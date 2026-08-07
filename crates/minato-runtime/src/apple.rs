@@ -1,0 +1,973 @@
+//! Apple Container バックエンド（`container` CLI）。
+//!
+//! Docker との構造的な違いが 3 つあり、それぞれ吸収している。
+//!
+//! 1. **各コンテナが専用 IP を持つ**（`192.168.64.x`）。ポートフォワードが
+//!    要らないので publish せず、`endpoint` にコンテナ自身のアドレスを返す。
+//!    ポート衝突が原理的に起きないという副産物がある。
+//! 2. **ラベルでの絞り込みができない**。CLI に filter がないため、一覧を
+//!    取得してこちら側で絞る。
+//! 3. **ネットワークの作成は macOS 26 以降**。使えない環境では既定の
+//!    ネットワークに相乗りする。
+//!
+//! さらに、ネットワークエイリアスがないためサービス名では名前解決できない。
+//! `{コンテナ名}.test` で引けるので、`MINATO_HOST_<SERVICE>` として注入する。
+
+use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+use async_trait::async_trait;
+use minato_core::{ServiceScope, ServiceState};
+use serde::Deserialize;
+use tokio::process::Command;
+
+use crate::error::{Result, RuntimeError};
+use crate::event::EventSink;
+use crate::readiness::{DEFAULT_READINESS_TIMEOUT, await_service};
+use crate::runtime::{Runtime, RuntimeInfo, labels, names};
+use crate::spec::{
+    RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount, WorkspaceKey,
+    WorkspaceSpec,
+};
+
+const RUNTIME_ID: &str = "apple";
+
+/// 既定の CLI 名。
+const PROGRAM: &str = "container";
+
+/// Apple Container が各コンテナに割り当てる DNS サフィックス。
+const DNS_SUFFIX: &str = "test";
+
+pub struct AppleContainerRuntime {
+    program: String,
+    /// 名前付きボリュームの実体を置くディレクトリ。
+    ///
+    /// Apple Container に named volume の概念がないため、ホスト側の
+    /// ディレクトリを bind mount して同等の永続性を得る。
+    volume_root: PathBuf,
+    /// カスタムネットワークが使えるか。0 = 未判定, 1 = 使える, 2 = 使えない。
+    network_support: AtomicU8,
+}
+
+impl Default for AppleContainerRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AppleContainerRuntime {
+    pub fn new() -> Self {
+        let volume_root = minato_core::Paths::resolve()
+            .map(|paths| paths.root().join("volumes"))
+            .unwrap_or_else(|_| PathBuf::from("/tmp/minato-volumes"));
+
+        Self::with_settings(PROGRAM.to_string(), volume_root)
+    }
+
+    pub fn with_settings(program: String, volume_root: PathBuf) -> Self {
+        Self {
+            program,
+            volume_root,
+            network_support: AtomicU8::new(0),
+        }
+    }
+
+    /// CLI を実行し、標準出力を返す。
+    async fn run(&self, args: &[&str]) -> Result<String> {
+        let output = Command::new(&self.program)
+            .args(args)
+            .output()
+            .await
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    RuntimeError::Unavailable {
+                        runtime: RUNTIME_ID.to_string(),
+                        message: format!(
+                            "`{}` コマンドが見つかりません。\
+                             Apple Container をインストールしてください",
+                            self.program
+                        ),
+                    }
+                } else {
+                    RuntimeError::Unavailable {
+                        runtime: RUNTIME_ID.to_string(),
+                        message: err.to_string(),
+                    }
+                }
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(RuntimeError::Failed {
+                operation: format!("{} {}", self.program, args.join(" ")),
+                message: if stderr.is_empty() {
+                    format!("終了コード {}", output.status.code().unwrap_or(-1))
+                } else {
+                    stderr
+                },
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// 成否だけを見る。失敗を機能の非対応として扱う場面で使う。
+    async fn succeeds(&self, args: &[&str]) -> bool {
+        Command::new(&self.program)
+            .args(args)
+            .output()
+            .await
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Minato が管理しているコンテナをすべて取得する。
+    ///
+    /// CLI にラベルでの絞り込みがないため、一覧を取ってこちらで絞る。
+    async fn managed_containers(&self) -> Result<Vec<AppleContainerRecord>> {
+        let json = self.run(&["ls", "--all", "--format", "json"]).await?;
+        let records = parse_container_list(&json)?;
+
+        Ok(records
+            .into_iter()
+            .filter(|record| {
+                record
+                    .configuration
+                    .labels
+                    .get(labels::MANAGED)
+                    .map(String::as_str)
+                    == Some(labels::MANAGED_VALUE)
+            })
+            .collect())
+    }
+
+    async fn find_container(&self, key: &ServiceKey) -> Result<Option<AppleContainerRecord>> {
+        let name = names::container(key);
+        Ok(self
+            .managed_containers()
+            .await?
+            .into_iter()
+            .find(|record| record.configuration.id == name))
+    }
+
+    /// カスタムネットワークが使えるかを 1 度だけ調べて覚える。
+    async fn supports_networks(&self) -> bool {
+        match self.network_support.load(Ordering::Relaxed) {
+            1 => return true,
+            2 => return false,
+            _ => {}
+        }
+
+        let supported = self
+            .succeeds(&["network", "list", "--format", "json"])
+            .await;
+        self.network_support
+            .store(if supported { 1 } else { 2 }, Ordering::Relaxed);
+        supported
+    }
+
+    async fn ensure_network(
+        &self,
+        key: &WorkspaceKey,
+        events: &EventSink,
+    ) -> Result<Option<String>> {
+        if !self.supports_networks().await {
+            events.debug(
+                "この環境ではカスタムネットワークを作成できないため、既定のネットワークを使います\
+                 （Apple Container のネットワーク機能は macOS 26 以降）",
+            );
+            return Ok(None);
+        }
+
+        let name = names::network(key);
+        let existing = self.run(&["network", "list", "--format", "json"]).await?;
+
+        if parse_network_names(&existing)?.iter().any(|n| n == &name) {
+            return Ok(Some(name));
+        }
+
+        // 競合で「既にある」と言われた場合は成功として扱う。
+        match self.run(&["network", "create", &name]).await {
+            Ok(_) => Ok(Some(name)),
+            Err(err) if err.to_string().contains("exists") => Ok(Some(name)),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// 名前付きボリュームに対応するホスト側ディレクトリを用意する。
+    fn ensure_volume_dir(&self, project: &str, name: &str) -> Result<PathBuf> {
+        let path = self.volume_root.join(project).join(name);
+        std::fs::create_dir_all(&path).map_err(|err| {
+            RuntimeError::failed(format!("ボリューム領域 {} の作成", path.display()), err)
+        })?;
+        Ok(path)
+    }
+
+    /// このサービスに与える環境変数。peer のホスト名を追加する。
+    fn env_with_peers(&self, spec: &ServiceSpec) -> BTreeMap<String, String> {
+        let mut env = spec.env.clone();
+
+        for peer in &spec.peers {
+            let peer_key = spec.attached_to.service(peer);
+            let hostname = format!("{}.{DNS_SUFFIX}", names::container(&peer_key));
+            let var = format!("MINATO_HOST_{}", peer.to_uppercase().replace('-', "_"));
+
+            // 利用者が明示した値を上書きしない。
+            env.entry(var).or_insert(hostname);
+        }
+
+        env
+    }
+
+    /// `container create` の引数を組み立てる。
+    fn create_args(&self, spec: &ServiceSpec, network: Option<&str>) -> Result<Vec<String>> {
+        let name = names::container(&spec.key);
+        let mut args: Vec<String> = vec!["create".into(), "--name".into(), name];
+
+        args.push("--workdir".into());
+        args.push(spec.workdir.clone());
+
+        for (key, value) in self.env_with_peers(spec) {
+            args.push("--env".into());
+            args.push(format!("{key}={value}"));
+        }
+
+        for (key, value) in container_labels(spec) {
+            args.push("--label".into());
+            args.push(format!("{key}={value}"));
+        }
+
+        if let Some(network) = network {
+            args.push("--network".into());
+            args.push(network.to_string());
+        }
+
+        if let Some(SourceMount { host, target }) = &spec.source_mount {
+            args.push("--volume".into());
+            args.push(format!("{}:{}", host.display(), target));
+        }
+
+        for volume in &spec.volumes {
+            let (source, target, read_only) = match volume {
+                VolumeMount::Named {
+                    name,
+                    target,
+                    read_only,
+                } => {
+                    let path = self.ensure_volume_dir(&spec.key.workspace.project, name)?;
+                    (path, target.clone(), *read_only)
+                }
+                VolumeMount::Bind {
+                    source,
+                    target,
+                    read_only,
+                } => (source.clone(), target.clone(), *read_only),
+            };
+
+            args.push("--volume".into());
+            args.push(if read_only {
+                format!("{}:{}:ro", source.display(), target)
+            } else {
+                format!("{}:{}", source.display(), target)
+            });
+        }
+
+        args.push(spec.image.clone());
+
+        if let Some(command) = &spec.command {
+            args.extend(command.iter().cloned());
+        }
+
+        Ok(args)
+    }
+}
+
+/// コンテナに付けるラベル一式。Docker 実装と同じキーを使う。
+fn container_labels(spec: &ServiceSpec) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    map.insert(
+        labels::MANAGED.to_string(),
+        labels::MANAGED_VALUE.to_string(),
+    );
+    map.insert(
+        labels::PROJECT.to_string(),
+        spec.key.workspace.project.clone(),
+    );
+    map.insert(
+        labels::WORKSPACE.to_string(),
+        spec.key.workspace.workspace.clone(),
+    );
+    map.insert(labels::SERVICE.to_string(), spec.key.service.clone());
+    map.insert(
+        labels::SCOPE.to_string(),
+        match spec.scope {
+            ServiceScope::Workspace => "workspace".to_string(),
+            ServiceScope::Project => "project".to_string(),
+        },
+    );
+    if let Some(port) = spec.port {
+        map.insert(labels::PORT.to_string(), port.to_string());
+    }
+    map
+}
+
+#[async_trait]
+impl Runtime for AppleContainerRuntime {
+    fn id(&self) -> &'static str {
+        RUNTIME_ID
+    }
+
+    async fn probe(&self) -> Result<RuntimeInfo> {
+        let version = self.run(&["--version"]).await?;
+
+        // サービスが起動していないと以降の操作がすべて失敗する。
+        if !self.succeeds(&["system", "status"]).await {
+            return Err(RuntimeError::Unavailable {
+                runtime: RUNTIME_ID.to_string(),
+                message: "Apple Container のサービスが起動していません".to_string(),
+            });
+        }
+
+        Ok(RuntimeInfo {
+            id: RUNTIME_ID.to_string(),
+            version: parse_version(&version),
+            supports_custom_networks: self.supports_networks().await,
+        })
+    }
+
+    async fn prepare(&self, spec: &WorkspaceSpec, events: &EventSink) -> Result<()> {
+        events.step_started("network", "ネットワークを用意");
+        self.ensure_network(&spec.key, events).await?;
+        if spec
+            .services
+            .iter()
+            .any(|s| s.scope == ServiceScope::Project)
+        {
+            self.ensure_network(&WorkspaceKey::shared(&spec.key.project), events)
+                .await?;
+        }
+        events.step_done("network", "ネットワークを用意");
+
+        for service in &spec.services {
+            let label = format!("イメージ {} を取得", service.image);
+            events.step_started("pull", &label);
+
+            match self.run(&["image", "pull", &service.image]).await {
+                Ok(_) => events.step_done("pull", &label),
+                Err(err) => {
+                    events.step_failed("pull", &label, err.to_string());
+                    return Err(RuntimeError::ImageUnavailable {
+                        image: service.image.clone(),
+                        message: err.to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
+        let name = names::container(&spec.key);
+
+        if let Some(existing) = self.find_container(&spec.key).await? {
+            if existing.is_running() {
+                events.step_skipped(
+                    "start",
+                    format!("{} を起動", spec.name()),
+                    "既に起動しています",
+                );
+                events.service_state(spec.name(), ServiceState::Ready);
+
+                return Ok(RunningService {
+                    key: spec.key.clone(),
+                    container_id: existing.configuration.id.clone(),
+                    endpoint: existing.endpoint(spec.port),
+                });
+            }
+
+            // 停止中のコンテナは設定が古い可能性があるので作り直す。
+            self.run(&["delete", "--force", &name]).await?;
+        }
+
+        events.step_started("start", format!("{} を起動", spec.name()));
+        events.service_state(spec.name(), ServiceState::Starting);
+
+        let network = self.ensure_network(&spec.attached_to, events).await?;
+        let args = self.create_args(spec, network.as_deref())?;
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        if let Err(err) = self.run(&arg_refs).await {
+            events.step_failed("start", format!("{} を起動", spec.name()), err.to_string());
+            return Err(err);
+        }
+
+        if let Err(err) = self.run(&["start", &name]).await {
+            events.step_failed("start", format!("{} を起動", spec.name()), err.to_string());
+            return Err(err);
+        }
+
+        // IP はコンテナが動き出してから割り当てられるため、起動後に取得する。
+        let record = self.find_container(&spec.key).await?;
+        let endpoint = record.as_ref().and_then(|r| r.endpoint(spec.port));
+
+        if spec.port.is_some() && endpoint.is_none() {
+            events.warn(format!(
+                "{} の IP アドレスを取得できませんでした。ネットワークの割り当てを待っています",
+                spec.name()
+            ));
+        }
+
+        events.step_done("start", format!("{} を起動", spec.name()));
+
+        // Docker 側と同じ理由で、応答を確かめてから Ready を宣言する。
+        await_service(spec.name(), endpoint, DEFAULT_READINESS_TIMEOUT, events).await;
+
+        events.service_state(spec.name(), ServiceState::Ready);
+
+        Ok(RunningService {
+            key: spec.key.clone(),
+            container_id: name,
+            endpoint,
+        })
+    }
+
+    async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        let Some(record) = self.find_container(key).await? else {
+            events.step_skipped(
+                "stop",
+                format!("{} を停止", key.service),
+                "起動していません",
+            );
+            return Ok(());
+        };
+
+        if !record.is_running() {
+            events.step_skipped(
+                "stop",
+                format!("{} を停止", key.service),
+                "起動していません",
+            );
+            return Ok(());
+        }
+
+        events.step_started("stop", format!("{} を停止", key.service));
+        self.run(&["stop", &names::container(key)]).await?;
+        events.step_done("stop", format!("{} を停止", key.service));
+        events.service_state(&key.service, ServiceState::Stopped);
+        Ok(())
+    }
+
+    async fn remove(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        if self.find_container(key).await?.is_none() {
+            return Ok(());
+        }
+
+        events.step_started("remove", format!("{} を削除", key.service));
+        self.run(&["delete", "--force", &names::container(key)])
+            .await?;
+        events.step_done("remove", format!("{} を削除", key.service));
+        Ok(())
+    }
+
+    async fn destroy_workspace(&self, key: &WorkspaceKey, events: &EventSink) -> Result<()> {
+        let containers = self.managed_containers().await?;
+        let targets: Vec<String> = containers
+            .iter()
+            .filter(|record| {
+                record.label(labels::PROJECT) == Some(key.project.as_str())
+                    && record.label(labels::WORKSPACE) == Some(key.workspace.as_str())
+            })
+            .map(|record| record.configuration.id.clone())
+            .collect();
+
+        events.step_started("destroy", "コンテナを削除");
+        for name in targets {
+            self.run(&["delete", "--force", &name]).await?;
+        }
+        events.step_done("destroy", "コンテナを削除");
+
+        if self.supports_networks().await {
+            let network = names::network(key);
+            if !self.succeeds(&["network", "delete", &network]).await {
+                events.debug(format!("ネットワーク {network} は削除しませんでした"));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn inspect(&self, key: &ServiceKey) -> Result<ServiceStatus> {
+        match self.find_container(key).await? {
+            Some(record) => Ok(record.to_status()),
+            None => Ok(ServiceStatus::stopped(key.clone(), ServiceScope::Workspace)),
+        }
+    }
+
+    async fn list_project(&self, project: &str) -> Result<Vec<ServiceStatus>> {
+        Ok(self
+            .managed_containers()
+            .await?
+            .into_iter()
+            .filter(|record| record.label(labels::PROJECT) == Some(project))
+            .map(|record| record.to_status())
+            .collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CLI 出力のパース
+//
+// `container` の JSON はこの形（docs/how-to.md より）:
+//
+// [{ "status": "running",
+//    "networks": [{"address": "192.168.64.3/24", "gateway": "192.168.64.1",
+//                  "hostname": "my-web-server.test.", "network": "default"}],
+//    "configuration": {"id": "my-web-server", "labels": {...}, ...} }]
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppleContainerRecord {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub networks: Vec<AppleNetworkAttachment>,
+    pub configuration: AppleConfiguration,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppleNetworkAttachment {
+    /// CIDR 付きで返る（`192.168.64.3/24`）。
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub hostname: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppleConfiguration {
+    /// コンテナ名。`--name` で指定した値。
+    pub id: String,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub image: Option<AppleImage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppleImage {
+    #[serde(default)]
+    pub reference: Option<String>,
+}
+
+impl AppleContainerRecord {
+    pub fn is_running(&self) -> bool {
+        self.status.as_deref() == Some("running")
+    }
+
+    pub fn label(&self, key: &str) -> Option<&str> {
+        self.configuration.labels.get(key).map(String::as_str)
+    }
+
+    /// 最初のネットワークに割り当てられた IPv4 アドレス。
+    pub fn ip(&self) -> Option<Ipv4Addr> {
+        self.networks
+            .iter()
+            .find_map(|net| net.address.as_deref())
+            .and_then(parse_cidr_address)
+    }
+
+    /// プロキシの転送先。ポートフォワードではなくコンテナ自身のアドレス。
+    pub fn endpoint(&self, port: Option<u16>) -> Option<SocketAddr> {
+        let port = port.or_else(|| {
+            self.label(labels::PORT)
+                .and_then(|value| value.parse::<u16>().ok())
+        })?;
+
+        // 停止中のコンテナに IP はない。
+        if !self.is_running() {
+            return None;
+        }
+
+        self.ip().map(|ip| SocketAddr::new(IpAddr::V4(ip), port))
+    }
+
+    pub fn state(&self) -> ServiceState {
+        match self.status.as_deref() {
+            Some("running") => ServiceState::Ready,
+            Some("stopping") | Some("starting") => ServiceState::Starting,
+            Some("stopped") | Some("exited") => ServiceState::Stopped,
+            Some(_) => ServiceState::Unknown,
+            None => ServiceState::Unknown,
+        }
+    }
+
+    pub fn to_status(&self) -> ServiceStatus {
+        let project = self.label(labels::PROJECT).unwrap_or_default().to_string();
+        let workspace = self
+            .label(labels::WORKSPACE)
+            .unwrap_or_default()
+            .to_string();
+        let service = self.label(labels::SERVICE).unwrap_or_default().to_string();
+
+        let scope = match self.label(labels::SCOPE) {
+            Some("project") => ServiceScope::Project,
+            _ => ServiceScope::Workspace,
+        };
+
+        let port = self
+            .label(labels::PORT)
+            .and_then(|value| value.parse::<u16>().ok());
+
+        ServiceStatus {
+            key: WorkspaceKey::new(project, workspace).service(service),
+            state: self.state(),
+            container_id: Some(self.configuration.id.clone()),
+            image: self
+                .configuration
+                .image
+                .as_ref()
+                .and_then(|img| img.reference.clone()),
+            endpoint: self.endpoint(port),
+            port,
+            scope,
+        }
+    }
+}
+
+fn parse_container_list(json: &str) -> Result<Vec<AppleContainerRecord>> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str(json).map_err(|err| RuntimeError::Failed {
+        operation: "container ls の出力の解釈".to_string(),
+        message: format!("{err}\n出力: {json}"),
+    })
+}
+
+fn parse_network_names(json: &str) -> Result<Vec<String>> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    #[derive(Deserialize)]
+    struct NetworkRecord {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
+    }
+
+    let records: Vec<NetworkRecord> =
+        serde_json::from_str(json).map_err(|err| RuntimeError::Failed {
+            operation: "container network list の出力の解釈".to_string(),
+            message: format!("{err}\n出力: {json}"),
+        })?;
+
+    Ok(records
+        .into_iter()
+        .filter_map(|record| record.name.or(record.id))
+        .collect())
+}
+
+/// `192.168.64.3/24` から IP 部分だけを取り出す。
+fn parse_cidr_address(address: &str) -> Option<Ipv4Addr> {
+    address
+        .split('/')
+        .next()
+        .and_then(|ip| ip.parse::<Ipv4Addr>().ok())
+}
+
+/// `container CLI version 0.5.0 (build ...)` のような文字列から版だけ拾う。
+fn parse_version(output: &str) -> String {
+    output
+        .split_whitespace()
+        .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// docs/how-to.md に載っている実際の出力を元にした入力。
+    const SAMPLE: &str = r#"[
+      {
+        "status": "running",
+        "networks": [
+          {
+            "address": "192.168.64.3/24",
+            "gateway": "192.168.64.1",
+            "hostname": "minato-myapp-feat-1-web.test.",
+            "network": "default"
+          }
+        ],
+        "configuration": {
+          "id": "minato-myapp-feat-1-web",
+          "hostname": "minato-myapp-feat-1-web",
+          "mounts": [],
+          "labels": {
+            "dev.minato.managed": "1",
+            "dev.minato.project": "myapp",
+            "dev.minato.workspace": "feat-1",
+            "dev.minato.service": "web",
+            "dev.minato.scope": "workspace",
+            "dev.minato.port": "3000"
+          },
+          "image": { "reference": "node:22" },
+          "resources": { "cpus": 4, "memoryInBytes": 1073741824 }
+        }
+      }
+    ]"#;
+
+    #[test]
+    fn parses_real_cli_output() {
+        let records = parse_container_list(SAMPLE).expect("パースできる");
+        assert_eq!(records.len(), 1);
+
+        let record = &records[0];
+        assert!(record.is_running());
+        assert_eq!(record.configuration.id, "minato-myapp-feat-1-web");
+        assert_eq!(record.label(labels::SERVICE), Some("web"));
+        assert_eq!(record.ip(), Some(Ipv4Addr::new(192, 168, 64, 3)));
+    }
+
+    #[test]
+    fn endpoint_points_at_the_container_not_localhost() {
+        // Docker と違い、ポートフォワードを介さず直接コンテナに繋ぐ。
+        // この差を吸収するのが RunningService::endpoint の役目。
+        let record = &parse_container_list(SAMPLE).expect("パースできる")[0];
+
+        assert_eq!(
+            record.endpoint(Some(3000)),
+            Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 64, 3)),
+                3000
+            ))
+        );
+    }
+
+    #[test]
+    fn endpoint_falls_back_to_port_label() {
+        let record = &parse_container_list(SAMPLE).expect("パースできる")[0];
+        // spec が手元になくてもラベルからポートを復元できる。
+        assert_eq!(
+            record.endpoint(None).map(|addr| addr.port()),
+            Some(3000),
+            "daemon 再起動後の復元でポートが失われてはいけない"
+        );
+    }
+
+    #[test]
+    fn stopped_container_has_no_endpoint() {
+        let json = SAMPLE.replace(r#""status": "running""#, r#""status": "stopped""#);
+        let record = &parse_container_list(&json).expect("パースできる")[0];
+
+        assert_eq!(record.state(), ServiceState::Stopped);
+        assert_eq!(record.endpoint(Some(3000)), None, "停止中に IP は無効");
+    }
+
+    #[test]
+    fn converts_to_service_status() {
+        let record = &parse_container_list(SAMPLE).expect("パースできる")[0];
+        let status = record.to_status();
+
+        assert_eq!(status.key.workspace.project, "myapp");
+        assert_eq!(status.key.workspace.workspace, "feat-1");
+        assert_eq!(status.key.service, "web");
+        assert_eq!(status.state, ServiceState::Ready);
+        assert_eq!(status.port, Some(3000));
+        assert_eq!(status.image.as_deref(), Some("node:22"));
+        assert_eq!(status.scope, ServiceScope::Workspace);
+    }
+
+    #[test]
+    fn tolerates_missing_optional_fields() {
+        // CLI の出力形式が変わっても、必須項目さえあれば動き続ける。
+        let json = r#"[{"configuration": {"id": "x"}}]"#;
+        let records = parse_container_list(json).expect("パースできる");
+
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].is_running());
+        assert_eq!(records[0].ip(), None);
+        assert_eq!(records[0].state(), ServiceState::Unknown);
+    }
+
+    #[test]
+    fn parses_empty_list() {
+        assert!(parse_container_list("[]").expect("パースできる").is_empty());
+        assert!(parse_container_list("").expect("空も許容").is_empty());
+    }
+
+    #[test]
+    fn reports_unparseable_output_with_content() {
+        let err = parse_container_list("not json").unwrap_err();
+        assert!(
+            err.to_string().contains("not json"),
+            "デバッグできるよう出力を含める: {err}"
+        );
+    }
+
+    #[test]
+    fn strips_cidr_suffix() {
+        assert_eq!(
+            parse_cidr_address("192.168.64.3/24"),
+            Some(Ipv4Addr::new(192, 168, 64, 3))
+        );
+        assert_eq!(
+            parse_cidr_address("10.0.0.1"),
+            Some(Ipv4Addr::new(10, 0, 0, 1))
+        );
+        assert_eq!(parse_cidr_address("garbage"), None);
+    }
+
+    #[test]
+    fn extracts_version_number() {
+        assert_eq!(
+            parse_version("container CLI version 0.5.0 (build 1)"),
+            "0.5.0"
+        );
+        assert_eq!(parse_version("0.1.0"), "0.1.0");
+        assert_eq!(parse_version("no digits here"), "unknown");
+    }
+
+    #[test]
+    fn parses_network_list() {
+        let json = r#"[{"name": "minato-myapp-feat-1"}, {"id": "default"}]"#;
+        let names = parse_network_names(json).expect("パースできる");
+        assert_eq!(names, vec!["minato-myapp-feat-1", "default"]);
+    }
+
+    fn spec_with_peers(peers: Vec<String>) -> ServiceSpec {
+        ServiceSpec {
+            key: WorkspaceKey::new("myapp", "feat-1").service("api"),
+            attached_to: WorkspaceKey::new("myapp", "feat-1"),
+            image: "node:22".into(),
+            command: None,
+            workdir: "/workspace".into(),
+            env: BTreeMap::new(),
+            port: Some(8080),
+            scope: ServiceScope::Workspace,
+            volumes: vec![],
+            source_mount: None,
+            peers,
+        }
+    }
+
+    #[test]
+    fn injects_peer_hostnames() {
+        // エイリアスがないので、相手のコンテナ名を環境変数で教える。
+        let runtime = AppleContainerRuntime::with_settings(
+            PROGRAM.into(),
+            PathBuf::from("/tmp/minato-test-volumes"),
+        );
+        let env = runtime.env_with_peers(&spec_with_peers(vec!["db".into(), "cache-store".into()]));
+
+        assert_eq!(
+            env.get("MINATO_HOST_DB").map(String::as_str),
+            Some("minato-myapp-feat-1-db.test")
+        );
+        assert_eq!(
+            env.get("MINATO_HOST_CACHE_STORE").map(String::as_str),
+            Some("minato-myapp-feat-1-cache-store.test"),
+            "ハイフンは環境変数名に使えないのでアンダースコアにする"
+        );
+    }
+
+    #[test]
+    fn does_not_override_user_supplied_env() {
+        let runtime = AppleContainerRuntime::with_settings(
+            PROGRAM.into(),
+            PathBuf::from("/tmp/minato-test-volumes"),
+        );
+
+        let mut spec = spec_with_peers(vec!["db".into()]);
+        spec.env
+            .insert("MINATO_HOST_DB".into(), "custom-host".into());
+
+        let env = runtime.env_with_peers(&spec);
+        assert_eq!(
+            env.get("MINATO_HOST_DB").map(String::as_str),
+            Some("custom-host")
+        );
+    }
+
+    #[test]
+    fn builds_create_args_without_publishing_ports() {
+        let runtime = AppleContainerRuntime::with_settings(
+            PROGRAM.into(),
+            PathBuf::from("/tmp/minato-test-volumes"),
+        );
+
+        let mut spec = spec_with_peers(vec![]);
+        spec.command = Some(vec!["pnpm".into(), "dev".into()]);
+        spec.source_mount = Some(SourceMount {
+            host: PathBuf::from("/repo/wt/feat-1"),
+            target: "/workspace".into(),
+        });
+
+        let args = runtime
+            .create_args(&spec, Some("minato-myapp-feat-1"))
+            .expect("組み立てられる");
+
+        assert_eq!(args[0], "create");
+        assert!(
+            !args.iter().any(|a| a == "--publish" || a == "-p"),
+            "各コンテナが専用 IP を持つので publish は不要: {args:?}"
+        );
+
+        // イメージの後にコマンドが来る順序が守られていること。
+        let image_index = args
+            .iter()
+            .position(|a| a == "node:22")
+            .expect("イメージがある");
+        let cmd_index = args
+            .iter()
+            .position(|a| a == "pnpm")
+            .expect("コマンドがある");
+        assert!(image_index < cmd_index, "イメージ → コマンドの順: {args:?}");
+
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--volume" && w[1] == "/repo/wt/feat-1:/workspace"),
+            "worktree がマウントされる: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--label" && w[1] == "dev.minato.service=api"),
+            "ラベルが付く: {args:?}"
+        );
+    }
+
+    #[test]
+    fn maps_named_volumes_to_host_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().to_path_buf());
+
+        let mut spec = spec_with_peers(vec![]);
+        spec.volumes = vec![VolumeMount::Named {
+            name: "pgdata".into(),
+            target: "/var/lib/postgresql/data".into(),
+            read_only: false,
+        }];
+
+        let args = runtime.create_args(&spec, None).expect("組み立てられる");
+        let expected = dir.path().join("myapp").join("pgdata");
+
+        assert!(
+            args.windows(2).any(|w| {
+                w[0] == "--volume"
+                    && w[1] == format!("{}:/var/lib/postgresql/data", expected.display())
+            }),
+            "named volume はホストのディレクトリに割り当てる: {args:?}"
+        );
+        assert!(expected.is_dir(), "実体のディレクトリが作られる");
+    }
+}

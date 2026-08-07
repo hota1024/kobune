@@ -1,0 +1,84 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/minato-core",
+    "crates/minato-api",
+    "crates/minato-client",
+    "crates/minato-runtime",
+    "crates/minato-proxy",
+    "crates/minato-dns",
+    "crates/minato-tunnel",
+    "apps/daemon",
+    "apps/cli",
+    "apps/desktop",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/hota1024/minato"
+
+[workspace.dependencies]
+# 内部 crate。依存の方向は docs/DESIGN.md §13 を参照。
+minato-core = { path = "crates/minato-core" }
+minato-api = { path = "crates/minato-api" }
+minato-client = { path = "crates/minato-client" }
+minato-runtime = { path = "crates/minato-runtime" }
+minato-proxy = { path = "crates/minato-proxy" }
+minato-dns = { path = "crates/minato-dns" }
+minato-tunnel = { path = "crates/minato-tunnel" }
+
+# 非同期
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+# シリアライズ・設定
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+indexmap = { version = "2", features = ["serde"] }
+humantime-serde = "1"
+humantime = "2"
+
+# ユーティリティ
+sha2 = "0.10"
+shell-words = "1"
+dirs = "5"
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+
+# エラー・ログ
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# ネットワーク
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+axum = "0.8"
+rustls = "0.23"
+rcgen = "0.13"
+hickory-server = "0.24"
+
+# Runtime
+bollard = "0.18"
+
+# GUI
+eframe = "0.29"
+egui = "0.29"
+egui_extras = "0.29"
+tray-icon = "0.19"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
