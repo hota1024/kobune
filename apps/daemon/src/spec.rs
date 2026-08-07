@@ -17,6 +17,7 @@ pub fn build_workspace_spec(
     project: &str,
     workspace: &str,
     worktree_path: &Path,
+    envs: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> Result<WorkspaceSpec, ApiError> {
     let key = WorkspaceKey::new(project, workspace);
 
@@ -31,12 +32,13 @@ pub fn build_workspace_spec(
             .expect("startup_order は既存のサービス名だけを返す");
 
         services.push(build_service_spec(
-            config,
             service_config,
             name,
             project,
             workspace,
             worktree_path,
+            envs.get(name).cloned().unwrap_or_default(),
+            config.services.keys().cloned().collect(),
         )?);
     }
 
@@ -49,12 +51,13 @@ pub fn build_workspace_spec(
 
 /// サービス 1 つの仕様を組み立てる。
 pub fn build_service_spec(
-    config: &MinatoConfig,
     service: &ServiceConfig,
     name: &str,
     project: &str,
     workspace: &str,
     worktree_path: &Path,
+    env: BTreeMap<String, String>,
+    all_services: Vec<String>,
 ) -> Result<ServiceSpec, ApiError> {
     // M0 では既製イメージのみ。Dockerfile のビルドは M0.5 で対応する。
     let image = match (&service.image, &service.build) {
@@ -111,11 +114,9 @@ pub fn build_service_spec(
     }
 
     // 同じ workspace の他サービス。名前解決の手段を runtime が用意する。
-    let peers: Vec<String> = config
-        .services
-        .keys()
-        .filter(|other| other.as_str() != name)
-        .cloned()
+    let peers: Vec<String> = all_services
+        .into_iter()
+        .filter(|other| other != name)
         .collect();
 
     Ok(ServiceSpec {
@@ -124,7 +125,7 @@ pub fn build_service_spec(
         image,
         command,
         workdir: service.workdir().to_string(),
-        env: build_env(service, name, project, workspace),
+        env,
         port: service.port,
         health: service.health.clone(),
         scope: service.scope,
@@ -132,30 +133,6 @@ pub fn build_service_spec(
         source_mount,
         peers,
     })
-}
-
-/// サービスに渡す環境変数。
-///
-/// 自分がどの workspace で動いているかをアプリ側から知れるようにする。
-/// URL の注入（`MINATO_URL_*`）はプロキシが動く M1 以降。
-fn build_env(
-    service: &ServiceConfig,
-    name: &str,
-    project: &str,
-    workspace: &str,
-) -> BTreeMap<String, String> {
-    let mut env = BTreeMap::new();
-
-    env.insert("MINATO_PROJECT".to_string(), project.to_string());
-    env.insert("MINATO_WORKSPACE".to_string(), workspace.to_string());
-    env.insert("MINATO_SERVICE".to_string(), name.to_string());
-
-    // 利用者が書いた値を後から入れて、自動注入を上書きできるようにする。
-    for (key, value) in &service.env {
-        env.insert(key.clone(), value.clone());
-    }
-
-    env
 }
 
 #[cfg(test)]
@@ -188,12 +165,19 @@ mod tests {
         volumes = ["pgdata:/var/lib/postgresql/data"]
     "#;
 
+    /// テストでは環境変数の層は関心外なので空で渡す。
+    /// 層の組み立ては `crate::env` の担当。
+    fn no_envs() -> BTreeMap<String, BTreeMap<String, String>> {
+        BTreeMap::new()
+    }
+
     fn build() -> WorkspaceSpec {
         build_workspace_spec(
             &config(SAMPLE),
             "myapp",
             "feat-1",
             Path::new("/repo/wt/feat-1"),
+            &no_envs(),
         )
         .expect("組み立てられる")
     }
@@ -217,7 +201,7 @@ mod tests {
         "#,
         );
 
-        let spec = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"))
+        let spec = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"), &no_envs())
             .expect("組み立てられる");
 
         assert_eq!(
@@ -262,54 +246,6 @@ mod tests {
     }
 
     #[test]
-    fn injects_context_env_vars() {
-        let spec = build();
-        let web = spec.service("web").expect("存在する");
-
-        assert_eq!(
-            web.env.get("MINATO_PROJECT").map(String::as_str),
-            Some("myapp")
-        );
-        assert_eq!(
-            web.env.get("MINATO_WORKSPACE").map(String::as_str),
-            Some("feat-1")
-        );
-        assert_eq!(
-            web.env.get("MINATO_SERVICE").map(String::as_str),
-            Some("web")
-        );
-        assert_eq!(
-            web.env.get("NODE_ENV").map(String::as_str),
-            Some("development")
-        );
-    }
-
-    #[test]
-    fn user_env_overrides_injected_values() {
-        let config = config(
-            r#"
-            [project]
-            name = "myapp"
-            [services.web]
-            image = "node:22"
-            env = { MINATO_SERVICE = "custom" }
-        "#,
-        );
-
-        let spec = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"))
-            .expect("組み立てられる");
-
-        assert_eq!(
-            spec.services[0]
-                .env
-                .get("MINATO_SERVICE")
-                .map(String::as_str),
-            Some("custom"),
-            "明示した値を勝手に潰さない"
-        );
-    }
-
-    #[test]
     fn lists_peers_excluding_self() {
         let spec = build();
         let web = spec.service("web").expect("存在する");
@@ -344,7 +280,8 @@ mod tests {
         "#,
         );
 
-        let err = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo")).unwrap_err();
+        let err = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"), &no_envs())
+            .unwrap_err();
 
         assert_eq!(err.code, minato_api::ErrorCode::Unsupported);
         assert!(err.message.contains("image"), "代わりの手段を示す: {err}");
@@ -362,7 +299,8 @@ mod tests {
         "#,
         );
 
-        let err = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo")).unwrap_err();
+        let err = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"), &no_envs())
+            .unwrap_err();
         assert_eq!(err.code, minato_api::ErrorCode::InvalidConfig);
     }
 }

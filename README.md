@@ -22,9 +22,10 @@ $ minato new feature/user-auth
 
 ## 状態
 
-**M0 / M1 / M2 完了。** worktree を作るとコンテナが起動し、
+**M0 〜 M3 完了。** worktree を作るとコンテナが起動し、
 `*.localhost` の URL でアクセスできる。触っていない環境は自動で停止し、
-アクセスが来たら起き上がる。
+アクセスが来たら起き上がる。各サービスには他サービスの URL が
+`MINATO_URL_<SERVICE>` として渡る。
 
 ```console
 $ minato init
@@ -67,7 +68,7 @@ $ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daem
 | M0 ✅ | Docker / Apple Container runtime + `new` / `up` / `down` / `rm` / `ls` / `status` / `url` |
 | M1 ✅ | DNS + リバースプロキシ + TLS + `doctor` / `setup` + launchd socket activation |
 | M2 ✅ | scale-to-zero（health check・アイドル停止・オンデマンド起動） |
-| M3 | 環境変数管理 |
+| M3 ✅ | 環境変数管理（3 層マージ・シークレット参照・URL 自動注入） |
 | M4 | Cloudflare Tunnel |
 | M5 | Skills |
 | M6 | GUI（egui + メニューバー常駐） |

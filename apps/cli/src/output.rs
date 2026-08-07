@@ -3,7 +3,9 @@
 //! daemon 側には整形済みの文字列を一切持たせない。同じイベント列から
 //! GUI も進捗表示を作れる必要があるため（`docs/DESIGN.md` §3）。
 
-use minato_api::{ApiError, Diagnostics, Event, LogLevel, ServiceInfo, StepStatus, WorkspaceInfo};
+use minato_api::{
+    ApiError, Diagnostics, EnvInfo, Event, LogLevel, ServiceInfo, StepStatus, WorkspaceInfo,
+};
 use minato_core::ServiceState;
 
 /// 進行中のステップを表示する。
@@ -115,6 +117,47 @@ fn access_label(service: &ServiceInfo) -> String {
         Some(access) => access,
         None if service.state.is_running() => "(内部のみ)".to_string(),
         None => "-".to_string(),
+    }
+}
+
+/// 環境変数を一覧する。
+///
+/// **どの層で定義された値かを併記する。** 3 層あるので、意図しない層の
+/// 値が効いていることに気づけないと原因が掴めない。
+pub fn print_env(entries: &[EnvInfo]) {
+    if entries.is_empty() {
+        println!("環境変数は定義されていません");
+        return;
+    }
+
+    let key_width = entries
+        .iter()
+        .map(|entry| entry.key.chars().count())
+        .max()
+        .unwrap_or(3)
+        .max(3);
+
+    let scope_width = entries
+        .iter()
+        .map(|entry| entry.scope.label().chars().count())
+        .max()
+        .unwrap_or(5)
+        .max(5);
+
+    for entry in entries {
+        let value = match &entry.source {
+            Some(source) => format!("{} → {source}", entry.value),
+            None => entry.value.clone(),
+        };
+
+        println!(
+            "{:<key_width$}  {:<scope_width$}  {}",
+            entry.key,
+            entry.scope.label(),
+            value,
+            key_width = key_width,
+            scope_width = scope_width
+        );
     }
 }
 

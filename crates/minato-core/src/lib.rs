@@ -4,6 +4,7 @@
 //! `minato-runtime` / `minato-proxy` などが担当し、ここには持ち込まない。
 
 pub mod config;
+pub mod env;
 pub mod error;
 pub mod git;
 pub mod naming;
@@ -12,6 +13,7 @@ pub mod service;
 pub mod state;
 
 pub use config::{HealthCheck, MinatoConfig, ServiceConfig, ServiceScope};
+pub use env::{EnvEntry, EnvLayers, EnvScope, SecretRef};
 pub use error::{Error, Result};
 pub use git::Repository;
 pub use paths::Paths;

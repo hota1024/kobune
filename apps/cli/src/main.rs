@@ -115,10 +115,47 @@ enum Command {
         service: Option<String>,
     },
 
+    /// 環境変数を操作する
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
+
     /// daemon を操作する
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum EnvCommand {
+    /// 環境変数を一覧する
+    Ls {
+        /// 値を伏せずに表示する
+        #[arg(long)]
+        reveal: bool,
+    },
+
+    /// 1 つの値を出力する（パイプで使える）
+    Get { key: String },
+
+    /// 環境変数を設定する
+    Set {
+        /// KEY=VALUE の形式
+        assignment: String,
+
+        /// 書き込む層
+        #[arg(long, default_value = "workspace")]
+        scope: String,
+    },
+
+    /// 環境変数を削除する
+    Unset {
+        key: String,
+
+        #[arg(long, default_value = "workspace")]
+        scope: String,
     },
 }
 
@@ -267,6 +304,7 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             all: *all,
         },
         Command::Status | Command::Url { .. } => Request::Status { target },
+        Command::Env { command } => build_env_request(command, target)?,
         Command::Doctor | Command::Setup => Request::Doctor,
         Command::Init { .. } | Command::Daemon { .. } => {
             unreachable!("daemon を使わないコマンドは呼び出し前に処理済み")
@@ -276,10 +314,55 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
     Ok(request)
 }
 
+fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, CliError> {
+    let parse_scope = |raw: &str| -> Result<minato_api::EnvScope, CliError> {
+        raw.parse::<minato_api::EnvScope>().map_err(CliError::Local)
+    };
+
+    Ok(match command {
+        EnvCommand::Ls { reveal } => Request::EnvList {
+            target,
+            reveal: *reveal,
+        },
+        // get は一覧から取り出す。値そのものが要るので伏せない。
+        EnvCommand::Get { .. } => Request::EnvList {
+            target,
+            reveal: true,
+        },
+        EnvCommand::Set { assignment, scope } => {
+            let Some((key, value)) = assignment.split_once('=') else {
+                return Err(CliError::Local(format!(
+                    "`{assignment}` は KEY=VALUE の形式ではありません"
+                )));
+            };
+
+            Request::EnvSet {
+                target,
+                scope: parse_scope(scope)?,
+                key: key.to_string(),
+                value: value.to_string(),
+            }
+        }
+        EnvCommand::Unset { key, scope } => Request::EnvUnset {
+            target,
+            scope: parse_scope(scope)?,
+            key: key.clone(),
+        },
+    })
+}
+
 fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
     // url だけは表示が特殊。パイプで繋げるよう 1 行だけ出す。
     if let Command::Url { service } = &cli.command {
         return present_url(cli, response, service.as_deref());
+    }
+
+    // env get はパイプで使えるよう 1 行だけ出す。
+    if let Command::Env {
+        command: EnvCommand::Get { key },
+    } = &cli.command
+    {
+        return present_env_value(cli, response, key);
     }
 
     // doctor と setup は daemon の診断にホスト側の診断を足して見せる。
@@ -300,6 +383,21 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
         }
         Response::Workspaces { workspaces } => output::print_workspaces(workspaces),
         Response::Diagnostics(diagnostics) => output::print_diagnostics(diagnostics),
+        Response::Env { entries } => {
+            output::print_env(entries);
+
+            // 変更しても既存のコンテナには反映されない。黙っていると
+            // 「設定したのに効かない」と受け取られる。
+            if matches!(
+                cli.command,
+                Command::Env {
+                    command: EnvCommand::Set { .. } | EnvCommand::Unset { .. }
+                }
+            ) {
+                println!();
+                println!("反映するには `minato down` してから `minato up` してください");
+            }
+        }
         Response::Workspace { workspace } => output::print_workspace(workspace),
         Response::Empty => println!("完了しました"),
     }
@@ -351,6 +449,32 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
     } else {
         // パイプで使えるよう、装飾なしで 1 行だけ出す。
         println!("{access}");
+    }
+
+    Ok(())
+}
+
+/// `minato env get` の出力。値だけを 1 行で出す。
+fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), CliError> {
+    let Response::Env { entries } = response else {
+        return Err(CliError::Local(
+            "環境変数を取得できませんでした".to_string(),
+        ));
+    };
+
+    let entry = entries
+        .iter()
+        .find(|entry| entry.key == key)
+        .ok_or_else(|| {
+            CliError::Local(format!(
+                "`{key}` は定義されていません。`minato env ls` で確認してください"
+            ))
+        })?;
+
+    if cli.json {
+        output::print_json(entry);
+    } else {
+        println!("{}", entry.value);
     }
 
     Ok(())

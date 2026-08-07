@@ -367,8 +367,22 @@ MINATO_WORKSPACE     = feat-1
 MINATO_SERVICE       = web
 MINATO_URL_WEB       = https://web.feat-1.myapp.localhost
 MINATO_URL_API       = https://api.feat-1.myapp.localhost
-MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # Tunnel 有効時
+MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # Tunnel 有効時（M4）
 ```
+
+サービス名の `-` は `_` に変換する（`api-server` → `MINATO_URL_API_SERVER`）。環境変数名に `-` は使えないため。
+
+**自動注入は層の最下段に置く。** 利用者の指定で上書きできるようにするため。逆にすると Minato の都合で利用者の設定が消える。
+
+**プロキシが動いていないときは URL を注入しない。** 空文字を入れると「設定されているのに繋がらない」状態になり、原因が分かりにくくなる。
+
+### M3 で分かったこと
+
+- `minato env ls` は**どの層で定義された値かを併記する**。3 層あるので、意図しない層の値が効いていることに気づけないと原因が掴めない
+- 自動注入した値はマスクしない。Minato が作ったもので秘密ではなく、URL を確認したい場面が多い
+- シークレットは `--reveal` でも参照のまま表示する。実体を出すには解決が要り、それは起動時にだけ行う
+- **`env set` の後に再起動が要ることを明示する**。既存コンテナには反映されないので、黙っていると「設定したのに効かない」と受け取られる
+- シークレットの解決に失敗しても daemon は落とさない。1Password にサインインしていないだけということが多く、その 1 つのために環境全体が起動しない方が困る。失敗は警告として伝え、そのキーだけ落とす
 
 ## 9. Cloudflare Tunnel
 
@@ -569,7 +583,7 @@ apps/daemon ─────────────────────>  mi
 | **M0** ✅ | workspace 骨組み + core（config / naming / state）+ `minato-api`（イベントストリーム含む）+ Docker / Apple Container runtime + `init` / `new` / `up` / `down` / `rm` / `ls` / `status` / `url` / `daemon` | worktree を作るとコンテナが起動し、`localhost:<動的ポート>` で見える |
 | **M1** ✅ | DNS + Proxy + TLS + `doctor` / `setup` + launchd socket activation | `https://web.feat-1.myapp.localhost` が curl で通る |
 | **M2** ✅ | scale-to-zero + health check + アイドル停止 + オンデマンド起動 | worktree 10 個作っても実行中コンテナは触っているものだけ |
-| **M3** | 環境変数管理（3 層 + シークレット参照 + 自動注入） | `MINATO_URL_API` がフロントから読める |
+| **M3** ✅ | 環境変数管理（3 層 + シークレット参照 + 自動注入） | `MINATO_URL_API` がフロントから読める |
 | **M4** | Cloudflare Tunnel | スマホから `https://web-feat-1.myapp.example.com` が見える |
 | **M5** | Skills | エージェントが `docker` を直接触らずに開発を完了できる |
 | **M6** | GUI（egui + tray） | メニューバーから起動中の workspace と URL が見え、ログが読める |
@@ -617,7 +631,7 @@ DNS は :53 に移るため、resolver に書くポートも :53 になる。現
 | `Request::Cancel` | プロトコルには入れたが daemon 側が未対応。長時間処理が prepare/start に限られ、中断の要求が出ていない | M2 |
 | `minato logs` / `exec` | Runtime trait には口があるが CLI 未実装 | M0.5 |
 | `ls --all-projects` | 他プロジェクトの `minato.toml` の場所を状態ストアが持っていない | M3 |
-| `minato.local.toml` の上書き | 環境変数管理と同時に入れる方が設計が揃う | M3 |
+| `minato.local.toml` の上書き | 環境変数だけで大半の用途が埋まったため、需要が出るまで見送る | 未定 |
 
 ## 15. 未決事項
 

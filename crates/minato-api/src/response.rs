@@ -24,8 +24,28 @@ pub enum Response {
     },
     /// 診断結果（`doctor`）。
     Diagnostics(Diagnostics),
+    /// 環境変数の一覧。
+    Env {
+        entries: Vec<EnvInfo>,
+    },
     /// 返す値がない操作（`rm` / `shutdown`）。
     Empty,
+}
+
+/// 環境変数 1 つ分。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvInfo {
+    pub key: String,
+    /// 表示用の値。既定では伏せてある。
+    pub value: String,
+    /// どの層で定義されたか。
+    pub scope: minato_core::EnvScope,
+    /// シークレット参照かどうか。
+    #[serde(default)]
+    pub secret: bool,
+    /// 参照の説明（`1Password (op://...)` など）。値そのものは含まない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

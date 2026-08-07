@@ -95,6 +95,29 @@ pub enum Request {
 
     /// workspace の現在の状態。
     Status { target: Target },
+
+    /// 環境変数の一覧。
+    EnvList {
+        target: Target,
+        /// 値を伏せずに出す。既定では伏せる。
+        #[serde(default)]
+        reveal: bool,
+    },
+
+    /// 環境変数を設定する。
+    EnvSet {
+        target: Target,
+        scope: minato_core::EnvScope,
+        key: String,
+        value: String,
+    },
+
+    /// 環境変数を削除する。
+    EnvUnset {
+        target: Target,
+        scope: minato_core::EnvScope,
+        key: String,
+    },
 }
 
 fn yes() -> bool {

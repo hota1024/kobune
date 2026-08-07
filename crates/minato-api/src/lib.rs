@@ -18,7 +18,7 @@ pub use error::{ApiError, ErrorCode};
 pub use event::{Event, LogLevel, OutputStream, StepStatus};
 pub use protocol::{ClientMessage, Outcome, PROTOCOL_VERSION, RequestId, ServerMessage};
 pub use request::{Request, Target};
-pub use response::{Pong, Response, ServiceInfo, WorkspaceInfo};
+pub use response::{EnvInfo, Pong, Response, ServiceInfo, WorkspaceInfo};
 
 /// 便宜上の再エクスポート。クライアントが `minato-core` を直接引かずに済む。
-pub use minato_core::{ServiceScope, ServiceState};
+pub use minato_core::{EnvScope, ServiceScope, ServiceState};

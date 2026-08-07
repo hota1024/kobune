@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use minato_api::{
-    ApiError, Check, Diagnostics, ErrorCode, Pong, Request, Response, ServiceInfo, Target,
+    ApiError, Check, Diagnostics, EnvInfo, ErrorCode, Pong, Request, Response, ServiceInfo, Target,
     WorkspaceInfo,
 };
 use minato_core::{MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, WorkspaceRecord};
@@ -21,12 +21,15 @@ use minato_runtime::{EventSink, Runtime, ServiceStatus, WorkspaceKey};
 type ServiceKeyRef = (String, String);
 use tokio::sync::Mutex;
 
+use crate::env;
 use crate::gateway::Gateway;
 use crate::idle::IdleTracker;
 use crate::resolve::{self, ProjectContext, Resolved};
+use crate::secrets;
 use crate::spec;
 
 pub struct Supervisor {
+    paths: Paths,
     store: StateStore,
     /// runtime は `[runtime] default` ごとに作って使い回す。
     /// プロジェクトによって別の runtime を使えるようにするため。
@@ -44,6 +47,7 @@ pub struct Supervisor {
 impl Supervisor {
     pub fn new(paths: &Paths, gateway: Arc<Gateway>, shutdown: Arc<tokio::sync::Notify>) -> Self {
         Self {
+            paths: paths.clone(),
             store: StateStore::new(paths.state_file()),
             runtimes: Mutex::new(HashMap::new()),
             state_lock: Mutex::new(()),
@@ -84,6 +88,14 @@ impl Supervisor {
             } => self.down(target, services, all, events).await,
             Request::Status { target } => self.status(target).await,
             Request::Doctor => self.doctor().await,
+            Request::EnvList { target, reveal } => self.env_list(target, reveal).await,
+            Request::EnvSet {
+                target,
+                scope,
+                key,
+                value,
+            } => self.env_set(target, scope, key, value).await,
+            Request::EnvUnset { target, scope, key } => self.env_unset(target, scope, key).await,
         }
     }
 
@@ -274,6 +286,205 @@ impl Supervisor {
         Ok(statuses)
     }
 
+    /// 環境変数を層ごとに見せる。
+    ///
+    /// **どの層で定義された値かを出す。** 3 層あるので、意図しない層の
+    /// 値が効いていることに気づけないと原因が掴めない。
+    async fn env_list(&self, target: Target, reveal: bool) -> Result<Response, ApiError> {
+        let resolved = self.resolve(&target).await?;
+
+        // サービス個別の指定を含めない共通の層だけを見せる。
+        // サービスごとの差分は `minato status` の領分。
+        let layers = env::layers_for_service(
+            &resolved.config,
+            &resolved.project,
+            &resolved.workspace,
+            &resolved.repo.main_root,
+            // 代表として最初のサービスを使う。MINATO_SERVICE 以外は共通。
+            resolved
+                .config
+                .services
+                .keys()
+                .next()
+                .map(String::as_str)
+                .unwrap_or(""),
+            &self.paths,
+            &self.gateway,
+        )
+        .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?;
+
+        let entries = layers
+            .resolve()
+            .into_iter()
+            .map(|entry| {
+                let secret = entry.secret_ref();
+
+                // 自動注入の値は Minato が作ったもので秘密ではない。
+                // URL を確認したい場面は多いので伏せない。
+                let injected = entry.scope == minato_core::EnvScope::Injected;
+
+                EnvInfo {
+                    key: entry.key,
+                    value: if reveal || injected || secret.is_some() {
+                        // シークレットは --reveal でも参照のままにする。
+                        // 実体を出すには解決が要り、それは起動時にだけ行う。
+                        entry.raw.clone()
+                    } else {
+                        minato_core::env::mask(&entry.raw)
+                    },
+                    scope: entry.scope,
+                    secret: secret.is_some(),
+                    source: secret.map(|reference| reference.describe()),
+                }
+            })
+            .collect();
+
+        Ok(Response::Env { entries })
+    }
+
+    async fn env_set(
+        &self,
+        target: Target,
+        scope: minato_core::EnvScope,
+        key: String,
+        value: String,
+    ) -> Result<Response, ApiError> {
+        if !minato_core::env::is_valid_key(&key) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidConfig,
+                format!("`{key}` は環境変数名として使えません"),
+            )
+            .with_hint("英数字とアンダースコアのみ、先頭は数字以外にしてください"));
+        }
+
+        let path = self.env_file_path(&target, scope).await?;
+        let current = read_or_empty(&path)?;
+
+        minato_core::env::write_file(&path, &minato_core::env::upsert(&current, &key, &value))
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+
+        self.env_list(target, false).await
+    }
+
+    async fn env_unset(
+        &self,
+        target: Target,
+        scope: minato_core::EnvScope,
+        key: String,
+    ) -> Result<Response, ApiError> {
+        let path = self.env_file_path(&target, scope).await?;
+        let current = read_or_empty(&path)?;
+
+        minato_core::env::write_file(&path, &minato_core::env::remove(&current, &key))
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+
+        self.env_list(target, false).await
+    }
+
+    /// 層に対応するファイルの場所。
+    async fn env_file_path(
+        &self,
+        target: &Target,
+        scope: minato_core::EnvScope,
+    ) -> Result<PathBuf, ApiError> {
+        if !scope.is_writable() {
+            return Err(ApiError::new(
+                ErrorCode::InvalidConfig,
+                format!("{} の値はファイルに書けません", scope.label()),
+            ));
+        }
+
+        if scope == minato_core::EnvScope::Global {
+            return Ok(self.paths.root().join(minato_core::env::GLOBAL_ENV_FILE));
+        }
+
+        let resolved = self.resolve(target).await?;
+
+        Ok(match scope {
+            minato_core::EnvScope::Project => {
+                minato_core::env::project_env_path(&resolved.repo.main_root)
+            }
+            _ => minato_core::env::workspace_env_path(&resolved.workspace.path),
+        })
+    }
+
+    /// サービスに渡す環境変数を確定させる。
+    ///
+    /// 層を重ね、シークレット参照を解決する。**解決値はここから先も
+    /// ディスクに書かない。** コンテナに渡すためだけに使う。
+    async fn service_env(
+        &self,
+        config: &MinatoConfig,
+        project: &str,
+        record: &WorkspaceRecord,
+        project_root: &std::path::Path,
+        service: &str,
+        events: &EventSink,
+    ) -> Result<BTreeMap<String, String>, ApiError> {
+        let layers = env::layers_for_service(
+            config,
+            project,
+            record,
+            project_root,
+            service,
+            &self.paths,
+            &self.gateway,
+        )
+        .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?;
+
+        let entries = layers.resolve();
+
+        // 参照とそれ以外に分ける。
+        let mut values = BTreeMap::new();
+        let mut references = Vec::new();
+
+        for entry in entries {
+            match entry.secret_ref() {
+                Some(reference) => references.push((entry.key, reference)),
+                None => {
+                    values.insert(entry.key, entry.raw);
+                }
+            }
+        }
+
+        if references.is_empty() {
+            return Ok(values);
+        }
+
+        let resolved = secrets::resolve(&references).await;
+        values.extend(resolved.values);
+
+        // 解決できなかったものは落とすが、黙って落とさない。
+        // 気づかないまま「なぜか認証に失敗する」状態になるのが最悪。
+        for (key, reason) in resolved.failures {
+            events.warn(format!("{key} のシークレットを解決できません: {reason}"));
+            tracing::warn!("{service}: {key} のシークレットを解決できません: {reason}");
+        }
+
+        Ok(values)
+    }
+
+    /// workspace の全サービス分の環境変数。
+    async fn workspace_envs(
+        &self,
+        config: &MinatoConfig,
+        project: &str,
+        record: &WorkspaceRecord,
+        project_root: &std::path::Path,
+        events: &EventSink,
+    ) -> Result<BTreeMap<String, BTreeMap<String, String>>, ApiError> {
+        let mut envs = BTreeMap::new();
+
+        for name in config.services.keys() {
+            let values = self
+                .service_env(config, project, record, project_root, name, events)
+                .await?;
+            envs.insert(name.clone(), values);
+        }
+
+        Ok(envs)
+    }
+
     /// アクセスがあったことを記録する。プロキシから毎リクエスト呼ばれる。
     pub fn touch(&self, host: &str) {
         self.idle.touch(host);
@@ -343,17 +554,31 @@ impl Supervisor {
         let (config, record) = self.locate(&route.project, &route.workspace).await?;
 
         let service_config = config.service(&route.service).map_err(ApiError::from)?;
+        let events = EventSink::discard();
+
+        let project_root = self.project_root(&route.project).await?;
+        let service_env = self
+            .service_env(
+                &config,
+                &route.project,
+                &record,
+                &project_root,
+                &route.service,
+                &events,
+            )
+            .await?;
+
         let service_spec = spec::build_service_spec(
-            &config,
             service_config,
             &route.service,
             &route.project,
             &record.label,
             &record.path,
+            service_env,
+            config.services.keys().cloned().collect(),
         )?;
 
         let runtime = self.runtime(&config.runtime.default).await?;
-        let events = EventSink::discard();
 
         // イメージが無いと start が失敗する。単体のサービスとして用意する。
         let workspace_spec = minato_runtime::WorkspaceSpec {
@@ -391,6 +616,19 @@ impl Supervisor {
 
         let (_, config) = MinatoConfig::find(&record.path).map_err(ApiError::from)?;
         Ok((config, record))
+    }
+
+    /// 状態ストアに記録されたプロジェクトの root。
+    async fn project_root(&self, project: &str) -> Result<PathBuf, ApiError> {
+        let _guard = self.state_lock.lock().await;
+        let state = self.store.load().map_err(ApiError::from)?;
+
+        state
+            .project(project)
+            .map(|record| record.root.clone())
+            .ok_or_else(|| {
+                ApiError::not_found(format!("プロジェクト `{project}` の登録がありません"))
+            })
     }
 
     /// プロジェクトの設定を、状態ストアに記録された root から読む。
@@ -734,11 +972,22 @@ impl Supervisor {
     ) -> Result<(), ApiError> {
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
 
+        let envs = self
+            .workspace_envs(
+                &resolved.config,
+                &resolved.project,
+                &resolved.workspace,
+                &resolved.repo.main_root,
+                events,
+            )
+            .await?;
+
         let workspace_spec = spec::build_workspace_spec(
             &resolved.config,
             &resolved.project,
             &resolved.workspace.label,
             &resolved.workspace.path,
+            &envs,
         )?;
 
         // 対象を絞る場合も、依存先は一緒に起動する必要がある。
@@ -900,6 +1149,18 @@ fn default_worktree_path(main_root: &std::path::Path, branch: &str) -> PathBuf {
     let label = minato_core::naming::sanitize_label(branch);
 
     parent.join(format!("{repo_name}.wt")).join(label)
+}
+
+/// ファイルを読む。無ければ空文字。
+fn read_or_empty(path: &std::path::Path) -> Result<String, ApiError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(ApiError::internal(format!(
+            "{} を読めません: {err}",
+            path.display()
+        ))),
+    }
 }
 
 /// プロキシに登録するホスト名と転送先の一覧を作る。
