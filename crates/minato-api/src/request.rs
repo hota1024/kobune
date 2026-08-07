@@ -96,6 +96,27 @@ pub enum Request {
     /// workspace の現在の状態。
     Status { target: Target },
 
+    /// ログを読む。出力は [`crate::Event::Output`] で流れる。
+    Logs {
+        target: Target,
+        /// 対象サービス。省略時は全サービス。
+        #[serde(default)]
+        services: Vec<String>,
+        /// 新しい行を待ち続ける。
+        #[serde(default)]
+        follow: bool,
+        /// 末尾から何行取るか。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail: Option<usize>,
+    },
+
+    /// コンテナ内でコマンドを実行する。
+    Exec {
+        target: Target,
+        service: String,
+        command: Vec<String>,
+    },
+
     /// 環境変数の一覧。
     EnvList {
         target: Target,
@@ -131,7 +152,12 @@ impl Request {
     pub fn is_long_running(&self) -> bool {
         matches!(
             self,
-            Self::New { .. } | Self::Up { .. } | Self::Down { .. } | Self::Rm { .. }
+            Self::New { .. }
+                | Self::Up { .. }
+                | Self::Down { .. }
+                | Self::Rm { .. }
+                | Self::Logs { .. }
+                | Self::Exec { .. }
         )
     }
 }

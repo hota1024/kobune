@@ -12,21 +12,24 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use async_trait::async_trait;
 use bollard::Docker;
 use bollard::container::{
-    Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
-    StartContainerOptions, StopContainerOptions,
+    Config, CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions,
+    RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
 };
+use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use bollard::models::{
     ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
 };
 use bollard::network::{ConnectNetworkOptions, CreateNetworkOptions, ListNetworksOptions};
 use futures::StreamExt;
+use futures::stream::BoxStream;
+use minato_api::OutputStream;
 use minato_core::{ServiceScope, ServiceState};
 
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
-use crate::runtime::{Runtime, RuntimeInfo, labels, names};
+use crate::runtime::{ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names};
 use crate::spec::{
     RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount, WorkspaceKey,
     WorkspaceSpec,
@@ -676,6 +679,136 @@ impl Runtime for DockerRuntime {
                 .unwrap_or_else(|| ServiceStatus::stopped(key.clone(), ServiceScope::Workspace))),
             None => Ok(ServiceStatus::stopped(key.clone(), ServiceScope::Workspace)),
         }
+    }
+
+    async fn logs(
+        &self,
+        key: &ServiceKey,
+        options: LogOptions,
+    ) -> Result<BoxStream<'static, LogLine>> {
+        let container = self.find_container(key).await?.ok_or_else(|| {
+            RuntimeError::failed(
+                format!("{} のログ取得", key.service),
+                "コンテナが存在しません",
+            )
+        })?;
+
+        let id = container.id.unwrap_or_default();
+        let stream = self.docker.logs(
+            &id,
+            Some(LogsOptions::<String> {
+                follow: options.follow,
+                stdout: true,
+                stderr: true,
+                tail: options
+                    .tail
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "all".to_string()),
+                ..Default::default()
+            }),
+        );
+
+        // Docker は 1 チャンクに複数行を詰めてくることがある。行に割る。
+        let lines = stream.flat_map(|item| {
+            let chunk = match item {
+                Ok(output) => output,
+                Err(err) => {
+                    tracing::debug!("ログの読み取りが終了しました: {err}");
+                    return futures::stream::iter(Vec::new());
+                }
+            };
+
+            let (stream_kind, bytes) = match chunk {
+                LogOutput::StdErr { message } => (OutputStream::Stderr, message),
+                LogOutput::StdOut { message }
+                | LogOutput::Console { message }
+                | LogOutput::StdIn { message } => (OutputStream::Stdout, message),
+            };
+
+            let text = String::from_utf8_lossy(&bytes).to_string();
+            let lines: Vec<LogLine> = text
+                .lines()
+                .map(|line| LogLine {
+                    stream: stream_kind,
+                    line: line.to_string(),
+                })
+                .collect();
+
+            futures::stream::iter(lines)
+        });
+
+        Ok(Box::pin(lines))
+    }
+
+    async fn exec(
+        &self,
+        key: &ServiceKey,
+        command: &[String],
+        events: &EventSink,
+    ) -> Result<ExecOutcome> {
+        let container = self.find_container(key).await?.ok_or_else(|| {
+            RuntimeError::failed(
+                format!("{} でのコマンド実行", key.service),
+                "コンテナが存在しません。`minato up` で起動してください",
+            )
+        })?;
+
+        if container.state.as_deref() != Some("running") {
+            return Err(RuntimeError::failed(
+                format!("{} でのコマンド実行", key.service),
+                "コンテナが起動していません。`minato up` で起動してください",
+            ));
+        }
+
+        let id = container.id.unwrap_or_default();
+        let created = self
+            .docker
+            .create_exec(
+                &id,
+                CreateExecOptions {
+                    cmd: Some(command.to_vec()),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    // TTY は要求しない。対話を待って固まる方が危険。
+                    tty: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| RuntimeError::failed("exec の作成", e))?;
+
+        let started = self
+            .docker
+            .start_exec(&created.id, None)
+            .await
+            .map_err(|e| RuntimeError::failed("exec の開始", e))?;
+
+        if let StartExecResults::Attached { mut output, .. } = started {
+            while let Some(chunk) = output.next().await {
+                let Ok(chunk) = chunk else { break };
+
+                let (stream_kind, bytes) = match chunk {
+                    LogOutput::StdErr { message } => (OutputStream::Stderr, message),
+                    LogOutput::StdOut { message }
+                    | LogOutput::Console { message }
+                    | LogOutput::StdIn { message } => (OutputStream::Stdout, message),
+                };
+
+                for line in String::from_utf8_lossy(&bytes).lines() {
+                    events.output(Some(key.service.clone()), stream_kind, line);
+                }
+            }
+        }
+
+        let inspected = self
+            .docker
+            .inspect_exec(&created.id)
+            .await
+            .map_err(|e| RuntimeError::failed("exec の状態取得", e))?;
+
+        Ok(ExecOutcome {
+            exit_code: inspected.exit_code.unwrap_or(-1) as i32,
+        })
     }
 
     async fn list_project(&self, project: &str) -> Result<Vec<ServiceStatus>> {

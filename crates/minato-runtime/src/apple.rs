@@ -19,14 +19,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
+use minato_api::OutputStream;
 use minato_core::{ServiceScope, ServiceState};
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
-use crate::runtime::{Runtime, RuntimeInfo, labels, names};
+use crate::runtime::{ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names};
 use crate::spec::{
     RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount, WorkspaceKey,
     WorkspaceSpec,
@@ -511,6 +514,128 @@ impl Runtime for AppleContainerRuntime {
             Some(record) => Ok(record.to_status()),
             None => Ok(ServiceStatus::stopped(key.clone(), ServiceScope::Workspace)),
         }
+    }
+
+    async fn logs(
+        &self,
+        key: &ServiceKey,
+        options: LogOptions,
+    ) -> Result<BoxStream<'static, LogLine>> {
+        let name = names::container(key);
+        let mut args: Vec<String> = vec!["logs".into()];
+
+        if options.follow {
+            args.push("--follow".into());
+        }
+        if let Some(tail) = options.tail {
+            args.push("-n".into());
+            args.push(tail.to_string());
+        }
+        args.push(name);
+
+        // CLI なので子プロセスの標準出力を行単位で読む。
+        let mut child = Command::new(&self.program)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|err| RuntimeError::failed(format!("{} のログ取得", key.service), err))?;
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        if let Some(stdout) = stdout {
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if sender
+                        .send(LogLine {
+                            stream: OutputStream::Stdout,
+                            line,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+
+        if let Some(stderr) = stderr {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if sender
+                        .send(LogLine {
+                            stream: OutputStream::Stderr,
+                            line,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+
+        // 読み手が止めたら子プロセスも終わらせる。follow の場合に
+        // 放っておくとプロセスが残り続ける。
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+
+        Ok(Box::pin(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(receiver),
+        ))
+    }
+
+    async fn exec(
+        &self,
+        key: &ServiceKey,
+        command: &[String],
+        events: &EventSink,
+    ) -> Result<ExecOutcome> {
+        let Some(record) = self.find_container(key).await? else {
+            return Err(RuntimeError::failed(
+                format!("{} でのコマンド実行", key.service),
+                "コンテナが存在しません。`minato up` で起動してください",
+            ));
+        };
+
+        if !record.is_running() {
+            return Err(RuntimeError::failed(
+                format!("{} でのコマンド実行", key.service),
+                "コンテナが起動していません。`minato up` で起動してください",
+            ));
+        }
+
+        let name = names::container(key);
+        let mut args: Vec<String> = vec!["exec".into(), name];
+        args.extend(command.iter().cloned());
+
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        let output = Command::new(&self.program)
+            .args(&arg_refs)
+            .output()
+            .await
+            .map_err(|err| {
+                RuntimeError::failed(format!("{} でのコマンド実行", key.service), err)
+            })?;
+
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            events.output(Some(key.service.clone()), OutputStream::Stdout, line);
+        }
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            events.output(Some(key.service.clone()), OutputStream::Stderr, line);
+        }
+
+        Ok(ExecOutcome {
+            exit_code: output.status.code().unwrap_or(-1),
+        })
     }
 
     async fn list_project(&self, project: &str) -> Result<Vec<ServiceStatus>> {

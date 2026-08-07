@@ -5,12 +5,40 @@
 //! 実装の裁量に委ねる。プロキシと Supervisor はその差を知らない。
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
+use minato_api::OutputStream;
 
 use crate::error::Result;
 use crate::event::EventSink;
 use crate::spec::{
     RunningService, ServiceKey, ServiceSpec, ServiceStatus, WorkspaceKey, WorkspaceSpec,
 };
+
+/// ログの取り方。
+#[derive(Debug, Clone, Default)]
+pub struct LogOptions {
+    /// 新しい行を待ち続ける。
+    pub follow: bool,
+    /// 末尾から何行取るか。`None` は全部。
+    pub tail: Option<usize>,
+}
+
+/// ログ 1 行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogLine {
+    pub stream: OutputStream,
+    pub line: String,
+}
+
+/// コンテナ内でコマンドを実行した結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecOutcome {
+    /// 実行したコマンドの終了コード。
+    ///
+    /// **そのまま呼び出し元に伝える。** `minato exec web -- pnpm test` の
+    /// 成否をエージェントが終了コードで判定できる必要がある。
+    pub exit_code: i32,
+}
 
 /// runtime の素性。`minato doctor` と `minato ping` が表示する。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +80,26 @@ pub trait Runtime: Send + Sync {
 
     /// 1 サービスの現在の状態。
     async fn inspect(&self, key: &ServiceKey) -> Result<ServiceStatus>;
+
+    /// ログを読む。
+    ///
+    /// これが無いとエージェントは `docker logs` に戻るしかなくなる。
+    async fn logs(
+        &self,
+        key: &ServiceKey,
+        options: LogOptions,
+    ) -> Result<BoxStream<'static, LogLine>>;
+
+    /// コンテナ内でコマンドを実行する。
+    ///
+    /// 出力は `events` に流し、終了コードを返す。TTY は要求しない
+    /// （エージェントが使う用途では対話が発生しない方が安全）。
+    async fn exec(
+        &self,
+        key: &ServiceKey,
+        command: &[String],
+        events: &EventSink,
+    ) -> Result<ExecOutcome>;
 
     /// プロジェクトに属する Minato 管理下のサービスをすべて列挙する。
     ///

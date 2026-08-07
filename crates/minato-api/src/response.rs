@@ -28,6 +28,15 @@ pub enum Response {
     Env {
         entries: Vec<EnvInfo>,
     },
+    /// コマンドの実行結果。出力は [`crate::Event::Output`] で流れる。
+    Exec {
+        /// 実行したコマンドの終了コード。
+        ///
+        /// CLI はこれをそのままプロセスの終了コードにする。
+        /// エージェントが `minato exec web -- pnpm test` の成否を
+        /// 判定できる必要があるため。
+        exit_code: i32,
+    },
     /// 返す値がない操作（`rm` / `shutdown`）。
     Empty,
 }

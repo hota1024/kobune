@@ -32,6 +32,28 @@ pub fn print_event(event: &Event) {
     }
 }
 
+/// `logs` と `exec` の出力。
+///
+/// 装飾を付けない。パイプで grep したり、エージェントがそのまま
+/// 読んだりするため。stderr は stderr に出す。
+pub fn print_output_event(event: &Event) {
+    match event {
+        Event::Output { line, stream, .. } => match stream {
+            minato_api::OutputStream::Stdout => println!("{line}"),
+            minato_api::OutputStream::Stderr => eprintln!("{line}"),
+        },
+        Event::Log {
+            level: LogLevel::Warn,
+            message,
+        } => eprintln!("警告: {message}"),
+        Event::Log {
+            level: LogLevel::Error,
+            message,
+        } => eprintln!("エラー: {message}"),
+        _ => {}
+    }
+}
+
 /// workspace 1 つの状態を表示する。
 pub fn print_workspace(workspace: &WorkspaceInfo) {
     println!();

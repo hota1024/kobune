@@ -467,13 +467,19 @@ minato tunnel status
 
 ## 11. Skills
 
-`minato skill install` で `.claude/skills/minato/SKILL.md` を配置する。CLI のリファレンスではなく、**判断基準**を書く。
+`minato skill install` で `.claude/skills/minato/SKILL.md` を配置する。CLI のリファレンスではなく、**判断基準**を書く。「何ができるか」は `--help` で分かるが、「`docker` を直接使わない」「ポートを推測しない」といった約束は書かないと伝わらない。
 
-- 変更を確認したいときは `minato url <service>` で URL を取得してから確認する。ポート番号を推測しない
-- ログは `minato logs`。`docker logs` / `docker ps` を直接使わない
-- 環境が応答しない場合はまず `minato status --json` で状態を見る。`starting` なら待つ
-- 環境変数の追加は `minato env set`。`.env` を直接書かない
-- 新しいブランチで作業を始めるときは `minato new <branch>`
+Skill の本文はバイナリに埋め込む（`include_str!`）。`minato` 単体で完結する方が、インストール手段を選ばない。既存ファイルと内容が同じなら書き直さない（git の差分を汚さないため）。
+
+### `logs` と `exec` は Skills の前提（M5 で判明）
+
+「エージェントが `docker` を直接触らずに開発を完了できる」を満たすには、ログの閲覧とコンテナ内でのコマンド実行が要る。**これが無いとデバッグの時点で `docker` に戻らざるを得ず、Skill に何を書いても守られない。**
+
+`minato exec` は実行したコマンドの終了コードをそのまま返す。`minato exec web -- pnpm test` の成否をエージェントが終了コードだけで判定できる必要があるため。TTY は要求しない（対話を待って固まる方が危険）。
+
+### エージェントが最初に躓く場所
+
+`minato setup` を済ませていない環境では、`curl` が終了コード 60（証明書が信頼されていない）で失敗する。`curl -s` だけだとエラーが握り潰され、「空の応答が返った」ようにしか見えない。SKILL にこの症状と `minato doctor` への導線を明記した。
 
 MCP サーバは当面作らない。CLI が `--json` を持つ以上、Bash 経由で十分に扱えるため、二重メンテのコストに見合わない。
 
@@ -585,7 +591,7 @@ apps/daemon ─────────────────────>  mi
 | **M2** ✅ | scale-to-zero + health check + アイドル停止 + オンデマンド起動 | worktree 10 個作っても実行中コンテナは触っているものだけ |
 | **M3** ✅ | 環境変数管理（3 層 + シークレット参照 + 自動注入） | `MINATO_URL_API` がフロントから読める |
 | **M4** | Cloudflare Tunnel | スマホから `https://web-feat-1.myapp.example.com` が見える |
-| **M5** | Skills | エージェントが `docker` を直接触らずに開発を完了できる |
+| **M5** ✅ | Skills + `logs` / `exec` | エージェントが `docker` を直接触らずに開発を完了できる |
 | **M6** | GUI（egui + tray） | メニューバーから起動中の workspace と URL が見え、ログが読める |
 | **M7** | Runtime 追加（Apple Container / Firecracker） | `[runtime] default` の切り替えだけで動く |
 
@@ -629,7 +635,6 @@ DNS は :53 に移るため、resolver に書くポートも :53 になる。現
 | --- | --- | --- |
 | `build`（Dockerfile のビルド） | 既製イメージ + bind mount の方が起動が速く、「すぐ立ち上がる」思想に合う。ビルドコンテキストの tar 化も必要 | M0.5 |
 | `Request::Cancel` | プロトコルには入れたが daemon 側が未対応。長時間処理が prepare/start に限られ、中断の要求が出ていない | M2 |
-| `minato logs` / `exec` | Runtime trait には口があるが CLI 未実装 | M0.5 |
 | `ls --all-projects` | 他プロジェクトの `minato.toml` の場所を状態ストアが持っていない | M3 |
 | `minato.local.toml` の上書き | 環境変数だけで大半の用途が埋まったため、需要が出るまで見送る | 未定 |
 

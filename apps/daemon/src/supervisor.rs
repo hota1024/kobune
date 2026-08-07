@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use minato_api::{
     ApiError, Check, Diagnostics, EnvInfo, ErrorCode, Pong, Request, Response, ServiceInfo, Target,
     WorkspaceInfo,
@@ -88,6 +89,17 @@ impl Supervisor {
             } => self.down(target, services, all, events).await,
             Request::Status { target } => self.status(target).await,
             Request::Doctor => self.doctor().await,
+            Request::Logs {
+                target,
+                services,
+                follow,
+                tail,
+            } => self.logs(target, services, follow, tail, events).await,
+            Request::Exec {
+                target,
+                service,
+                command,
+            } => self.exec(target, service, command, events).await,
             Request::EnvList { target, reveal } => self.env_list(target, reveal).await,
             Request::EnvSet {
                 target,
@@ -284,6 +296,107 @@ impl Supervisor {
         self.gateway.routes().replace_project(project, entries);
 
         Ok(statuses)
+    }
+
+    /// ログを読んでイベントとして流す。
+    ///
+    /// `follow` の場合はクライアントが切るまで流し続ける。daemon 側は
+    /// 書き込みに失敗した時点で終わるので、明示的な中断は要らない。
+    async fn logs(
+        &self,
+        target: Target,
+        services: Vec<String>,
+        follow: bool,
+        tail: Option<usize>,
+        events: &EventSink,
+    ) -> Result<Response, ApiError> {
+        let resolved = self.resolve(&target).await?;
+        let runtime = self.runtime(&resolved.config.runtime.default).await?;
+
+        let targets = if services.is_empty() {
+            resolved.config.services.keys().cloned().collect()
+        } else {
+            validate_service_names(&resolved.config, &services)?;
+            services
+        };
+
+        let workspace_key = WorkspaceKey::new(&resolved.project, &resolved.workspace.label);
+        let shared_key = WorkspaceKey::shared(&resolved.project);
+
+        let mut streams = Vec::new();
+        for name in &targets {
+            let service_config = resolved.config.service(name).map_err(ApiError::from)?;
+            let key = match service_config.scope {
+                ServiceScope::Workspace => workspace_key.service(name),
+                ServiceScope::Project => shared_key.service(name),
+            };
+
+            match runtime
+                .logs(&key, minato_runtime::LogOptions { follow, tail })
+                .await
+            {
+                Ok(stream) => streams.push((name.clone(), stream)),
+                Err(err) => {
+                    // 1 つ読めなくても他は見せる。全部落とすと
+                    // 「どれが動いていないか」すら分からない。
+                    events.warn(format!("{name} のログを読めません: {err}"));
+                }
+            }
+        }
+
+        if streams.is_empty() {
+            return Err(
+                ApiError::not_found("ログを読めるサービスがありません".to_string())
+                    .with_hint("`minato status` で起動状況を確認してください"),
+            );
+        }
+
+        // 複数サービスのログを 1 本に混ぜる。どのサービスの行かは
+        // Event::Output の service で区別できる。
+        let mut merged = futures::stream::select_all(streams.into_iter().map(|(name, stream)| {
+            Box::pin(stream.map(move |line| (name.clone(), line)))
+                as futures::stream::BoxStream<'static, (String, minato_runtime::LogLine)>
+        }));
+
+        while let Some((service, entry)) = merged.next().await {
+            events.output(Some(service), entry.stream, entry.line);
+        }
+
+        Ok(Response::Empty)
+    }
+
+    /// コンテナ内でコマンドを実行する。
+    async fn exec(
+        &self,
+        target: Target,
+        service: String,
+        command: Vec<String>,
+        events: &EventSink,
+    ) -> Result<Response, ApiError> {
+        if command.is_empty() {
+            return Err(ApiError::new(
+                ErrorCode::InvalidConfig,
+                "実行するコマンドが指定されていません".to_string(),
+            ));
+        }
+
+        let resolved = self.resolve(&target).await?;
+        validate_service_names(&resolved.config, std::slice::from_ref(&service))?;
+
+        let service_config = resolved.config.service(&service).map_err(ApiError::from)?;
+        let key = match service_config.scope {
+            ServiceScope::Workspace => {
+                WorkspaceKey::new(&resolved.project, &resolved.workspace.label).service(&service)
+            }
+            ServiceScope::Project => WorkspaceKey::shared(&resolved.project).service(&service),
+        };
+
+        let runtime = self.runtime(&resolved.config.runtime.default).await?;
+        let outcome = runtime.exec(&key, &command, events).await?;
+
+        Ok(Response::Exec {
+            exit_code: outcome.exit_code,
+        })
     }
 
     /// 環境変数を層ごとに見せる。

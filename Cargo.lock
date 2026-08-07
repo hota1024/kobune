@@ -1171,6 +1171,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "futures",
  "humantime",
  "indexmap 2.14.0",
  "libc",

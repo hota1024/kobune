@@ -17,12 +17,12 @@ $ minato new feature/user-auth
 - **ポートを覚えない** — サービスごとに `{service}.{workspace}.{project}.localhost` の URL が生える
 - **scale-to-zero** — 触っていない環境は自動で停止し、アクセスが来たら起動する。worktree を何個作ってもいい
 - **リモートからも見える** — Cloudflare Tunnel でスマホや外部レビュアーに共有できる
-- **エージェントが使える** — 全コマンドが `--json` を持ち、Skills から操作できる
+- **エージェントが使える** — 全コマンドが `--json` を持ち、`minato skill install` で Skill を配置できる
 - **仮想化を選べる** — Docker / Apple Container / Firecracker を Runtime 抽象で切り替える
 
 ## 状態
 
-**M0 〜 M3 完了。** worktree を作るとコンテナが起動し、
+**M0 〜 M3 と M5 完了。** worktree を作るとコンテナが起動し、
 `*.localhost` の URL でアクセスできる。触っていない環境は自動で停止し、
 アクセスが来たら起き上がる。各サービスには他サービスの URL が
 `MINATO_URL_<SERVICE>` として渡る。
@@ -70,7 +70,7 @@ $ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daem
 | M2 ✅ | scale-to-zero（health check・アイドル停止・オンデマンド起動） |
 | M3 ✅ | 環境変数管理（3 層マージ・シークレット参照・URL 自動注入） |
 | M4 | Cloudflare Tunnel |
-| M5 | Skills |
+| M5 ✅ | Skills + `logs` / `exec` |
 | M6 | GUI（egui + メニューバー常駐） |
 | M7 | Runtime 追加（Apple Container / Firecracker） |
 

@@ -6,6 +6,7 @@
 mod init;
 mod launchd;
 mod output;
+mod skill;
 mod system;
 
 use std::path::PathBuf;
@@ -115,10 +116,42 @@ enum Command {
         service: Option<String>,
     },
 
+    /// ログを表示する
+    Logs {
+        /// 対象サービス。省略時は全サービス
+        services: Vec<String>,
+
+        /// 新しい行を待ち続ける
+        #[arg(long, short)]
+        follow: bool,
+
+        /// 末尾から表示する行数
+        #[arg(long, short = 'n')]
+        tail: Option<usize>,
+    },
+
+    /// コンテナ内でコマンドを実行する
+    ///
+    /// 終了コードはコマンドのものをそのまま返す。
+    Exec {
+        /// 対象サービス
+        service: String,
+
+        /// 実行するコマンド（`--` の後ろに書く）
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
+
     /// 環境変数を操作する
     Env {
         #[command(subcommand)]
         command: EnvCommand,
+    },
+
+    /// エージェント向けの Skill を配置する
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
     },
 
     /// daemon を操作する
@@ -157,6 +190,19 @@ enum EnvCommand {
         #[arg(long, default_value = "workspace")]
         scope: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum SkillCommand {
+    /// .claude/skills/minato/SKILL.md に配置する
+    Install {
+        /// 内容が異なる既存ファイルを上書きする
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// 配置される内容を出力する
+    Show,
 }
 
 #[derive(Subcommand, Debug)]
@@ -245,6 +291,11 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Skill の配置に daemon は要らない。
+    if let Command::Skill { command } = &cli.command {
+        return handle_skill(cli, command, &cwd);
+    }
+
     let client = Client::from_env()
         .map_err(|err| CliError::Local(format!("設定ディレクトリを解決できません: {err}")))?;
 
@@ -258,16 +309,29 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     let mut connection = client.connect_or_spawn().await?;
 
     // JSON 出力では途中経過を出さない。1 本の JSON だけを返す。
-    let show_progress = !cli.json && request.is_long_running();
+    // logs と exec は出力そのものが結果。進捗の飾りは付けない。
+    let raw_output = matches!(cli.command, Command::Logs { .. } | Command::Exec { .. });
+    let show_progress = !cli.json && request.is_long_running() && !raw_output;
+
     let response = connection
         .call(request, |event| {
-            if show_progress {
+            if raw_output {
+                output::print_output_event(&event);
+            } else if show_progress {
                 output::print_event(&event);
             }
         })
         .await?;
 
     present(cli, &response)?;
+
+    // exec は実行したコマンドの終了コードをそのまま返す。
+    // エージェントが `minato exec web -- pnpm test` の成否を
+    // 終了コードだけで判定できる必要がある。
+    if let Response::Exec { exit_code } = &response {
+        return Ok(ExitCode::from(clamp_exit_code(*exit_code)));
+    }
+
     Ok(ExitCode::SUCCESS)
 }
 
@@ -304,14 +368,73 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             all: *all,
         },
         Command::Status | Command::Url { .. } => Request::Status { target },
+        Command::Logs {
+            services,
+            follow,
+            tail,
+        } => Request::Logs {
+            target,
+            services: services.clone(),
+            follow: *follow,
+            tail: *tail,
+        },
+        Command::Exec { service, command } => Request::Exec {
+            target,
+            service: service.clone(),
+            command: command.clone(),
+        },
         Command::Env { command } => build_env_request(command, target)?,
         Command::Doctor | Command::Setup => Request::Doctor,
-        Command::Init { .. } | Command::Daemon { .. } => {
+        Command::Init { .. } | Command::Daemon { .. } | Command::Skill { .. } => {
             unreachable!("daemon を使わないコマンドは呼び出し前に処理済み")
         }
     };
 
     Ok(request)
+}
+
+/// Skill の配置。daemon を必要としない。
+fn handle_skill(
+    cli: &Cli,
+    command: &SkillCommand,
+    cwd: &std::path::Path,
+) -> Result<ExitCode, CliError> {
+    match command {
+        SkillCommand::Show => {
+            print!("{}", skill::contents());
+            Ok(ExitCode::SUCCESS)
+        }
+        SkillCommand::Install { force } => {
+            // worktree の中で実行されても、リポジトリのルートに置く。
+            let root = minato_core::Repository::discover(cwd)
+                .map(|repo| repo.main_root)
+                .unwrap_or_else(|_| cwd.to_path_buf());
+
+            let installed =
+                skill::install(&root, *force).map_err(|err| CliError::Local(err.to_string()))?;
+
+            if cli.json {
+                output::print_json(&serde_json::json!({
+                    "path": installed.path,
+                    "overwritten": installed.overwritten,
+                }));
+            } else if installed.overwritten {
+                println!("{} を更新しました", installed.path.display());
+            } else {
+                println!("{} を配置しました", installed.path.display());
+            }
+
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// 終了コードをプロセスの終了コードに収める。
+///
+/// シグナルで死んだ場合などに負の値が来る。0 に丸めると成功に
+/// 見えてしまうので、失敗として残す。
+fn clamp_exit_code(code: i32) -> u8 {
+    u8::try_from(code).unwrap_or(1)
 }
 
 fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, CliError> {
@@ -399,6 +522,9 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
             }
         }
         Response::Workspace { workspace } => output::print_workspace(workspace),
+        // logs は行そのものが出力済み。exec は終了コードで伝える。
+        Response::Exec { .. } => {}
+        Response::Empty if matches!(cli.command, Command::Logs { .. }) => {}
         Response::Empty => println!("完了しました"),
     }
 
