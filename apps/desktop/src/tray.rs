@@ -4,8 +4,8 @@
 //! 確認して開く用途が主。egui 単体では tray を扱えないため
 //! `tray-icon` を併用する。
 //!
-//! イベントループは eframe が持っているので、tray のイベントは
-//! 描画ループからポーリングして拾う。
+//! イベントループは GPUI が持っているので、tray のイベントは
+//! GPUI の executor から定期的にポーリングして拾う。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -43,7 +43,7 @@ impl Tray {
             .with_icon(icon())
             .with_menu(Box::new(menu.clone()))
             .build()
-            .map_err(|err| tracing::warn!("メニューバーに常駐できません: {err}"))
+            .map_err(|err| tracing::warn!("cannot create the tray icon: {err}"))
             .ok()?;
 
         let tray = Self {
@@ -82,14 +82,14 @@ impl Tray {
 
         let mut actions = HashMap::new();
 
-        let show = MenuItem::new("Minato を開く", true, None);
+        let show = MenuItem::new("Open Minato", true, None);
         actions.insert(show.id().clone(), Action::Show);
         let _ = self.menu.append(&show);
 
         let _ = self.menu.append(&PredefinedMenuItem::separator());
 
         if entries.is_empty() {
-            let empty = MenuItem::new("起動中の環境はありません", false, None);
+            let empty = MenuItem::new("No running environments", false, None);
             let _ = self.menu.append(&empty);
         } else {
             for (label, url) in entries {
@@ -101,7 +101,7 @@ impl Tray {
 
         let _ = self.menu.append(&PredefinedMenuItem::separator());
 
-        let quit = MenuItem::new("終了", true, None);
+        let quit = MenuItem::new("Quit", true, None);
         actions.insert(quit.id().clone(), Action::Quit);
         let _ = self.menu.append(&quit);
 
@@ -159,6 +159,37 @@ fn icon() -> tray_icon::Icon {
     }
 
     tray_icon::Icon::from_rgba(rgba, SIZE, SIZE).expect("生成したビットマップは常に妥当")
+}
+
+/// tray のイベントを定期的に拾い、メニューを状態に追従させる。
+///
+/// GPUI のイベントループに割り込めないので、短い間隔で見に行く。
+/// メニュー操作は人間の速度なので、この程度で取りこぼさない。
+pub fn spawn_poller(tray: Tray, state: crate::state::SharedState, cx: &mut gpui::App) {
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(POLL_INTERVAL).await;
+
+            let entries = state.read(|state| state.menu_entries()).unwrap_or_default();
+            tray.sync(&entries);
+
+            for action in tray.poll() {
+                match action {
+                    Action::Show => {
+                        cx.update(|cx| cx.activate(true));
+                    }
+                    Action::Open(url) => crate::app::open_url(&url),
+                    Action::Quit => {
+                        cx.update(|cx| cx.quit());
+                        return;
+                    }
+                }
+            }
+        }
+    })
+    .detach();
 }
 
 #[cfg(test)]

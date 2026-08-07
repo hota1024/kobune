@@ -14,10 +14,13 @@ path = "src/main.rs"
 minato-core.workspace = true
 minato-api.workspace = true
 minato-client.workspace = true
-eframe.workspace = true
-egui.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
 tray-icon.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process", "sync"] }
+futures.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

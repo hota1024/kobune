@@ -79,9 +79,22 @@ hickory-proto = "0.24"
 bollard = "0.18"
 
 # GUI
-eframe = "0.29"
-egui = "0.29"
-egui_extras = "0.29"
+#
+# gpui / gpui-component は crates.io に無いため git から取る。
+#
+# **gpui に rev を指定しない。** gpui-component 側が rev 無しで gpui を
+# 参照しており、こちらだけ固定すると別ソース扱いになって gpui が 2 つ
+# 依存グラフに入る。トレイトの実装が食い違い、`Styled` のメソッドが
+# 見つからないという分かりにくいエラーになる。
+# 実際の版は Cargo.lock で固定される。
+#
+# runtime_shaders はシェーダを実行時にコンパイルする。既定ではビルド時に
+# Metal コンパイラを呼ぶが、それは完全な Xcode が要る。Command Line Tools
+# だけの環境でもビルドできるようにこちらを使う。
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "f96f1576ee704b48476f6782962690e0feb7985b" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "f96f1576ee704b48476f6782962690e0feb7985b" }
 tray-icon = "0.19"
 
 [profile.release]

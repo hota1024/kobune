@@ -3,7 +3,7 @@
 //! egui の描画ループは同期で、`async` を直接扱えない。tokio 側が書き、
 //! 描画側が読む。**ロックは短く持つ**（描画のたびに取るため）。
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, RwLock};
 
 use minato_api::{Pong, WorkspaceInfo};
@@ -40,6 +40,10 @@ pub struct AppState {
     pub error: Option<String>,
     /// ログビューアが選んでいる workspace。
     pub log_target: Option<String>,
+    /// 起動・停止の処理中の workspace。
+    ///
+    /// 押した直後に反応が無いと壊れて見えるので、状態として持つ。
+    pub busy: BTreeSet<String>,
     logs: VecDeque<LogLine>,
 }
 
@@ -78,6 +82,27 @@ impl AppState {
                     .any(|service| service.state.is_running())
             })
             .count()
+    }
+
+    /// ラベルから workspace を引く。
+    pub fn workspace(&self, label: &str) -> Option<&WorkspaceInfo> {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.workspace.as_deref().unwrap_or("main") == label)
+    }
+
+    /// 選択の初期値。main worktree より、作業中の worktree を優先する。
+    pub fn default_selection(&self) -> Option<String> {
+        self.workspaces
+            .iter()
+            .find(|workspace| !workspace.is_main)
+            .or_else(|| self.workspaces.first())
+            .map(|workspace| {
+                workspace
+                    .workspace
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string())
+            })
     }
 
     /// tray のメニューに出す (表示名, URL) の一覧。
@@ -231,6 +256,45 @@ mod tests {
         };
 
         assert_eq!(state.menu_entries()[0].0, "(main) / web");
+    }
+
+    #[test]
+    fn default_selection_prefers_a_worktree_over_main() {
+        // main を最初に選ぶと、作業中の環境を見るのに毎回クリックが要る。
+        let state = AppState {
+            workspaces: vec![workspace(None, vec![]), workspace(Some("feat-1"), vec![])],
+            ..Default::default()
+        };
+
+        assert_eq!(state.default_selection().as_deref(), Some("feat-1"));
+    }
+
+    #[test]
+    fn default_selection_falls_back_to_main() {
+        let state = AppState {
+            workspaces: vec![workspace(None, vec![])],
+            ..Default::default()
+        };
+
+        assert_eq!(state.default_selection().as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn no_selection_without_workspaces() {
+        assert_eq!(AppState::default().default_selection(), None);
+    }
+
+    #[test]
+    fn looks_up_workspaces_by_label() {
+        let state = AppState {
+            workspaces: vec![workspace(Some("feat-1"), vec![]), workspace(None, vec![])],
+            ..Default::default()
+        };
+
+        assert!(state.workspace("feat-1").is_some());
+        // main worktree は "main" というラベルで引ける。
+        assert!(state.workspace("main").is_some());
+        assert!(state.workspace("nope").is_none());
     }
 
     #[test]
