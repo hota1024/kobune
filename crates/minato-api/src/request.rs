@@ -41,6 +41,9 @@ pub enum Request {
     /// daemon を終了する。
     Shutdown,
 
+    /// 環境の診断。daemon 側で分かることを集めて返す。
+    Doctor,
+
     /// workspace の一覧。
     Ls {
         target: Target,

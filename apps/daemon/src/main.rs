@@ -4,6 +4,7 @@
 //! daemon を置く。M0 の時点ではまだ Supervisor しかいないが、以降の
 //! マイルストーンはここに機能を足していく形になる。
 
+mod gateway;
 mod resolve;
 mod server;
 mod spec;
@@ -16,6 +17,7 @@ use minato_core::Paths;
 use tokio::sync::Notify;
 use tracing_subscriber::EnvFilter;
 
+use crate::gateway::{Gateway, GatewaySettings};
 use crate::server::Server;
 use crate::supervisor::Supervisor;
 
@@ -54,7 +56,20 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let shutdown = Arc::new(Notify::new());
-    let supervisor = Arc::new(Supervisor::new(&paths, shutdown.clone()));
+
+    // プロキシと DNS を先に立てる。bind に失敗しても daemon は動かす。
+    // その場合 URL は発行されず、ポート直指定の endpoint だけになる。
+    let settings = GatewaySettings::from_env();
+    let gateway = Arc::new(Gateway::start(&paths, &settings, shutdown.clone()).await);
+
+    if !gateway.is_serving() {
+        tracing::warn!(
+            "プロキシが待ち受けられていないため URL は発行されません。\
+             `minato doctor` を確認してください"
+        );
+    }
+
+    let supervisor = Arc::new(Supervisor::new(&paths, gateway, shutdown.clone()));
     let server = Server::new(paths.socket(), supervisor, shutdown.clone());
 
     // シグナルでも Request::Shutdown でも同じ経路で止める。

@@ -3,7 +3,7 @@
 //! daemon 側には整形済みの文字列を一切持たせない。同じイベント列から
 //! GUI も進捗表示を作れる必要があるため（`docs/DESIGN.md` §3）。
 
-use minato_api::{ApiError, Event, LogLevel, ServiceInfo, StepStatus, WorkspaceInfo};
+use minato_api::{ApiError, Diagnostics, Event, LogLevel, ServiceInfo, StepStatus, WorkspaceInfo};
 use minato_core::ServiceState;
 
 /// 進行中のステップを表示する。
@@ -118,6 +118,40 @@ fn access_label(service: &ServiceInfo) -> String {
     }
 }
 
+/// 診断結果を表示する。直し方は必ず添える。
+pub fn print_diagnostics(diagnostics: &Diagnostics) {
+    println!();
+    for check in &diagnostics.checks {
+        println!(
+            "  {} {:<28}  {}",
+            check.status.symbol(),
+            check.title,
+            check.detail
+        );
+    }
+
+    let fixes = diagnostics.fixes();
+    if fixes.is_empty() {
+        println!();
+        if diagnostics.has_failures() {
+            println!("問題がありますが、直し方が判明していません");
+        } else {
+            println!("問題は見つかりませんでした");
+        }
+        return;
+    }
+
+    println!();
+    println!("直すには:");
+    for check in fixes {
+        println!();
+        println!("  {} {}", check.status.symbol(), check.title);
+        println!("    {}", check.fix.as_deref().unwrap_or_default());
+    }
+    println!();
+    println!("`minato setup` でまとめて確認できます");
+}
+
 /// エラーを表示する。`hint` があれば必ず添える。
 pub fn print_error(message: &str, hint: Option<&str>) {
     eprintln!("エラー: {message}");
@@ -148,7 +182,7 @@ pub fn print_json<T: serde::Serialize>(value: &T) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minato_api::ServiceScope;
+    use minato_api::{CheckStatus, ServiceScope};
 
     fn service(name: &str, state: ServiceState, endpoint: Option<&str>) -> ServiceInfo {
         ServiceInfo {
@@ -184,6 +218,13 @@ mod tests {
     fn shows_dash_for_stopped_services() {
         let svc = service("web", ServiceState::Stopped, None);
         assert_eq!(access_label(&svc), "-");
+    }
+
+    #[test]
+    fn diagnostics_symbols_distinguish_severity() {
+        assert_eq!(CheckStatus::Ok.symbol(), "✓");
+        assert_ne!(CheckStatus::Warn.symbol(), CheckStatus::Ok.symbol());
+        assert_ne!(CheckStatus::Fail.symbol(), CheckStatus::Warn.symbol());
     }
 
     #[test]

@@ -151,23 +151,41 @@ main worktree は workspace ラベルを省略して `{service}.{project}.localh
 
 macOS では `*.localhost` はシステムレベルでは解決されない。Chrome は独自に 127.0.0.1 へ解決するが、`curl` / Safari / Node.js の fetch は解決しない。**エージェントは curl で疎通確認する**ので、これは致命的。
 
-対策として daemon 内に DNS サーバを持ち、`/etc/resolver/localhost` に `nameserver 127.0.0.1` を書く。これは `minato init` で一度だけ sudo を要求する。
+対策として daemon 内に DNS サーバを持ち、`/etc/resolver/localhost` に `nameserver 127.0.0.1` を書く。これは `minato setup` が案内する（sudo が要るため実行は利用者に委ねる）。
 
 ```
 /etc/resolver/localhost:
   nameserver 127.0.0.1
-  port 53
+  port 15353
 ```
 
+**`port` を書けるおかげで DNS に root が要らない。** :53 を取らずに非特権ポートで動かせる。
+
 Linux では `systemd-resolved` が `.localhost` を解決するため、DNS サーバは任意（`.test` など別 TLD を使う場合のみ必要）。
+
+**ルートの有無を見ずに解決する。** 未知のホスト名も 127.0.0.1 に向け、プロキシに 404 を返させる。DNS で解決を失敗させると「名前が引けない」としか分からないが、プロキシまで届けば「どの workspace が動いているか」まで案内できる。
 
 ### Proxy と TLS
 
 hyper ベースのリバースプロキシが :80/:443 で待ち受け、Host ヘッダ（HTTPS は SNI）でルーティングする。
 
-ローカル CA を `~/.minato/ca/` に生成し、`*.localhost` および `*.{project}.localhost` のワイルドカード証明書に署名する。CA 証明書はシステムキーチェーンに登録する（`minato init` 時、sudo）。
+**WebSocket と SSE は必ず通す**。開発サーバの HMR がこれに依存しているため、ここが動かないと使いものにならない。HTTP/2 は ALPN で広告していない（WebSocket の upgrade は HTTP/1.1 の機構なので、h2 を通すと HMR が繋がらなくなる）。
 
-**WebSocket / SSE / HTTP/2 は必ず通す**。開発サーバの HMR がこれに依存しているため、ここが動かないと使いものにならない。
+**Host ヘッダは書き換えない。** Vite などは Host を見て許可判定をするため、ブラウザで開いた URL がそのままアプリに見える形を保つ。
+
+#### 証明書は SNI ごとに動的発行する（M1 で確定）
+
+ワイルドカード証明書は 1 ラベルしかカバーしない。`*.localhost` では `web.feat-1.myapp.localhost` を賄えず、worktree が増えるたびに深さの違う名前が生まれるため、証明書を事前に用意する方法では追いつかない。
+
+そこでローカル CA を `~/.minato/ca/` に 1 つ持ち、**SNI で要求された名前の証明書をその場で発行してキャッシュする**。利用者が信頼するのは CA 1 枚だけで済む。
+
+CA を読み込むときは**ディスク上の証明書をそのままチェーンに載せる**。rcgen で読み直して再署名すると、ECDSA の署名が毎回変わるため、利用者が信頼したものとバイト列が食い違う。
+
+#### IPv4 と IPv6 の両方で待ち受ける（M1 で判明）
+
+macOS は `*.localhost` を `::1` と `127.0.0.1` の**両方**に解決し、クライアントは IPv6 を優先する。IPv4 だけで待ち受けると、`[::1]` に別のアプリがいた場合そちらへ silently 繋がってしまう（実際に開発中の Node アプリに吸われた）。
+
+プロキシはループバックの両アドレスで待ち受ける。DNS は resolver 設定が `127.0.0.1` を名指しするため曖昧さがなく、IPv4 のみでよい。
 
 ### 特権ポート
 
@@ -523,7 +541,7 @@ apps/daemon ─────────────────────>  mi
 | マイルストーン | 内容 | 完了条件 |
 | --- | --- | --- |
 | **M0** ✅ | workspace 骨組み + core（config / naming / state）+ `minato-api`（イベントストリーム含む）+ Docker / Apple Container runtime + `init` / `new` / `up` / `down` / `rm` / `ls` / `status` / `url` / `daemon` | worktree を作るとコンテナが起動し、`localhost:<動的ポート>` で見える |
-| **M1** | DNS + Proxy + TLS + `doctor` | `https://web.feat-1.myapp.localhost` が curl で通る |
+| **M1** ◐ | DNS + Proxy + TLS + `doctor` / `setup` | `https://web.feat-1.myapp.localhost` が curl で通る（標準ポートは権限設定が必要） |
 | **M2** | scale-to-zero + health check + アイドル停止 | worktree 10 個作っても実行中コンテナは触っているものだけ |
 | **M3** | 環境変数管理（3 層 + シークレット参照 + 自動注入） | `MINATO_URL_API` がフロントから読める |
 | **M4** | Cloudflare Tunnel | スマホから `https://web-feat-1.myapp.example.com` が見える |
@@ -534,6 +552,24 @@ apps/daemon ─────────────────────>  mi
 M1 完了時点が最小の価値提供ライン。M2 まで行くと日常的に使える。
 
 GUI を M6 に置いたのは、daemon の API がひととおり出揃ってからの方が手戻りが少ないため。ただし **API のイベントストリームだけは M0 で用意する**（後付けするとブロッキング前提の設計になり、GUI で進捗を出せなくなる）。
+
+### M1 で残っているもの
+
+DNS・プロキシ・TLS・URL 発行・診断はすべて動作している。非特権ポート
+（`MINATO_HTTP_PORT` などで指定）では `--resolve` なしで curl が通る。
+
+残るのは **80/443 の特権ポートをどう確保するか**の 1 点。macOS では
+1024 未満のポートに root が要るため、次のいずれかが要る。
+
+| 方式 | 長所 | 短所 |
+| --- | --- | --- |
+| launchd socket activation | daemon 本体は非 root のまま。設計上の第一候補 | plist の設置と管理が要る。macOS 専用 |
+| pf による転送（80→8080, 443→8443） | 実装不要。設定だけで済む | 再起動で消える。loopback 向け rdr の挙動に注意が要る |
+| 非標準ポートを既定にする | 権限が一切要らない | URL にポートが付き、「覚えなくていい」という利点が薄れる |
+
+`minato doctor` はこの状態を検出し、`minato setup` が必要なコマンドを提示する。
+**sudo は自動実行しない。** エージェントが実行すると password 待ちで固まり、
+利用者から見れば黙って権限昇格したことになる。
 
 ### M0 で先送りしたもの
 

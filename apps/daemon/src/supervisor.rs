@@ -9,12 +9,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use minato_api::{
-    ApiError, ErrorCode, Pong, Request, Response, ServiceInfo, Target, WorkspaceInfo,
+    ApiError, Check, Diagnostics, ErrorCode, Pong, Request, Response, ServiceInfo, Target,
+    WorkspaceInfo,
 };
-use minato_core::{MinatoConfig, Paths, ServiceScope, ServiceState, StateStore};
+use minato_core::{MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, WorkspaceRecord};
+use minato_proxy::Route;
 use minato_runtime::{EventSink, Runtime, ServiceStatus, WorkspaceKey};
 use tokio::sync::Mutex;
 
+use crate::gateway::Gateway;
 use crate::resolve::{self, ProjectContext, Resolved};
 use crate::spec;
 
@@ -25,16 +28,19 @@ pub struct Supervisor {
     runtimes: Mutex<HashMap<String, Arc<dyn Runtime>>>,
     /// 状態ファイルの更新を直列化する。
     state_lock: Mutex<()>,
+    /// プロキシと DNS の入り口。URL の発行元でもある。
+    gateway: Arc<Gateway>,
     started_at: Instant,
     shutdown: Arc<tokio::sync::Notify>,
 }
 
 impl Supervisor {
-    pub fn new(paths: &Paths, shutdown: Arc<tokio::sync::Notify>) -> Self {
+    pub fn new(paths: &Paths, gateway: Arc<Gateway>, shutdown: Arc<tokio::sync::Notify>) -> Self {
         Self {
             store: StateStore::new(paths.state_file()),
             runtimes: Mutex::new(HashMap::new()),
             state_lock: Mutex::new(()),
+            gateway,
             started_at: Instant::now(),
             shutdown,
         }
@@ -69,6 +75,7 @@ impl Supervisor {
                 all,
             } => self.down(target, services, all, events).await,
             Request::Status { target } => self.status(target).await,
+            Request::Doctor => self.doctor().await,
         }
     }
 
@@ -88,6 +95,75 @@ impl Supervisor {
             runtime: format!("{runtime_id} {version}"),
             uptime_secs: self.started_at.elapsed().as_secs(),
         }))
+    }
+
+    /// daemon 側で分かることを診断する。
+    ///
+    /// システム側の設定（`/etc/resolver`、CA の信頼）は daemon からは
+    /// 判定しにくいので CLI が担当する。ここでは待ち受けと runtime を見る。
+    async fn doctor(&self) -> Result<Response, ApiError> {
+        let mut checks = Vec::new();
+
+        // runtime に届くか。届かなければ何も起動できない。
+        match self.runtime("docker").await {
+            Ok(runtime) => match runtime.probe().await {
+                Ok(info) => checks.push(Check::ok(
+                    "runtime",
+                    "コンテナランタイム",
+                    format!("{} {}", info.id, info.version),
+                )),
+                Err(err) => checks.push(
+                    Check::fail("runtime", "コンテナランタイム", err.to_string()).with_fix(
+                        "Docker Desktop / OrbStack / colima のいずれかを起動してください",
+                    ),
+                ),
+            },
+            Err(err) => checks.push(Check::fail(
+                "runtime",
+                "コンテナランタイム",
+                err.to_string(),
+            )),
+        }
+
+        checks.push(match self.gateway.http_port() {
+            Some(port) => Check::ok("proxy-http", "HTTP プロキシ", format!("127.0.0.1:{port}")),
+            None => Check::fail(
+                "proxy-http",
+                "HTTP プロキシ",
+                "待ち受けていません（ポートを確保できませんでした）".to_string(),
+            )
+            .with_fix(
+                "1024 未満のポートには権限が要ります。`minato setup` の手順を実行するか、\
+                 MINATO_HTTP_PORT で別のポートを指定してください",
+            ),
+        });
+
+        checks.push(match self.gateway.https_port() {
+            Some(port) => Check::ok("proxy-https", "HTTPS プロキシ", format!("127.0.0.1:{port}")),
+            None => Check::warn(
+                "proxy-https",
+                "HTTPS プロキシ",
+                "待ち受けていません。HTTP のみ利用できます".to_string(),
+            )
+            .with_fix("MINATO_HTTPS_PORT で別のポートを指定してください"),
+        });
+
+        checks.push(match self.gateway.dns_port() {
+            Some(port) => Check::ok("dns", "DNS サーバ", format!("127.0.0.1:{port}")),
+            None => Check::fail(
+                "dns",
+                "DNS サーバ",
+                "待ち受けていません。*.localhost を解決できません".to_string(),
+            )
+            .with_fix("MINATO_DNS_PORT で 1024 以上のポートを指定してください"),
+        });
+
+        checks.push(match self.gateway.ca_path() {
+            Some(path) => Check::ok("ca", "ローカル CA", path.display().to_string()),
+            None => Check::warn("ca", "ローカル CA", "生成されていません".to_string()),
+        });
+
+        Ok(Response::Diagnostics(Diagnostics::new(checks)))
     }
 
     /// runtime 実装を取得する。同じ識別子なら作り直さない。
@@ -124,9 +200,39 @@ impl Supervisor {
             .map_err(ApiError::from)
     }
 
+    /// runtime の現状を取り直し、ルーティングを作り直す。
+    ///
+    /// 個々の変化を追わず毎回まるごと入れ替える。runtime のラベルを
+    /// 状態の正とする方針と揃い、取りこぼしが起きない。
+    async fn refresh(
+        &self,
+        project: &str,
+        config: &MinatoConfig,
+    ) -> Result<Vec<ServiceStatus>, ApiError> {
+        let runtime = self.runtime(&config.runtime.default).await?;
+        let statuses = runtime.list_project(project).await?;
+
+        let records = self.workspace_records(project).await?;
+        let entries = route_entries(config, project, &records, &statuses);
+
+        self.gateway.routes().replace_project(project, entries);
+
+        Ok(statuses)
+    }
+
+    /// 状態ストアに登録済みの workspace 一覧。
+    async fn workspace_records(&self, project: &str) -> Result<Vec<WorkspaceRecord>, ApiError> {
+        let _guard = self.state_lock.lock().await;
+
+        let state = self.store.load().map_err(ApiError::from)?;
+        Ok(state
+            .project(project)
+            .map(|record| record.workspaces.values().cloned().collect())
+            .unwrap_or_default())
+    }
+
     async fn ls(&self, target: Target, all_projects: bool) -> Result<Response, ApiError> {
         let context = self.resolve_project_only(&target).await?;
-        let runtime = self.runtime(&context.config.runtime.default).await?;
 
         // 登録済みの worktree と、まだ登録していない worktree の両方を出す。
         // 「git worktree list には出るのに minato ls には出ない」を避ける。
@@ -149,11 +255,11 @@ impl Supervisor {
         };
 
         // runtime への問い合わせは 1 回で済ませ、workspace ごとに振り分ける。
-        let statuses = runtime.list_project(&context.project).await?;
+        let statuses = self.refresh(&context.project, &context.config).await?;
 
         let mut workspaces = Vec::with_capacity(records.len());
         for record in records {
-            workspaces.push(build_workspace_info(
+            workspaces.push(self.build_workspace_info(
                 &context.config,
                 &context.project,
                 &record,
@@ -172,11 +278,10 @@ impl Supervisor {
 
     async fn status(&self, target: Target) -> Result<Response, ApiError> {
         let resolved = self.resolve(&target).await?;
-        let runtime = self.runtime(&resolved.config.runtime.default).await?;
-        let statuses = runtime.list_project(&resolved.project).await?;
+        let statuses = self.refresh(&resolved.project, &resolved.config).await?;
 
         Ok(Response::Workspace {
-            workspace: build_workspace_info(
+            workspace: self.build_workspace_info(
                 &resolved.config,
                 &resolved.project,
                 &resolved.workspace,
@@ -247,11 +352,10 @@ impl Supervisor {
             self.start_services(&resolved, &[], events).await?;
         }
 
-        let runtime = self.runtime(&resolved.config.runtime.default).await?;
-        let statuses = runtime.list_project(&resolved.project).await?;
+        let statuses = self.refresh(&resolved.project, &resolved.config).await?;
 
         Ok(Response::Workspace {
-            workspace: build_workspace_info(
+            workspace: self.build_workspace_info(
                 &resolved.config,
                 &resolved.project,
                 &resolved.workspace,
@@ -316,11 +420,10 @@ impl Supervisor {
         let resolved = self.resolve(&target).await?;
         self.start_services(&resolved, &services, events).await?;
 
-        let runtime = self.runtime(&resolved.config.runtime.default).await?;
-        let statuses = runtime.list_project(&resolved.project).await?;
+        let statuses = self.refresh(&resolved.project, &resolved.config).await?;
 
         Ok(Response::Workspace {
-            workspace: build_workspace_info(
+            workspace: self.build_workspace_info(
                 &resolved.config,
                 &resolved.project,
                 &resolved.workspace,
@@ -430,10 +533,10 @@ impl Supervisor {
             }
         }
 
-        let statuses = runtime.list_project(&resolved.project).await?;
+        let statuses = self.refresh(&resolved.project, &resolved.config).await?;
 
         Ok(Response::Workspace {
-            workspace: build_workspace_info(
+            workspace: self.build_workspace_info(
                 &resolved.config,
                 &resolved.project,
                 &resolved.workspace,
@@ -505,63 +608,151 @@ fn default_worktree_path(main_root: &std::path::Path, branch: &str) -> PathBuf {
     parent.join(format!("{repo_name}.wt")).join(label)
 }
 
-/// 設定と runtime の状態を突き合わせて、クライアントに返す形にする。
-fn build_workspace_info(
+/// プロキシに登録するホスト名と転送先の一覧を作る。
+///
+/// 起動していて公開対象のサービスだけを載せる。停止中のものを残すと、
+/// プロキシが死んだ相手に転送して 502 を返すことになる。
+fn route_entries(
     config: &MinatoConfig,
     project: &str,
-    record: &minato_core::WorkspaceRecord,
+    records: &[WorkspaceRecord],
     statuses: &[ServiceStatus],
-) -> WorkspaceInfo {
-    let workspace_key = WorkspaceKey::new(project, &record.label);
+) -> Vec<(String, Route)> {
+    let domain = config.domain();
     let shared_key = WorkspaceKey::shared(project);
+    let mut entries = Vec::new();
 
-    let services = config
-        .services
-        .iter()
-        .map(|(name, service_config)| {
+    for record in records {
+        let workspace_key = WorkspaceKey::new(project, &record.label);
+
+        for (name, service_config) in &config.services {
+            if !service_config.exposed() {
+                continue;
+            }
+
             let key = match service_config.scope {
                 ServiceScope::Workspace => workspace_key.service(name),
                 ServiceScope::Project => shared_key.service(name),
             };
 
-            let status = statuses.iter().find(|s| s.key == key);
+            let Some(status) = statuses.iter().find(|s| s.key == key) else {
+                continue;
+            };
 
-            ServiceInfo {
-                name: name.clone(),
-                state: status
-                    .map(|s| s.state.clone())
-                    .unwrap_or(ServiceState::Stopped),
-                scope: service_config.scope,
-                // URL はプロキシが動く M1 以降。
-                url: None,
-                tunnel_url: None,
-                endpoint: status
-                    .and_then(|s| s.endpoint)
-                    .filter(|_| service_config.exposed())
-                    .map(|addr| addr.to_string()),
-                port: service_config.port,
-                container_id: status.and_then(|s| s.container_id.clone()),
-                image: status
-                    .and_then(|s| s.image.clone())
-                    .or_else(|| service_config.image.clone()),
+            if !status.state.is_running() {
+                continue;
             }
-        })
-        .collect();
 
-    WorkspaceInfo {
-        project: project.to_string(),
-        workspace: record.url_label().map(str::to_string),
-        branch: record.branch.clone(),
-        path: record.path.clone(),
-        is_main: record.is_main,
-        services,
+            let Some(endpoint) = status.endpoint else {
+                continue;
+            };
+
+            let host = minato_core::naming::service_host_in(name, record.url_label(), &domain);
+            entries.push((
+                host,
+                Route::new(endpoint, project, &record.label, name.clone()),
+            ));
+        }
+    }
+
+    entries
+}
+
+impl Supervisor {
+    /// 設定と runtime の状態を突き合わせて、クライアントに返す形にする。
+    fn build_workspace_info(
+        &self,
+        config: &MinatoConfig,
+        project: &str,
+        record: &WorkspaceRecord,
+        statuses: &[ServiceStatus],
+    ) -> WorkspaceInfo {
+        let workspace_key = WorkspaceKey::new(project, &record.label);
+        let shared_key = WorkspaceKey::shared(project);
+        let domain = config.domain();
+
+        let services = config
+            .services
+            .iter()
+            .map(|(name, service_config)| {
+                let key = match service_config.scope {
+                    ServiceScope::Workspace => workspace_key.service(name),
+                    ServiceScope::Project => shared_key.service(name),
+                };
+
+                let status = statuses.iter().find(|s| s.key == key);
+                let state = status
+                    .map(|s| s.state.clone())
+                    .unwrap_or(ServiceState::Stopped);
+
+                // URL を出すのは、公開対象で・起動していて・プロキシが
+                // 待ち受けている場合だけ。繋がらない先を案内しない。
+                let url = if service_config.exposed() && state.is_running() {
+                    let host =
+                        minato_core::naming::service_host_in(name, record.url_label(), &domain);
+                    self.gateway.url_for(&host)
+                } else {
+                    None
+                };
+
+                ServiceInfo {
+                    name: name.clone(),
+                    state,
+                    scope: service_config.scope,
+                    url,
+                    tunnel_url: None,
+                    endpoint: status
+                        .and_then(|s| s.endpoint)
+                        .filter(|_| service_config.exposed())
+                        .map(|addr| addr.to_string()),
+                    port: service_config.port,
+                    container_id: status.and_then(|s| s.container_id.clone()),
+                    image: status
+                        .and_then(|s| s.image.clone())
+                        .or_else(|| service_config.image.clone()),
+                }
+            })
+            .collect();
+
+        WorkspaceInfo {
+            project: project.to_string(),
+            workspace: record.url_label().map(str::to_string),
+            branch: record.branch.clone(),
+            path: record.path.clone(),
+            is_main: record.is_main,
+            services,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::Gateway;
+    use std::net::SocketAddr;
     use std::path::Path;
+
+    /// URL の組み立てとルーティングだけを見るための Supervisor。
+    /// 状態ストアには触れないので、実体のないパスで構わない。
+    fn supervisor(gateway: Gateway) -> Supervisor {
+        Supervisor::new(
+            &Paths::with_root(PathBuf::from("/tmp/minato-supervisor-test")),
+            Arc::new(gateway),
+            Arc::new(tokio::sync::Notify::new()),
+        )
+    }
+
+    fn ready(key: minato_runtime::ServiceKey, port: u16, scope: ServiceScope) -> ServiceStatus {
+        ServiceStatus {
+            key,
+            state: ServiceState::Ready,
+            container_id: Some("abc".into()),
+            image: Some("busybox".into()),
+            endpoint: Some(SocketAddr::from(([127, 0, 0, 1], port))),
+            port: Some(port),
+            scope,
+        }
+    }
 
     fn config(toml: &str) -> MinatoConfig {
         let config: MinatoConfig = toml::from_str(toml).expect("構文は正しい");
@@ -638,7 +829,12 @@ mod tests {
 
     #[test]
     fn reports_stopped_when_runtime_knows_nothing() {
-        let info = build_workspace_info(&config(SAMPLE), "myapp", &record("feat-1", false), &[]);
+        let info = supervisor(Gateway::with_ports(Some(80), Some(443))).build_workspace_info(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            &[],
+        );
 
         assert_eq!(info.services.len(), 3);
         for service in &info.services {
@@ -659,7 +855,7 @@ mod tests {
             scope: ServiceScope::Project,
         }];
 
-        let info = build_workspace_info(
+        let info = supervisor(Gateway::inert()).build_workspace_info(
             &config(SAMPLE),
             "myapp",
             &record("feat-1", false),
@@ -686,7 +882,7 @@ mod tests {
             scope: ServiceScope::Workspace,
         }];
 
-        let info = build_workspace_info(
+        let info = supervisor(Gateway::inert()).build_workspace_info(
             &config(SAMPLE),
             "myapp",
             &record("feat-1", false),
@@ -700,10 +896,160 @@ mod tests {
 
     #[test]
     fn main_workspace_has_no_url_label() {
-        let info = build_workspace_info(&config(SAMPLE), "myapp", &record("main", true), &[]);
+        let info = supervisor(Gateway::inert()).build_workspace_info(
+            &config(SAMPLE),
+            "myapp",
+            &record("main", true),
+            &[],
+        );
 
         assert_eq!(info.workspace, None, "main は URL から省略する");
         assert!(info.is_main);
         assert_eq!(info.display_name(), "(main)");
+    }
+
+    #[test]
+    fn issues_urls_when_the_proxy_is_listening() {
+        let statuses = vec![ready(
+            WorkspaceKey::new("myapp", "feat-1").service("web"),
+            49312,
+            ServiceScope::Workspace,
+        )];
+
+        let info = supervisor(Gateway::with_ports(Some(80), Some(443))).build_workspace_info(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            &statuses,
+        );
+
+        let web = info.service("web").expect("存在する");
+        assert_eq!(
+            web.url.as_deref(),
+            Some("https://web.feat-1.myapp.localhost")
+        );
+        assert_eq!(
+            web.access().as_deref(),
+            Some("https://web.feat-1.myapp.localhost"),
+            "URL があるならそちらを案内する"
+        );
+    }
+
+    #[test]
+    fn issues_no_url_when_the_proxy_is_down() {
+        // 待ち受けていないのに URL を返すと、繋がらない先を教えることになる。
+        let statuses = vec![ready(
+            WorkspaceKey::new("myapp", "feat-1").service("web"),
+            49312,
+            ServiceScope::Workspace,
+        )];
+
+        let info = supervisor(Gateway::inert()).build_workspace_info(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            &statuses,
+        );
+
+        let web = info.service("web").expect("存在する");
+        assert_eq!(web.url, None);
+        assert_eq!(
+            web.access().as_deref(),
+            Some("http://127.0.0.1:49312"),
+            "URL が無くてもポート直指定は案内できる"
+        );
+    }
+
+    #[test]
+    fn main_workspace_url_omits_the_label() {
+        let statuses = vec![ready(
+            WorkspaceKey::new("myapp", "main").service("web"),
+            49312,
+            ServiceScope::Workspace,
+        )];
+
+        let info = supervisor(Gateway::with_ports(Some(80), Some(443))).build_workspace_info(
+            &config(SAMPLE),
+            "myapp",
+            &record("main", true),
+            &statuses,
+        );
+
+        assert_eq!(
+            info.service("web").expect("存在する").url.as_deref(),
+            Some("https://web.myapp.localhost")
+        );
+    }
+
+    #[test]
+    fn stopped_services_get_no_url() {
+        let info = supervisor(Gateway::with_ports(Some(80), Some(443))).build_workspace_info(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            &[],
+        );
+
+        assert!(info.services.iter().all(|s| s.url.is_none()));
+    }
+
+    #[test]
+    fn routes_only_running_exposed_services() {
+        let records = vec![record("feat-1", false)];
+        let statuses = vec![
+            ready(
+                WorkspaceKey::new("myapp", "feat-1").service("web"),
+                49312,
+                ServiceScope::Workspace,
+            ),
+            // expose = false なので URL もルートも作らない。
+            ready(
+                WorkspaceKey::shared("myapp").service("db"),
+                5432,
+                ServiceScope::Project,
+            ),
+            // 停止中は転送先にしない。502 を返すだけになる。
+            ServiceStatus {
+                key: WorkspaceKey::new("myapp", "feat-1").service("api"),
+                state: ServiceState::Stopped,
+                container_id: None,
+                image: None,
+                endpoint: None,
+                port: Some(8080),
+                scope: ServiceScope::Workspace,
+            },
+        ];
+
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &statuses);
+        let hosts: Vec<&str> = entries.iter().map(|(host, _)| host.as_str()).collect();
+
+        assert_eq!(hosts, vec!["web.feat-1.myapp.localhost"]);
+        assert_eq!(entries[0].1.endpoint.port(), 49312);
+    }
+
+    #[test]
+    fn routes_every_workspace_of_the_project() {
+        let records = vec![record("feat-1", false), record("main", true)];
+        let statuses = vec![
+            ready(
+                WorkspaceKey::new("myapp", "feat-1").service("web"),
+                49312,
+                ServiceScope::Workspace,
+            ),
+            ready(
+                WorkspaceKey::new("myapp", "main").service("web"),
+                49313,
+                ServiceScope::Workspace,
+            ),
+        ];
+
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &statuses);
+        let mut hosts: Vec<&str> = entries.iter().map(|(host, _)| host.as_str()).collect();
+        hosts.sort();
+
+        assert_eq!(
+            hosts,
+            vec!["web.feat-1.myapp.localhost", "web.myapp.localhost"]
+        );
     }
 }

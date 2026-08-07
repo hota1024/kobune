@@ -14,6 +14,8 @@ path = "src/main.rs"
 minato-core.workspace = true
 minato-api.workspace = true
 minato-runtime.workspace = true
+minato-proxy.workspace = true
+minato-dns.workspace = true
 tokio = { workspace = true, features = ["full"] }
 clap.workspace = true
 serde_json.workspace = true

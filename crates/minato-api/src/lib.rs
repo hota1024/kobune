@@ -5,6 +5,7 @@
 //! 実装に依存してはならない（`docs/DESIGN.md` §3, §13）。
 
 pub mod codec;
+pub mod diagnostics;
 pub mod error;
 pub mod event;
 pub mod protocol;
@@ -12,6 +13,7 @@ pub mod request;
 pub mod response;
 
 pub use codec::{CodecError, MessageStream, write_message};
+pub use diagnostics::{Check, CheckStatus, Diagnostics};
 pub use error::{ApiError, ErrorCode};
 pub use event::{Event, LogLevel, OutputStream, StepStatus};
 pub use protocol::{ClientMessage, Outcome, PROTOCOL_VERSION, RequestId, ServerMessage};

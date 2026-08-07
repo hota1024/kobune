@@ -5,12 +5,17 @@
 
 mod init;
 mod output;
+mod system;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use minato_api::{Request, Response, Target};
+
+/// `[project] domain` を省略したときに使われる接尾辞。
+/// resolver の設置対象もこれになる。
+const DEFAULT_DOMAIN_SUFFIX: &str = "localhost";
 use minato_client::{Client, ClientError};
 
 #[derive(Parser, Debug)]
@@ -45,6 +50,12 @@ enum Command {
 
     /// daemon への疎通を確認する
     Ping,
+
+    /// 環境を診断し、直し方を示す
+    Doctor,
+
+    /// URL を使うために必要な、権限の要る設定を案内する
+    Setup,
 
     /// workspace を一覧する
     Ls {
@@ -255,6 +266,7 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             all: *all,
         },
         Command::Status | Command::Url { .. } => Request::Status { target },
+        Command::Doctor | Command::Setup => Request::Doctor,
         Command::Init { .. } | Command::Daemon { .. } => {
             unreachable!("daemon を使わないコマンドは呼び出し前に処理済み")
         }
@@ -269,6 +281,11 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
         return present_url(cli, response, service.as_deref());
     }
 
+    // doctor と setup は daemon の診断にホスト側の診断を足して見せる。
+    if matches!(cli.command, Command::Doctor | Command::Setup) {
+        return present_diagnostics(cli, response);
+    }
+
     if cli.json {
         output::print_json(response);
         return Ok(());
@@ -281,6 +298,7 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
             println!("uptime: {}秒", pong.uptime_secs);
         }
         Response::Workspaces { workspaces } => output::print_workspaces(workspaces),
+        Response::Diagnostics(diagnostics) => output::print_diagnostics(diagnostics),
         Response::Workspace { workspace } => output::print_workspace(workspace),
         Response::Empty => println!("完了しました"),
     }
@@ -335,6 +353,101 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
     }
 
     Ok(())
+}
+
+/// daemon の診断にホスト側の診断を足して表示する。
+///
+/// `/etc/resolver` や CA の信頼は daemon からは分からない。CLI が
+/// 自分の目で確かめたものを合わせて、1 つの結果として見せる。
+fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
+    let Response::Diagnostics(diagnostics) = response else {
+        return Err(CliError::Local(
+            "診断結果を取得できませんでした".to_string(),
+        ));
+    };
+
+    let dns_port = find_port(diagnostics, "dns");
+    let ca_path = find_detail(diagnostics, "ca").map(PathBuf::from);
+
+    let mut all = diagnostics.checks.clone();
+    all.extend(system::check_system(
+        DEFAULT_DOMAIN_SUFFIX,
+        dns_port,
+        ca_path.as_deref(),
+    ));
+
+    let combined = minato_api::Diagnostics::new(all);
+
+    if matches!(cli.command, Command::Setup) {
+        return present_setup(cli, &combined);
+    }
+
+    if cli.json {
+        output::print_json(&combined);
+    } else {
+        output::print_diagnostics(&combined);
+    }
+
+    Ok(())
+}
+
+/// 権限の要る手順を案内する。実行はしない。
+fn present_setup(cli: &Cli, diagnostics: &minato_api::Diagnostics) -> Result<(), CliError> {
+    let plan = system::SetupPlan::from_checks(&diagnostics.checks);
+
+    if cli.json {
+        output::print_json(&serde_json::json!({
+            "steps": plan
+                .steps
+                .iter()
+                .map(|step| serde_json::json!({
+                    "description": step.description,
+                    "command": step.command,
+                }))
+                .collect::<Vec<_>>(),
+        }));
+        return Ok(());
+    }
+
+    if plan.is_empty() {
+        println!("設定は完了しています。`minato doctor` で確認できます");
+        return Ok(());
+    }
+
+    println!("URL を使うには以下の設定が必要です。");
+    println!("root 権限が要るため、内容を確認してから実行してください。");
+    println!();
+
+    for (index, step) in plan.steps.iter().enumerate() {
+        println!("{}. {}", index + 1, step.description);
+        println!("   {}", step.command);
+        println!();
+    }
+
+    println!("実行後は `minato daemon stop` してから再度お試しください。");
+    Ok(())
+}
+
+/// 診断結果の detail からポート番号を拾う（`127.0.0.1:15353` 形式）。
+fn find_port(diagnostics: &minato_api::Diagnostics, id: &str) -> Option<u16> {
+    diagnostics
+        .checks
+        .iter()
+        .find(|check| check.id == id)?
+        .detail
+        .rsplit(':')
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn find_detail<'a>(diagnostics: &'a minato_api::Diagnostics, id: &str) -> Option<&'a str> {
+    let check = diagnostics.checks.iter().find(|check| check.id == id)?;
+    if check.detail.starts_with('/') {
+        Some(&check.detail)
+    } else {
+        None
+    }
 }
 
 async fn handle_daemon(

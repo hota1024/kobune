@@ -113,6 +113,17 @@ pub fn service_host(service: &str, workspace: Option<&str>, project: &str, suffi
     }
 }
 
+/// ドメインを直接指定してサービスのホスト名を組み立てる。
+///
+/// `[project] domain` を設定した場合はプロジェクト名が接尾辞に現れないため、
+/// [`service_host`] ではなくこちらを使う。
+pub fn service_host_in(service: &str, workspace: Option<&str>, domain: &str) -> String {
+    match workspace {
+        Some(ws) => format!("{service}.{ws}.{domain}"),
+        None => format!("{service}.{domain}"),
+    }
+}
+
 /// Cloudflare Tunnel 向けのホスト名。
 ///
 /// Tunnel 側ではサブドメインの階層を増やすとワイルドカード証明書が効かないため、
@@ -186,6 +197,23 @@ mod tests {
         let out = disambiguate(&long, "seed");
         assert!(out.len() <= MAX_LABEL_LEN);
         assert!(is_valid_label(&out));
+    }
+
+    #[test]
+    fn builds_hostnames_from_a_domain() {
+        assert_eq!(
+            service_host_in("web", Some("feat-1"), "myapp.localhost"),
+            "web.feat-1.myapp.localhost"
+        );
+        assert_eq!(
+            service_host_in("web", None, "myapp.localhost"),
+            "web.myapp.localhost"
+        );
+        // domain を明示した場合はプロジェクト名が入らない。
+        assert_eq!(
+            service_host_in("api", Some("feat-1"), "dev.example.com"),
+            "api.feat-1.dev.example.com"
+        );
     }
 
     #[test]

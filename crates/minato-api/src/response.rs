@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use minato_core::{ServiceScope, ServiceState};
 use serde::{Deserialize, Serialize};
 
+use crate::diagnostics::Diagnostics;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Response {
@@ -20,6 +22,8 @@ pub enum Response {
     Workspace {
         workspace: WorkspaceInfo,
     },
+    /// 診断結果（`doctor`）。
+    Diagnostics(Diagnostics),
     /// 返す値がない操作（`rm` / `shutdown`）。
     Empty,
 }

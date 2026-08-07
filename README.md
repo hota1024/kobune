@@ -22,8 +22,8 @@ $ minato new feature/user-auth
 
 ## 状態
 
-**M0 完了。** worktree を作るとコンテナが起動し、ホストのポート経由でアクセスできる。
-URL（`*.localhost`）はまだ生えない — M1 で対応する。
+**M0 完了、M1 はほぼ完了。** worktree を作るとコンテナが起動し、
+`*.localhost` の URL でアクセスできる。
 
 ```console
 $ minato init
@@ -32,11 +32,20 @@ $ minato new feature/user-auth
   ✓ ネットワークを用意
   ✓ イメージ busybox:latest を取得
   ✓ web を起動
+  ✓ web の応答を待機
 
 myapp / feature-user-auth  (feature/user-auth)
   /path/to/myapp.wt/feature-user-auth
 
-  web   ready     http://127.0.0.1:32768
+  web   ready     https://web.feature-user-auth.myapp.localhost
+```
+
+標準ポート（80/443）を使うには root 権限の設定が要る。
+`minato doctor` が状態を診断し、`minato setup` が必要なコマンドを示す。
+非標準ポートなら権限は不要:
+
+```console
+$ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daemon start
 ```
 
 - 設計ドキュメント: [docs/DESIGN.md](docs/DESIGN.md)
@@ -46,7 +55,7 @@ myapp / feature-user-auth  (feature/user-auth)
 | | 内容 |
 | --- | --- |
 | M0 ✅ | Docker / Apple Container runtime + `new` / `up` / `down` / `rm` / `ls` / `status` / `url` |
-| M1 | DNS + リバースプロキシ + TLS |
+| M1 ◐ | DNS + リバースプロキシ + TLS + `doctor` / `setup`（標準ポートのみ権限設定が残る） |
 | M2 | scale-to-zero |
 | M3 | 環境変数管理 |
 | M4 | Cloudflare Tunnel |
@@ -78,7 +87,10 @@ $ cargo test --workspace
 ```console
 $ export PATH="$PWD/target/debug:$PATH"
 $ minato daemon status
+$ minato doctor
 ```
 
-`MINATO_HOME`（既定 `~/.minato`）に daemon の socket・状態・ログが置かれる。
+`MINATO_HOME`（既定 `~/.minato`）に daemon の socket・状態・ログ・CA が置かれる。
 Unix socket のパス長制限があるため、深い場所は指定できない。
+
+待ち受けポートは `MINATO_HTTP_PORT` / `MINATO_HTTPS_PORT` / `MINATO_DNS_PORT` で変えられる。
