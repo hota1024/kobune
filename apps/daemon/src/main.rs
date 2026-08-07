@@ -4,6 +4,7 @@
 //! daemon を置く。M0 の時点ではまだ Supervisor しかいないが、以降の
 //! マイルストーンはここに機能を足していく形になる。
 
+mod activation;
 mod gateway;
 mod resolve;
 mod server;

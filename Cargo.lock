@@ -1169,6 +1169,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "libc",
  "minato-api",
  "minato-core",
  "minato-dns",

@@ -152,9 +152,34 @@ pub async fn serve(
     let udp = tokio::net::UdpSocket::bind(addr).await?;
     let tcp = tokio::net::TcpListener::bind(addr).await?;
 
+    serve_sockets(vec![udp], vec![tcp], config, shutdown).await
+}
+
+/// 既に待ち受けているソケットで動かす。
+///
+/// launchd（socket activation）から fd を受け取る場合に使う。
+/// :53 は特権ポートなので、非 root の daemon は自分で bind できない。
+pub async fn serve_sockets(
+    udp: Vec<tokio::net::UdpSocket>,
+    tcp: Vec<tokio::net::TcpListener>,
+    config: DnsConfig,
+    shutdown: Arc<tokio::sync::Notify>,
+) -> std::io::Result<()> {
+    if udp.is_empty() && tcp.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "待ち受けるソケットがありません",
+        ));
+    }
+
     let mut server = ServerFuture::new(MinatoDns::new(config));
-    server.register_socket(udp);
-    server.register_listener(tcp, TCP_TIMEOUT);
+
+    for socket in udp {
+        server.register_socket(socket);
+    }
+    for listener in tcp {
+        server.register_listener(listener, TCP_TIMEOUT);
+    }
 
     tokio::select! {
         result = server.block_until_done() => {

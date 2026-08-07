@@ -158,6 +158,22 @@ impl Supervisor {
             .with_fix("MINATO_DNS_PORT で 1024 以上のポートを指定してください"),
         });
 
+        // 特権ポートを使えているかは launchd から fd を受けたかで決まる。
+        checks.push(if crate::activation::is_active() {
+            Check::ok(
+                "launchd",
+                "launchd socket activation",
+                "有効（特権ポートを利用できます）".to_string(),
+            )
+        } else {
+            Check::warn(
+                "launchd",
+                "launchd socket activation",
+                "無効。80/443 は使えないため、非標準ポートで待ち受けます".to_string(),
+            )
+            .with_fix("`minato setup` の手順で LaunchDaemon を設置してください")
+        });
+
         checks.push(match self.gateway.ca_path() {
             Some(path) => Check::ok("ca", "ローカル CA", path.display().to_string()),
             None => Check::warn("ca", "ローカル CA", "生成されていません".to_string()),

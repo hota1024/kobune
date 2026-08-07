@@ -22,7 +22,7 @@ $ minato new feature/user-auth
 
 ## 状態
 
-**M0 完了、M1 はほぼ完了。** worktree を作るとコンテナが起動し、
+**M0 / M1 完了。** worktree を作るとコンテナが起動し、
 `*.localhost` の URL でアクセスできる。
 
 ```console
@@ -40,9 +40,18 @@ myapp / feature-user-auth  (feature/user-auth)
   web   ready     https://web.feature-user-auth.myapp.localhost
 ```
 
-標準ポート（80/443）を使うには root 権限の設定が要る。
-`minato doctor` が状態を診断し、`minato setup` が必要なコマンドを示す。
-非標準ポートなら権限は不要:
+標準ポート（80/443）を使うには一度だけ権限の要る設定がいる。
+`minato doctor` が状態を診断し、`minato setup` が必要なコマンドを示す
+（**sudo は自動実行しない** — 内容を確認してから自分で実行する）。
+
+```console
+$ minato setup
+1. launchd に 80/443/53 を確保させる（daemon 自体は非 root のまま動きます）
+2. *.localhost を Minato の DNS に向ける
+3. ローカル CA を信頼する（HTTPS の警告を消す）
+```
+
+設定せずに使うなら、非標準ポートを指定すれば権限は要らない:
 
 ```console
 $ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daemon start
@@ -55,7 +64,7 @@ $ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daem
 | | 内容 |
 | --- | --- |
 | M0 ✅ | Docker / Apple Container runtime + `new` / `up` / `down` / `rm` / `ls` / `status` / `url` |
-| M1 ◐ | DNS + リバースプロキシ + TLS + `doctor` / `setup`（標準ポートのみ権限設定が残る） |
+| M1 ✅ | DNS + リバースプロキシ + TLS + `doctor` / `setup` + launchd socket activation |
 | M2 | scale-to-zero |
 | M3 | 環境変数管理 |
 | M4 | Cloudflare Tunnel |

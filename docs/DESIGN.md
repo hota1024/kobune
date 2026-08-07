@@ -189,9 +189,17 @@ macOS は `*.localhost` を `::1` と `127.0.0.1` の**両方**に解決し、�
 
 ### 特権ポート
 
-macOS では非 root プロセスは 1024 未満をバインドできない。launchd の socket activation を使い、launchd（root）が :53 / :80 / :443 をバインドしてファイルディスクリプタを daemon に渡す。daemon 本体は非 root で動かせる。
+macOS では非 root プロセスは 1024 未満をバインドできない。launchd の socket activation を使い、launchd（root）が :53 / :80 / :443 をバインドしてファイルディスクリプタを daemon に渡す。plist に `UserName` を書くことで、**daemon 本体は利用者の権限で動く**（root で動かすと、作るコンテナやファイルの所有者がずれる）。
 
-Linux では `CAP_NET_BIND_SERVICE` または systemd socket activation を使う。
+**macOS は systemd の `LISTEN_FDS` 規約を使わない。** `launch_activate_socket()` を呼び、plist の `Sockets` に書いた名前で fd を引く。この関数は `libSystem` にあるので FFI で宣言する。
+
+`SockNodeName` に `localhost` を書くと、launchd は `::1` と `127.0.0.1` の両方に socket を開いて fd を 2 つ渡してくる。これで IPv6 を優先するクライアントも取りこぼさない。
+
+`KeepAlive` は `SuccessfulExit: false` にする。無条件に `true` にすると `minato daemon stop` の直後に launchd が起動し直してしまう。
+
+launchd 経由でない場合（開発中の手動起動など）は通常の bind にフォールバックし、`MINATO_HTTP_PORT` などで非特権ポートを指定できる。
+
+Linux では `CAP_NET_BIND_SERVICE` または systemd socket activation を使う（未実装）。
 
 ## 6. Runtime 抽象
 
@@ -541,7 +549,7 @@ apps/daemon ─────────────────────>  mi
 | マイルストーン | 内容 | 完了条件 |
 | --- | --- | --- |
 | **M0** ✅ | workspace 骨組み + core（config / naming / state）+ `minato-api`（イベントストリーム含む）+ Docker / Apple Container runtime + `init` / `new` / `up` / `down` / `rm` / `ls` / `status` / `url` / `daemon` | worktree を作るとコンテナが起動し、`localhost:<動的ポート>` で見える |
-| **M1** ◐ | DNS + Proxy + TLS + `doctor` / `setup` | `https://web.feat-1.myapp.localhost` が curl で通る（標準ポートは権限設定が必要） |
+| **M1** ✅ | DNS + Proxy + TLS + `doctor` / `setup` + launchd socket activation | `https://web.feat-1.myapp.localhost` が curl で通る |
 | **M2** | scale-to-zero + health check + アイドル停止 | worktree 10 個作っても実行中コンテナは触っているものだけ |
 | **M3** | 環境変数管理（3 層 + シークレット参照 + 自動注入） | `MINATO_URL_API` がフロントから読める |
 | **M4** | Cloudflare Tunnel | スマホから `https://web-feat-1.myapp.example.com` が見える |
@@ -553,23 +561,24 @@ M1 完了時点が最小の価値提供ライン。M2 まで行くと日常的�
 
 GUI を M6 に置いたのは、daemon の API がひととおり出揃ってからの方が手戻りが少ないため。ただし **API のイベントストリームだけは M0 で用意する**（後付けするとブロッキング前提の設計になり、GUI で進捗を出せなくなる）。
 
-### M1 で残っているもの
+### 権限の要る設定の扱い
 
-DNS・プロキシ・TLS・URL 発行・診断はすべて動作している。非特権ポート
-（`MINATO_HTTP_PORT` などで指定）では `--resolve` なしで curl が通る。
-
-残るのは **80/443 の特権ポートをどう確保するか**の 1 点。macOS では
-1024 未満のポートに root が要るため、次のいずれかが要る。
-
-| 方式 | 長所 | 短所 |
-| --- | --- | --- |
-| launchd socket activation | daemon 本体は非 root のまま。設計上の第一候補 | plist の設置と管理が要る。macOS 専用 |
-| pf による転送（80→8080, 443→8443） | 実装不要。設定だけで済む | 再起動で消える。loopback 向け rdr の挙動に注意が要る |
-| 非標準ポートを既定にする | 権限が一切要らない | URL にポートが付き、「覚えなくていい」という利点が薄れる |
-
-`minato doctor` はこの状態を検出し、`minato setup` が必要なコマンドを提示する。
 **sudo は自動実行しない。** エージェントが実行すると password 待ちで固まり、
-利用者から見れば黙って権限昇格したことになる。
+利用者から見れば黙って権限昇格したことになる。`minato doctor` が状態を
+診断し、`minato setup` が必要なコマンドを提示する。実行は利用者に委ねる。
+
+権限が要るのは 3 つ。`minato setup` はこれらをまとめて案内する。
+
+1. LaunchDaemon の設置（80/443/53 の確保）
+2. `/etc/resolver/localhost` の設置
+3. ローカル CA の信頼登録
+
+plist の生成自体には権限が要らないので `~/.minato/` に書き出し、
+設置コマンドだけを提示する。中身を確認してから実行できる。
+
+**手順は「設定後の状態」に合わせて生成する。** 例えば launchd を設置すると
+DNS は :53 に移るため、resolver に書くポートも :53 になる。現在の待ち受け
+ポートをそのまま書くと、設置後に名前が引けなくなる。
 
 ### M0 で先送りしたもの
 

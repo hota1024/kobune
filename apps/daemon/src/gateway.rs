@@ -8,6 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::activation;
 use minato_core::Paths;
 use minato_dns::DnsConfig;
 use minato_proxy::{LocalCa, Routes, serve_http, serve_https, server_config};
@@ -121,6 +122,29 @@ impl Gateway {
         settings: &GatewaySettings,
         shutdown: Arc<Notify>,
     ) -> Option<u16> {
+        // launchd が bind 済みの socket を持っていればそれを使う。
+        // 80 は特権ポートなので、非 root ではこれ以外に確保する手段がない。
+        let activated = adopt_listeners(activation::HTTP_SOCKET);
+        if !activated.is_empty() {
+            let port = activated
+                .first()
+                .and_then(|l| l.local_addr().ok())
+                .map(|a| a.port());
+
+            for listener in activated {
+                let routes = routes.clone();
+                let shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = serve_http(listener, routes, shutdown).await {
+                        tracing::warn!("HTTP プロキシが停止しました: {err}");
+                    }
+                });
+            }
+
+            tracing::info!("HTTP プロキシ: launchd から継承 (:{})", port.unwrap_or(0));
+            return port.or(Some(settings.http_port));
+        }
+
         let mut bound = None;
 
         for ip in &settings.bind {
@@ -169,6 +193,29 @@ impl Gateway {
 
         let ca_path = ca.certificate_path();
         let tls = server_config(ca);
+
+        let activated = adopt_listeners(activation::HTTPS_SOCKET);
+        if !activated.is_empty() {
+            let port = activated
+                .first()
+                .and_then(|l| l.local_addr().ok())
+                .map(|a| a.port());
+
+            for listener in activated {
+                let routes = routes.clone();
+                let shutdown = shutdown.clone();
+                let tls = tls.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = serve_https(listener, routes, tls, shutdown).await {
+                        tracing::warn!("HTTPS プロキシが停止しました: {err}");
+                    }
+                });
+            }
+
+            tracing::info!("HTTPS プロキシ: launchd から継承 (:{})", port.unwrap_or(0));
+            return (port.or(Some(settings.https_port)), Some(ca_path));
+        }
+
         let mut bound = None;
 
         for ip in &settings.bind {
@@ -203,6 +250,32 @@ impl Gateway {
     }
 
     async fn start_dns(settings: &GatewaySettings, shutdown: Arc<Notify>) -> Option<u16> {
+        // :53 も特権ポート。launchd が持っていればそれを使う。
+        let udp = adopt_udp(activation::DNS_UDP_SOCKET);
+        let tcp = adopt_listeners(activation::DNS_TCP_SOCKET);
+
+        if !udp.is_empty() || !tcp.is_empty() {
+            let port = udp
+                .first()
+                .and_then(|s| s.local_addr().ok())
+                .map(|a| a.port())
+                .or_else(|| {
+                    tcp.first()
+                        .and_then(|l| l.local_addr().ok())
+                        .map(|a| a.port())
+                });
+
+            let config = DnsConfig::default();
+            tokio::spawn(async move {
+                if let Err(err) = minato_dns::serve_sockets(udp, tcp, config, shutdown).await {
+                    tracing::warn!("DNS サーバが停止しました: {err}");
+                }
+            });
+
+            tracing::info!("DNS: launchd から継承 (:{})", port.unwrap_or(0));
+            return port.or(Some(settings.dns_port));
+        }
+
         let addr = SocketAddr::new(settings.dns_bind, settings.dns_port);
 
         // 先に bind できるか確かめる。serve() の中で失敗すると
@@ -296,6 +369,33 @@ fn format_url(scheme: &str, host: &str, port: u16, default_port: u16) -> String 
     } else {
         format!("{scheme}://{host}:{port}")
     }
+}
+
+/// launchd から受け取った fd を tokio のリスナーにする。
+fn adopt_listeners(name: &str) -> Vec<TcpListener> {
+    activation::tcp_listeners(name)
+        .into_iter()
+        .filter_map(|listener| match TcpListener::from_std(listener) {
+            Ok(listener) => Some(listener),
+            Err(err) => {
+                tracing::warn!("{name} の socket を引き継げません: {err}");
+                None
+            }
+        })
+        .collect()
+}
+
+fn adopt_udp(name: &str) -> Vec<tokio::net::UdpSocket> {
+    activation::udp_sockets(name)
+        .into_iter()
+        .filter_map(|socket| match tokio::net::UdpSocket::from_std(socket) {
+            Ok(socket) => Some(socket),
+            Err(err) => {
+                tracing::warn!("{name} の socket を引き継げません: {err}");
+                None
+            }
+        })
+        .collect()
 }
 
 fn report_bind_failure(what: &str, addr: SocketAddr, err: &std::io::Error) {

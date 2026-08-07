@@ -8,7 +8,7 @@
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 
-use minato_api::{Check, CheckStatus};
+use minato_api::Check;
 
 /// macOS が参照する resolver 設定の置き場。
 pub const RESOLVER_DIR: &str = "/etc/resolver";
@@ -159,6 +159,11 @@ pub fn resolver_contents(dns_port: Option<u16>) -> String {
     }
 }
 
+/// resolver ファイルを設置するコマンド。
+pub fn resolver_command(suffix: &str, dns_port: u16) -> String {
+    resolver_fix(suffix, Some(dns_port))
+}
+
 fn resolver_fix(suffix: &str, dns_port: Option<u16>) -> String {
     let path = resolver_path(suffix);
     let contents = resolver_contents(dns_port);
@@ -168,6 +173,11 @@ fn resolver_fix(suffix: &str, dns_port: Option<u16>) -> String {
         contents.replace('\n', "\\n"),
         path.display()
     )
+}
+
+/// CA を信頼させるコマンド。
+pub fn trust_command(ca_path: &Path) -> String {
+    trust_fix(ca_path)
 }
 
 fn trust_fix(ca_path: &Path) -> String {
@@ -186,41 +196,10 @@ fn trust_fix(ca_path: &Path) -> String {
     }
 }
 
-/// `minato setup` が案内する手順。
-pub struct SetupPlan {
-    pub steps: Vec<SetupStep>,
-}
-
-pub struct SetupStep {
-    pub description: String,
-    pub command: String,
-}
-
-impl SetupPlan {
-    /// 未完了の項目だけを集める。既に済んでいる作業を促さない。
-    pub fn from_checks(checks: &[Check]) -> Self {
-        let steps = checks
-            .iter()
-            .filter(|check| check.status != CheckStatus::Ok)
-            .filter_map(|check| {
-                check.fix.as_ref().map(|fix| SetupStep {
-                    description: check.title.clone(),
-                    command: fix.clone(),
-                })
-            })
-            .collect();
-
-        Self { steps }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.steps.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minato_api::CheckStatus;
 
     #[test]
     fn resolver_contents_include_port_when_non_standard() {
@@ -271,22 +250,17 @@ mod tests {
     }
 
     #[test]
-    fn setup_plan_skips_completed_checks() {
-        let checks = vec![
-            Check::ok("a", "済んでいる", "問題なし").with_fix("やらなくてよい"),
-            Check::fail("b", "未完了", "設置されていません").with_fix("sudo something"),
-        ];
+    fn resolver_command_targets_the_effective_port() {
+        // launchd 設置後は :53 になる。設置前のポートを書くと繋がらない。
+        let command = resolver_command("localhost", 53);
+        assert!(command.contains("nameserver 127.0.0.1"));
+        assert!(
+            !command.contains("port "),
+            "53 なら port 行は不要: {command}"
+        );
 
-        let plan = SetupPlan::from_checks(&checks);
-
-        assert_eq!(plan.steps.len(), 1);
-        assert_eq!(plan.steps[0].command, "sudo something");
-    }
-
-    #[test]
-    fn setup_plan_is_empty_when_everything_is_done() {
-        let checks = vec![Check::ok("a", "済んでいる", "問題なし")];
-        assert!(SetupPlan::from_checks(&checks).is_empty());
+        let command = resolver_command("localhost", 15353);
+        assert!(command.contains("port 15353"), "got: {command}");
     }
 
     #[test]

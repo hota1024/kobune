@@ -4,6 +4,7 @@
 //! リクエストの組み立てと表示だけを担当する（`docs/DESIGN.md` §3）。
 
 mod init;
+mod launchd;
 mod output;
 mod system;
 
@@ -379,7 +380,7 @@ fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
     let combined = minato_api::Diagnostics::new(all);
 
     if matches!(cli.command, Command::Setup) {
-        return present_setup(cli, &combined);
+        return present_setup(cli, &combined, dns_port, ca_path.as_deref());
     }
 
     if cli.json {
@@ -391,40 +392,112 @@ fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
     Ok(())
 }
 
-/// 権限の要る手順を案内する。実行はしない。
-fn present_setup(cli: &Cli, diagnostics: &minato_api::Diagnostics) -> Result<(), CliError> {
-    let plan = system::SetupPlan::from_checks(&diagnostics.checks);
+/// 権限の要る手順を案内する。**実行はしない。**
+///
+/// sudo を自動で走らせると、エージェントは password 待ちで固まり、
+/// 利用者から見れば黙って権限昇格したことになる。
+fn present_setup(
+    cli: &Cli,
+    diagnostics: &minato_api::Diagnostics,
+    dns_port: Option<u16>,
+    ca_path: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    let pending = |id: &str| {
+        diagnostics
+            .checks
+            .iter()
+            .any(|check| check.id == id && check.status != minato_api::CheckStatus::Ok)
+    };
+
+    // (説明, 補足, コマンド)
+    let mut steps: Vec<(String, Option<String>, Vec<String>)> = Vec::new();
+    let launchd_pending = pending("launchd");
+
+    if launchd_pending {
+        match prepare_launchd() {
+            Ok((source, commands)) => steps.push((
+                "launchd に 80/443/53 を確保させる（daemon 自体は非 root のまま動きます）"
+                    .to_string(),
+                Some(format!("生成した plist: {}", source.display())),
+                commands,
+            )),
+            Err(err) => eprintln!("警告: plist を書き出せませんでした: {err}"),
+        }
+    }
+
+    // launchd を設置すると DNS は :53 に移る。設置前のポートを書いた
+    // resolver を残すと、設置後に名前が引けなくなる。
+    let effective_dns_port = if launchd_pending {
+        launchd::Ports::default().dns
+    } else {
+        dns_port.unwrap_or(53)
+    };
+
+    if pending("resolver") || launchd_pending {
+        steps.push((
+            format!("*.{DEFAULT_DOMAIN_SUFFIX} を Minato の DNS に向ける"),
+            None,
+            vec![system::resolver_command(
+                DEFAULT_DOMAIN_SUFFIX,
+                effective_dns_port,
+            )],
+        ));
+    }
+
+    if pending("ca-trust") {
+        if let Some(path) = ca_path {
+            steps.push((
+                "ローカル CA を信頼する（HTTPS の警告を消す）".to_string(),
+                None,
+                vec![system::trust_command(path)],
+            ));
+        }
+    }
 
     if cli.json {
         output::print_json(&serde_json::json!({
-            "steps": plan
-                .steps
+            "steps": steps
                 .iter()
-                .map(|step| serde_json::json!({
-                    "description": step.description,
-                    "command": step.command,
+                .map(|(description, note, commands)| serde_json::json!({
+                    "description": description,
+                    "note": note,
+                    "commands": commands,
                 }))
                 .collect::<Vec<_>>(),
         }));
         return Ok(());
     }
 
-    if plan.is_empty() {
+    if steps.is_empty() {
         println!("設定は完了しています。`minato doctor` で確認できます");
         return Ok(());
     }
 
     println!("URL を使うには以下の設定が必要です。");
     println!("root 権限が要るため、内容を確認してから実行してください。");
-    println!();
 
-    for (index, step) in plan.steps.iter().enumerate() {
-        println!("{}. {}", index + 1, step.description);
-        println!("   {}", step.command);
+    for (index, (description, note, commands)) in steps.iter().enumerate() {
         println!();
+        println!("{}. {description}", index + 1);
+        if let Some(note) = note {
+            println!("   ({note})");
+        }
+        for command in commands {
+            println!("   {command}");
+        }
     }
 
-    println!("実行後は `minato daemon stop` してから再度お試しください。");
+    println!();
+    println!("実行後に `minato daemon stop` してください（launchd が起動し直します）。");
+
+    if launchd_pending {
+        println!();
+        println!("取り消すには:");
+        for command in launchd::uninstall_commands() {
+            println!("   {command}");
+        }
+    }
+
     Ok(())
 }
 
@@ -448,6 +521,23 @@ fn find_detail<'a>(diagnostics: &'a minato_api::Diagnostics, id: &str) -> Option
     } else {
         None
     }
+}
+
+/// launchd の plist を書き出し、設置コマンドを返す。
+fn prepare_launchd() -> anyhow::Result<(PathBuf, Vec<String>)> {
+    let paths = minato_core::Paths::resolve()?;
+
+    // CLI と daemon は一緒に配布されるので隣にいる。
+    let program = std::env::current_exe()?
+        .parent()
+        .map(|dir| dir.join("minatod"))
+        .unwrap_or_else(|| PathBuf::from("minatod"));
+
+    let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+
+    let plan = launchd::prepare(&program, paths.root(), &user, launchd::Ports::default())?;
+
+    Ok((plan.source, plan.commands))
 }
 
 async fn handle_daemon(
