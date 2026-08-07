@@ -1123,6 +1123,7 @@ dependencies = [
 name = "minato-proxy"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "http-body-util",
  "hyper",
@@ -1167,8 +1168,10 @@ name = "minatod"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
+ "humantime",
  "libc",
  "minato-api",
  "minato-core",

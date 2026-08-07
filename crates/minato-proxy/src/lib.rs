@@ -4,11 +4,13 @@
 //! `SocketAddr` へ転送するだけで、それがホストのフォワードポートか
 //! コンテナ自身の IP かは区別しない。
 
+pub mod activator;
 pub mod ca;
 pub mod proxy;
 pub mod routes;
 pub mod server;
 
+pub use activator::{Activation, Activator, NoopActivator};
 pub use ca::{CA_CERT_FILE, CA_KEY_FILE, CaError, DynamicCertResolver, LocalCa, server_config};
 pub use routes::{Route, Routes, normalize_host};
 pub use server::{serve_http, serve_https};

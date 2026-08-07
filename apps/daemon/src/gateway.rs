@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::activation;
 use minato_core::Paths;
 use minato_dns::DnsConfig;
-use minato_proxy::{LocalCa, Routes, serve_http, serve_https, server_config};
+use minato_proxy::{Activator, LocalCa, Routes, serve_http, serve_https, server_config};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
@@ -91,79 +91,91 @@ fn port_from_env(key: &str) -> Option<u16> {
 /// 起動済みの入り口。
 pub struct Gateway {
     routes: Routes,
-    /// 実際に bind できたポート。失敗したものは `None`。
-    http_port: Option<u16>,
-    https_port: Option<u16>,
+    /// 実際に bind できたアドレス。
+    ///
+    /// ポートだけでなくアドレスを持つのは、**片方のアドレス族だけ
+    /// 取れた状態を検出するため**。`*.localhost` は `::1` と `127.0.0.1`
+    /// の両方に解決されるので、IPv6 を取り損ねると別のアプリに
+    /// リクエストが吸われる（実際に起きた）。
+    http_addrs: Vec<SocketAddr>,
+    https_addrs: Vec<SocketAddr>,
     dns_port: Option<u16>,
     ca_path: Option<PathBuf>,
+    /// 設定上の待ち受けアドレス。取れなかったものの検出に使う。
+    wanted: Vec<IpAddr>,
 }
 
 impl Gateway {
     /// プロキシと DNS を起動する。失敗したものは無効のまま先へ進む。
-    pub async fn start(paths: &Paths, settings: &GatewaySettings, shutdown: Arc<Notify>) -> Self {
+    pub async fn start(
+        paths: &Paths,
+        settings: &GatewaySettings,
+        activator: Arc<dyn Activator>,
+        shutdown: Arc<Notify>,
+    ) -> Self {
         let routes = Routes::new();
 
-        let http_port = Self::start_http(&routes, settings, shutdown.clone()).await;
-        let (https_port, ca_path) =
-            Self::start_https(paths, &routes, settings, shutdown.clone()).await;
+        let http_addrs =
+            Self::start_http(&routes, settings, activator.clone(), shutdown.clone()).await;
+        let (https_addrs, ca_path) =
+            Self::start_https(paths, &routes, settings, activator, shutdown.clone()).await;
         let dns_port = Self::start_dns(settings, shutdown).await;
 
         Self {
             routes,
-            http_port,
-            https_port,
+            http_addrs,
+            https_addrs,
             dns_port,
             ca_path,
+            wanted: settings.bind.clone(),
         }
     }
 
     async fn start_http(
         routes: &Routes,
         settings: &GatewaySettings,
+        activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
-    ) -> Option<u16> {
+    ) -> Vec<SocketAddr> {
         // launchd が bind 済みの socket を持っていればそれを使う。
         // 80 は特権ポートなので、非 root ではこれ以外に確保する手段がない。
         let activated = adopt_listeners(activation::HTTP_SOCKET);
         if !activated.is_empty() {
-            let port = activated
-                .first()
-                .and_then(|l| l.local_addr().ok())
-                .map(|a| a.port());
+            let addrs: Vec<SocketAddr> = activated
+                .iter()
+                .filter_map(|l| l.local_addr().ok())
+                .collect();
 
             for listener in activated {
                 let routes = routes.clone();
+                let activator = activator.clone();
                 let shutdown = shutdown.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = serve_http(listener, routes, shutdown).await {
+                    if let Err(err) = serve_http(listener, routes, activator, shutdown).await {
                         tracing::warn!("HTTP プロキシが停止しました: {err}");
                     }
                 });
             }
 
-            tracing::info!("HTTP プロキシ: launchd から継承 (:{})", port.unwrap_or(0));
-            return port.or(Some(settings.http_port));
+            tracing::info!("HTTP プロキシ: launchd から継承 ({addrs:?})");
+            return addrs;
         }
 
-        let mut bound = None;
+        let mut bound = Vec::new();
 
         for ip in &settings.bind {
             let addr = SocketAddr::new(*ip, settings.http_port);
 
             match TcpListener::bind(addr).await {
                 Ok(listener) => {
-                    bound = Some(
-                        listener
-                            .local_addr()
-                            .map(|a| a.port())
-                            .unwrap_or(settings.http_port),
-                    );
+                    bound.push(listener.local_addr().unwrap_or(addr));
 
                     let routes = routes.clone();
+                    let activator = activator.clone();
                     let shutdown = shutdown.clone();
 
                     tokio::spawn(async move {
-                        if let Err(err) = serve_http(listener, routes, shutdown).await {
+                        if let Err(err) = serve_http(listener, routes, activator, shutdown).await {
                             tracing::warn!("HTTP プロキシが停止しました: {err}");
                         }
                     });
@@ -181,13 +193,14 @@ impl Gateway {
         paths: &Paths,
         routes: &Routes,
         settings: &GatewaySettings,
+        activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
-    ) -> (Option<u16>, Option<PathBuf>) {
+    ) -> (Vec<SocketAddr>, Option<PathBuf>) {
         let ca = match LocalCa::load_or_create(&paths.ca_dir()) {
             Ok(ca) => Arc::new(ca),
             Err(err) => {
                 tracing::warn!("CA を用意できないため HTTPS を無効にします: {err}");
-                return (None, None);
+                return (Vec::new(), None);
             }
         };
 
@@ -196,46 +209,46 @@ impl Gateway {
 
         let activated = adopt_listeners(activation::HTTPS_SOCKET);
         if !activated.is_empty() {
-            let port = activated
-                .first()
-                .and_then(|l| l.local_addr().ok())
-                .map(|a| a.port());
+            let addrs: Vec<SocketAddr> = activated
+                .iter()
+                .filter_map(|l| l.local_addr().ok())
+                .collect();
 
             for listener in activated {
                 let routes = routes.clone();
+                let activator = activator.clone();
                 let shutdown = shutdown.clone();
                 let tls = tls.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = serve_https(listener, routes, tls, shutdown).await {
+                    if let Err(err) = serve_https(listener, routes, activator, tls, shutdown).await
+                    {
                         tracing::warn!("HTTPS プロキシが停止しました: {err}");
                     }
                 });
             }
 
-            tracing::info!("HTTPS プロキシ: launchd から継承 (:{})", port.unwrap_or(0));
-            return (port.or(Some(settings.https_port)), Some(ca_path));
+            tracing::info!("HTTPS プロキシ: launchd から継承 ({addrs:?})");
+            return (addrs, Some(ca_path));
         }
 
-        let mut bound = None;
+        let mut bound = Vec::new();
 
         for ip in &settings.bind {
             let addr = SocketAddr::new(*ip, settings.https_port);
 
             match TcpListener::bind(addr).await {
                 Ok(listener) => {
-                    bound = Some(
-                        listener
-                            .local_addr()
-                            .map(|a| a.port())
-                            .unwrap_or(settings.https_port),
-                    );
+                    bound.push(listener.local_addr().unwrap_or(addr));
 
                     let routes = routes.clone();
+                    let activator = activator.clone();
                     let shutdown = shutdown.clone();
                     let tls = tls.clone();
 
                     tokio::spawn(async move {
-                        if let Err(err) = serve_https(listener, routes, tls, shutdown).await {
+                        if let Err(err) =
+                            serve_https(listener, routes, activator, tls, shutdown).await
+                        {
                             tracing::warn!("HTTPS プロキシが停止しました: {err}");
                         }
                     });
@@ -304,22 +317,34 @@ impl Gateway {
     pub(crate) fn inert() -> Self {
         Self {
             routes: Routes::new(),
-            http_port: None,
-            https_port: None,
+            http_addrs: Vec::new(),
+            https_addrs: Vec::new(),
             dns_port: None,
             ca_path: None,
+            wanted: Vec::new(),
         }
     }
 
     /// ポートを指定した入り口。テストで URL の組み立てを確かめるのに使う。
     #[cfg(test)]
     pub(crate) fn with_ports(http: Option<u16>, https: Option<u16>) -> Self {
+        let both = |port: u16| {
+            vec![
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
+            ]
+        };
+
         Self {
             routes: Routes::new(),
-            http_port: http,
-            https_port: https,
+            http_addrs: http.map(both).unwrap_or_default(),
+            https_addrs: https.map(both).unwrap_or_default(),
             dns_port: None,
             ca_path: None,
+            wanted: vec![
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ],
         }
     }
 
@@ -328,11 +353,34 @@ impl Gateway {
     }
 
     pub fn http_port(&self) -> Option<u16> {
-        self.http_port
+        self.http_addrs.first().map(|addr| addr.port())
     }
 
     pub fn https_port(&self) -> Option<u16> {
-        self.https_port
+        self.https_addrs.first().map(|addr| addr.port())
+    }
+
+    /// 待ち受けたかったのに取れなかったアドレス族。
+    ///
+    /// 空でなければ、そのアドレスに来たリクエストは別のプロセスに
+    /// 渡ってしまう。`*.localhost` は両方に解決されるので実害が出る。
+    pub fn missing_families(&self) -> Vec<IpAddr> {
+        if self.http_addrs.is_empty() && self.https_addrs.is_empty() {
+            return Vec::new();
+        }
+
+        let bound: Vec<IpAddr> = self
+            .http_addrs
+            .iter()
+            .chain(self.https_addrs.iter())
+            .map(|addr| addr.ip())
+            .collect();
+
+        self.wanted
+            .iter()
+            .filter(|wanted| !bound.iter().any(|got| got.is_ipv4() == wanted.is_ipv4()))
+            .copied()
+            .collect()
     }
 
     pub fn dns_port(&self) -> Option<u16> {
@@ -345,7 +393,7 @@ impl Gateway {
 
     /// プロキシが動いているか。動いていなければ URL を発行しない。
     pub fn is_serving(&self) -> bool {
-        self.http_port.is_some() || self.https_port.is_some()
+        !self.http_addrs.is_empty() || !self.https_addrs.is_empty()
     }
 
     /// ホスト名に対応する URL。プロキシが動いていなければ `None`。
@@ -353,11 +401,11 @@ impl Gateway {
     /// HTTPS を優先する。ブラウザは HTTP の開発サーバに対しても
     /// 混在コンテンツや Secure Cookie の制約をかけるため。
     pub fn url_for(&self, host: &str) -> Option<String> {
-        if let Some(port) = self.https_port {
+        if let Some(port) = self.https_port() {
             return Some(format_url("https", host, port, 443));
         }
 
-        self.http_port
+        self.http_port()
             .map(|port| format_url("http", host, port, 80))
     }
 }
@@ -470,6 +518,44 @@ mod tests {
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             "0.0.0.0 にすると LAN から開発環境が見えてしまう"
         );
+    }
+
+    #[test]
+    fn detects_a_missing_address_family() {
+        // 別のアプリが [::1]:8080 を持っていると、こちらは IPv4 しか
+        // 取れない。*.localhost は両方に解決されるので、IPv6 で来た
+        // リクエストは相手のアプリに吸われる。黙って進んではいけない。
+        let gateway = Gateway {
+            routes: Routes::new(),
+            http_addrs: vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)],
+            https_addrs: Vec::new(),
+            dns_port: None,
+            ca_path: None,
+            wanted: vec![
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ],
+        };
+
+        assert_eq!(
+            gateway.missing_families(),
+            vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]
+        );
+    }
+
+    #[test]
+    fn no_missing_families_when_both_are_bound() {
+        assert!(
+            Gateway::with_ports(Some(80), Some(443))
+                .missing_families()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn nothing_bound_is_reported_separately() {
+        // 全部失敗している場合は「片方だけ取れた」問題ではない。
+        assert!(Gateway::inert().missing_families().is_empty());
     }
 
     #[test]

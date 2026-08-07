@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use minato_core::{ServiceScope, ServiceState};
+use minato_core::{HealthCheck, ServiceScope, ServiceState};
 
 /// `scope = "project"` のサービスが属する仮想的な workspace 名。
 ///
@@ -98,6 +98,11 @@ pub struct ServiceSpec {
 
     /// コンテナ内で待ち受けるポート。
     pub port: Option<u16>,
+
+    /// 受け付け可能かどうかの判定方法。
+    ///
+    /// 指定が無ければ TCP 接続の可否で判断する。
+    pub health: Option<HealthCheck>,
 
     pub scope: ServiceScope,
     pub volumes: Vec<VolumeMount>,
@@ -354,6 +359,7 @@ mod tests {
                 ("NODE_ENV".to_string(), "development".to_string()),
             ]),
             port: Some(3000),
+            health: None,
             scope: ServiceScope::Workspace,
             volumes: vec![],
             source_mount: None,

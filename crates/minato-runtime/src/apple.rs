@@ -25,7 +25,7 @@ use tokio::process::Command;
 
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
-use crate::readiness::{DEFAULT_READINESS_TIMEOUT, await_service};
+use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{Runtime, RuntimeInfo, labels, names};
 use crate::spec::{
     RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount, WorkspaceKey,
@@ -423,7 +423,14 @@ impl Runtime for AppleContainerRuntime {
         events.step_done("start", format!("{} を起動", spec.name()));
 
         // Docker 側と同じ理由で、応答を確かめてから Ready を宣言する。
-        await_service(spec.name(), endpoint, DEFAULT_READINESS_TIMEOUT, events).await;
+        await_service(
+            spec.name(),
+            endpoint,
+            spec.health.as_ref(),
+            DEFAULT_READINESS_TIMEOUT,
+            events,
+        )
+        .await;
 
         events.service_state(spec.name(), ServiceState::Ready);
 
@@ -853,6 +860,7 @@ mod tests {
             workdir: "/workspace".into(),
             env: BTreeMap::new(),
             port: Some(8080),
+            health: None,
             scope: ServiceScope::Workspace,
             volumes: vec![],
             source_mount: None,

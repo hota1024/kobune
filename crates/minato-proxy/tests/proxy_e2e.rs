@@ -6,6 +6,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
@@ -14,7 +15,10 @@ use hyper::header::{CONNECTION, HOST, UPGRADE};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use minato_proxy::{LocalCa, Route, Routes, serve_http, serve_https, server_config};
+use minato_proxy::{
+    Activation, Activator, LocalCa, NoopActivator, Route, Routes, serve_http, serve_https,
+    server_config,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
@@ -101,15 +105,87 @@ async fn spawn_upstream() -> SocketAddr {
 
 /// プロキシを起動して待ち受けアドレスを返す。
 async fn spawn_proxy(routes: Routes) -> SocketAddr {
+    spawn_proxy_with(routes, Arc::new(NoopActivator)).await
+}
+
+async fn spawn_proxy_with(routes: Routes, activator: Arc<dyn Activator>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let shutdown = Arc::new(Notify::new());
 
     tokio::spawn(async move {
-        let _ = serve_http(listener, routes, shutdown).await;
+        let _ = serve_http(listener, routes, activator, shutdown).await;
     });
 
     addr
+}
+
+/// 呼ばれた回数を数え、決まった結果を返す Activator。
+struct ScriptedActivator {
+    result: Activation,
+    woken: AtomicUsize,
+    touched: AtomicUsize,
+    /// touch / ensure_ready に渡されたホスト名。
+    seen: std::sync::Mutex<Vec<String>>,
+}
+
+impl ScriptedActivator {
+    fn new(result: Activation) -> Arc<Self> {
+        Arc::new(Self {
+            result,
+            woken: AtomicUsize::new(0),
+            touched: AtomicUsize::new(0),
+            seen: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Activator for ScriptedActivator {
+    async fn ensure_ready(&self, host: &str, _wait: std::time::Duration) -> Activation {
+        self.woken.fetch_add(1, Ordering::SeqCst);
+        self.seen.lock().expect("lock").push(host.to_string());
+        self.result.clone()
+    }
+
+    fn touch(&self, host: &str) {
+        self.touched.fetch_add(1, Ordering::SeqCst);
+        self.seen.lock().expect("lock").push(host.to_string());
+    }
+}
+
+/// `Accept: text/html` を付けてリクエストする（ブラウザからの遷移を模す）。
+async fn request_as_browser(proxy: SocketAddr, host: &str) -> (StatusCode, String) {
+    let stream = TcpStream::connect(proxy).await.expect("接続できる");
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .expect("handshake");
+
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = Request::builder()
+        .uri("/")
+        .header(HOST, host)
+        .header(hyper::header::ACCEPT, "text/html,application/xhtml+xml")
+        .body(
+            Empty::<Bytes>::new()
+                .map_err(|never| match never {})
+                .boxed(),
+        )
+        .expect("組み立てられる");
+
+    let response = sender.send_request(request).await.expect("応答が返る");
+    let status = response.status();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("本文を読める")
+        .to_bytes();
+
+    (status, String::from_utf8_lossy(&body).to_string())
 }
 
 /// プロキシに 1 リクエスト送って応答を受け取る。
@@ -319,7 +395,14 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
     let shutdown = Arc::new(Notify::new());
 
     tokio::spawn(async move {
-        let _ = serve_https(listener, routes, server_config(ca), shutdown).await;
+        let _ = serve_https(
+            listener,
+            routes,
+            Arc::new(NoopActivator),
+            server_config(ca),
+            shutdown,
+        )
+        .await;
     });
 
     // CA だけを信頼したクライアントで繋ぐ。実際のブラウザと同じ条件。
@@ -369,4 +452,148 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
         .to_bytes();
 
     assert!(String::from_utf8_lossy(&body).contains("upstream /secure"));
+}
+
+#[tokio::test]
+async fn wakes_a_stopped_service_and_forwards() {
+    // scale-to-zero の本体。停止中でもリクエストで起きて、そのまま繋がる。
+    let upstream = spawn_upstream().await;
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::stopped("myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Ready(upstream));
+    let proxy = spawn_proxy_with(routes, activator.clone()).await;
+
+    let (status, body) = request_through(proxy, "web.feat-1.myapp.localhost", "/woken").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("upstream /woken"), "got: {body}");
+    assert_eq!(activator.woken.load(Ordering::SeqCst), 1, "起動を要求する");
+    assert_eq!(
+        activator.touched.load(Ordering::SeqCst),
+        1,
+        "アクセスを記録する"
+    );
+}
+
+#[tokio::test]
+async fn running_services_are_not_woken() {
+    // 起動済みのリクエストで毎回 activator を呼ぶと、ここが律速になる。
+    let upstream = spawn_upstream().await;
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::new(upstream, "myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Ready(upstream));
+    let proxy = spawn_proxy_with(routes, activator.clone()).await;
+
+    request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
+
+    assert_eq!(activator.woken.load(Ordering::SeqCst), 0, "起動要求は不要");
+    assert_eq!(
+        activator.touched.load(Ordering::SeqCst),
+        1,
+        "アイドル判定のために記録は要る"
+    );
+}
+
+#[tokio::test]
+async fn browsers_get_a_self_refreshing_page_while_starting() {
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::stopped("myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Starting);
+    let proxy = spawn_proxy_with(routes, activator).await;
+
+    let (status, body) = request_as_browser(proxy, "web.feat-1.myapp.localhost").await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body.contains("<!doctype html>"), "HTML を返す");
+    assert!(
+        body.contains("http-equiv=\"refresh\""),
+        "自動で読み直さないと利用者が手で reload することになる"
+    );
+    assert!(body.contains("web.feat-1.myapp.localhost"));
+}
+
+#[tokio::test]
+async fn non_browser_clients_get_a_timeout_not_a_html_page() {
+    // エージェントの curl に HTML の待機ページを返すと解釈できない。
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::stopped("myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Starting);
+    let proxy = spawn_proxy_with(routes, activator).await;
+
+    let (status, body) = request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
+
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert!(!body.contains("<!doctype"), "HTML は返さない: {body}");
+    assert!(body.contains("minato status"), "切り分けの手掛かりを出す");
+}
+
+#[tokio::test]
+async fn failed_activation_explains_itself() {
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::stopped("myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Failed("イメージがありません".into()));
+    let proxy = spawn_proxy_with(routes, activator).await;
+
+    let (status, body) = request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(
+        body.contains("イメージがありません"),
+        "理由をそのまま伝える"
+    );
+    assert!(body.contains("minato logs"));
+}
+
+#[tokio::test]
+async fn activator_receives_normalised_hosts() {
+    // アイドル判定はルーティングと同じキーで引く。ここでポート付きの
+    // ホスト名を渡すと、アクセスが記録されず、使用中のサービスが
+    // アイドルとして停止される。
+    let upstream = spawn_upstream().await;
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::new(upstream, "myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Ready(upstream));
+    let proxy = spawn_proxy_with(routes, activator.clone()).await;
+
+    // ブラウザは非標準ポートだと Host にポートを付けて送る。
+    request_through(proxy, "WEB.feat-1.myapp.localhost:8443", "/").await;
+
+    let seen = activator.seen.lock().expect("lock").clone();
+    assert_eq!(
+        seen,
+        vec!["web.feat-1.myapp.localhost".to_string()],
+        "ポートと大文字小文字を落としてから渡す必要がある"
+    );
+}
+
+#[tokio::test]
+async fn rejects_an_unusable_host_header() {
+    let proxy = spawn_proxy(Routes::new()).await;
+    let (status, _) = request_through(proxy, ":8080", "/").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

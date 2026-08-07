@@ -25,7 +25,7 @@ use minato_core::{ServiceScope, ServiceState};
 
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
-use crate::readiness::{DEFAULT_READINESS_TIMEOUT, await_service};
+use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{Runtime, RuntimeInfo, labels, names};
 use crate::spec::{
     RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount, WorkspaceKey,
@@ -544,7 +544,14 @@ impl Runtime for DockerRuntime {
 
         // コンテナが動き出しても、中のアプリはまだ listen していないことがある。
         // ここで待たないと `minato new` 直後の curl が connection refused になる。
-        await_service(spec.name(), endpoint, DEFAULT_READINESS_TIMEOUT, events).await;
+        await_service(
+            spec.name(),
+            endpoint,
+            spec.health.as_ref(),
+            DEFAULT_READINESS_TIMEOUT,
+            events,
+        )
+        .await;
 
         events.service_state(spec.name(), ServiceState::Ready);
 

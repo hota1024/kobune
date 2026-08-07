@@ -5,7 +5,9 @@
 //! マイルストーンはここに機能を足していく形になる。
 
 mod activation;
+mod activator;
 mod gateway;
+mod idle;
 mod resolve;
 mod server;
 mod spec;
@@ -18,6 +20,7 @@ use minato_core::Paths;
 use tokio::sync::Notify;
 use tracing_subscriber::EnvFilter;
 
+use crate::activator::{DeferredActivator, SupervisorActivator};
 use crate::gateway::{Gateway, GatewaySettings};
 use crate::server::Server;
 use crate::supervisor::Supervisor;
@@ -61,7 +64,19 @@ async fn main() -> anyhow::Result<()> {
     // プロキシと DNS を先に立てる。bind に失敗しても daemon は動かす。
     // その場合 URL は発行されず、ポート直指定の endpoint だけになる。
     let settings = GatewaySettings::from_env();
-    let gateway = Arc::new(Gateway::start(&paths, &settings, shutdown.clone()).await);
+
+    // Gateway は起動要求の受け口（Activator）を必要とし、Supervisor は
+    // URL の発行に Gateway を必要とする。実体を後から差し込んで循環を解く。
+    let deferred = DeferredActivator::new();
+    let gateway = Arc::new(
+        Gateway::start(
+            &paths,
+            &settings,
+            Arc::new(deferred.clone()),
+            shutdown.clone(),
+        )
+        .await,
+    );
 
     if !gateway.is_serving() {
         tracing::warn!(
@@ -71,6 +86,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let supervisor = Arc::new(Supervisor::new(&paths, gateway, shutdown.clone()));
+    deferred.set(Arc::new(SupervisorActivator::new(supervisor.clone())));
+
+    spawn_idle_sweeper(supervisor.clone(), shutdown.clone());
     let server = Server::new(paths.socket(), supervisor, shutdown.clone());
 
     // シグナルでも Request::Shutdown でも同じ経路で止める。
@@ -106,6 +124,30 @@ fn init_logging(args: &Args, paths: &Paths) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// アイドルなサービスを定期的に止める。
+///
+/// これがあるおかげで worktree を何個作っても、実行中のコンテナは
+/// 触っているものだけになる。
+fn spawn_idle_sweeper(supervisor: Arc<Supervisor>, shutdown: Arc<Notify>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(idle::SWEEP_INTERVAL);
+        // 起動直後の 1 回目は意味がないので読み飛ばす。
+        ticker.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let stopped = supervisor.sweep_idle().await;
+                    if stopped > 0 {
+                        tracing::info!("アイドルのため {stopped} 件のサービスを停止しました");
+                    }
+                }
+                _ = shutdown.notified() => break,
+            }
+        }
+    });
 }
 
 fn spawn_signal_handler(shutdown: Arc<Notify>) {

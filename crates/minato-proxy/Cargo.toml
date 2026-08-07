@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 minato-core.workspace = true
+async-trait.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "time", "macros"] }
 hyper.workspace = true
 hyper-util.workspace = true
@@ -22,6 +23,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile.workspace = true
 http-body-util.workspace = true

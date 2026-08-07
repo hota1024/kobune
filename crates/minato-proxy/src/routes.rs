@@ -9,9 +9,14 @@ use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 /// 1 つのホスト名に対応する転送先。
+///
+/// **停止中のサービスも登録する。** scale-to-zero では「止まっている」ことと
+/// 「存在しない」ことを区別する必要がある。前者はリクエストで起こし、
+/// 後者は 404 を返す。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
-    pub endpoint: SocketAddr,
+    /// 転送先。停止中は `None`。
+    pub endpoint: Option<SocketAddr>,
     /// 診断とログのための識別子。
     pub project: String,
     pub workspace: String,
@@ -19,6 +24,7 @@ pub struct Route {
 }
 
 impl Route {
+    /// 起動中のサービス。
     pub fn new(
         endpoint: SocketAddr,
         project: impl Into<String>,
@@ -26,11 +32,29 @@ impl Route {
         service: impl Into<String>,
     ) -> Self {
         Self {
-            endpoint,
+            endpoint: Some(endpoint),
             project: project.into(),
             workspace: workspace.into(),
             service: service.into(),
         }
+    }
+
+    /// 停止中のサービス。リクエストが来たら起動する。
+    pub fn stopped(
+        project: impl Into<String>,
+        workspace: impl Into<String>,
+        service: impl Into<String>,
+    ) -> Self {
+        Self {
+            endpoint: None,
+            project: project.into(),
+            workspace: workspace.into(),
+            service: service.into(),
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.endpoint.is_some()
     }
 }
 
@@ -268,6 +292,28 @@ mod tests {
 
         routes.replace_project("myapp", vec![]);
         assert!(routes.is_empty(), "全サービス停止でルートが残らない");
+    }
+
+    #[test]
+    fn stopped_routes_are_registered_without_an_endpoint() {
+        // 「止まっている」と「存在しない」を区別できないと、
+        // 停止中のサービスを起こせず 404 になってしまう。
+        let routes = Routes::new();
+        routes.insert(
+            "web.feat-1.myapp.localhost",
+            Route::stopped("myapp", "feat-1", "web"),
+        );
+
+        let route = routes
+            .get("web.feat-1.myapp.localhost")
+            .expect("登録されている");
+        assert!(!route.is_running());
+        assert_eq!(route.endpoint, None);
+
+        assert!(
+            routes.get("never-created.myapp.localhost").is_none(),
+            "存在しないホストは別物"
+        );
     }
 
     #[test]

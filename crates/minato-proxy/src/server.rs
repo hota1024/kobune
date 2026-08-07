@@ -8,6 +8,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
+use crate::activator::Activator;
 use crate::proxy;
 use crate::routes::Routes;
 
@@ -17,6 +18,7 @@ use crate::routes::Routes;
 pub async fn serve_http(
     listener: TcpListener,
     routes: Routes,
+    activator: Arc<dyn Activator>,
     shutdown: Arc<Notify>,
 ) -> std::io::Result<()> {
     loop {
@@ -32,13 +34,15 @@ pub async fn serve_http(
         };
 
         let routes = routes.clone();
+        let activator = activator.clone();
         tokio::spawn(async move {
             let _ = stream.set_nodelay(true);
             let io = TokioIo::new(stream);
 
             let service = service_fn(move |request| {
                 let routes = routes.clone();
-                async move { Ok::<_, Infallible>(proxy::handle(request, routes).await) }
+                let activator = activator.clone();
+                async move { Ok::<_, Infallible>(proxy::handle(request, routes, activator).await) }
             });
 
             if let Err(err) = hyper::server::conn::http1::Builder::new()
@@ -58,6 +62,7 @@ pub async fn serve_http(
 pub async fn serve_https(
     listener: TcpListener,
     routes: Routes,
+    activator: Arc<dyn Activator>,
     tls: Arc<rustls::ServerConfig>,
     shutdown: Arc<Notify>,
 ) -> std::io::Result<()> {
@@ -76,6 +81,7 @@ pub async fn serve_https(
         };
 
         let routes = routes.clone();
+        let activator = activator.clone();
         let acceptor = acceptor.clone();
 
         tokio::spawn(async move {
@@ -94,7 +100,8 @@ pub async fn serve_https(
             let io = TokioIo::new(stream);
             let service = service_fn(move |request| {
                 let routes = routes.clone();
-                async move { Ok::<_, Infallible>(proxy::handle(request, routes).await) }
+                let activator = activator.clone();
+                async move { Ok::<_, Infallible>(proxy::handle(request, routes, activator).await) }
             });
 
             if let Err(err) = hyper::server::conn::http1::Builder::new()

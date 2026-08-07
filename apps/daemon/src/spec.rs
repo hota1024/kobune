@@ -126,6 +126,7 @@ pub fn build_service_spec(
         workdir: service.workdir().to_string(),
         env: build_env(service, name, project, workspace),
         port: service.port,
+        health: service.health.clone(),
         scope: service.scope,
         volumes,
         source_mount,
