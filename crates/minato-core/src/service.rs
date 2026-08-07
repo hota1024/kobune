@@ -1,46 +1,47 @@
-//! サービスの実行状態。
+//! The runtime state of a service.
 //!
-//! 状態機械の定義は概念であって実装ではないため、runtime ではなくここに置く。
-//! `minato-api` と `minato-runtime` の両方がこの型を共有する。
+//! The state machine is a concept, not an implementation, so it lives here
+//! rather than in the runtime. Both `minato-api` and `minato-runtime`
+//! share this type.
 
 use serde::{Deserialize, Serialize};
 
-/// サービス 1 つのライフサイクル。
+/// The lifecycle of a single service.
 ///
 /// ```text
-/// Stopped ──(リクエスト到達)──> Starting ──(health OK)──> Ready
-///    ▲                             │                        │
-///    └──(idle_timeout 経過)── Idle <┘ (health NG)            │
-///                              ▲                            │
-///                              └────(無アクセス継続)─────────┘
+/// Stopped ──(request arrives)──> Starting ──(health OK)──> Ready
+///    ▲                              │                        │
+///    └──(idle_timeout elapsed)─ Idle <┘ (health fails)        │
+///                              ▲                             │
+///                              └────(no traffic)─────────────┘
 /// ```
 ///
-/// `Idle` は M2（scale-to-zero）で使い始める。M0 では `Stopped` / `Starting` /
-/// `Ready` / `Failed` のみが現れる。
+/// `Idle` marks a service that is up but has not been touched for a while,
+/// which is what makes it a candidate for scale-to-zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ServiceState {
-    /// コンテナが存在しない、または停止している。
+    /// No container exists, or it is stopped.
     Stopped,
-    /// 起動処理中。health check がまだ通っていない。
+    /// Starting up; the health check has not passed yet.
     Starting,
-    /// 受け付け可能。
+    /// Accepting requests.
     Ready,
-    /// 起動しているが一定時間アクセスがない。停止候補。
+    /// Running, but untouched for a while. A candidate for stopping.
     Idle,
-    /// 起動に失敗した、または異常終了した。
+    /// Failed to start, or exited abnormally.
     Failed { reason: String },
-    /// runtime に問い合わせられず判定できない。
+    /// The runtime could not be queried.
     Unknown,
 }
 
 impl ServiceState {
-    /// コンテナが存在している状態か。
+    /// Whether a container exists for this service.
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Starting | Self::Ready | Self::Idle)
     }
 
-    /// リクエストを転送してよい状態か。
+    /// Whether requests may be forwarded here.
     pub fn is_serving(&self) -> bool {
         matches!(self, Self::Ready | Self::Idle)
     }
@@ -51,7 +52,7 @@ impl ServiceState {
         }
     }
 
-    /// 表示用の短いラベル。
+    /// A short label for display.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Stopped => "stopped",
@@ -74,11 +75,14 @@ mod tests {
         assert!(ServiceState::Ready.is_serving());
 
         assert!(ServiceState::Starting.is_running());
-        assert!(!ServiceState::Starting.is_serving(), "起動中には転送しない");
+        assert!(
+            !ServiceState::Starting.is_serving(),
+            "do not forward while still starting"
+        );
 
         assert!(
             ServiceState::Idle.is_serving(),
-            "idle は起動済みなので転送できる"
+            "idle services are up, so they can serve"
         );
 
         assert!(!ServiceState::Stopped.is_running());

@@ -1,19 +1,20 @@
-//! クライアントから daemon への要求。
+//! Requests from a client to the daemon.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// 操作の対象を決める情報。
+/// Identifies what an operation acts on.
 ///
-/// daemon は呼び出し元の作業ディレクトリを知らないため、クライアントが必ず渡す。
-/// `cwd` から git リポジトリと `minato.toml` を解決し、`workspace` が
-/// 省略されていれば `cwd` の属する worktree を対象にする。
+/// The daemon does not know the caller's working directory, so the client
+/// always supplies it. The git repository and `minato.toml` are resolved
+/// from `cwd`; when `workspace` is omitted, the worktree containing `cwd`
+/// is the target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
     pub cwd: PathBuf,
 
-    /// 明示指定する workspace ラベル。省略時は `cwd` から判定する。
+    /// An explicit workspace label. Inferred from `cwd` when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
 }
@@ -35,97 +36,97 @@ impl Target {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
-    /// 疎通確認とバージョン照合。
+    /// Connectivity check and version handshake.
     Ping,
 
-    /// daemon を終了する。
+    /// Shuts the daemon down.
     Shutdown,
 
-    /// 環境の診断。daemon 側で分かることを集めて返す。
+    /// Diagnoses the environment, reporting what the daemon can see.
     Doctor,
 
-    /// workspace の一覧。
+    /// Lists workspaces.
     Ls {
         target: Target,
-        /// 現在のプロジェクトに限定せず、全プロジェクトを返す。
+        /// Return every project, not just the current one.
         #[serde(default)]
         all_projects: bool,
     },
 
-    /// worktree を作り、環境を用意する。
+    /// Creates a worktree and prepares its environment.
     New {
         target: Target,
-        /// チェックアウトするブランチ。存在しなければ `base` から作る。
+        /// The branch to check out. Created from `base` if absent.
         branch: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base: Option<String>,
-        /// worktree を作るパス。省略時は規約に従って決める。
+        /// Where to create the worktree. Derived by convention if omitted.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<PathBuf>,
-        /// 作成後にサービスを起動するか。
+        /// Whether to start the services afterwards.
         #[serde(default = "yes")]
         start: bool,
     },
 
-    /// worktree と環境を破棄する。
+    /// Destroys a worktree and its environment.
     Rm {
         target: Target,
-        /// 未コミットの変更があっても削除する。
+        /// Delete even with uncommitted changes.
         #[serde(default)]
         force: bool,
     },
 
-    /// サービスを起動する。
+    /// Starts services.
     Up {
         target: Target,
-        /// 対象サービス。空なら全サービス。
+        /// The services to act on. Empty means all of them.
         #[serde(default)]
         services: Vec<String>,
     },
 
-    /// サービスを停止する。
+    /// Stops services.
     Down {
         target: Target,
         #[serde(default)]
         services: Vec<String>,
-        /// プロジェクト内の全 workspace を停止する。
+        /// Stop every workspace in the project.
         #[serde(default)]
         all: bool,
     },
 
-    /// workspace の現在の状態。
+    /// The current state of a workspace.
     Status { target: Target },
 
-    /// ログを読む。出力は [`crate::Event::Output`] で流れる。
+    /// Reads logs. Output arrives as [`crate::Event::Output`].
     Logs {
         target: Target,
-        /// 対象サービス。省略時は全サービス。
+        /// The services to read. All of them when omitted.
         #[serde(default)]
         services: Vec<String>,
-        /// 新しい行を待ち続ける。
+        /// Keep waiting for new lines.
         #[serde(default)]
         follow: bool,
-        /// 末尾から何行取るか。
+        /// How many lines to take from the end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail: Option<usize>,
     },
 
-    /// コンテナ内でコマンドを実行する。
+    /// Runs a command inside a container.
     Exec {
         target: Target,
         service: String,
         command: Vec<String>,
     },
 
-    /// 環境変数の一覧。
+    /// Lists environment variables.
     EnvList {
         target: Target,
-        /// 値を伏せずに出す。既定では伏せる。
+        /// Show values in the clear. Masked by default.
         #[serde(default)]
         reveal: bool,
     },
 
-    /// 環境変数を設定する。
+    /// Sets an environment variable.
     EnvSet {
         target: Target,
         scope: minato_core::EnvScope,
@@ -133,7 +134,7 @@ pub enum Request {
         value: String,
     },
 
-    /// 環境変数を削除する。
+    /// Removes an environment variable.
     EnvUnset {
         target: Target,
         scope: minato_core::EnvScope,
@@ -146,9 +147,9 @@ fn yes() -> bool {
 }
 
 impl Request {
-    /// 進捗イベントを伴う長時間処理かどうか。
+    /// Whether this is a long-running operation that emits progress.
     ///
-    /// クライアントは これが true のとき進捗表示を用意する。
+    /// Clients show a progress indicator when this is true.
     pub fn is_long_running(&self) -> bool {
         matches!(
             self,
@@ -190,20 +191,20 @@ mod tests {
                 assert_eq!(branch, "feature/one");
                 assert!(start);
             }
-            other => panic!("想定外の variant: {other:?}"),
+            other => panic!("unexpected variant: {other:?}"),
         }
     }
 
     #[test]
     fn start_defaults_to_true() {
-        // `start` の既定が false だと `minato new` が環境を立ち上げなくなる。
+        // A default of false would make `minato new` skip starting up.
         let request: Request =
             serde_json::from_str(r#"{"op":"new","target":{"cwd":"/repo"},"branch":"x"}"#)
                 .expect("deserializes");
 
         match request {
-            Request::New { start, .. } => assert!(start, "start は既定で true"),
-            other => panic!("想定外の variant: {other:?}"),
+            Request::New { start, .. } => assert!(start, "start defaults to true"),
+            other => panic!("unexpected variant: {other:?}"),
         }
     }
 

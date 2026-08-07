@@ -1,8 +1,8 @@
-//! daemon への接続。CLI と GUI が共有する。
+//! Connecting to the daemon. Shared by the CLI and the GUI.
 //!
-//! この crate は `minato-runtime` に依存しない。クライアントが runtime を
-//! 直接触れてしまうと「daemon の API が製品の本体」という原則が崩れる
-//! （`docs/DESIGN.md` §3, §13）。
+//! This crate does not depend on `minato-runtime`. Letting a client touch
+//! the runtime directly would undo the principle that the daemon's API is
+//! the product (`docs/DESIGN.md` §3, §13).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,55 +14,55 @@ use minato_api::{
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
-/// daemon の起動を待つ最大時間。
+/// How long to wait for the daemon to come up.
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 起動待ちのポーリング間隔。
+/// How often to retry while waiting.
 const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// daemon の実行ファイル名。
+/// The daemon's executable name.
 const DAEMON_PROGRAM: &str = "minatod";
 
-/// daemon の場所を明示するための環境変数。
+/// Points at the daemon explicitly.
 pub const DAEMON_ENV: &str = "MINATO_DAEMON";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    #[error("daemon に接続できません ({path}): {source}")]
+    #[error("cannot connect to the daemon ({path}): {source}")]
     Connect {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("daemon を起動できません: {0}")]
+    #[error("cannot start the daemon: {0}")]
     Spawn(String),
 
-    #[error("daemon の起動を {}秒 待ちましたが応答がありません", SPAWN_TIMEOUT.as_secs())]
+    #[error("waited {}s for the daemon to start, with no response", SPAWN_TIMEOUT.as_secs())]
     SpawnTimeout,
 
-    #[error("daemon との通信が切断されました")]
+    #[error("the connection to the daemon was closed")]
     Disconnected,
 
     #[error(transparent)]
     Codec(#[from] minato_api::CodecError),
 
-    /// daemon が処理を拒否した。呼び出し側はこれを表示すればよい。
+    /// The daemon refused. Callers can display this as-is.
     #[error("{0}")]
     Api(#[source] ApiError),
 
-    #[error("daemon が想定外の応答を返しました: {0}")]
+    #[error("the daemon returned an unexpected response: {0}")]
     Protocol(String),
 
     #[error(
-        "daemon のプロトコル版 {server} は、この minato (版 {client}) と互換性がありません。\
-         `minato daemon restart` で daemon を再起動してください"
+        "the daemon speaks protocol {server}, which this minato (protocol \
+         {client}) cannot talk to. Restart it with `minato daemon restart`"
     )]
     VersionMismatch { client: u32, server: u32 },
 }
 
 impl ClientError {
-    /// CLI がプロセス終了コードとして返す値。
+    /// The value the CLI returns as its exit code.
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Api(err) => err.code.exit_code(),
@@ -70,17 +70,17 @@ impl ClientError {
         }
     }
 
-    /// 利用者に見せる対処方法。
+    /// The remedy to show the user.
     pub fn hint(&self) -> Option<&str> {
         match self {
             Self::Api(err) => err.hint.as_deref(),
-            Self::Connect { .. } => Some("`minato daemon start` で daemon を起動してください"),
+            Self::Connect { .. } => Some("start it with `minato daemon start`"),
             _ => None,
         }
     }
 }
 
-/// daemon への接続を作る。
+/// Creates connections to the daemon.
 #[derive(Debug, Clone)]
 pub struct Client {
     socket: PathBuf,
@@ -95,17 +95,18 @@ impl Client {
         }
     }
 
-    /// 既定のパス（`$MINATO_HOME` または `~/.minato`）から作る。
+    /// Builds one from the default paths (`$MINATO_HOME` or `~/.minato`).
     ///
-    /// socket のパス長もここで確かめる。長すぎる場合、daemon は起動直後に
-    /// 落ちるだけで、クライアント側からは「応答がない」としか見えないため。
+    /// Also checks the socket path length: when it is too long the daemon
+    /// dies right after starting, and from here that looks like silence.
     pub fn from_env() -> minato_core::Result<Self> {
         let paths = minato_core::Paths::resolve()?;
         paths.check_socket_length()?;
         Ok(Self::new(paths.socket()))
     }
 
-    /// daemon の実行ファイルを明示する。省略時は環境変数と PATH から探す。
+    /// Points at the daemon explicitly. Otherwise found via the
+    /// environment and PATH.
     pub fn with_daemon_program(mut self, program: PathBuf) -> Self {
         self.daemon_program = Some(program);
         self
@@ -115,7 +116,7 @@ impl Client {
         &self.socket
     }
 
-    /// 既に動いている daemon に繋ぐ。
+    /// Connects to an already-running daemon.
     pub async fn connect(&self) -> Result<Connection, ClientError> {
         let stream =
             UnixStream::connect(&self.socket)
@@ -128,19 +129,19 @@ impl Client {
         Ok(Connection::new(stream))
     }
 
-    /// 繋がらなければ daemon を起動してから繋ぐ。
+    /// Starts the daemon first if nothing answers.
     ///
-    /// CLI は基本これを使う。利用者に daemon の存在を意識させないため。
+    /// The CLI uses this by default, so the daemon stays invisible.
     pub async fn connect_or_spawn(&self) -> Result<Connection, ClientError> {
         match self.connect().await {
             Ok(connection) => return Ok(connection),
             Err(err) => {
-                tracing::debug!("daemon への接続に失敗、起動を試みます: {err}");
+                tracing::debug!("cannot connect, trying to start the daemon: {err}");
             }
         }
 
-        // daemon が異常終了すると socket ファイルだけが残る。
-        // 残骸があると bind に失敗するので、繋がらないものは消しておく。
+        // A crashed daemon leaves its socket file behind, and that stale
+        // file makes bind fail. Remove anything that does not answer.
         if self.socket.exists() {
             let _ = std::fs::remove_file(&self.socket);
         }
@@ -164,15 +165,15 @@ impl Client {
     fn spawn_daemon(&self) -> Result<(), ClientError> {
         let program = self.resolve_daemon_program()?;
 
-        // 親（CLI）が終了しても daemon は動き続ける必要がある。
-        // 標準入出力を切り離し、ログは daemon 自身がファイルへ書く。
+        // The daemon must outlive its parent. Detach the standard streams;
+        // the daemon writes its own log to a file.
         std::process::Command::new(&program)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|err| {
-                ClientError::Spawn(format!("{} の起動に失敗しました: {err}", program.display()))
+                ClientError::Spawn(format!("cannot start {}: {err}", program.display()))
             })?;
 
         Ok(())
@@ -187,8 +188,9 @@ impl Client {
             return Ok(PathBuf::from(value));
         }
 
-        // CLI と daemon は一緒に配布されるので、隣にいる可能性が高い。
-        // PATH より先に見ることで、開発中の target/debug のものが確実に使われる。
+        // The CLI and the daemon ship together, so the daemon is probably
+        // next door. Looking here before PATH makes a development build in
+        // target/debug win.
         if let Ok(current) = std::env::current_exe() {
             if let Some(dir) = current.parent() {
                 let sibling = dir.join(DAEMON_PROGRAM);
@@ -202,10 +204,10 @@ impl Client {
     }
 }
 
-/// 確立済みの接続。
+/// An established connection.
 ///
-/// 1 本の接続でリクエストを順に処理する。並行に投げる必要が出たら
-/// プロトコル側は既に多重化に対応しているので、ここを拡張すればよい。
+/// Requests are handled one at a time. The protocol already supports
+/// multiplexing, so concurrency can be added here when it is needed.
 pub struct Connection {
     reader: MessageStream<OwnedReadHalf>,
     writer: OwnedWriteHalf,
@@ -237,7 +239,8 @@ impl Connection {
         id
     }
 
-    /// リクエストを送り、届いたイベントを `on_event` に渡しながら応答を待つ。
+    /// Sends a request, passing each event to `on_event` while awaiting
+    /// the response.
     pub async fn call<F>(
         &mut self,
         request: Request,
@@ -259,7 +262,7 @@ impl Connection {
                     id: event_id,
                     event,
                 } => {
-                    // 他のリクエストのイベントは呼び出し側に渡さない。
+                    // Events for other requests are not the caller's business.
                     if event_id == id {
                         on_event(event);
                     }
@@ -278,18 +281,18 @@ impl Connection {
         }
     }
 
-    /// イベントを捨てて応答だけ受け取る。
+    /// Discards events and returns only the response.
     pub async fn request(&mut self, request: Request) -> Result<Response, ClientError> {
         self.call(request, |_| {}).await
     }
 
-    /// 疎通確認とプロトコル版の照合。
+    /// Connectivity check and protocol handshake.
     pub async fn handshake(&mut self) -> Result<Pong, ClientError> {
         let response = self.request(Request::Ping).await?;
 
         let Response::Pong(pong) = response else {
             return Err(ClientError::Protocol(
-                "Ping に対して Pong 以外が返りました".to_string(),
+                "Ping was answered with something other than Pong".to_string(),
             ));
         };
 
@@ -310,14 +313,14 @@ mod tests {
     use minato_api::{ErrorCode, Outcome};
     use tokio::net::UnixListener;
 
-    /// 決められた応答を返すだけの daemon 代役。
+    /// A stand-in daemon that replays canned responses.
     async fn serve(listener: UnixListener, responses: Vec<Vec<ServerMessage>>) {
-        let (stream, _) = listener.accept().await.expect("接続を受ける");
+        let (stream, _) = listener.accept().await.expect("accepts");
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = MessageStream::new(read_half);
 
         for batch in responses {
-            let Some(_request): Option<ClientMessage> = reader.recv().await.expect("読める")
+            let Some(_request): Option<ClientMessage> = reader.recv().await.expect("reads")
             else {
                 return;
             };
@@ -325,7 +328,7 @@ mod tests {
             for message in batch {
                 write_message(&mut write_half, &message)
                     .await
-                    .expect("書ける");
+                    .expect("writes");
             }
         }
     }
@@ -357,8 +360,8 @@ mod tests {
             )]],
         ));
 
-        let mut connection = Client::new(path).connect().await.expect("接続できる");
-        let result = connection.handshake().await.expect("成功する");
+        let mut connection = Client::new(path).connect().await.expect("connects");
+        let result = connection.handshake().await.expect("succeeds");
         assert_eq!(result.runtime, "docker");
     }
 
@@ -376,14 +379,14 @@ mod tests {
             )]],
         ));
 
-        let mut connection = Client::new(path).connect().await.expect("接続できる");
+        let mut connection = Client::new(path).connect().await.expect("connects");
         let err = connection.handshake().await.unwrap_err();
 
         assert!(
             matches!(err, ClientError::VersionMismatch { .. }),
             "got: {err}"
         );
-        assert!(err.to_string().contains("再起動"), "対処方法を示す: {err}");
+        assert!(err.to_string().contains("Restart"), "say how to fix it: {err}");
     }
 
     #[tokio::test]
@@ -403,16 +406,16 @@ mod tests {
             ]],
         ));
 
-        let mut connection = Client::new(path).connect().await.expect("接続できる");
+        let mut connection = Client::new(path).connect().await.expect("connects");
 
         let mut events = Vec::new();
         let response = connection
             .call(Request::Ping, |event| events.push(event))
             .await
-            .expect("成功する");
+            .expect("succeeds");
 
         assert!(matches!(response, Response::Empty));
-        assert_eq!(events.len(), 3, "イベントが順に届く");
+        assert_eq!(events.len(), 3, "events arrive in order");
     }
 
     #[tokio::test]
@@ -424,22 +427,22 @@ mod tests {
         tokio::spawn(serve(
             listener,
             vec![vec![
-                // 別リクエストのイベントが混ざっても取り違えない。
-                ServerMessage::event(RequestId(99), Event::info("他の処理")),
-                ServerMessage::event(RequestId(1), Event::info("自分の処理")),
+                // Events for another request must not be mistaken for ours.
+                ServerMessage::event(RequestId(99), Event::info("someone else's work")),
+                ServerMessage::event(RequestId(1), Event::info("our work")),
                 ServerMessage::ok(RequestId(1), Response::Empty),
             ]],
         ));
 
-        let mut connection = Client::new(path).connect().await.expect("接続できる");
+        let mut connection = Client::new(path).connect().await.expect("connects");
 
         let mut events = Vec::new();
         connection
             .call(Request::Ping, |event| events.push(event))
             .await
-            .expect("成功する");
+            .expect("succeeds");
 
-        assert_eq!(events.len(), 1, "自分宛てのイベントだけ受け取る");
+        assert_eq!(events.len(), 1, "only our own events arrive");
     }
 
     #[tokio::test]
@@ -453,17 +456,17 @@ mod tests {
             vec![vec![ServerMessage::Response {
                 id: RequestId(1),
                 outcome: Outcome::Error {
-                    error: ApiError::not_found("workspace がありません")
-                        .with_hint("minato ls で確認してください"),
+                    error: ApiError::not_found("no such workspace")
+                        .with_hint("run minato ls to check"),
                 },
             }]],
         ));
 
-        let mut connection = Client::new(path).connect().await.expect("接続できる");
+        let mut connection = Client::new(path).connect().await.expect("connects");
         let err = connection.request(Request::Ping).await.unwrap_err();
 
         assert_eq!(err.exit_code(), ErrorCode::NotFound.exit_code());
-        assert_eq!(err.hint(), Some("minato ls で確認してください"));
+        assert_eq!(err.hint(), Some("run minato ls to check"));
     }
 
     #[tokio::test]
@@ -472,13 +475,13 @@ mod tests {
         let path = socket_path(&dir);
         let listener = UnixListener::bind(&path).expect("bind");
 
-        // 応答せずに切断する。
+        // Close without answering.
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("接続を受ける");
+            let (stream, _) = listener.accept().await.expect("accepts");
             drop(stream);
         });
 
-        let mut connection = Client::new(path).connect().await.expect("接続できる");
+        let mut connection = Client::new(path).connect().await.expect("connects");
         let err = connection.request(Request::Ping).await.unwrap_err();
 
         assert!(matches!(err, ClientError::Disconnected), "got: {err}");
@@ -490,7 +493,7 @@ mod tests {
         let err = Client::new(socket_path(&dir)).connect().await.unwrap_err();
 
         assert!(matches!(err, ClientError::Connect { .. }));
-        assert!(err.hint().expect("hint がある").contains("daemon"));
+        assert!(err.hint().expect("a hint is present").contains("daemon"));
     }
 
     #[tokio::test]
@@ -508,13 +511,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = socket_path(&dir);
 
-        // daemon が異常終了したあとに残る socket ファイルを模す。
-        std::fs::write(&path, b"").expect("作れる");
+        // Mimic the socket file a crashed daemon leaves behind.
+        std::fs::write(&path, b"").expect("creates");
 
         let client =
             Client::new(path.clone()).with_daemon_program(dir.path().join("does-not-exist"));
         let _ = client.connect_or_spawn().await;
 
-        assert!(!path.exists(), "繋がらない socket は消してから起動する");
+        assert!(!path.exists(), "a dead socket is removed before starting");
     }
 }

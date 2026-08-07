@@ -1,31 +1,33 @@
-//! git worktree の検出と操作。
+//! Discovering and manipulating git worktrees.
 //!
-//! `gix` ではなく `git` コマンドを呼ぶ。worktree 周りは git 本体の挙動
-//! （設定、hooks、submodule）にそのまま従わせたいため。
+//! Shells out to `git` rather than using `gix`, so that worktree handling
+//! follows git's own behaviour exactly — config, hooks, submodules and all.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Error, Result};
 
-/// `path` を含む git リポジトリ。
+/// The git repository containing `path`.
 #[derive(Debug, Clone)]
 pub struct Repository {
-    /// `path` が属している worktree のルート。
+    /// The root of the worktree `path` belongs to.
     pub root: PathBuf,
-    /// main worktree のルート。worktree 一覧やブランチ操作の起点にする。
+    /// The main worktree's root. The anchor for listing worktrees and
+    /// for branch operations.
     pub main_root: PathBuf,
 }
 
 impl Repository {
-    /// `path` から上位に向かって git リポジトリを探す。
+    /// Searches upwards from `path` for a git repository.
     pub fn discover(path: &Path) -> Result<Self> {
         let root = git(path, &["rev-parse", "--show-toplevel"])
             .map_err(|_| Error::NotAGitRepository(path.to_path_buf()))?;
         let root = PathBuf::from(root);
 
-        // `git worktree list` の先頭は常に main worktree。
-        // `--git-common-dir` の親は bare リポジトリで期待どおりにならないので使わない。
+        // The first entry of `git worktree list` is always the main
+        // worktree. The parent of `--git-common-dir` is not reliable for
+        // bare repositories, so avoid it.
         let worktrees = list_worktrees_in(&root)?;
         let main_root = worktrees
             .first()
@@ -35,7 +37,7 @@ impl Repository {
         Ok(Self { root, main_root })
     }
 
-    /// 現在地が main worktree かどうか。
+    /// Whether this is the main worktree.
     pub fn is_main(&self) -> bool {
         self.root == self.main_root
     }
@@ -44,12 +46,12 @@ impl Repository {
         list_worktrees_in(&self.main_root)
     }
 
-    /// 現在チェックアウトしているブランチ名。detached HEAD なら `None`。
+    /// The currently checked-out branch, or `None` on a detached HEAD.
     pub fn current_branch(&self) -> Result<Option<String>> {
         let out = git(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"]);
         match out {
             Ok(name) if !name.is_empty() => Ok(Some(name)),
-            // detached HEAD では symbolic-ref が非ゼロ終了する。
+            // symbolic-ref exits non-zero on a detached HEAD.
             _ => Ok(None),
         }
     }
@@ -74,7 +76,7 @@ impl Repository {
         .is_ok()
     }
 
-    /// 新しい worktree を作る分岐元。`origin/HEAD` → `main` → `master` の順で探す。
+    /// The base for new worktrees: `origin/HEAD`, then `main`, then `master`.
     pub fn default_base(&self) -> Result<String> {
         if let Ok(head) = git(
             &self.main_root,
@@ -96,13 +98,13 @@ impl Repository {
             }
         }
 
-        // 分岐元が特定できないときは現在の HEAD を使う。
+        // Fall back to the current HEAD when nothing else matches.
         Ok("HEAD".to_string())
     }
 
-    /// worktree を追加する。
+    /// Adds a worktree.
     ///
-    /// `branch` が既存ならそれをチェックアウトし、なければ `base` から新規作成する。
+    /// Checks out `branch` if it exists, otherwise creates it from `base`.
     pub fn add_worktree(&self, path: &Path, branch: &str, base: Option<&str>) -> Result<()> {
         let path_str = path.to_string_lossy().to_string();
 
@@ -122,7 +124,7 @@ impl Repository {
         Ok(())
     }
 
-    /// worktree を削除する。ブランチ自体は残す。
+    /// Removes a worktree. The branch itself is kept.
     pub fn remove_worktree(&self, path: &Path, force: bool) -> Result<()> {
         let path_str = path.to_string_lossy().to_string();
         let mut args = vec!["worktree", "remove"];
@@ -136,12 +138,12 @@ impl Repository {
     }
 }
 
-/// `git worktree list --porcelain` の 1 エントリ。
+/// One entry of `git worktree list --porcelain`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
     pub path: PathBuf,
     pub head: Option<String>,
-    /// チェックアウト中のブランチ。detached HEAD なら `None`。
+    /// The checked-out branch, or `None` on a detached HEAD.
     pub branch: Option<String>,
     pub detached: bool,
     pub bare: bool,
@@ -153,9 +155,9 @@ fn list_worktrees_in(dir: &Path) -> Result<Vec<Worktree>> {
     Ok(parse_worktree_list(&output))
 }
 
-/// `git worktree list --porcelain` の出力をパースする。
+/// Parses the output of `git worktree list --porcelain`.
 ///
-/// エントリは空行区切りで、`worktree <path>` で始まる。
+/// Entries are separated by blank lines and start with `worktree <path>`.
 fn parse_worktree_list(output: &str) -> Vec<Worktree> {
     let mut result = Vec::new();
     let mut current: Option<Worktree> = None;

@@ -1,15 +1,15 @@
-//! 環境変数の層と、その読み書き。
+//! Environment variable layers, and reading and writing them.
 //!
-//! 3 つの層を後勝ちで重ねる。
+//! Three layers, later ones winning.
 //!
-//! | 層 | 置き場所 | 想定 |
+//! | Layer | Location | Intent |
 //! | --- | --- | --- |
-//! | global | `~/.minato/env` | 全プロジェクト共通 |
-//! | project | `minato.toml` の `env` と `.minato/env` | リポジトリにコミットする |
-//! | workspace | `.minato/env.local` | worktree 固有。gitignore |
+//! | global | `~/.minato/env` | shared by every project |
+//! | project | `env` in `minato.toml` and `.minato/env` | committed |
+//! | workspace | `.minato/env.local` | per-worktree, gitignored |
 //!
-//! **平文のシークレットをリポジトリに入れさせない。** 値に参照
-//! （`op://` など）を書けるようにし、解決は起動時に daemon が行う。
+//! **Keeps plaintext secrets out of the repository.** Values may hold a
+//! reference (`op://` and friends), resolved by the daemon at start-up.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,36 +17,36 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-/// プロジェクト／workspace が環境変数を置くディレクトリ。
+/// The directory where projects and workspaces keep their variables.
 pub const ENV_DIR: &str = ".minato";
 
-/// プロジェクト共通の環境変数ファイル（コミットする）。
+/// The project-wide file. Committed to the repository.
 pub const PROJECT_ENV_FILE: &str = "env";
 
-/// worktree 固有の環境変数ファイル（gitignore）。
+/// The per-worktree file. Gitignored.
 pub const WORKSPACE_ENV_FILE: &str = "env.local";
 
-/// global の環境変数ファイル（`$MINATO_HOME` 直下）。
+/// The global file, directly under `$MINATO_HOME`.
 pub const GLOBAL_ENV_FILE: &str = "env";
 
-/// 環境変数がどこで定義されたか。
+/// Where a variable was defined.
 ///
-/// 並び順が優先順位。後のものが前を上書きする。
+/// Declaration order is precedence: later entries override earlier ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvScope {
-    /// 全プロジェクト共通。
+    /// Shared by every project.
     Global,
-    /// プロジェクト共通。
+    /// Shared within the project.
     Project,
-    /// worktree 固有。
+    /// Specific to one worktree.
     Workspace,
-    /// Minato が自動で入れるもの。利用者は上書きできる。
+    /// Injected by Minato. The user may override it.
     Injected,
 }
 
 impl EnvScope {
-    /// `minato env set` で指定できる層。
+    /// The layers `minato env set` can target.
     pub const WRITABLE: &'static [EnvScope] =
         &[EnvScope::Global, EnvScope::Project, EnvScope::Workspace];
 
@@ -59,7 +59,7 @@ impl EnvScope {
         }
     }
 
-    /// 書き込める層かどうか。
+    /// Whether this layer can be written to.
     pub fn is_writable(self) -> bool {
         Self::WRITABLE.contains(&self)
     }
@@ -74,29 +74,29 @@ impl std::str::FromStr for EnvScope {
             "project" => Ok(Self::Project),
             "workspace" => Ok(Self::Workspace),
             other => Err(format!(
-                "`{other}` は環境変数の層として不正です。global / project / workspace のいずれかを指定してください"
+                "`{other}` is not a valid layer. Use global, project or workspace"
             )),
         }
     }
 }
 
-/// 解決前の 1 エントリ。
+/// A single entry, before resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvEntry {
     pub key: String,
-    /// 書かれたままの値。シークレット参照の場合は参照文字列そのもの。
+    /// The value as written. For a secret, the reference itself.
     pub raw: String,
     pub scope: EnvScope,
 }
 
 impl EnvEntry {
-    /// シークレット参照かどうか。
+    /// Whether this is a secret reference.
     pub fn secret_ref(&self) -> Option<SecretRef> {
         SecretRef::parse(&self.raw)
     }
 }
 
-/// 層を重ねたもの。
+/// A stack of layers.
 #[derive(Debug, Default, Clone)]
 pub struct EnvLayers {
     layers: Vec<(EnvScope, IndexMap<String, String>)>,
@@ -107,12 +107,12 @@ impl EnvLayers {
         Self::default()
     }
 
-    /// 層を追加する。**追加した順に優先度が上がる。**
+    /// Adds a layer. **Precedence increases with each call.**
     pub fn push(&mut self, scope: EnvScope, values: IndexMap<String, String>) {
         self.layers.push((scope, values));
     }
 
-    /// dotenv ファイルを層として読む。ファイルが無い場合は何もしない。
+    /// Reads a dotenv file as a layer. A missing file is not an error.
     pub fn push_file(&mut self, scope: EnvScope, path: &Path) -> Result<(), EnvError> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
@@ -134,9 +134,9 @@ impl EnvLayers {
         Ok(())
     }
 
-    /// 重ねた結果。キーごとに、最も優先度の高い層の値を返す。
+    /// The merged result: for each key, the value from the highest layer.
     ///
-    /// 並びはキー順。表示と比較を安定させるため。
+    /// Sorted by key so that display and comparison stay stable.
     pub fn resolve(&self) -> Vec<EnvEntry> {
         let mut merged: BTreeMap<String, EnvEntry> = BTreeMap::new();
 
@@ -161,17 +161,17 @@ impl EnvLayers {
     }
 }
 
-/// 外部から取り出すシークレットの参照。
+/// A reference to a secret held outside the repository.
 ///
-/// 平文をリポジトリに置かないための仕組み。解決は起動時に行い、
-/// 結果はディスクに書かない。
+/// The mechanism that keeps plaintext out of version control. Resolved at
+/// start-up; the result is never written to disk.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SecretRef {
     /// 1Password CLI (`op read`)。
     OnePassword(String),
-    /// macOS キーチェーン。`keychain://<service>/<account>`。
+    /// The macOS keychain. `keychain://<service>/<account>`.
     Keychain { service: String, account: String },
-    /// daemon プロセスの環境変数。
+    /// An environment variable of the daemon process.
     Env(String),
 }
 
@@ -202,27 +202,28 @@ impl SecretRef {
         None
     }
 
-    /// 表示用の説明。値そのものは出さない。
+    /// A description for display. Never includes the value itself.
     pub fn describe(&self) -> String {
         match self {
             Self::OnePassword(reference) => format!("1Password ({reference})"),
             Self::Keychain { service, account } => {
-                format!("キーチェーン ({service}/{account})")
+                format!("keychain ({service}/{account})")
             }
-            Self::Env(name) => format!("daemon の環境変数 ({name})"),
+            Self::Env(name) => format!("daemon environment ({name})"),
         }
     }
 }
 
-/// 値を伏せる。ログや一覧に平文を出さないため。
+/// Masks a value, so plaintext never reaches a log or a listing.
 pub fn mask(value: &str) -> String {
     let length = value.chars().count();
 
     if length == 0 {
-        return "(空)".to_string();
+        return "(empty)".to_string();
     }
 
-    // 短い値は先頭も出さない。1 文字でも漏れると総当たりの手掛かりになる。
+    // Short values reveal nothing at all: even one character narrows a
+    // brute-force search.
     if length <= 4 {
         return "•".repeat(length);
     }
@@ -233,41 +234,41 @@ pub fn mask(value: &str) -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum EnvError {
-    #[error("環境変数ファイルを読めません ({path}): {source}")]
+    #[error("cannot read the environment file ({path}): {source}")]
     Read {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("環境変数ファイルを書けません ({path}): {source}")]
+    #[error("cannot write the environment file ({path}): {source}")]
     Write {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("環境変数ファイルの書式が不正です ({path}): {message}")]
+    #[error("malformed environment file ({path}): {message}")]
     Parse { path: PathBuf, message: String },
 
-    #[error("環境変数名として使えません: `{0}`")]
+    #[error("not a usable variable name: `{0}`")]
     InvalidKey(String),
 }
 
-/// 環境変数名として妥当か。
+/// Whether a name is usable as an environment variable.
 ///
-/// シェルや Docker に渡せない名前を弾く。
+/// Rejects names that a shell or Docker would not accept.
 pub fn is_valid_key(key: &str) -> bool {
     !key.is_empty()
         && !key.starts_with(|c: char| c.is_ascii_digit())
         && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// dotenv 形式を読む。
+/// Parses the dotenv format.
 ///
-/// - `KEY=VALUE`、`export KEY=VALUE`
-/// - `#` から行末までコメント（クォートの中を除く）
-/// - `"..."` は `\n` `\t` `\\` `\"` を解釈、`'...'` はそのまま
+/// - `KEY=VALUE` and `export KEY=VALUE`
+/// - `#` to end of line is a comment, unless quoted
+/// - `"..."` interprets `\n` `\t` `\\` `\"`; `'...'` is taken literally
 pub fn parse(text: &str) -> std::result::Result<IndexMap<String, String>, String> {
     let mut values = IndexMap::new();
 
@@ -282,13 +283,13 @@ pub fn parse(text: &str) -> std::result::Result<IndexMap<String, String>, String
         let statement = trimmed.strip_prefix("export ").unwrap_or(trimmed).trim();
 
         let Some((key, raw_value)) = statement.split_once('=') else {
-            return Err(format!("{line_number} 行目: `=` がありません: {trimmed}"));
+            return Err(format!("line {line_number}: no `=`: {trimmed}"));
         };
 
         let key = key.trim();
         if !is_valid_key(key) {
             return Err(format!(
-                "{line_number} 行目: `{key}` は環境変数名として使えません"
+                "line {line_number}: `{key}` is not a usable variable name"
             ));
         }
 
@@ -304,11 +305,11 @@ fn parse_value(raw: &str) -> String {
     }
 
     if let Some(inner) = raw.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
-        // シングルクォートは中身をそのまま使う。
+        // Single quotes are taken literally.
         return inner.to_string();
     }
 
-    // クォートが無い場合、`#` 以降はコメント。
+    // Without quotes, everything after `#` is a comment.
     match raw.split_once(" #") {
         Some((value, _)) => value.trim_end().to_string(),
         None => raw.to_string(),
@@ -331,7 +332,8 @@ fn unescape(value: &str) -> String {
             Some('r') => out.push('\r'),
             Some('\\') => out.push('\\'),
             Some('"') => out.push('"'),
-            // 知らないエスケープはそのまま残す。壊すより素通しの方が安全。
+            // Unknown escapes are left as-is: passing them through is
+            // safer than mangling them.
             Some(other) => {
                 out.push('\\');
                 out.push(other);
@@ -343,10 +345,10 @@ fn unescape(value: &str) -> String {
     out
 }
 
-/// 既存のファイル内容に `key` を設定する。
+/// Sets `key` within existing file contents.
 ///
-/// **コメントと行の順序を保つ。** 利用者が手で書いたファイルを
-/// 書き換える以上、勝手に整形してはいけない。
+/// **Preserves comments and line order.** These files are hand-written, so
+/// rewriting one must not reformat it.
 pub fn upsert(text: &str, key: &str, value: &str) -> String {
     let rendered = format!("{key}={}", quote(value));
     let mut replaced = false;
@@ -371,7 +373,7 @@ pub fn upsert(text: &str, key: &str, value: &str) -> String {
     out
 }
 
-/// `key` の定義を取り除く。
+/// Removes the definition of `key`.
 pub fn remove(text: &str, key: &str) -> String {
     let lines: Vec<&str> = text
         .lines()
@@ -387,7 +389,7 @@ pub fn remove(text: &str, key: &str) -> String {
     out
 }
 
-/// その行が `key` を定義しているか。
+/// Whether this line defines `key`.
 fn defines_key(line: &str, key: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -400,7 +402,7 @@ fn defines_key(line: &str, key: &str) -> bool {
         .is_some_and(|(found, _)| found.trim() == key)
 }
 
-/// 値を書き出す形にする。必要なときだけクォートする。
+/// Renders a value for writing, quoting only when necessary.
 fn quote(value: &str) -> String {
     let needs_quotes = value.is_empty()
         || value
@@ -420,7 +422,7 @@ fn quote(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// ファイルに書き出す。親ディレクトリが無ければ作る。
+/// Writes the file, creating parent directories as needed.
 pub fn write_file(path: &Path, contents: &str) -> Result<(), EnvError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| EnvError::Write {
@@ -429,8 +431,8 @@ pub fn write_file(path: &Path, contents: &str) -> Result<(), EnvError> {
         })?;
     }
 
-    // 環境変数ファイルにはシークレットの参照が入る。
-    // 実体でなくても、どこに何があるかは他人に見せない。
+    // These files hold secret references. Even without the secrets
+    // themselves, where they live is nobody else's business.
     write_private(path, contents.as_bytes())
 }
 
@@ -464,12 +466,12 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<(), EnvError> {
     })
 }
 
-/// プロジェクトの環境変数ファイル（`{root}/.minato/env`）。
+/// The project's environment file (`{root}/.minato/env`).
 pub fn project_env_path(root: &Path) -> PathBuf {
     root.join(ENV_DIR).join(PROJECT_ENV_FILE)
 }
 
-/// worktree 固有の環境変数ファイル（`{worktree}/.minato/env.local`）。
+/// The worktree's environment file (`{worktree}/.minato/env.local`).
 pub fn workspace_env_path(worktree: &Path) -> PathBuf {
     worktree.join(ENV_DIR).join(WORKSPACE_ENV_FILE)
 }
@@ -480,7 +482,7 @@ mod tests {
 
     #[test]
     fn parses_basic_assignments() {
-        let values = parse("FOO=bar\nBAZ=qux\n").expect("読める");
+        let values = parse("FOO=bar\nBAZ=qux\n").expect("parses");
 
         assert_eq!(values.get("FOO").map(String::as_str), Some("bar"));
         assert_eq!(values.get("BAZ").map(String::as_str), Some("qux"));
@@ -488,7 +490,7 @@ mod tests {
 
     #[test]
     fn ignores_comments_and_blank_lines() {
-        let values = parse("# comment\n\nFOO=bar\n   \n# another\n").expect("読める");
+        let values = parse("# comment\n\nFOO=bar\n   \n# another\n").expect("parses");
 
         assert_eq!(values.len(), 1);
         assert_eq!(values.get("FOO").map(String::as_str), Some("bar"));
@@ -496,8 +498,8 @@ mod tests {
 
     #[test]
     fn accepts_export_prefix() {
-        // シェルからコピーした行をそのまま貼れるようにする。
-        let values = parse("export FOO=bar\n").expect("読める");
+        // So a line copied from a shell can be pasted verbatim.
+        let values = parse("export FOO=bar\n").expect("parses");
         assert_eq!(values.get("FOO").map(String::as_str), Some("bar"));
     }
 
@@ -510,7 +512,7 @@ RAW='no $interpolation here'
 ESCAPED="line1\nline2"
 "#,
         )
-        .expect("読める");
+        .expect("parses");
 
         assert_eq!(
             values.get("SPACED").map(String::as_str),
@@ -528,26 +530,26 @@ ESCAPED="line1\nline2"
 
     #[test]
     fn strips_trailing_comments_outside_quotes() {
-        let values = parse("FOO=bar # 説明\nURL=\"http://x/#anchor\"\n").expect("読める");
+        let values = parse("FOO=bar # note\nURL=\"http://x/#anchor\"\n").expect("parses");
 
         assert_eq!(values.get("FOO").map(String::as_str), Some("bar"));
         assert_eq!(
             values.get("URL").map(String::as_str),
             Some("http://x/#anchor"),
-            "クォートの中の # はコメントではない"
+            "a # inside quotes is not a comment"
         );
     }
 
     #[test]
     fn empty_values_are_allowed() {
-        let values = parse("EMPTY=\n").expect("読める");
+        let values = parse("EMPTY=\n").expect("parses");
         assert_eq!(values.get("EMPTY").map(String::as_str), Some(""));
     }
 
     #[test]
     fn rejects_lines_without_assignment() {
         let err = parse("JUST_A_WORD\n").unwrap_err();
-        assert!(err.contains("1 行目"), "行番号を出す: {err}");
+        assert!(err.contains("line 1"), "report the line number: {err}");
     }
 
     #[test]
@@ -585,24 +587,24 @@ ESCAPED="line1\nline2"
             resolved
                 .iter()
                 .find(|entry| entry.key == key)
-                .expect("存在する")
+                .expect("present")
                 .clone()
         };
 
         assert_eq!(find("A").raw, "global");
         assert_eq!(find("A").scope, EnvScope::Global);
 
-        assert_eq!(find("B").raw, "workspace", "最も内側の層が勝つ");
+        assert_eq!(find("B").raw, "workspace", "the innermost layer wins");
         assert_eq!(
             find("B").scope,
             EnvScope::Workspace,
-            "どこで定義されたかも分かる必要がある"
+            "the defining layer must be visible too"
         );
     }
 
     #[test]
     fn injected_values_can_be_overridden_by_the_user() {
-        // 自動注入を先に置き、利用者の指定を後に重ねる。
+        // Injected values go first; the user's settings layer on top.
         let mut layers = EnvLayers::new();
         layers.push(EnvScope::Injected, layer(&[("MINATO_URL_WEB", "auto")]));
         layers.push(EnvScope::Project, layer(&[("MINATO_URL_WEB", "custom")]));
@@ -627,7 +629,7 @@ ESCAPED="line1\nline2"
         let mut layers = EnvLayers::new();
         layers
             .push_file(EnvScope::Global, Path::new("/definitely/not/here/env"))
-            .expect("無いだけなら失敗させない");
+            .expect("a missing file is not a failure");
 
         assert!(layers.is_empty());
     }
@@ -636,12 +638,12 @@ ESCAPED="line1\nline2"
     fn reports_the_path_when_a_file_is_malformed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("env");
-        std::fs::write(&path, "BROKEN\n").expect("書ける");
+        std::fs::write(&path, "BROKEN\n").expect("writes");
 
         let mut layers = EnvLayers::new();
         let err = layers.push_file(EnvScope::Project, &path).unwrap_err();
 
-        assert!(err.to_string().contains("env"), "どのファイルか示す: {err}");
+        assert!(err.to_string().contains("env"), "name the file: {err}");
     }
 
     #[test]
@@ -674,8 +676,8 @@ ESCAPED="line1\nline2"
 
     #[test]
     fn malformed_references_are_not_treated_as_secrets() {
-        // 中途半端な参照を「解決できないシークレット」にすると、
-        // ただの文字列を渡したい場合に詰む。
+        // Treating a half-formed reference as an unresolvable secret
+        // would make it impossible to pass such a string literally.
         assert_eq!(SecretRef::parse("keychain://only-service"), None);
         assert_eq!(SecretRef::parse("keychain:///no-service"), None);
         assert_eq!(SecretRef::parse("env://"), None);
@@ -689,27 +691,27 @@ ESCAPED="line1\nline2"
         };
         let description = reference.describe();
 
-        assert!(description.contains("キーチェーン"));
+        assert!(description.contains("keychain"));
         assert!(description.contains("minato/api-key"));
     }
 
     #[test]
     fn masks_hide_the_value() {
-        assert_eq!(mask(""), "(空)");
-        assert_eq!(mask("abc"), "•••", "短い値は先頭も見せない");
+        assert_eq!(mask(""), "(empty)");
+        assert_eq!(mask("abc"), "•••", "short values reveal nothing");
         assert_eq!(mask("secret-value"), "se••••••••••");
 
-        // 長さ以外の情報が漏れないこと。
+        // Nothing but the length leaks.
         assert!(!mask("password123").contains("ssword"));
     }
 
     #[test]
     fn upsert_replaces_in_place_and_keeps_comments() {
-        // 利用者が手で書いたファイルを整形し直してはいけない。
-        let original = "# 説明\nFOO=old\n\n# 別の説明\nBAR=keep\n";
+        // A hand-written file must not be reformatted.
+        let original = "# note\nFOO=old\n\n# another note\nBAR=keep\n";
         let updated = upsert(original, "FOO", "new");
 
-        assert_eq!(updated, "# 説明\nFOO=new\n\n# 別の説明\nBAR=keep\n");
+        assert_eq!(updated, "# note\nFOO=new\n\n# another note\nBAR=keep\n");
     }
 
     #[test]
@@ -725,7 +727,7 @@ ESCAPED="line1\nline2"
 
     #[test]
     fn upsert_replaces_only_the_first_definition() {
-        // 重複定義があっても増やさない。
+        // A duplicate definition is not multiplied.
         let updated = upsert("FOO=1\nFOO=2\n", "FOO", "3");
         assert_eq!(updated.matches("FOO=").count(), 2);
         assert!(updated.starts_with("FOO=3\n"));
@@ -751,20 +753,20 @@ ESCAPED="line1\nline2"
             "$SHELL",
         ] {
             let text = upsert("", "A", value);
-            let parsed = parse(&text).expect("読める");
+            let parsed = parse(&text).expect("parses");
 
             assert_eq!(
                 parsed.get("A").map(String::as_str),
                 Some(value),
-                "書いて読んだら元に戻る必要がある: {value:?}"
+                "writing then reading must round-trip: {value:?}"
             );
         }
     }
 
     #[test]
     fn remove_deletes_the_definition_only() {
-        let original = "# 説明\nFOO=1\nBAR=2\n";
-        assert_eq!(remove(original, "FOO"), "# 説明\nBAR=2\n");
+        let original = "# note\nFOO=1\nBAR=2\n";
+        assert_eq!(remove(original, "FOO"), "# note\nBAR=2\n");
     }
 
     #[test]
@@ -788,8 +790,8 @@ ESCAPED="line1\nline2"
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nested").join("env");
 
-        write_file(&path, "FOO=bar\n").expect("書ける");
-        assert_eq!(std::fs::read_to_string(&path).expect("読める"), "FOO=bar\n");
+        write_file(&path, "FOO=bar\n").expect("writes");
+        assert_eq!(std::fs::read_to_string(&path).expect("parses"), "FOO=bar\n");
 
         #[cfg(unix)]
         {
@@ -798,7 +800,7 @@ ESCAPED="line1\nline2"
                 .expect("metadata")
                 .permissions()
                 .mode();
-            assert_eq!(mode & 0o777, 0o600, "シークレットの在り処を他人に見せない");
+            assert_eq!(mode & 0o777, 0o600, "where the secrets live is nobody else's business");
         }
     }
 
@@ -807,12 +809,12 @@ ESCAPED="line1\nline2"
         assert_eq!("project".parse::<EnvScope>(), Ok(EnvScope::Project));
 
         let err = "nope".parse::<EnvScope>().unwrap_err();
-        assert!(err.contains("global"), "選べるものを示す: {err}");
+        assert!(err.contains("global"), "list the choices: {err}");
     }
 
     #[test]
     fn injected_scope_is_not_writable() {
-        // 自動注入はファイルに書けない。書けると実体と食い違う。
+        // Injected values cannot be written; a file would drift from reality.
         assert!(!EnvScope::Injected.is_writable());
         assert!(EnvScope::Project.is_writable());
     }

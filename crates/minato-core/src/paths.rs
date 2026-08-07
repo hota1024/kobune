@@ -1,16 +1,16 @@
-//! Minato がホームディレクトリ以下に置くファイルのレイアウト。
+//! The layout of the files Minato keeps under its home directory.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// ルートディレクトリを上書きする環境変数。テストと複数インスタンスの分離に使う。
+/// Overrides the root directory. Used by tests and to isolate instances.
 pub const HOME_ENV: &str = "MINATO_HOME";
 
-/// Unix socket のパス長の上限。
+/// The upper bound on the length of a Unix socket path.
 ///
-/// `sockaddr_un.sun_path` は macOS で 104 バイト、Linux で 108 バイト。
-/// 終端も含めて収まるよう、短い方から余裕を取る。
+/// `sockaddr_un.sun_path` holds 104 bytes on macOS and 108 on Linux.
+/// Leave headroom below the smaller of the two, terminator included.
 pub const MAX_SOCKET_PATH_LEN: usize = 100;
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `$MINATO_HOME`、なければ `~/.minato` を使う。
+    /// Uses `$MINATO_HOME`, falling back to `~/.minato`.
     pub fn resolve() -> Result<Self> {
         if let Some(value) = std::env::var_os(HOME_ENV) {
             let path = PathBuf::from(value);
@@ -40,32 +40,32 @@ impl Paths {
         &self.root
     }
 
-    /// workspace レジストリ。
+    /// The workspace registry.
     pub fn state_file(&self) -> PathBuf {
         self.root.join("state.json")
     }
 
-    /// daemon が待ち受ける Unix socket。
+    /// The Unix socket the daemon listens on.
     ///
-    /// Unix socket のパスには長さ制限（macOS で 104 バイト）があるため、
-    /// ルート直下に置いて階層を深くしない。
+    /// Socket paths are length-limited (104 bytes on macOS), so keep this
+    /// directly under the root rather than nesting it.
     pub fn socket(&self) -> PathBuf {
         self.root.join("minatod.sock")
     }
 
-    /// socket のパスが Unix socket の長さ制限に収まるかを確かめる。
+    /// Checks that the socket path fits within the platform limit.
     ///
-    /// 超えていると bind が `SUN_LEN` のエラーで落ちる。原因が分かりにくい
-    /// エラーなので、`MINATO_HOME` を深い場所に設定したときに気づけるよう
-    /// ここで説明付きのエラーにする。
+    /// Exceeding it makes `bind` fail with `SUN_LEN`, which says nothing
+    /// about the cause. Fail here with an explanation instead, so a deep
+    /// `MINATO_HOME` is caught before it turns into a puzzle.
     pub fn check_socket_length(&self) -> Result<()> {
         let socket = self.socket();
         let length = socket.as_os_str().as_encoded_bytes().len();
 
         if length > MAX_SOCKET_PATH_LEN {
             return Err(Error::ConfigInvalid(format!(
-                "Unix socket のパスが長すぎます（{length} バイト、上限 {MAX_SOCKET_PATH_LEN} バイト）: {}\n\
-                 {HOME_ENV} をより短いパスに設定してください",
+                "the Unix socket path is too long ({length} bytes, limit {MAX_SOCKET_PATH_LEN}): {}\n\
+                 set {HOME_ENV} to a shorter path",
                 socket.display()
             )));
         }
@@ -73,7 +73,7 @@ impl Paths {
         Ok(())
     }
 
-    /// daemon の PID ファイル。多重起動の検出に使う。
+    /// The daemon's PID file. Used to detect a second instance.
     pub fn pid_file(&self) -> PathBuf {
         self.root.join("minatod.pid")
     }
@@ -86,12 +86,12 @@ impl Paths {
         self.log_dir().join("minatod.log")
     }
 
-    /// ローカル CA の鍵と証明書。
+    /// The local CA's key and certificate.
     pub fn ca_dir(&self) -> PathBuf {
         self.root.join("ca")
     }
 
-    /// 必要なディレクトリを作る。
+    /// Creates the directories Minato needs.
     pub fn ensure(&self) -> Result<()> {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(self.log_dir())?;
@@ -108,27 +108,27 @@ mod tests {
         let paths = Paths::with_root(PathBuf::from("/Users/someone/.minato"));
         paths
             .check_socket_length()
-            .expect("既定のレイアウトは上限に収まる");
+            .expect("the default layout fits within the limit");
     }
 
     #[test]
     fn rejects_socket_path_over_the_limit() {
-        // 深いディレクトリを MINATO_HOME にすると bind が SUN_LEN で失敗する。
-        // 原因が分かりにくいエラーなので、事前に説明付きで弾く。
+        // A deep MINATO_HOME makes bind fail with SUN_LEN, which explains
+        // nothing. Reject it up front with a message that does.
         let deep = PathBuf::from("/tmp").join("x".repeat(MAX_SOCKET_PATH_LEN));
         let err = Paths::with_root(deep).check_socket_length().unwrap_err();
 
         let message = err.to_string();
-        assert!(message.contains("長すぎます"), "got: {message}");
+        assert!(message.contains("too long"), "got: {message}");
         assert!(
             message.contains(HOME_ENV),
-            "どう直せばよいかを示す: {message}"
+            "say how to fix it: {message}"
         );
     }
 
     #[test]
     fn accepts_socket_path_at_the_limit() {
-        // 境界ちょうどは通す。
+        // Exactly at the limit is allowed.
         let socket_name_len = "/minatod.sock".len();
         let root =
             PathBuf::from("/".to_string() + &"x".repeat(MAX_SOCKET_PATH_LEN - socket_name_len - 1));
@@ -138,7 +138,7 @@ mod tests {
             paths.socket().as_os_str().as_encoded_bytes().len(),
             MAX_SOCKET_PATH_LEN
         );
-        paths.check_socket_length().expect("上限ちょうどは許容する");
+        paths.check_socket_length().expect("exactly at the limit is fine");
     }
 
     #[test]

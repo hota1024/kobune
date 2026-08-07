@@ -1,4 +1,4 @@
-//! `minato.toml` のスキーマとバリデーション。
+//! The schema and validation of `minato.toml`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,13 +11,13 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::naming;
 
-/// 設定ファイルの名前。
+/// The name of the configuration file.
 pub const CONFIG_FILE: &str = "minato.toml";
 
-/// worktree のソースをコンテナ内にマウントする先。
+/// Where the worktree's source is mounted inside the container.
 pub const MOUNT_TARGET: &str = "/workspace";
 
-/// `idle_timeout` を省略したときの既定値。
+/// The default when `idle_timeout` is omitted.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -37,7 +37,7 @@ pub struct MinatoConfig {
 pub struct ProjectSection {
     pub name: String,
 
-    /// URL の接尾辞。省略時は `{name}.localhost`。
+    /// The URL suffix. Defaults to `{name}.localhost`.
     #[serde(default)]
     pub domain: Option<String>,
 }
@@ -64,31 +64,31 @@ fn default_runtime() -> String {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
-    /// 既製イメージを使う場合のイメージ名。`build` と排他。
+    /// A prebuilt image. Mutually exclusive with `build`.
     #[serde(default)]
     pub image: Option<String>,
 
-    /// Dockerfile のあるディレクトリ。`image` と排他。
+    /// The directory holding a Dockerfile. Mutually exclusive with `image`.
     #[serde(default)]
     pub build: Option<String>,
 
-    /// サービスが待ち受けるコンテナ内のポート。
+    /// The port the service listens on inside the container.
     #[serde(default)]
     pub port: Option<u16>,
 
-    /// 起動コマンド。省略時はイメージの CMD を使う。
+    /// The start command. Falls back to the image's CMD.
     #[serde(default)]
     pub command: Option<String>,
 
-    /// コンテナ内の作業ディレクトリ。省略時は [`MOUNT_TARGET`]。
+    /// The working directory inside the container. Defaults to [`MOUNT_TARGET`].
     #[serde(default)]
     pub workdir: Option<String>,
 
-    /// 起動完了の判定方法。scale-to-zero で使う。
+    /// How readiness is determined. Used by scale-to-zero.
     #[serde(default)]
     pub health: Option<HealthCheck>,
 
-    /// 無アクセスでの自動停止までの時間。
+    /// How long without traffic before the service is stopped.
     #[serde(default, with = "humantime_serde::option")]
     pub idle_timeout: Option<Duration>,
 
@@ -101,7 +101,7 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub scope: ServiceScope,
 
-    /// URL を生やすかどうか。省略時は `port` があれば true。
+    /// Whether to publish a URL. Defaults to true when `port` is set.
     #[serde(default)]
     pub expose: Option<bool>,
 
@@ -110,7 +110,7 @@ pub struct ServiceConfig {
 }
 
 impl ServiceConfig {
-    /// URL を生やすかどうかの実効値。
+    /// The effective value of `expose`.
     pub fn exposed(&self) -> bool {
         self.expose.unwrap_or(self.port.is_some())
     }
@@ -124,26 +124,26 @@ impl ServiceConfig {
     }
 }
 
-/// サービスのインスタンスを worktree ごとに分けるか、プロジェクトで共有するか。
+/// Whether a service gets one instance per worktree or one per project.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceScope {
-    /// worktree ごとに独立したインスタンスを立てる。
+    /// One independent instance per worktree.
     #[default]
     Workspace,
-    /// 同一プロジェクトの全 worktree で 1 インスタンスを共有する。
+    /// A single instance shared by every worktree of the project.
     Project,
 }
 
-/// 起動完了の判定方法。
+/// How readiness is determined.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum HealthCheck {
-    /// 2xx / 3xx が返れば ready。
+    /// Ready when the response is 2xx or 3xx.
     Http(String),
-    /// TCP 接続が確立できれば ready。
+    /// Ready when a TCP connection can be established.
     Tcp(String),
-    /// コンテナ内で実行し、終了コード 0 なら ready。
+    /// Runs inside the container; ready on exit code 0.
     Cmd(String),
 }
 
@@ -155,7 +155,7 @@ impl FromStr for HealthCheck {
         if let Some(rest) = s.strip_prefix("cmd:") {
             let cmd = rest.trim();
             if cmd.is_empty() {
-                return Err("cmd: の後にコマンドがありません".to_string());
+                return Err("nothing follows `cmd:`".to_string());
             }
             return Ok(Self::Cmd(cmd.to_string()));
         }
@@ -164,13 +164,13 @@ impl FromStr for HealthCheck {
         }
         if let Some(rest) = s.strip_prefix("tcp://") {
             if rest.is_empty() {
-                return Err("tcp:// の後にアドレスがありません".to_string());
+                return Err("nothing follows `tcp://`".to_string());
             }
             return Ok(Self::Tcp(rest.to_string()));
         }
         Err(format!(
-            "`{s}` は health の形式として解釈できません。\
-             `http://...`, `https://...`, `tcp://host:port`, `cmd:...` のいずれかを指定してください"
+            "cannot parse `{s}` as a health check. \
+             Use `http://...`, `https://...`, `tcp://host:port` or `cmd:...`"
         ))
     }
 }
@@ -194,9 +194,9 @@ impl From<HealthCheck> for String {
 }
 
 impl MinatoConfig {
-    /// `start` から上位ディレクトリへ向かって `minato.toml` を探す。
+    /// Searches upwards from `start` for `minato.toml`.
     ///
-    /// 見つけたファイルのパスと、パース済みの設定を返す。
+    /// Returns the path found along with the parsed configuration.
     pub fn find(start: &Path) -> Result<(PathBuf, Self)> {
         let mut dir = Some(start);
         while let Some(current) = dir {
@@ -225,7 +225,7 @@ impl MinatoConfig {
         Ok(config)
     }
 
-    /// URL の接尾辞。`[project] domain` を省略した場合は `{name}.localhost`。
+    /// The URL suffix. `{name}.localhost` when `[project] domain` is unset.
     pub fn domain(&self) -> String {
         self.project
             .domain
@@ -239,19 +239,19 @@ impl MinatoConfig {
             .ok_or_else(|| Error::ServiceNotFound(name.to_string()))
     }
 
-    /// 構文としては正しい設定が、意味的に成立しているかを検査する。
+    /// Checks that a syntactically valid configuration also makes sense.
     pub fn validate(&self) -> Result<()> {
         if !naming::is_valid_label(&self.project.name) {
             return Err(Error::ConfigInvalid(format!(
-                "[project] name = \"{}\" は DNS ラベルとして使えません。\
-                 小文字・数字・ハイフンのみ、63 文字以内にしてください",
+                "[project] name = \"{}\" is not a usable DNS label. \
+                 Use lowercase letters, digits and hyphens, up to 63 characters",
                 self.project.name
             )));
         }
 
         if self.services.is_empty() {
             return Err(Error::ConfigInvalid(
-                "サービスが 1 つも定義されていません".to_string(),
+                "no services are defined".to_string(),
             ));
         }
 
@@ -266,20 +266,20 @@ impl MinatoConfig {
     fn validate_service(&self, name: &str, svc: &ServiceConfig) -> Result<()> {
         if !naming::is_valid_label(name) {
             return Err(Error::ConfigInvalid(format!(
-                "サービス名 `{name}` は DNS ラベルとして使えません。\
-                 小文字・数字・ハイフンのみ、63 文字以内にしてください"
+                "the service name `{name}` is not a usable DNS label. \
+                 Use lowercase letters, digits and hyphens, up to 63 characters"
             )));
         }
 
         match (&svc.image, &svc.build) {
             (Some(_), Some(_)) => {
                 return Err(Error::ConfigInvalid(format!(
-                    "サービス `{name}`: image と build は同時に指定できません"
+                    "service `{name}`: image and build are mutually exclusive"
                 )));
             }
             (None, None) => {
                 return Err(Error::ConfigInvalid(format!(
-                    "サービス `{name}`: image か build のどちらかが必要です"
+                    "service `{name}`: one of image or build is required"
                 )));
             }
             _ => {}
@@ -287,24 +287,24 @@ impl MinatoConfig {
 
         if svc.expose == Some(true) && svc.port.is_none() {
             return Err(Error::ConfigInvalid(format!(
-                "サービス `{name}`: expose = true には port の指定が必要です"
+                "service `{name}`: expose = true requires a port"
             )));
         }
 
         for dep in &svc.depends_on {
             let target = self.services.get(dep).ok_or_else(|| {
                 Error::ConfigInvalid(format!(
-                    "サービス `{name}`: depends_on に未定義のサービス `{dep}` が指定されています"
+                    "service `{name}`: depends_on refers to undefined service `{dep}`"
                 ))
             })?;
 
-            // 共有インスタンスが worktree 固有のインスタンスに依存すると、
-            // どの worktree の相手に繋ぐべきかが決まらない。
+            // A shared instance depending on a per-worktree one leaves no
+            // way to decide which worktree's instance to connect to.
             if svc.scope == ServiceScope::Project && target.scope == ServiceScope::Workspace {
                 return Err(Error::ConfigInvalid(format!(
-                    "サービス `{name}` (scope = \"project\") が \
-                     `{dep}` (scope = \"workspace\") に依存しています。\
-                     共有サービスは worktree 固有のサービスに依存できません"
+                    "service `{name}` (scope = \"project\") depends on \
+                     `{dep}` (scope = \"workspace\"). A shared service cannot \
+                     depend on a per-worktree one"
                 )));
             }
         }
@@ -326,7 +326,7 @@ impl MinatoConfig {
             .map(|k| (k.as_str(), Mark::Unvisited))
             .collect();
 
-        // 明示的なスタックで DFS する。パスを保持して循環を可読なメッセージにする。
+        // Explicit-stack DFS. The path is kept so the cycle can be named.
         for root in self.services.keys() {
             if marks[root.as_str()] != Mark::Unvisited {
                 continue;
@@ -337,7 +337,7 @@ impl MinatoConfig {
             marks[root.as_str()] = Mark::InProgress;
 
             while let Some(&node) = path.last() {
-                let index = *cursor.last().expect("cursor と path は同じ深さで積む");
+                let index = *cursor.last().expect("cursor and path are pushed in lockstep");
                 let deps = &self.services[node].depends_on;
 
                 if index >= deps.len() {
@@ -347,7 +347,7 @@ impl MinatoConfig {
                     continue;
                 }
 
-                *cursor.last_mut().expect("同上") += 1;
+                *cursor.last_mut().expect("as above") += 1;
                 let dep = deps[index].as_str();
 
                 match marks[dep] {
@@ -357,7 +357,7 @@ impl MinatoConfig {
                         let mut chain: Vec<&str> = path[start..].to_vec();
                         chain.push(dep);
                         return Err(Error::ConfigInvalid(format!(
-                            "depends_on が循環しています: {}",
+                            "depends_on has a cycle: {}",
                             chain.join(" -> ")
                         )));
                     }
@@ -373,9 +373,10 @@ impl MinatoConfig {
         Ok(())
     }
 
-    /// depends_on を満たす順にサービス名を並べる。
+    /// Orders service names so that dependencies come first.
     ///
-    /// [`Self::validate`] を通っていれば循環はないので、必ず全サービスを返す。
+    /// Every service is returned: [`Self::validate`] has already ruled out
+    /// cycles.
     pub fn startup_order(&self) -> Vec<&str> {
         let mut ordered: Vec<&str> = Vec::with_capacity(self.services.len());
         let mut visited: IndexMap<&str, bool> =
@@ -412,7 +413,7 @@ mod tests {
     use super::*;
 
     fn parse(text: &str) -> Result<MinatoConfig> {
-        let config: MinatoConfig = toml::from_str(text).expect("構文は正しい前提");
+        let config: MinatoConfig = toml::from_str(text).expect("syntax is assumed valid");
         config.validate()?;
         Ok(config)
     }
@@ -483,7 +484,7 @@ mod tests {
         assert_eq!(db.scope, ServiceScope::Project);
         assert!(
             !db.exposed(),
-            "expose = false なら port があっても公開しない"
+            "expose = false hides the service even with a port"
         );
         assert_eq!(db.health, Some(HealthCheck::Tcp("localhost:5432".into())));
     }
@@ -500,7 +501,7 @@ mod tests {
         "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("同時に指定できません"));
+        assert!(err.to_string().contains("mutually exclusive"));
     }
 
     #[test]
@@ -514,7 +515,7 @@ mod tests {
         "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("image か build"));
+        assert!(err.to_string().contains("one of image or build"));
     }
 
     #[test]
@@ -529,7 +530,7 @@ mod tests {
         "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("port の指定が必要"));
+        assert!(err.to_string().contains("requires a port"));
     }
 
     #[test]
@@ -544,7 +545,7 @@ mod tests {
         "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("未定義のサービス"));
+        assert!(err.to_string().contains("undefined service"));
     }
 
     #[test]
@@ -562,7 +563,7 @@ mod tests {
         "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("共有サービスは"));
+        assert!(err.to_string().contains("A shared service cannot"));
     }
 
     #[test]
@@ -580,7 +581,7 @@ mod tests {
         "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("循環"), "got: {err}");
+        assert!(err.to_string().contains("has a cycle"), "got: {err}");
     }
 
     #[test]
@@ -595,7 +596,7 @@ mod tests {
         "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("循環"), "got: {err}");
+        assert!(err.to_string().contains("has a cycle"), "got: {err}");
     }
 
     #[test]
@@ -609,7 +610,7 @@ mod tests {
         "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("DNS ラベル"));
+        assert!(err.to_string().contains("not a usable DNS label"));
     }
 
     #[test]
@@ -623,7 +624,7 @@ mod tests {
             porrt = 3000
         "#,
         );
-        assert!(result.is_err(), "typo は検出されるべき");
+        assert!(result.is_err(), "a typo must be caught");
     }
 
     #[test]
@@ -647,7 +648,7 @@ mod tests {
         let order = config.startup_order();
         assert_eq!(order.len(), 3);
 
-        let pos = |name: &str| order.iter().position(|s| *s == name).expect("含まれる");
+        let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
         assert!(pos("db") < pos("api"));
         assert!(pos("api") < pos("web"));
     }
@@ -674,9 +675,9 @@ mod tests {
         .expect("valid");
 
         let order = config.startup_order();
-        assert_eq!(order.len(), 4, "重複なく全サービスが並ぶ: {order:?}");
+        assert_eq!(order.len(), 4, "every service appears exactly once: {order:?}");
 
-        let pos = |name: &str| order.iter().position(|s| *s == name).expect("含まれる");
+        let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
         assert!(pos("db") < pos("api"));
         assert!(pos("db") < pos("worker"));
         assert!(pos("api") < pos("web"));

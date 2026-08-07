@@ -1,8 +1,8 @@
-//! daemon とクライアント（CLI / GUI）の唯一の接点。
+//! The single point of contact between the daemon and its clients.
 //!
-//! この crate に**人間向けの整形を持ち込まない**。表示は CLI と GUI が
-//! それぞれ担当する。同様に、クライアント側の crate が `minato-runtime` などの
-//! 実装に依存してはならない（`docs/DESIGN.md` §3, §13）。
+//! **No human-facing formatting belongs here.** Presentation is the CLI's
+//! and the GUI's job. Likewise, no client crate may depend on
+//! `minato-runtime` or any other implementation (`docs/DESIGN.md` §3, §13).
 
 pub mod codec;
 pub mod diagnostics;
@@ -20,5 +20,5 @@ pub use protocol::{ClientMessage, Outcome, PROTOCOL_VERSION, RequestId, ServerMe
 pub use request::{Request, Target};
 pub use response::{EnvInfo, Pong, Response, ServiceInfo, WorkspaceInfo};
 
-/// 便宜上の再エクスポート。クライアントが `minato-core` を直接引かずに済む。
+/// Re-exported for convenience, so clients need not pull in `minato-core`.
 pub use minato_core::{EnvScope, ServiceScope, ServiceState};

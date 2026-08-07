@@ -1,8 +1,9 @@
-//! 処理中に daemon が送出するイベント。
+//! Events the daemon emits while working.
 //!
-//! 1 リクエストに対して 0 個以上のイベントが流れ、最後に 1 つの応答が返る。
-//! CLI はこれをスピナーと行出力に、GUI は進捗バーとログペインに変換する。
-//! **同じイベント列から両方が作れること**が設計上の要件（`docs/DESIGN.md` §3）。
+//! A request yields zero or more events and then exactly one response. The
+//! CLI turns them into a spinner and printed lines; the GUI into a progress
+//! bar and a log pane. **Both must be derivable from the same event
+//! stream** — that is a design requirement (`docs/DESIGN.md` §3).
 
 use minato_core::ServiceState;
 use serde::{Deserialize, Serialize};
@@ -10,13 +11,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
-    /// 状況を伝えるログ行。
+    /// A line describing what is happening.
     Log { level: LogLevel, message: String },
 
-    /// 名前付きステップの進捗。
+    /// Progress of a named step.
     ///
-    /// `id` は安定した識別子で、GUI が同じステップの更新を追跡するのに使う。
-    /// `label` は表示用の文言。
+    /// `id` is a stable identifier the GUI uses to follow updates to the
+    /// same step; `label` is the text to show.
     Step {
         id: String,
         label: String,
@@ -24,13 +25,13 @@ pub enum Event {
         status: StepStatus,
     },
 
-    /// サービスの状態遷移。
+    /// A service changed state.
     ServiceState {
         service: String,
         state: ServiceState,
     },
 
-    /// コンテナやビルドの出力をそのまま転送する。
+    /// Container or build output, passed through verbatim.
     Output {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         service: Option<String>,
@@ -108,7 +109,7 @@ impl Event {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum StepStatus {
     Started,
-    /// 進行中の付随情報（ビルドの段数、ダウンロード量など）。
+    /// Incidental detail while running: build stages, bytes downloaded.
     Progress {
         message: String,
     },
@@ -116,14 +117,14 @@ pub enum StepStatus {
     Failed {
         reason: String,
     },
-    /// 実行不要だった場合。既に起動済みのサービスなど。
+    /// Nothing to do — an already-running service, for instance.
     Skipped {
         reason: String,
     },
 }
 
 impl StepStatus {
-    /// このステップがこれ以上更新されないか。
+    /// Whether this step will receive no further updates.
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -154,10 +155,10 @@ mod tests {
 
     #[test]
     fn step_flattens_status_onto_the_event() {
-        let event = Event::step_started("prepare-network", "ネットワークを作成");
+        let event = Event::step_started("prepare-network", "creating the network");
         let json = serde_json::to_string(&event).expect("serializes");
 
-        // status がネストせず同じ階層に出ることで、GUI 側の分岐が単純になる。
+        // Keeping status flat rather than nested simplifies the GUI's match.
         assert!(json.contains(r#""kind":"step""#), "got: {json}");
         assert!(json.contains(r#""status":"started""#), "got: {json}");
         assert!(json.contains(r#""id":"prepare-network""#), "got: {json}");
@@ -166,16 +167,16 @@ mod tests {
     #[test]
     fn roundtrips_every_variant() {
         let events = vec![
-            Event::info("起動しています"),
-            Event::warn("イメージが古い可能性があります"),
-            Event::error("接続できません"),
-            Event::step_started("pull", "イメージを取得"),
-            Event::step_done("pull", "イメージを取得"),
-            Event::step_failed("start", "コンテナを起動", "port in use"),
-            Event::step_skipped("pull", "イメージを取得", "既に存在します"),
+            Event::info("starting up"),
+            Event::warn("the image may be out of date"),
+            Event::error("cannot connect"),
+            Event::step_started("pull", "pulling the image"),
+            Event::step_done("pull", "pulling the image"),
+            Event::step_failed("start", "starting the container", "port in use"),
+            Event::step_skipped("pull", "pulling the image", "already present"),
             Event::Step {
                 id: "build".into(),
-                label: "ビルド".into(),
+                label: "building".into(),
                 status: StepStatus::Progress {
                     message: "3/8".into(),
                 },

@@ -1,7 +1,7 @@
-//! `minato doctor` の診断結果。
+//! The results of `minato doctor`.
 //!
-//! 「動いていない」だけでは何もできない。**必ず直し方を添える**。
-//! 人間はそれを実行し、エージェントは `fix` を読んで次の行動を決められる。
+//! "It is broken" helps nobody. **Always attach the fix.** A human runs it;
+//! an agent reads `fix` and decides what to do next.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ impl Diagnostics {
         Self { checks }
     }
 
-    /// 使用に支障がある項目があるか。
+    /// Whether anything blocks normal use.
     pub fn has_failures(&self) -> bool {
         self.checks
             .iter()
@@ -28,7 +28,7 @@ impl Diagnostics {
             .any(|check| check.status == CheckStatus::Warn)
     }
 
-    /// 直し方が判明している項目。
+    /// The checks with a known fix.
     pub fn fixes(&self) -> Vec<&Check> {
         self.checks
             .iter()
@@ -39,14 +39,14 @@ impl Diagnostics {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Check {
-    /// 安定した識別子。エージェントはこれで分岐する。
+    /// A stable identifier. Agents branch on this.
     pub id: String,
-    /// 人間向けの項目名。
+    /// The human-facing name of the check.
     pub title: String,
     pub status: CheckStatus,
-    /// 何が分かったか。
+    /// What was found.
     pub detail: String,
-    /// 直すために実行するコマンド。
+    /// The command that fixes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
 }
@@ -99,11 +99,11 @@ impl Check {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
-    /// 問題なし。
+    /// Nothing wrong.
     Ok,
-    /// 動くが、一部の機能が使えない。
+    /// Usable, but some features are unavailable.
     Warn,
-    /// このままでは使えない。
+    /// Unusable as things stand.
     Fail,
 }
 
@@ -124,8 +124,8 @@ mod tests {
     #[test]
     fn summarises_severity() {
         let diagnostics = Diagnostics::new(vec![
-            Check::ok("a", "A", "問題なし"),
-            Check::warn("b", "B", "一部使えない"),
+            Check::ok("a", "A", "fine"),
+            Check::warn("b", "B", "partly unavailable"),
         ]);
 
         assert!(!diagnostics.has_failures());
@@ -135,10 +135,10 @@ mod tests {
     #[test]
     fn collects_only_actionable_fixes() {
         let diagnostics = Diagnostics::new(vec![
-            // 直っているものの fix は出さない。
-            Check::ok("a", "A", "問題なし").with_fix("何もしなくてよい"),
-            Check::fail("b", "B", "壊れている").with_fix("sudo minato setup"),
-            Check::fail("c", "C", "直し方が分からない"),
+            // A passing check offers no fix.
+            Check::ok("a", "A", "fine").with_fix("nothing to do"),
+            Check::fail("b", "B", "broken").with_fix("sudo minato setup"),
+            Check::fail("c", "C", "no known fix"),
         ]);
 
         let fixes = diagnostics.fixes();
@@ -150,7 +150,7 @@ mod tests {
     fn roundtrips_on_the_wire() {
         let diagnostics = Diagnostics::new(vec![
             Check::ok("runtime", "Docker", "29.4.0"),
-            Check::fail("resolver", "DNS resolver", "未設置").with_fix("sudo minato setup"),
+            Check::fail("resolver", "DNS resolver", "not installed").with_fix("sudo minato setup"),
         ]);
 
         let json = serde_json::to_string(&diagnostics).expect("serializes");
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn omits_absent_fixes_on_the_wire() {
-        let json = serde_json::to_string(&Check::ok("a", "A", "問題なし")).expect("serializes");
+        let json = serde_json::to_string(&Check::ok("a", "A", "fine")).expect("serializes");
         assert!(!json.contains("fix"));
     }
 }

@@ -1,7 +1,9 @@
-//! Minato の依存グラフの底にある型と、設定・命名・状態の取り扱い。
+//! The types at the bottom of Minato's dependency graph: configuration,
+//! naming, and state.
 //!
-//! この crate は副作用の少ない土台に徹する。コンテナ操作やネットワークは
-//! `minato-runtime` / `minato-proxy` などが担当し、ここには持ち込まない。
+//! This crate stays a mostly side-effect-free foundation. Container
+//! operations and networking belong to `minato-runtime` / `minato-proxy`
+//! and must not leak in here.
 
 pub mod config;
 pub mod env;

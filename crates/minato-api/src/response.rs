@@ -1,7 +1,7 @@
-//! daemon からクライアントへの最終応答。
+//! The final response from the daemon to a client.
 //!
-//! ここに人間向けの整形済み文字列を入れてはいけない。表示は CLI と GUI が
-//! それぞれ担当する（`docs/DESIGN.md` §3 の原則）。
+//! No pre-formatted, human-facing strings belong here. Presentation is the
+//! CLI's and the GUI's job (`docs/DESIGN.md` §3).
 
 use std::path::PathBuf;
 
@@ -14,56 +14,55 @@ use crate::diagnostics::Diagnostics;
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Response {
     Pong(Pong),
-    /// 複数 workspace を返す操作（`ls`）。
+    /// Operations returning several workspaces (`ls`).
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
     },
-    /// 単一 workspace を返す操作（`new` / `up` / `down` / `status`）。
+    /// Operations returning one workspace (`new` / `up` / `down` / `status`).
     Workspace {
         workspace: WorkspaceInfo,
     },
-    /// 診断結果（`doctor`）。
+    /// Diagnostics (`doctor`).
     Diagnostics(Diagnostics),
-    /// 環境変数の一覧。
+    /// A listing of environment variables.
     Env {
         entries: Vec<EnvInfo>,
     },
-    /// コマンドの実行結果。出力は [`crate::Event::Output`] で流れる。
+    /// The result of a command. Its output arrives as [`crate::Event::Output`].
     Exec {
-        /// 実行したコマンドの終了コード。
+        /// The exit code of the command that was run.
         ///
-        /// CLI はこれをそのままプロセスの終了コードにする。
-        /// エージェントが `minato exec web -- pnpm test` の成否を
-        /// 判定できる必要があるため。
+        /// The CLI passes it through as its own exit code, so an agent can
+        /// judge `minato exec web -- pnpm test` by exit status alone.
         exit_code: i32,
     },
-    /// 返す値がない操作（`rm` / `shutdown`）。
+    /// Operations with nothing to return (`rm` / `shutdown`).
     Empty,
 }
 
-/// 環境変数 1 つ分。
+/// A single environment variable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvInfo {
     pub key: String,
-    /// 表示用の値。既定では伏せてある。
+    /// The value for display. Masked by default.
     pub value: String,
-    /// どの層で定義されたか。
+    /// Which layer defined it.
     pub scope: minato_core::EnvScope,
-    /// シークレット参照かどうか。
+    /// Whether this is a secret reference.
     #[serde(default)]
     pub secret: bool,
-    /// 参照の説明（`1Password (op://...)` など）。値そのものは含まない。
+    /// A description of the reference. Never the value itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pong {
-    /// daemon のバージョン。
+    /// The daemon's version.
     pub version: String,
-    /// 対応しているプロトコルバージョン。
+    /// The protocol version it speaks.
     pub protocol: u32,
-    /// 既定の runtime 実装（`docker` など）。
+    /// The default runtime implementation.
     pub runtime: String,
     pub uptime_secs: u64,
 }
@@ -71,7 +70,7 @@ pub struct Pong {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
     pub project: String,
-    /// URL に現れる workspace ラベル。main worktree では `None`。
+    /// The workspace label used in URLs. `None` for the main worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     pub branch: String,
@@ -81,7 +80,7 @@ pub struct WorkspaceInfo {
 }
 
 impl WorkspaceInfo {
-    /// 表示用の workspace 名。main worktree では `(main)` を使う。
+    /// The display name. `(main)` for the main worktree.
     pub fn display_name(&self) -> &str {
         self.workspace.as_deref().unwrap_or("(main)")
     }
@@ -97,21 +96,21 @@ pub struct ServiceInfo {
     pub state: ServiceState,
     pub scope: ServiceScope,
 
-    /// 発行された URL。プロキシが動く M1 以降で埋まる。
+    /// The issued URL. Present once the proxy is listening.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 
-    /// Cloudflare Tunnel 経由の URL。M4 以降。
+    /// The URL via Cloudflare Tunnel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel_url: Option<String>,
 
-    /// ホストから直接届く待ち受けアドレス（`127.0.0.1:49312`）。
+    /// The address reachable directly from the host (`127.0.0.1:49312`).
     ///
-    /// プロキシが入るまではこれが唯一のアクセス手段になる。
+    /// Without a proxy this is the only way in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 
-    /// コンテナ内のポート。
+    /// The port inside the container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
 
@@ -123,9 +122,9 @@ pub struct ServiceInfo {
 }
 
 impl ServiceInfo {
-    /// クライアントが利用者に見せるべきアクセス先。
+    /// What a client should show as the way in.
     ///
-    /// URL が発行されていればそれを、まだなら生の待ち受けアドレスを返す。
+    /// The URL when one has been issued, otherwise the raw address.
     pub fn access(&self) -> Option<String> {
         self.url
             .clone()
@@ -197,8 +196,8 @@ mod tests {
         };
 
         let json = serde_json::to_string(&info).expect("serializes");
-        assert!(!json.contains("tunnel_url"), "未使用のフィールドは出さない");
-        // `"scope":"workspace"` の値と紛れないよう、キーとして現れないことを見る。
+        assert!(!json.contains("tunnel_url"), "unused fields stay off the wire");
+        // Check for the key, not the value of `"scope":"workspace"`.
         assert!(!json.contains(r#""workspace":"#), "got: {json}");
     }
 }

@@ -1,8 +1,8 @@
-//! ワイヤ上のエラー表現。
+//! How errors travel on the wire.
 //!
-//! `minato_core::Error` をそのまま送らず、コード・メッセージ・対処方法の
-//! 3 つに分解する。`hint` はエージェントが次の行動を決めるための情報であり、
-//! 単なる装飾ではない。
+//! `minato_core::Error` is not sent as-is; it is split into a code, a
+//! message and a remedy. `hint` is what an agent uses to decide its next
+//! move — it is not decoration.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +11,7 @@ pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
 
-    /// どうすれば解消できるか。表示できるなら必ず表示する。
+    /// How to resolve it. Always shown when there is room.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
 }
@@ -54,33 +54,33 @@ impl std::error::Error for ApiError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
-    /// workspace / サービス / プロジェクトが見つからない。
+    /// No such workspace, service or project.
     NotFound,
-    /// 既に存在するため作成できない。
+    /// Already exists, so it cannot be created.
     AlreadyExists,
-    /// `minato.toml` が見つからない。
+    /// No `minato.toml` was found.
     ConfigNotFound,
-    /// `minato.toml` の内容が不正。
+    /// The contents of `minato.toml` are invalid.
     InvalidConfig,
-    /// git リポジトリの外で実行された。
+    /// Run outside a git repository.
     NotAGitRepository,
-    /// runtime（Docker など）に接続できない。
+    /// The runtime cannot be reached.
     RuntimeUnavailable,
-    /// runtime の操作が失敗した。
+    /// A runtime operation failed.
     RuntimeFailed,
-    /// この版では未実装の機能。
+    /// Not implemented in this version.
     Unsupported,
-    /// 呼び出し側によって中断された。
+    /// Cancelled by the caller.
     Cancelled,
-    /// 想定外の内部エラー。
+    /// An unexpected internal error.
     Internal,
 }
 
 impl ErrorCode {
-    /// CLI がプロセス終了コードとして返す値。
+    /// The value the CLI returns as its exit code.
     ///
-    /// エージェントが出力をパースせずに失敗の種類を判別できるようにする。
-    /// 1 は汎用エラー、2 は clap の usage エラーに予約されているため 4 から始める。
+    /// Lets an agent tell failures apart without parsing output. 1 is the
+    /// generic error and 2 is reserved for clap's usage error, so start at 4.
     pub fn exit_code(self) -> i32 {
         match self {
             Self::NotFound => 4,
@@ -96,7 +96,7 @@ impl ErrorCode {
         }
     }
 
-    /// 同じ操作を再試行して解決する見込みがあるか。
+    /// Whether retrying the same operation might succeed.
     pub fn is_retryable(self) -> bool {
         matches!(self, Self::RuntimeUnavailable | Self::RuntimeFailed)
     }
@@ -109,21 +109,21 @@ impl From<minato_core::Error> for ApiError {
         let message = err.to_string();
         match err {
             E::ConfigNotFound(_) => Self::new(ErrorCode::ConfigNotFound, message).with_hint(
-                "プロジェクトのルートで `minato init` を実行して minato.toml を作成してください",
+                "run `minato init` at the project root to create minato.toml",
             ),
             E::ConfigParse { .. } | E::ConfigInvalid(_) => {
                 Self::new(ErrorCode::InvalidConfig, message)
             }
             E::ConfigRead { .. } => Self::new(ErrorCode::InvalidConfig, message),
             E::NotAGitRepository(_) => Self::new(ErrorCode::NotAGitRepository, message)
-                .with_hint("git 管理下のディレクトリで実行してください"),
+                .with_hint("run this inside a git repository"),
             E::WorkspaceNotFound(_) => Self::new(ErrorCode::NotFound, message)
-                .with_hint("`minato ls` で利用できる workspace を確認してください"),
+                .with_hint("run `minato ls` to see the available workspaces"),
             E::ServiceNotFound(_) => Self::new(ErrorCode::NotFound, message)
-                .with_hint("minato.toml の [services] に定義されている名前を指定してください"),
+                .with_hint("use a name defined under [services] in minato.toml"),
             E::WorkspaceExists(_) => Self::new(ErrorCode::AlreadyExists, message),
             E::GitSpawn(_) => Self::new(ErrorCode::Internal, message)
-                .with_hint("git がインストールされ、PATH に含まれているか確認してください"),
+                .with_hint("check that git is installed and on PATH"),
             E::GitFailed { .. } => Self::new(ErrorCode::Internal, message),
             E::StateIo { .. } | E::StateCorrupt { .. } | E::NoHomeDirectory | E::Io(_) => {
                 Self::new(ErrorCode::Internal, message)
@@ -156,10 +156,10 @@ mod tests {
             let exit = code.exit_code();
             assert!(
                 seen.insert(exit),
-                "終了コード {exit} が重複している: {code:?}"
+                "duplicate exit code {exit}: {code:?}"
             );
-            assert_ne!(exit, 0, "エラーが成功扱いになっている: {code:?}");
-            assert_ne!(exit, 2, "2 は clap の usage エラーに予約: {code:?}");
+            assert_ne!(exit, 0, "an error must not look like success: {code:?}");
+            assert_ne!(exit, 2, "2 is reserved for clap usage errors: {code:?}");
         }
     }
 
@@ -168,8 +168,8 @@ mod tests {
         let err: ApiError = minato_core::Error::ConfigNotFound(PathBuf::from("/repo")).into();
         assert_eq!(err.code, ErrorCode::ConfigNotFound);
         assert!(
-            err.hint.expect("hint がある").contains("minato init"),
-            "次に何をすべきかを示す必要がある"
+            err.hint.expect("a hint is present").contains("minato init"),
+            "it must say what to do next"
         );
     }
 

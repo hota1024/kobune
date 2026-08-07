@@ -1,7 +1,7 @@
-//! 本物の DNS クエリを投げて応答を確かめる。
+//! Sends real DNS queries and checks the answers.
 //!
-//! `curl` が名前を引けるかどうかが M1 の成否を分けるので、
-//! 実際のワイヤフォーマットで検証する。
+//! Whether `curl` can resolve a name decides whether any of this works, so
+//! verify against the actual wire format.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -14,10 +14,10 @@ use minato_dns::{DnsConfig, serve};
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
 
-/// DNS サーバを起動して待ち受けアドレスを返す。
+/// Starts the server and returns the address it listens on.
 async fn spawn_dns(config: DnsConfig) -> SocketAddr {
-    // ポート 0 で bind して空きを見つけ、その番号を使い直す。
-    // serve() が UDP と TCP の両方を開くため、いったん解放する。
+    // Bind port 0 to find a free port, then reuse the number. serve()
+    // opens both UDP and TCP, so release it first.
     let probe = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     let addr = probe.local_addr().expect("addr");
     drop(probe);
@@ -27,11 +27,11 @@ async fn spawn_dns(config: DnsConfig) -> SocketAddr {
         let _ = serve(addr, config, shutdown).await;
     });
 
-    // 待ち受けが始まるまで少し待つ。
+    // Give the server a moment to start listening.
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(20)).await;
         if UdpSocket::bind(addr).await.is_err() {
-            // bind できない = サーバが掴んでいる。
+            // Cannot bind means the server holds it.
             break;
         }
     }
@@ -39,7 +39,7 @@ async fn spawn_dns(config: DnsConfig) -> SocketAddr {
     addr
 }
 
-/// 1 問い合わせを送って応答を受け取る。
+/// Sends one query and reads the answer.
 async fn query(server: SocketAddr, name: &str, record_type: RecordType) -> Message {
     let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
 
@@ -52,28 +52,28 @@ async fn query(server: SocketAddr, name: &str, record_type: RecordType) -> Messa
 
     let mut question = Query::new();
     question
-        .set_name(Name::from_ascii(name).expect("名前として妥当"))
+        .set_name(Name::from_ascii(name).expect("a valid name"))
         .set_query_type(record_type)
         .set_query_class(DNSClass::IN);
     message.add_query(question);
 
-    let bytes = message.to_bytes().expect("符号化できる");
-    socket.send_to(&bytes, server).await.expect("送れる");
+    let bytes = message.to_bytes().expect("encodes");
+    socket.send_to(&bytes, server).await.expect("sends");
 
     let mut buffer = vec![0u8; 4096];
     let (len, _) = tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut buffer))
         .await
-        .expect("応答が返る")
-        .expect("受け取れる");
+        .expect("an answer arrives")
+        .expect("receives");
 
-    Message::from_bytes(&buffer[..len]).expect("復号できる")
+    Message::from_bytes(&buffer[..len]).expect("decodes")
 }
 
 #[tokio::test]
 async fn resolves_nested_localhost_names_to_loopback() {
     let server = spawn_dns(DnsConfig::default()).await;
 
-    // これが引けないと curl が使えず、エージェントが確認できない。
+    // Without this curl is useless and an agent cannot verify anything.
     let response = query(server, "web.feat-1.myapp.localhost.", RecordType::A).await;
 
     assert_eq!(response.response_code(), ResponseCode::NoError);
@@ -81,14 +81,14 @@ async fn resolves_nested_localhost_names_to_loopback() {
 
     match response.answers()[0].data() {
         Some(RData::A(address)) => assert_eq!(address.0, Ipv4Addr::LOCALHOST),
-        other => panic!("A レコードが返るべき: {other:?}"),
+        other => panic!("expected an A record: {other:?}"),
     }
 }
 
 #[tokio::test]
 async fn resolves_unknown_hosts_too() {
-    // ルートが無くても解決する。プロキシまで届かせて 404 で案内する方が、
-    // 名前解決の失敗より切り分けやすい。
+    // Resolves even without a route. Reaching the proxy for a 404 is far
+    // easier to diagnose than a name that does not resolve.
     let server = spawn_dns(DnsConfig::default()).await;
     let response = query(server, "never-created.myapp.localhost.", RecordType::A).await;
 
@@ -98,8 +98,8 @@ async fn resolves_unknown_hosts_too() {
 
 #[tokio::test]
 async fn resolves_aaaa_to_ipv6_loopback() {
-    // プロキシは ::1 でも待ち受ける。答えないとクライアントが A に
-    // フォールバックするまで一往復ぶん遅れる。
+    // The proxy also listens on ::1. Staying silent costs a round trip
+    // while the client falls back to A.
     let server = spawn_dns(DnsConfig::default()).await;
     let response = query(server, "web.myapp.localhost.", RecordType::AAAA).await;
 
@@ -110,7 +110,7 @@ async fn resolves_aaaa_to_ipv6_loopback() {
         Some(RData::AAAA(address)) => {
             assert_eq!(address.0, std::net::Ipv6Addr::LOCALHOST)
         }
-        other => panic!("AAAA レコードが返るべき: {other:?}"),
+        other => panic!("expected an AAAA record: {other:?}"),
     }
 }
 
@@ -135,14 +135,14 @@ async fn serves_configured_suffixes() {
     assert_eq!(served.response_code(), ResponseCode::NoError);
     assert_eq!(served.answers().len(), 1);
 
-    // 既定の localhost は設定から外したので受け持たない。
+    // localhost was left out of the configuration, so it is not served.
     let not_served = query(server, "web.myapp.localhost.", RecordType::A).await;
     assert_eq!(not_served.response_code(), ResponseCode::NXDomain);
 }
 
 #[tokio::test]
 async fn preserves_the_query_id() {
-    // ID が一致しないと resolver は応答を捨てる。
+    // A resolver discards answers whose ID does not match.
     let server = spawn_dns(DnsConfig::default()).await;
     let response = query(server, "web.myapp.localhost.", RecordType::A).await;
 

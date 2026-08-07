@@ -1,8 +1,8 @@
-//! クライアントと daemon がやりとりするメッセージ。
+//! The messages exchanged between a client and the daemon.
 //!
-//! 1 本の接続の上で複数のリクエストを多重化できるよう、すべてのメッセージが
-//! [`RequestId`] を持つ。1 つのリクエストに対して 0 個以上の [`Event`] が流れ、
-//! 最後にちょうど 1 つの応答が返って終端する。
+//! Every message carries a [`RequestId`] so that several requests can be
+//! multiplexed over one connection. A request produces zero or more
+//! [`Event`]s and is terminated by exactly one response.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +11,10 @@ use crate::event::Event;
 use crate::request::Request;
 use crate::response::Response;
 
-/// プロトコルの互換性を判定する番号。
+/// The number that decides protocol compatibility.
 ///
-/// 破壊的変更を入れるたびに増やす。クライアントは接続直後の [`Request::Ping`] で
-/// 照合し、一致しなければ daemon の再起動を促す。
+/// Bumped on every breaking change. Clients compare it during the initial
+/// [`Request::Ping`] and ask for a daemon restart on mismatch.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -34,8 +34,8 @@ pub enum ClientMessage {
         id: RequestId,
         request: Request,
     },
-    /// 進行中の処理の中断を要求する。daemon は可能な範囲で打ち切り、
-    /// [`crate::error::ErrorCode::Cancelled`] の応答で終端する。
+    /// Asks to abort work in progress. The daemon stops what it can and
+    /// terminates with [`crate::error::ErrorCode::Cancelled`].
     Cancel {
         id: RequestId,
     },
@@ -44,18 +44,18 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerMessage {
-    /// 処理中の中間報告。何個でも流れる。
+    /// An interim report. Any number may arrive.
     Event { id: RequestId, event: Event },
 
-    /// リクエストの終端。同じ `id` について 1 度だけ送られる。
+    /// Terminates a request. Sent exactly once per `id`.
     Response {
         id: RequestId,
         #[serde(flatten)]
         outcome: Outcome,
     },
 
-    /// リクエストに紐づかない致命的なエラー（プロトコル違反など）。
-    /// これを送ったあと daemon は接続を閉じる。
+    /// A fatal error not tied to any request, such as a protocol violation.
+    /// The daemon closes the connection after sending this.
     Fatal { message: String },
 }
 
@@ -78,7 +78,7 @@ impl ServerMessage {
         Self::Event { id, event }
     }
 
-    /// このメッセージがリクエストを終端させるか。
+    /// Whether this message terminates its request.
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Response { .. } | Self::Fatal { .. })
     }
@@ -112,15 +112,15 @@ mod tests {
     #[test]
     fn request_id_is_transparent_on_the_wire() {
         let json = serde_json::to_string(&RequestId(7)).expect("serializes");
-        assert_eq!(json, "7", "ラップせずそのまま数値で送る");
+        assert_eq!(json, "7", "sent as a bare number, not wrapped");
     }
 
     #[test]
     fn multiplexes_events_and_response_under_one_id() {
         let id = RequestId(1);
         let messages = vec![
-            ServerMessage::event(id, Event::step_started("pull", "取得")),
-            ServerMessage::event(id, Event::step_done("pull", "取得")),
+            ServerMessage::event(id, Event::step_started("pull", "pulling")),
+            ServerMessage::event(id, Event::step_done("pull", "pulling")),
             ServerMessage::ok(
                 id,
                 Response::Pong(Pong {
@@ -133,7 +133,7 @@ mod tests {
         ];
 
         let terminal_count = messages.iter().filter(|m| m.is_terminal()).count();
-        assert_eq!(terminal_count, 1, "終端は 1 つだけ");
+        assert_eq!(terminal_count, 1, "exactly one terminator");
 
         for message in &messages {
             let json = serde_json::to_string(message).expect("serializes");
@@ -146,7 +146,7 @@ mod tests {
     fn outcome_flattens_beside_the_id() {
         let message = ServerMessage::err(
             RequestId(3),
-            ApiError::not_found("workspace が見つかりません"),
+            ApiError::not_found("no such workspace"),
         );
         let json = serde_json::to_string(&message).expect("serializes");
 
@@ -163,7 +163,7 @@ mod tests {
         assert!(ok.into_result().is_ok());
 
         let err = Outcome::Error {
-            error: ApiError::new(ErrorCode::NotFound, "なし"),
+            error: ApiError::new(ErrorCode::NotFound, "missing"),
         };
         let error = err.into_result().unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound);
@@ -188,7 +188,7 @@ mod tests {
         for message in messages {
             let json = serde_json::to_string(&message).expect("serializes");
             let _: ClientMessage = serde_json::from_str(&json).expect("deserializes");
-            assert!(!json.contains('\n'), "1 行に収まる必要がある: {json}");
+            assert!(!json.contains('\n'), "must fit on one line: {json}");
         }
     }
 }

@@ -1,7 +1,7 @@
-//! Unix socket 上のフレーミング。
+//! Framing over the Unix socket.
 //!
-//! 1 メッセージ 1 行の JSON（JSONL）。バイナリを運ぶ必要がなく、
-//! `socat` などで手動デバッグできる利点が大きいためこの形式にする。
+//! One JSON message per line (JSONL). Nothing binary needs to travel here,
+//! and being able to debug by hand with `socat` is worth a lot.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -9,10 +9,10 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
-    #[error("接続の入出力に失敗しました: {0}")]
+    #[error("connection I/O failed: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("メッセージを解釈できません: {source}\n受信した行: {line}")]
+    #[error("cannot decode the message: {source}\nreceived: {line}")]
     Decode {
         line: String,
         #[source]
@@ -20,9 +20,9 @@ pub enum CodecError {
     },
 }
 
-/// メッセージを 1 行書き出して flush する。
+/// Writes one message as a line and flushes.
 ///
-/// `serde_json::to_string` は改行を含まないため、行の区切りが壊れることはない。
+/// `serde_json::to_string` never emits a newline, so the framing holds.
 pub async fn write_message<W, T>(writer: &mut W, message: &T) -> Result<(), CodecError>
 where
     W: AsyncWrite + Unpin,
@@ -39,10 +39,10 @@ where
     Ok(())
 }
 
-/// 行区切りのメッセージを読み出す。
+/// Reads line-delimited messages.
 ///
-/// 行長の上限は設けていない。ローカルの Unix socket のみを相手にし、
-/// 送り手も自分自身であるため。ネットワーク越しに開く場合はここに上限が要る。
+/// No line-length limit: the only peer is a local Unix socket and the
+/// sender is us. Exposing this over a network would need one.
 pub struct MessageStream<R> {
     reader: BufReader<R>,
     line: String,
@@ -56,9 +56,9 @@ impl<R: AsyncRead + Unpin> MessageStream<R> {
         }
     }
 
-    /// 次のメッセージを読む。接続が閉じられた場合は `None`。
+    /// Reads the next message, or `None` once the peer closes.
     ///
-    /// 空行は読み飛ばす。
+    /// Blank lines are skipped.
     pub async fn recv<T: DeserializeOwned>(&mut self) -> Result<Option<T>, CodecError> {
         loop {
             self.line.clear();
@@ -98,23 +98,23 @@ mod tests {
             },
         )
         .await
-        .expect("書ける");
+        .expect("writes");
 
-        assert!(buffer.ends_with(b"\n"), "行区切りで終わる");
+        assert!(buffer.ends_with(b"\n"), "ends with the line separator");
 
         let mut stream = MessageStream::new(buffer.as_slice());
         let message: ClientMessage = stream
             .recv()
             .await
-            .expect("読める")
-            .expect("メッセージがある");
+            .expect("reads")
+            .expect("a message is present");
 
         match message {
             ClientMessage::Request { id, request } => {
                 assert_eq!(id, RequestId(1));
                 assert!(matches!(request, Request::Ping));
             }
-            other => panic!("想定外: {other:?}"),
+            other => panic!("unexpected: {other:?}"),
         }
     }
 
@@ -130,7 +130,7 @@ mod tests {
                 },
             )
             .await
-            .expect("書ける");
+            .expect("writes");
         }
 
         let mut stream = MessageStream::new(buffer.as_slice());
@@ -138,22 +138,22 @@ mod tests {
             let message: ClientMessage = stream
                 .recv()
                 .await
-                .expect("読める")
-                .expect("メッセージがある");
+                .expect("reads")
+                .expect("a message is present");
             match message {
                 ClientMessage::Request { id, .. } => assert_eq!(id, RequestId(expected)),
-                other => panic!("想定外: {other:?}"),
+                other => panic!("unexpected: {other:?}"),
             }
         }
 
-        let end: Option<ClientMessage> = stream.recv().await.expect("読める");
-        assert!(end.is_none(), "終端では None を返す");
+        let end: Option<ClientMessage> = stream.recv().await.expect("reads");
+        assert!(end.is_none(), "the end of the stream yields None");
     }
 
     #[tokio::test]
     async fn returns_none_on_empty_input() {
         let mut stream = MessageStream::new(&[][..]);
-        let message: Option<ClientMessage> = stream.recv().await.expect("読める");
+        let message: Option<ClientMessage> = stream.recv().await.expect("reads");
         assert!(message.is_none());
     }
 
@@ -162,10 +162,10 @@ mod tests {
         let input = b"\n\n{\"kind\":\"cancel\",\"id\":5}\n";
         let mut stream = MessageStream::new(&input[..]);
 
-        let message: ClientMessage = stream.recv().await.expect("読める").expect("ある");
+        let message: ClientMessage = stream.recv().await.expect("reads").expect("present");
         match message {
             ClientMessage::Cancel { id } => assert_eq!(id, RequestId(5)),
-            other => panic!("想定外: {other:?}"),
+            other => panic!("unexpected: {other:?}"),
         }
     }
 
@@ -178,7 +178,7 @@ mod tests {
         let text = err.to_string();
         assert!(
             text.contains("{not json}"),
-            "デバッグできるよう問題の行を含める: {text}"
+            "include the offending line so it can be debugged: {text}"
         );
     }
 }
