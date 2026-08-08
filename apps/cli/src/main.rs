@@ -370,7 +370,10 @@ fn restore_sigpipe() {
 fn wants_update_notice(command: &Command) -> bool {
     !matches!(
         command,
-        Command::Update { .. } | Command::Completions { .. }
+        // `uninstall` has just removed the binary, and often the cache
+        // the check reads, so it would go to GitHub to recommend
+        // reinstalling something the user has this second thrown away.
+        Command::Update { .. } | Command::Completions { .. } | Command::Uninstall { .. }
     )
 }
 
@@ -899,12 +902,32 @@ async fn handle_uninstall(
     if let Some(connection) = &mut connection {
         let progress = (!cli.json).then(ui::Progress::start);
 
+        // `call_until` rather than `call`, for the reason every other
+        // long-running request uses it: Ctrl-C should ask the daemon to
+        // stop and wait for its answer. Dropping the connection here would
+        // leave it destroying workspaces for a CLI that has gone, and skip
+        // everything below — the privileged steps, the shutdown, the
+        // files — leaving a machine half uninstalled and unreported.
         let outcome = connection
-            .call(Request::Purge { dry_run: false }, |event| {
-                if let Some(progress) = &progress {
-                    progress.handle(&event);
-                }
-            })
+            .call_until(
+                Request::Purge { dry_run: false },
+                |event| {
+                    if let Some(progress) = &progress {
+                        progress.handle(&event);
+                    }
+                },
+                {
+                    let progress = progress.clone();
+                    async move {
+                        let _ = tokio::signal::ctrl_c().await;
+                        let line = ui::note("stopping — the daemon is finishing what it can");
+                        match &progress {
+                            Some(progress) => progress.say(line),
+                            None => ui::notice(vec![line]),
+                        }
+                    }
+                },
+            )
             .await;
 
         if let Some(progress) = &progress {
@@ -932,7 +955,7 @@ async fn handle_uninstall(
     // with it installed is immediately followed by launchd starting the
     // daemon again, which would recreate the state directory a moment
     // before it was deleted.
-    let privileged = run_privileged(&plan, yes);
+    let privileged = run_privileged(&plan, yes, cli.json);
 
     // Now nothing will restart it, so it can go. This releases the socket
     // and stops it writing the state file back out from memory.
@@ -940,7 +963,21 @@ async fn handle_uninstall(
         let _ = connection.request(Request::Shutdown).await;
     }
 
-    let failures = uninstall::remove_files(&plan);
+    let removed = uninstall::remove_files(&plan);
+
+    // A file root owns is a second round of privileged work, found only by
+    // trying. Running it now keeps the whole thing to one password prompt
+    // from the user's point of view.
+    let mut privileged = privileged;
+    if !removed.needs_root.is_empty() {
+        let second = uninstall::Plan {
+            files: Vec::new(),
+            privileged: removed.needs_root,
+        };
+        privileged.extend(run_privileged(&second, yes, cli.json));
+    }
+
+    let failures = removed.failures;
 
     if cli.json {
         output::print_json(&as_json(true, &failures, &privileged));
@@ -948,11 +985,23 @@ async fn handle_uninstall(
         ui::uninstall_done(&failures, &privileged);
     }
 
-    Ok(if failures.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    // Anything left undone is a failure, whichever half it is in. An
+    // `uninstall --yes` from CI that could not run the privileged steps
+    // leaves the LaunchDaemon installed — socket-activated on 80/443/53,
+    // pointing at a binary that has just been deleted — and the CA still
+    // trusted. Exiting 0 there would report that as a clean uninstall.
+    let stranded = daemon
+        .as_ref()
+        .map(|report| !report.stranded.is_empty())
+        .unwrap_or(false);
+
+    Ok(
+        if failures.is_empty() && privileged.is_empty() && !stranded {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        },
+    )
 }
 
 /// Runs the steps that need root, and returns whatever is left to do.
@@ -961,7 +1010,7 @@ async fn handle_uninstall(
 /// agent or a pipe it would hang at the prompt with nothing to say —
 /// exactly the failure `minato setup` exists to avoid — so there the
 /// commands are handed back to be run by hand.
-fn run_privileged(plan: &uninstall::Plan, yes: bool) -> Vec<uninstall::Privileged> {
+fn run_privileged(plan: &uninstall::Plan, yes: bool, json: bool) -> Vec<uninstall::Privileged> {
     use std::io::IsTerminal;
 
     if plan.privileged.is_empty() {
@@ -986,7 +1035,7 @@ fn run_privileged(plan: &uninstall::Plan, yes: bool) -> Vec<uninstall::Privilege
         let failed: Vec<String> = step
             .commands
             .iter()
-            .filter(|command| !run_shell(command))
+            .filter(|command| !run_shell(command, json))
             .cloned()
             .collect();
 
@@ -1006,10 +1055,19 @@ fn run_privileged(plan: &uninstall::Plan, yes: bool) -> Vec<uninstall::Privilege
 /// Through `sh -c` because the commands are pipelines — `printf … | sudo
 /// tee …` — and they are the same strings `minato setup` prints, so what
 /// runs is what the documentation says runs.
-fn run_shell(command: &str) -> bool {
-    std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
+fn run_shell(command: &str, quiet_stdout: bool) -> bool {
+    let mut shell = std::process::Command::new("sh");
+    shell.arg("-c").arg(command);
+
+    // `update-ca-certificates` and friends write to stdout, which under
+    // `--json` is the stream carrying the one document this command
+    // promises. Their output is worth keeping, so it moves to stderr
+    // rather than being thrown away.
+    if quiet_stdout {
+        shell.stdout(std::process::Stdio::null());
+    }
+
+    shell
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -1625,6 +1683,26 @@ mod tests {
             cli.command,
             Command::Uninstall { dry_run: true, .. }
         ));
+    }
+
+    #[test]
+    fn uninstalling_does_not_recommend_reinstalling() {
+        // The binary has just been deleted, and often the cache the check
+        // reads with it.
+        assert!(!wants_update_notice(&Command::Uninstall {
+            yes: true,
+            dry_run: false
+        }));
+
+        // A dry run removed nothing, but the notice would still land
+        // under a list the user is about to act on.
+        assert!(!wants_update_notice(&Command::Uninstall {
+            yes: false,
+            dry_run: true
+        }));
+
+        // Everything else still gets it.
+        assert!(wants_update_notice(&Command::Status));
     }
 
     #[test]
