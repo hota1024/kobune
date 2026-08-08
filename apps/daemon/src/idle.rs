@@ -1,27 +1,28 @@
-//! 最終アクセス時刻の記録と、アイドル判定。
+//! Recording last-access times, and deciding what counts as idle.
 //!
-//! これがあるおかげで worktree を何個作っても、実行中のコンテナは
-//! 触っているものだけになる。
+//! This is what keeps the running containers down to the ones actually in
+//! use, however many worktrees pile up.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-/// アイドル判定を回す間隔。
+/// How often the idle sweep runs.
 ///
-/// 短くしても意味がない。`idle_timeout` の最小が分単位のため、
-/// 30 秒ごとに見れば十分で、無駄な runtime への問い合わせも避けられる。
+/// There is nothing to gain from going faster: the smallest `idle_timeout`
+/// is measured in minutes, so every 30 seconds is plenty, and it spares
+/// the runtime a stream of pointless queries.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
-/// ホスト名ごとの最終アクセス時刻。
+/// The last time each host was accessed.
 ///
-/// プロキシがリクエストのたびに [`IdleTracker::touch`] を呼ぶため、
-/// **速くなければならない**。書き込みは短く済ませ、I/O はしない。
+/// The proxy calls [`IdleTracker::touch`] on every request, so this **has
+/// to be fast**: keep writes short and do no I/O.
 #[derive(Default)]
 pub struct IdleTracker {
     last_access: RwLock<HashMap<String, Instant>>,
-    /// 起動処理中のホスト。同じホストへの同時リクエストで
-    /// 二重に起動しないようにする。
+    /// Hosts currently starting. Keeps concurrent requests for the same
+    /// host from starting it twice.
     starting: Mutex<HashMap<String, ()>>,
 }
 
@@ -30,34 +31,36 @@ impl IdleTracker {
         Self::default()
     }
 
-    /// アクセスがあったことを記録する。
+    /// Records an access.
     pub fn touch(&self, host: &str) {
         let now = Instant::now();
 
-        // 既にある鍵なら読みロックで済ませたいところだが、
-        // 値の更新には書きロックが要る。保持時間は極小に抑える。
+        // A read lock would do for a key that is already there, but
+        // updating the value needs a write lock. Hold it as briefly as
+        // possible.
         if let Ok(mut guard) = self.last_access.write() {
             guard.insert(host.to_ascii_lowercase(), now);
         }
     }
 
-    /// 最後にアクセスされてからの経過時間。記録が無ければ `None`。
+    /// How long since the last access. `None` when there is no record.
     pub fn idle_for(&self, host: &str) -> Option<Duration> {
         let guard = self.last_access.read().ok()?;
         guard.get(&host.to_ascii_lowercase()).map(|at| at.elapsed())
     }
 
-    /// 記録を消す。サービスを停止したときに呼ぶ。
+    /// Forgets a host. Called when its service stops.
     pub fn forget(&self, host: &str) {
         if let Ok(mut guard) = self.last_access.write() {
             guard.remove(&host.to_ascii_lowercase());
         }
     }
 
-    /// 起動処理を始める権利を取る。
+    /// Claims the right to start a host.
     ///
-    /// 同じホストに同時にリクエストが来ても、起動するのは 1 つだけ。
-    /// 取れた場合は [`StartGuard`] が返り、drop で解放される。
+    /// However many requests arrive for the same host at once, only one
+    /// start happens. A successful claim returns a [`StartGuard`], which
+    /// releases on drop.
     pub fn begin_start(&self, host: &str) -> Option<StartGuard<'_>> {
         let key = host.to_ascii_lowercase();
         let mut guard = self.starting.lock().ok()?;
@@ -77,7 +80,7 @@ impl IdleTracker {
     }
 }
 
-/// 起動処理中であることを示す。drop されると解除される。
+/// Marks a host as starting. Releases on drop.
 pub struct StartGuard<'a> {
     tracker: &'a IdleTracker,
     key: String,
@@ -100,13 +103,15 @@ mod tests {
 
         tracker.touch("web.myapp.localhost");
 
-        let idle = tracker.idle_for("web.myapp.localhost").expect("記録がある");
+        let idle = tracker
+            .idle_for("web.myapp.localhost")
+            .expect("has a record");
         assert!(idle < Duration::from_secs(1));
     }
 
     #[test]
     fn host_matching_ignores_case() {
-        // Host ヘッダの大文字小文字はクライアント任せ。
+        // The casing of a Host header is up to the client.
         let tracker = IdleTracker::new();
         tracker.touch("WEB.MyApp.localhost");
 
@@ -115,16 +120,20 @@ mod tests {
 
     #[test]
     fn idle_time_grows_from_the_last_touch() {
-        // アイドル判定はこの値だけを見る。触り直せば 0 に戻る必要がある。
+        // The idle sweep reads nothing else, so touching has to reset it.
         let tracker = IdleTracker::new();
         tracker.touch("web.myapp.localhost");
         std::thread::sleep(Duration::from_millis(20));
 
-        let before = tracker.idle_for("web.myapp.localhost").expect("記録がある");
+        let before = tracker
+            .idle_for("web.myapp.localhost")
+            .expect("has a record");
         assert!(before >= Duration::from_millis(20));
 
         tracker.touch("web.myapp.localhost");
-        let after = tracker.idle_for("web.myapp.localhost").expect("記録がある");
+        let after = tracker
+            .idle_for("web.myapp.localhost")
+            .expect("has a record");
         assert!(after < before);
     }
 
@@ -139,16 +148,16 @@ mod tests {
 
     #[test]
     fn only_one_start_can_be_in_flight() {
-        // 同じホストに同時にリクエストが来ても、起動は 1 回だけにする。
+        // Concurrent requests for one host must start it only once.
         let tracker = IdleTracker::new();
 
         let first = tracker.begin_start("web.myapp.localhost");
         assert!(first.is_some());
 
         let second = tracker.begin_start("web.myapp.localhost");
-        assert!(second.is_none(), "2 つ目は取れない");
+        assert!(second.is_none(), "the second claim fails");
 
-        // 別のホストは独立して起動できる。
+        // A different host starts independently.
         assert!(tracker.begin_start("api.myapp.localhost").is_some());
     }
 
@@ -157,12 +166,14 @@ mod tests {
         let tracker = IdleTracker::new();
 
         {
-            let _guard = tracker.begin_start("web.myapp.localhost").expect("取れる");
+            let _guard = tracker
+                .begin_start("web.myapp.localhost")
+                .expect("claims it");
         }
 
         assert!(
             tracker.begin_start("web.myapp.localhost").is_some(),
-            "失敗して解放されたら次が起動を試せる必要がある"
+            "after a failed start is released, the next one may try"
         );
     }
 }

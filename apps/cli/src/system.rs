@@ -68,7 +68,11 @@ fn check_ca_trust(ca_path: &Path) -> Check {
     let title = "local CA trust".to_string();
 
     if !ca_path.is_file() {
-        return Check::warn("ca-trust", title, "the CA has not been generated yet".to_string());
+        return Check::warn(
+            "ca-trust",
+            title,
+            "the CA has not been generated yet".to_string(),
+        );
     }
 
     if !cfg!(target_os = "macos") {
@@ -121,9 +125,9 @@ fn check_resolution(suffix: &str) -> Check {
     };
 
     if addresses.is_empty() {
-        return Check::fail("resolution", title, "resolved to nothing".to_string()).with_fix(format!(
-            "follow `minato setup` to install /etc/resolver/{suffix}"
-        ));
+        return Check::fail("resolution", title, "resolved to nothing".to_string()).with_fix(
+            format!("follow `minato setup` to install /etc/resolver/{suffix}"),
+        );
     }
 
     let loopback_v4 = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);

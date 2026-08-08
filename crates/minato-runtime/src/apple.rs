@@ -207,7 +207,10 @@ impl AppleContainerRuntime {
     fn ensure_volume_dir(&self, project: &str, name: &str) -> Result<PathBuf> {
         let path = self.volume_root.join(project).join(name);
         std::fs::create_dir_all(&path).map_err(|err| {
-            RuntimeError::failed(format!("creating volume storage at {}", path.display()), err)
+            RuntimeError::failed(
+                format!("creating volume storage at {}", path.display()),
+                err,
+            )
         })?;
         Ok(path)
     }
@@ -408,12 +411,20 @@ impl Runtime for AppleContainerRuntime {
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
         if let Err(err) = self.run(&arg_refs).await {
-            events.step_failed("start", format!("starting {}", spec.name()), err.to_string());
+            events.step_failed(
+                "start",
+                format!("starting {}", spec.name()),
+                err.to_string(),
+            );
             return Err(err);
         }
 
         if let Err(err) = self.run(&["start", &name]).await {
-            events.step_failed("start", format!("starting {}", spec.name()), err.to_string());
+            events.step_failed(
+                "start",
+                format!("starting {}", spec.name()),
+                err.to_string(),
+            );
             return Err(err);
         }
 
@@ -454,20 +465,12 @@ impl Runtime for AppleContainerRuntime {
 
     async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
         let Some(record) = self.find_container(key).await? else {
-            events.step_skipped(
-                "stop",
-                format!("stopping {}", key.service),
-                "not running",
-            );
+            events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
         };
 
         if !record.is_running() {
-            events.step_skipped(
-                "stop",
-                format!("stopping {}", key.service),
-                "not running",
-            );
+            events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
         }
 
@@ -547,7 +550,9 @@ impl Runtime for AppleContainerRuntime {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|err| RuntimeError::failed(format!("reading logs for {}", key.service), err))?;
+            .map_err(|err| {
+                RuntimeError::failed(format!("reading logs for {}", key.service), err)
+            })?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -913,7 +918,11 @@ mod tests {
         let record = &parse_container_list(&json).expect("parses")[0];
 
         assert_eq!(record.state(), ServiceState::Stopped);
-        assert_eq!(record.endpoint(Some(3000)), None, "a stopped container has no usable IP");
+        assert_eq!(
+            record.endpoint(Some(3000)),
+            None,
+            "a stopped container has no usable IP"
+        );
     }
 
     #[test]

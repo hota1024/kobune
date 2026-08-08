@@ -320,8 +320,7 @@ mod tests {
         let mut reader = MessageStream::new(read_half);
 
         for batch in responses {
-            let Some(_request): Option<ClientMessage> = reader.recv().await.expect("reads")
-            else {
+            let Some(_request): Option<ClientMessage> = reader.recv().await.expect("reads") else {
                 return;
             };
 
@@ -386,7 +385,10 @@ mod tests {
             matches!(err, ClientError::VersionMismatch { .. }),
             "got: {err}"
         );
-        assert!(err.to_string().contains("Restart"), "say how to fix it: {err}");
+        assert!(
+            err.to_string().contains("Restart"),
+            "say how to fix it: {err}"
+        );
     }
 
     #[tokio::test]

@@ -108,9 +108,8 @@ impl From<minato_core::Error> for ApiError {
 
         let message = err.to_string();
         match err {
-            E::ConfigNotFound(_) => Self::new(ErrorCode::ConfigNotFound, message).with_hint(
-                "run `minato init` at the project root to create minato.toml",
-            ),
+            E::ConfigNotFound(_) => Self::new(ErrorCode::ConfigNotFound, message)
+                .with_hint("run `minato init` at the project root to create minato.toml"),
             E::ConfigParse { .. } | E::ConfigInvalid(_) => {
                 Self::new(ErrorCode::InvalidConfig, message)
             }
@@ -154,10 +153,7 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for code in codes {
             let exit = code.exit_code();
-            assert!(
-                seen.insert(exit),
-                "duplicate exit code {exit}: {code:?}"
-            );
+            assert!(seen.insert(exit), "duplicate exit code {exit}: {code:?}");
             assert_ne!(exit, 0, "an error must not look like success: {code:?}");
             assert_ne!(exit, 2, "2 is reserved for clap usage errors: {code:?}");
         }

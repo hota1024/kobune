@@ -196,7 +196,10 @@ mod tests {
         };
 
         let json = serde_json::to_string(&info).expect("serializes");
-        assert!(!json.contains("tunnel_url"), "unused fields stay off the wire");
+        assert!(
+            !json.contains("tunnel_url"),
+            "unused fields stay off the wire"
+        );
         // Check for the key, not the value of `"scope":"workspace"`.
         assert!(!json.contains(r#""workspace":"#), "got: {json}");
     }

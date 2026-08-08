@@ -1,8 +1,8 @@
-//! minatod — Minato の常駐プロセス。
+//! minatod — Minato's resident process.
 //!
-//! ポート台帳・リバースプロキシ・DNS・アイドル監視はいずれも常駐が要るため
-//! daemon を置く。M0 の時点ではまだ Supervisor しかいないが、以降の
-//! マイルストーンはここに機能を足していく形になる。
+//! The port ledger, the reverse proxy, DNS and idle sweeping all need
+//! something to stay running, hence a daemon. At M0 there was only the
+//! supervisor; every milestone since has added to this.
 
 mod activation;
 mod activator;
@@ -28,13 +28,13 @@ use crate::server::Server;
 use crate::supervisor::Supervisor;
 
 #[derive(Parser, Debug)]
-#[command(name = "minatod", version, about = "Minato の常駐プロセス")]
+#[command(name = "minatod", version, about = "Minato's resident process")]
 struct Args {
-    /// ログを標準エラーにも出す。手元でのデバッグ用。
+    /// Also log to stderr. For debugging by hand.
     #[arg(long)]
     foreground: bool,
 
-    /// ログの詳細度。`MINATO_LOG` でも指定できる。
+    /// How verbose to log. `MINATO_LOG` works too.
     #[arg(long, default_value = "info")]
     log_level: String,
 }
@@ -46,29 +46,32 @@ async fn main() -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure()?;
 
-    // bind してからだと `SUN_LEN` という原因の分からないエラーになる。
-    // ログの初期化より前に弾いて、標準エラーにも必ず出す。
+    // Left until after the bind, this surfaces as an inscrutable
+    // `SUN_LEN`. Catch it before logging is even up, and make sure it
+    // reaches stderr.
     if let Err(err) = paths.check_socket_length() {
-        eprintln!("エラー: {err}");
+        eprintln!("error: {err}");
         return Err(err.into());
     }
 
     init_logging(&args, &paths)?;
 
     tracing::info!(
-        "minatod {} を起動します (protocol {})",
+        "starting minatod {} (protocol {})",
         env!("CARGO_PKG_VERSION"),
         minato_api::PROTOCOL_VERSION
     );
 
     let shutdown = Arc::new(Notify::new());
 
-    // プロキシと DNS を先に立てる。bind に失敗しても daemon は動かす。
-    // その場合 URL は発行されず、ポート直指定の endpoint だけになる。
+    // The proxy and DNS come up first. A failed bind does not stop the
+    // daemon; it just means no URLs are issued and only the direct
+    // endpoints work.
     let settings = GatewaySettings::from_env();
 
-    // Gateway は起動要求の受け口（Activator）を必要とし、Supervisor は
-    // URL の発行に Gateway を必要とする。実体を後から差し込んで循環を解く。
+    // The gateway needs somewhere to send wake requests, and the
+    // supervisor needs the gateway to issue URLs. Supplying the real
+    // implementation later breaks the cycle.
     let deferred = DeferredActivator::new();
     let gateway = Arc::new(
         Gateway::start(
@@ -82,8 +85,8 @@ async fn main() -> anyhow::Result<()> {
 
     if !gateway.is_serving() {
         tracing::warn!(
-            "プロキシが待ち受けられていないため URL は発行されません。\
-             `minato doctor` を確認してください"
+            "the proxy is not listening, so no URLs will be issued. \
+             Check `minato doctor`"
         );
     }
 
@@ -93,13 +96,13 @@ async fn main() -> anyhow::Result<()> {
     spawn_idle_sweeper(supervisor.clone(), shutdown.clone());
     let server = Server::new(paths.socket(), supervisor, shutdown.clone());
 
-    // シグナルでも Request::Shutdown でも同じ経路で止める。
+    // A signal and a Request::Shutdown stop it the same way.
     spawn_signal_handler(shutdown.clone());
 
     let result = server.run().await;
 
     let _ = std::fs::remove_file(paths.pid_file());
-    tracing::info!("minatod を終了します");
+    tracing::info!("minatod is shutting down");
 
     result
 }
@@ -108,8 +111,8 @@ fn init_logging(args: &Args, paths: &Paths) -> anyhow::Result<()> {
     let filter =
         EnvFilter::try_from_env("MINATO_LOG").unwrap_or_else(|_| EnvFilter::new(&args.log_level));
 
-    // CLI から起動された daemon は標準出力が閉じられているため、
-    // ログはファイルに残さないと何も分からなくなる。
+    // A daemon started by the CLI has its stdout closed, so without a log
+    // file there is nothing to go on at all.
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -128,14 +131,14 @@ fn init_logging(args: &Args, paths: &Paths) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// アイドルなサービスを定期的に止める。
+/// Stops idle services on a timer.
 ///
-/// これがあるおかげで worktree を何個作っても、実行中のコンテナは
-/// 触っているものだけになる。
+/// This is what keeps the running containers down to the ones actually in
+/// use, however many worktrees pile up.
 fn spawn_idle_sweeper(supervisor: Arc<Supervisor>, shutdown: Arc<Notify>) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(idle::SWEEP_INTERVAL);
-        // 起動直後の 1 回目は意味がないので読み飛ばす。
+        // The first tick fires immediately and has nothing to sweep.
         ticker.tick().await;
 
         loop {
@@ -143,7 +146,7 @@ fn spawn_idle_sweeper(supervisor: Arc<Supervisor>, shutdown: Arc<Notify>) {
                 _ = ticker.tick() => {
                     let stopped = supervisor.sweep_idle().await;
                     if stopped > 0 {
-                        tracing::info!("アイドルのため {stopped} 件のサービスを停止しました");
+                        tracing::info!("stopped {stopped} idle service(s)");
                     }
                 }
                 _ = shutdown.notified() => break,
@@ -158,14 +161,14 @@ fn spawn_signal_handler(shutdown: Arc<Notify>) {
             match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
                 Ok(signal) => signal,
                 Err(err) => {
-                    tracing::warn!("SIGTERM を待ち受けられません: {err}");
+                    tracing::warn!("cannot listen for SIGTERM: {err}");
                     return;
                 }
             };
 
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => tracing::info!("SIGINT を受信しました"),
-            _ = terminate.recv() => tracing::info!("SIGTERM を受信しました"),
+            _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT"),
+            _ = terminate.recv() => tracing::info!("received SIGTERM"),
         }
 
         shutdown.notify_waiters();

@@ -250,9 +250,7 @@ impl MinatoConfig {
         }
 
         if self.services.is_empty() {
-            return Err(Error::ConfigInvalid(
-                "no services are defined".to_string(),
-            ));
+            return Err(Error::ConfigInvalid("no services are defined".to_string()));
         }
 
         for (name, svc) in &self.services {
@@ -337,7 +335,9 @@ impl MinatoConfig {
             marks[root.as_str()] = Mark::InProgress;
 
             while let Some(&node) = path.last() {
-                let index = *cursor.last().expect("cursor and path are pushed in lockstep");
+                let index = *cursor
+                    .last()
+                    .expect("cursor and path are pushed in lockstep");
                 let deps = &self.services[node].depends_on;
 
                 if index >= deps.len() {
@@ -675,7 +675,11 @@ mod tests {
         .expect("valid");
 
         let order = config.startup_order();
-        assert_eq!(order.len(), 4, "every service appears exactly once: {order:?}");
+        assert_eq!(
+            order.len(),
+            4,
+            "every service appears exactly once: {order:?}"
+        );
 
         let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
         assert!(pos("db") < pos("api"));

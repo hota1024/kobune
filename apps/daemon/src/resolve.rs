@@ -1,7 +1,9 @@
-//! クライアントが送ってきた [`Target`] を、実際のプロジェクトと workspace に対応づける。
+//! Mapping the [`Target`] a client sends onto a real project and
+//! workspace.
 //!
-//! CLI も GUI も「今いるディレクトリ」しか教えてくれない。そこから
-//! git リポジトリ・設定・workspace を突き止めるのがここの役目。
+//! Neither the CLI nor the GUI knows more than the directory it is in.
+//! Getting from there to a git repository, a configuration and a workspace
+//! is this module's job.
 
 use std::path::Path;
 
@@ -10,24 +12,26 @@ use minato_api::Target;
 use minato_core::git::{Repository, Worktree};
 use minato_core::{Error, MinatoConfig, Result, State, WorkspaceRecord};
 
-/// [`Target`] の解決結果。
+/// What a [`Target`] resolved to.
 pub struct Resolved {
     pub repo: Repository,
     pub config: MinatoConfig,
     pub project: String,
-    /// 操作の対象になる workspace。
+    /// The workspace being acted on.
     pub workspace: WorkspaceRecord,
 }
 
-/// `cwd` からプロジェクトを特定し、設定を読む。
+/// Finds the project from `cwd` and reads its configuration.
 ///
-/// workspace の特定は [`resolve_workspace`] が行う。作成系の操作では
-/// 対象 workspace がまだ存在しないため、2 段階に分けている。
+/// Finding the workspace is [`resolve_workspace`]'s job. Creating
+/// operations act on a workspace that does not exist yet, hence the two
+/// steps.
 pub fn resolve_project(target: &Target, state: &mut State) -> Result<ProjectContext> {
     let repo = Repository::discover(&target.cwd)?;
 
-    // worktree 内にも同じ内容の minato.toml があるため、そこから探せばよい。
-    // 見つからなければ main worktree も見る（worktree 作成直後など）。
+    // A worktree carries the same minato.toml, so searching from there is
+    // enough. Failing that, look in the main worktree too — right after a
+    // worktree is created, for instance.
     let (_config_path, config) = match MinatoConfig::find(&repo.root) {
         Ok(found) => found,
         Err(Error::ConfigNotFound(_)) => MinatoConfig::find(&repo.main_root)?,
@@ -51,13 +55,14 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
-    /// 対象の workspace を決める。
+    /// Decides which workspace to act on.
     ///
-    /// 1. `target.workspace` が指定されていればそのラベルを使う
-    /// 2. なければ `cwd` が属する worktree を使う
+    /// 1. Use `target.workspace`'s label when one was given
+    /// 2. Otherwise use the worktree `cwd` sits in
     ///
-    /// Minato の外で `git worktree add` された worktree もここで登録する。
-    /// 利用者が worktree の作り方を間違えたと感じないようにするため。
+    /// A worktree created by `git worktree add` outside Minato gets
+    /// registered here too, so nobody is left feeling they created their
+    /// worktree the wrong way.
     pub fn resolve_workspace(self, target: &Target, state: &mut State) -> Result<Resolved> {
         let worktrees = self.repo.worktrees()?;
 
@@ -86,10 +91,10 @@ impl ProjectContext {
             .cloned();
 
         if let Some(record) = record {
-            // 登録はあるが worktree が消えている場合を検出する。
+            // Catch a registration whose worktree has since gone.
             if !worktrees.iter().any(|wt| wt.path == record.path) {
                 return Err(Error::WorkspaceNotFound(format!(
-                    "{label} (登録されている worktree {} が見つかりません)",
+                    "{label} (the registered worktree {} is gone)",
                     record.path.display()
                 )));
             }
@@ -121,7 +126,7 @@ impl ProjectContext {
         self.register(worktree, state)
     }
 
-    /// まだ Minato が知らない worktree を登録する。
+    /// Registers a worktree Minato does not know about yet.
     pub fn register(&self, worktree: &Worktree, state: &mut State) -> Result<WorkspaceRecord> {
         let branch = worktree
             .branch
@@ -144,7 +149,7 @@ impl ProjectContext {
         Ok(record)
     }
 
-    /// この worktree に対応する登録を返す。なければ作る。
+    /// The registration for this worktree, created if there is none.
     pub fn ensure_registered(
         &self,
         worktree: &Worktree,
@@ -162,7 +167,7 @@ impl ProjectContext {
     }
 }
 
-/// detached HEAD の worktree に付ける名前。
+/// What to call a worktree on a detached HEAD.
 fn detached_name(worktree: &Worktree) -> String {
     let head = worktree
         .head

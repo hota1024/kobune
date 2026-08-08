@@ -1,8 +1,8 @@
-//! プロキシからの起動要求を Supervisor に繋ぐ。
+//! Wiring the proxy's wake requests through to the supervisor.
 //!
-//! Gateway（プロキシ）は起動時に Activator を必要とし、Supervisor は
-//! URL の発行に Gateway を必要とする。この循環を、後から実体を差し込む
-//! [`DeferredActivator`] で解く。
+//! The gateway needs an activator to start, and the supervisor needs the
+//! gateway to issue URLs. [`DeferredActivator`] breaks that cycle by
+//! taking the real implementation later.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -12,10 +12,10 @@ use minato_proxy::{Activation, Activator};
 
 use crate::supervisor::Supervisor;
 
-/// Supervisor を Activator として見せる。
+/// Presents the supervisor as an activator.
 ///
-/// `impl Activator for Arc<Supervisor>` は孤児ルールで書けないため
-/// newtype を挟む。
+/// The orphan rule rules out `impl Activator for Arc<Supervisor>`, so a
+/// newtype goes in between.
 pub struct SupervisorActivator(Arc<Supervisor>);
 
 impl SupervisorActivator {
@@ -35,10 +35,10 @@ impl Activator for SupervisorActivator {
     }
 }
 
-/// 実体が後から差し込まれる Activator。
+/// An activator whose implementation arrives later.
 ///
-/// 差し込まれる前に呼ばれた場合は「知らないホスト」として扱う。
-/// daemon の起動直後の極めて短い間だけ起こりうる。
+/// Called before it does, every host is an unknown one. That window is
+/// vanishingly short, right after the daemon starts.
 #[derive(Clone, Default)]
 pub struct DeferredActivator {
     inner: Arc<OnceLock<Arc<dyn Activator>>>,
@@ -49,10 +49,10 @@ impl DeferredActivator {
         Self::default()
     }
 
-    /// 実体を差し込む。2 回目以降は無視される。
+    /// Supplies the implementation. Later calls are ignored.
     pub fn set(&self, activator: Arc<dyn Activator>) {
         if self.inner.set(activator).is_err() {
-            tracing::warn!("Activator は既に設定されています");
+            tracing::warn!("the activator is already set");
         }
     }
 }
@@ -63,7 +63,7 @@ impl Activator for DeferredActivator {
         match self.inner.get() {
             Some(activator) => activator.ensure_ready(host, wait).await,
             None => {
-                tracing::debug!("Activator がまだ設定されていません: {host}");
+                tracing::debug!("the activator is not set yet: {host}");
                 Activation::Unknown
             }
         }
@@ -104,7 +104,7 @@ mod tests {
                 .await,
             Activation::Unknown
         );
-        // 落ちないことも確かめる。
+        // Also confirms it does not panic.
         deferred.touch("web.myapp.localhost");
     }
 
@@ -126,7 +126,7 @@ mod tests {
         deferred.set(Arc::new(Counting(AtomicUsize::new(0))));
         deferred.set(Arc::new(minato_proxy::NoopActivator));
 
-        // 2 回目が効いていれば Unknown になる。
+        // Had the second call taken, this would be Unknown.
         let result = deferred
             .ensure_ready("web.myapp.localhost", Duration::ZERO)
             .await;

@@ -68,13 +68,14 @@ mod tests {
     #[test]
     fn skill_has_the_frontmatter_claude_code_needs() {
         // Without name and description it is not recognised as a Skill.
-        assert!(SKILL.starts_with("---\n"), "it has to open with frontmatter");
+        assert!(
+            SKILL.starts_with("---\n"),
+            "it has to open with frontmatter"
+        );
         assert!(SKILL.contains("\nname: minato\n"));
         assert!(SKILL.contains("\ndescription: "));
 
-        let end = SKILL[4..]
-            .find("\n---\n")
-            .expect("the frontmatter closes");
+        let end = SKILL[4..].find("\n---\n").expect("the frontmatter closes");
         let frontmatter = &SKILL[4..4 + end];
         assert!(
             frontmatter.lines().count() <= 5,

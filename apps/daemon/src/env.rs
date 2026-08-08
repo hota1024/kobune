@@ -1,18 +1,19 @@
-//! サービスに渡す環境変数を組み立てる。
+//! Building the environment a service receives.
 //!
-//! 層の重ね方は `docs/DESIGN.md` §8 のとおり。自動注入を最初に置き、
-//! 利用者の指定で上書きできるようにする。逆にすると、Minato の都合で
-//! 利用者の設定が消える。
+//! The layers stack as `docs/DESIGN.md` §8 describes. What Minato injects
+//! goes first, so the user's own settings win. The other way round,
+//! Minato's conveniences would quietly erase them.
 
 use indexmap::IndexMap;
 use minato_core::{EnvLayers, EnvScope, MinatoConfig, Paths, WorkspaceRecord, env};
 
 use crate::gateway::Gateway;
 
-/// 自動注入する変数。
+/// The variables Minato injects.
 ///
-/// **`MINATO_URL_<SERVICE>` が要。** フロントが API の URL を知る手段が
-/// ないと、worktree ごとに URL が変わる構成が成立しない。
+/// **`MINATO_URL_<SERVICE>` is the important one.** Without a way for the
+/// frontend to learn the API's URL, a setup where URLs differ per worktree
+/// cannot hold together.
 pub fn injected(
     config: &MinatoConfig,
     project: &str,
@@ -34,8 +35,8 @@ pub fn injected(
 
         let host = minato_core::naming::service_host_in(name, record.url_label(), &domain);
         let Some(url) = gateway.url_for(&host) else {
-            // プロキシが動いていなければ URL は存在しない。
-            // 空文字を入れると「設定されているのに壊れている」状態になる。
+            // With no proxy running there is no URL. An empty string
+            // would leave it "set, but broken".
             continue;
         };
 
@@ -45,15 +46,15 @@ pub fn injected(
     values
 }
 
-/// サービス名から環境変数名を作る。
+/// Turns a service name into a variable name.
 ///
-/// `cache-store` → `MINATO_URL_CACHE_STORE`。ハイフンは環境変数名に
-/// 使えないのでアンダースコアにする。
+/// `cache-store` becomes `MINATO_URL_CACHE_STORE`. A hyphen is not valid
+/// in a variable name, so it becomes an underscore.
 pub fn url_variable(service: &str) -> String {
     format!("MINATO_URL_{}", service.to_uppercase().replace('-', "_"))
 }
 
-/// 1 サービス分の層を、優先度の低い順に積む。
+/// Stacks one service's layers, lowest priority first.
 pub fn layers_for_service(
     config: &MinatoConfig,
     project: &str,
@@ -65,7 +66,7 @@ pub fn layers_for_service(
 ) -> Result<EnvLayers, env::EnvError> {
     let mut layers = EnvLayers::new();
 
-    // 1. 自動注入（利用者が上書きできるよう最初に置く）
+    // 1. What Minato injects — first, so the user can override it
     layers.push(
         EnvScope::Injected,
         injected(config, project, record, service, gateway),
@@ -74,10 +75,11 @@ pub fn layers_for_service(
     // 2. global
     layers.push_file(EnvScope::Global, &paths.root().join(env::GLOBAL_ENV_FILE))?;
 
-    // 3. project の共通ファイル
+    // 3. The project-wide file
     layers.push_file(EnvScope::Project, &env::project_env_path(project_root))?;
 
-    // 4. minato.toml のサービス個別指定（project より具体的）
+    // 4. The service's own entry in minato.toml — more specific than the
+    //    project
     if let Ok(service_config) = config.service(service) {
         let values: IndexMap<String, String> = service_config
             .env
@@ -87,7 +89,7 @@ pub fn layers_for_service(
         layers.push(EnvScope::Project, values);
     }
 
-    // 5. workspace（最も具体的なので最後）
+    // 5. The workspace — the most specific, so it goes last
     layers.push_file(EnvScope::Workspace, &env::workspace_env_path(&record.path))?;
 
     Ok(layers)
@@ -99,8 +101,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn config(toml: &str) -> MinatoConfig {
-        let config: MinatoConfig = toml::from_str(toml).expect("構文は正しい");
-        config.validate().expect("意味も正しい");
+        let config: MinatoConfig = toml::from_str(toml).expect("is syntactically valid");
+        config.validate().expect("is semantically valid");
         config
     }
 
@@ -131,7 +133,7 @@ mod tests {
 
     #[test]
     fn injects_urls_for_every_exposed_service() {
-        // これが無いと、フロントは API の URL を知る手段がない。
+        // Without this the frontend has no way to learn the API's URL.
         let values = injected(
             &config(SAMPLE),
             "myapp",
@@ -147,11 +149,11 @@ mod tests {
         assert_eq!(
             values.get("MINATO_URL_API_SERVER").map(String::as_str),
             Some("https://api-server.feat-1.myapp.localhost"),
-            "ハイフンはアンダースコアにする"
+            "a hyphen becomes an underscore"
         );
         assert!(
             !values.contains_key("MINATO_URL_DB"),
-            "expose = false のサービスに URL は無い"
+            "a service with expose = false has no URL"
         );
     }
 
@@ -181,7 +183,7 @@ mod tests {
 
     #[test]
     fn omits_urls_when_the_proxy_is_down() {
-        // 空文字を入れると「設定されているのに繋がらない」状態になる。
+        // An empty string would leave it "set, but unreachable".
         let values = injected(
             &config(SAMPLE),
             "myapp",

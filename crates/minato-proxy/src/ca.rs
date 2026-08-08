@@ -272,10 +272,7 @@ fn pem_to_der(pem: &str, path: PathBuf) -> Result<CertificateDer<'static>, CaErr
         .map(|der| der.into_owned())
         .ok_or_else(|| CaError::Read {
             path,
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "contains no certificate",
-            ),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, "contains no certificate"),
         })
 }
 
@@ -384,7 +381,11 @@ mod tests {
                 .expect("metadata")
                 .permissions()
                 .mode();
-            assert_eq!(mode & 0o777, 0o600, "only the owner may read the private key");
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "only the owner may read the private key"
+            );
         }
     }
 
@@ -419,7 +420,8 @@ mod tests {
 
         assert_eq!(loaded.certificate_pem(), on_disk);
 
-        let chain_der = pem_to_der(&on_disk, dir.path().join(CA_CERT_FILE)).expect("converts to DER");
+        let chain_der =
+            pem_to_der(&on_disk, dir.path().join(CA_CERT_FILE)).expect("converts to DER");
         let issued = loaded.issue("web.myapp.localhost").expect("issues");
         assert_eq!(
             issued.cert[1], chain_der,

@@ -800,7 +800,11 @@ ESCAPED="line1\nline2"
                 .expect("metadata")
                 .permissions()
                 .mode();
-            assert_eq!(mode & 0o777, 0o600, "where the secrets live is nobody else's business");
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "where the secrets live is nobody else's business"
+            );
         }
     }
 

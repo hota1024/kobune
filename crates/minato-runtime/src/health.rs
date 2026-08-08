@@ -332,7 +332,10 @@ mod tests {
         assert!(await_service("db", None, None, Duration::from_millis(100), &sink).await);
         drop(sink);
 
-        assert!(rx.recv().await.is_none(), "nothing to wait for, so nothing to report");
+        assert!(
+            rx.recv().await.is_none(),
+            "nothing to wait for, so nothing to report"
+        );
     }
 
     #[tokio::test]

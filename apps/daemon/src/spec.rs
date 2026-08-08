@@ -1,7 +1,8 @@
-//! `minato.toml` の設定を runtime に渡す仕様へ変換する。
+//! Turning `minato.toml` into the spec a runtime is handed.
 //!
-//! runtime は `minato.toml` を知らない。設定の解釈はすべてここで済ませ、
-//! runtime には解決済みの値だけを渡す。
+//! A runtime knows nothing about `minato.toml`. Every question of
+//! interpretation is settled here, and the runtime receives resolved
+//! values only.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,7 +12,7 @@ use minato_core::config::MOUNT_TARGET;
 use minato_core::{MinatoConfig, ServiceConfig, ServiceScope};
 use minato_runtime::{ServiceSpec, SourceMount, VolumeMount, WorkspaceKey, WorkspaceSpec};
 
-/// workspace 全体の仕様を組み立てる。
+/// Builds the spec for a whole workspace.
 pub fn build_workspace_spec(
     config: &MinatoConfig,
     project: &str,
@@ -21,7 +22,8 @@ pub fn build_workspace_spec(
 ) -> Result<WorkspaceSpec, ApiError> {
     let key = WorkspaceKey::new(project, workspace);
 
-    // 依存関係を満たす順に並べる。runtime はこの順で起動する。
+    // Ordered so dependencies come first. The runtime starts them in
+    // this order.
     let ordered = config.startup_order();
     let mut services = Vec::with_capacity(ordered.len());
 
@@ -29,7 +31,7 @@ pub fn build_workspace_spec(
         let service_config = config
             .services
             .get(name)
-            .expect("startup_order は既存のサービス名だけを返す");
+            .expect("startup_order only returns services that exist");
 
         services.push(build_service_spec(
             service_config,
@@ -49,7 +51,7 @@ pub fn build_workspace_spec(
     })
 }
 
-/// サービス 1 つの仕様を組み立てる。
+/// Builds the spec for one service.
 pub fn build_service_spec(
     service: &ServiceConfig,
     name: &str,
@@ -59,18 +61,18 @@ pub fn build_service_spec(
     env: BTreeMap<String, String>,
     all_services: Vec<String>,
 ) -> Result<ServiceSpec, ApiError> {
-    // M0 では既製イメージのみ。Dockerfile のビルドは M0.5 で対応する。
+    // Prebuilt images only for now. Building a Dockerfile comes in M0.5.
     let image = match (&service.image, &service.build) {
         (Some(image), _) => image.clone(),
         (None, Some(_)) => {
             return Err(ApiError::unsupported(format!(
-                "サービス `{name}`: build による イメージのビルドは未対応です。\
-                 image で既製イメージを指定してください"
+                "service `{name}`: building an image with build is not \
+                 supported yet. Name a prebuilt image with image"
             )));
         }
         (None, None) => {
             return Err(ApiError::unsupported(format!(
-                "サービス `{name}`: image が指定されていません"
+                "service `{name}`: no image was given"
             )));
         }
     };
@@ -79,7 +81,7 @@ pub fn build_service_spec(
         Some(raw) => Some(shell_words::split(raw).map_err(|err| {
             ApiError::new(
                 minato_api::ErrorCode::InvalidConfig,
-                format!("サービス `{name}`: command を解釈できません: {err}"),
+                format!("service `{name}`: cannot make sense of command: {err}"),
             )
         })?),
         None => None,
@@ -87,14 +89,14 @@ pub fn build_service_spec(
 
     let attached_to = WorkspaceKey::new(project, workspace);
 
-    // 共有サービスは特定の worktree に属さない。
+    // A shared service belongs to no particular worktree.
     let key = match service.scope {
         ServiceScope::Workspace => attached_to.service(name),
         ServiceScope::Project => WorkspaceKey::shared(project).service(name),
     };
 
-    // 共有サービスに worktree のソースをマウントすると、
-    // どの worktree の内容を見せるべきか決まらない。
+    // Mounting a worktree's source into a shared service leaves no answer
+    // to which worktree it should be showing.
     let source_mount = match service.scope {
         ServiceScope::Workspace => Some(SourceMount {
             host: worktree_path.to_path_buf(),
@@ -108,12 +110,13 @@ pub fn build_service_spec(
         volumes.push(VolumeMount::parse(raw, worktree_path).map_err(|message| {
             ApiError::new(
                 minato_api::ErrorCode::InvalidConfig,
-                format!("サービス `{name}`: {message}"),
+                format!("service `{name}`: {message}"),
             )
         })?);
     }
 
-    // 同じ workspace の他サービス。名前解決の手段を runtime が用意する。
+    // The other services in this workspace. Resolving their names is the
+    // runtime's job.
     let peers: Vec<String> = all_services
         .into_iter()
         .filter(|other| other != name)
@@ -141,8 +144,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn config(toml: &str) -> MinatoConfig {
-        let config: MinatoConfig = toml::from_str(toml).expect("構文は正しい");
-        config.validate().expect("意味も正しい");
+        let config: MinatoConfig = toml::from_str(toml).expect("is syntactically valid");
+        config.validate().expect("is semantically valid");
         config
     }
 
@@ -165,8 +168,8 @@ mod tests {
         volumes = ["pgdata:/var/lib/postgresql/data"]
     "#;
 
-    /// テストでは環境変数の層は関心外なので空で渡す。
-    /// 層の組み立ては `crate::env` の担当。
+    /// The environment layers are beside the point here, so they go in
+    /// empty. Stacking them is `crate::env`'s job.
     fn no_envs() -> BTreeMap<String, BTreeMap<String, String>> {
         BTreeMap::new()
     }
@@ -179,14 +182,14 @@ mod tests {
             Path::new("/repo/wt/feat-1"),
             &no_envs(),
         )
-        .expect("組み立てられる")
+        .expect("builds")
     }
 
     #[test]
     fn orders_services_by_dependency() {
         let spec = build();
         let names: Vec<&str> = spec.services.iter().map(|s| s.name()).collect();
-        assert_eq!(names, vec!["db", "web"], "依存先が先に来る");
+        assert_eq!(names, vec!["db", "web"], "dependencies come first");
     }
 
     #[test]
@@ -202,7 +205,7 @@ mod tests {
         );
 
         let spec = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"), &no_envs())
-            .expect("組み立てられる");
+            .expect("builds");
 
         assert_eq!(
             spec.services[0].command,
@@ -211,14 +214,14 @@ mod tests {
                 "-c".to_string(),
                 "echo hello world".to_string()
             ]),
-            "引用符の中は 1 つの引数として扱う"
+            "what is quoted stays one argument"
         );
     }
 
     #[test]
     fn mounts_worktree_for_workspace_scoped_services() {
         let spec = build();
-        let web = spec.service("web").expect("存在する");
+        let web = spec.service("web").expect("exists");
 
         assert_eq!(
             web.source_mount,
@@ -232,32 +235,35 @@ mod tests {
     #[test]
     fn does_not_mount_worktree_for_shared_services() {
         let spec = build();
-        let db = spec.service("db").expect("存在する");
+        let db = spec.service("db").expect("exists");
 
         assert_eq!(
             db.source_mount, None,
-            "共有サービスにどの worktree を見せるかは決められない"
+            "there is no answer to which worktree a shared service sees"
         );
         assert!(db.key.workspace.is_shared());
         assert_eq!(
             db.attached_to.workspace, "feat-1",
-            "共有でも呼び出し元のネットワークには繋ぐ"
+            "shared or not, it joins the caller's network"
         );
     }
 
     #[test]
     fn lists_peers_excluding_self() {
         let spec = build();
-        let web = spec.service("web").expect("存在する");
+        let web = spec.service("web").expect("exists");
 
         assert_eq!(web.peers, vec!["db".to_string()]);
-        assert!(!web.peers.contains(&"web".to_string()), "自分は含めない");
+        assert!(
+            !web.peers.contains(&"web".to_string()),
+            "it is not its own peer"
+        );
     }
 
     #[test]
     fn parses_volumes_relative_to_worktree() {
         let spec = build();
-        let db = spec.service("db").expect("存在する");
+        let db = spec.service("db").expect("exists");
 
         assert_eq!(
             db.volumes,
@@ -284,7 +290,10 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.code, minato_api::ErrorCode::Unsupported);
-        assert!(err.message.contains("image"), "代わりの手段を示す: {err}");
+        assert!(
+            err.message.contains("image"),
+            "it points at what to do instead: {err}"
+        );
     }
 
     #[test]

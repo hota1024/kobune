@@ -417,8 +417,8 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
         .with_no_client_auth();
 
     let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-    let server_name =
-        rustls::pki_types::ServerName::try_from("web.feat-1.myapp.localhost").expect("a valid name");
+    let server_name = rustls::pki_types::ServerName::try_from("web.feat-1.myapp.localhost")
+        .expect("a valid name");
 
     let tcp = TcpStream::connect(addr).await.expect("connects");
     let tls = connector
@@ -475,7 +475,11 @@ async fn wakes_a_stopped_service_and_forwards() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("upstream /woken"), "got: {body}");
-    assert_eq!(activator.woken.load(Ordering::SeqCst), 1, "asks for a start");
+    assert_eq!(
+        activator.woken.load(Ordering::SeqCst),
+        1,
+        "asks for a start"
+    );
     assert_eq!(
         activator.touched.load(Ordering::SeqCst),
         1,

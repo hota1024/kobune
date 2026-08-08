@@ -1,4 +1,4 @@
-//! Unix socket の待ち受けと、1 接続あたりのメッセージ処理。
+//! Listening on the Unix socket, and handling one connection's messages.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,10 +25,10 @@ impl Server {
         }
     }
 
-    /// 待ち受けを開始し、停止が指示されるまで接続を受け続ける。
+    /// Starts listening, accepting connections until told to stop.
     pub async fn run(&self) -> anyhow::Result<()> {
         let listener = bind(&self.socket)?;
-        tracing::info!("待ち受けを開始しました: {}", self.socket.display());
+        tracing::info!("listening on {}", self.socket.display());
 
         loop {
             tokio::select! {
@@ -38,34 +38,35 @@ impl Server {
                             let supervisor = self.supervisor.clone();
                             tokio::spawn(async move {
                                 if let Err(err) = handle_connection(stream, supervisor).await {
-                                    tracing::debug!("接続の処理を終了しました: {err}");
+                                    tracing::debug!("finished handling the connection: {err}");
                                 }
                             });
                         }
                         Err(err) => {
-                            tracing::warn!("接続の受け入れに失敗しました: {err}");
+                            tracing::warn!("cannot accept the connection: {err}");
                         }
                     }
                 }
                 _ = self.shutdown.notified() => {
-                    tracing::info!("停止が指示されました");
+                    tracing::info!("asked to stop");
                     break;
                 }
             }
         }
 
-        // 次回の起動が bind できるよう後片付けする。
+        // Clean up, so the next start can bind.
         let _ = std::fs::remove_file(&self.socket);
         Ok(())
     }
 }
 
-/// socket を作る。前回の残骸があれば取り除く。
+/// Creates the socket, clearing away anything the last run left behind.
 fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     if socket.exists() {
-        // 生きた daemon がいるなら接続できる。その場合は多重起動なので譲る。
+        // A live daemon answers. That means a second instance, so stand
+        // down.
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
-            anyhow::bail!("既に daemon が {} で動いています", socket.display());
+            anyhow::bail!("a daemon is already running on {}", socket.display());
         }
         std::fs::remove_file(socket)?;
     }
@@ -81,7 +82,7 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
     let (read_half, write_half) = stream.into_split();
     let mut reader = MessageStream::new(read_half);
 
-    // イベントを流すタスクと最終応答が同じ writer を使うため共有する。
+    // The event pump and the final response share one writer.
     let writer = Arc::new(Mutex::new(write_half));
 
     while let Some(message) = reader.recv::<ClientMessage>().await? {
@@ -89,8 +90,8 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
             ClientMessage::Request { id, request } => {
                 let (sink, mut receiver) = EventSink::channel();
 
-                // 処理中のイベントを随時書き出す。
-                // 応答より先にすべて流し終える必要があるので、後で join する。
+                // Write events out as they happen. They all have to land
+                // before the response does, hence the join below.
                 let event_writer = writer.clone();
                 let pump = tokio::spawn(async move {
                     while let Some(event) = receiver.recv().await {
@@ -106,7 +107,7 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
 
                 let outcome = supervisor.handle(request, &sink).await;
 
-                // sink を落とすとチャネルが閉じ、pump が終わる。
+                // Dropping the sink closes the channel and ends the pump.
                 drop(sink);
                 let _ = pump.await;
 
@@ -119,9 +120,9 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
                 write_message(&mut *guard, &response).await?;
             }
             ClientMessage::Cancel { id } => {
-                // M0 では処理を中断できない。無視すると呼び出し側が待ち続けるため、
-                // 中断できなかったことをログに残す。
-                tracing::debug!("リクエスト {id} の中断は M0 では未対応です");
+                // M0 cannot cancel work in flight. Silently ignoring it
+                // would leave the caller waiting, so at least log it.
+                tracing::debug!("cancelling request {id} is not supported in M0");
             }
         }
     }
@@ -141,7 +142,7 @@ mod tests {
         let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
 
         let err = bind(&socket).unwrap_err();
-        assert!(err.to_string().contains("既に daemon"), "got: {err}");
+        assert!(err.to_string().contains("already running"), "got: {err}");
     }
 
     #[tokio::test]
@@ -149,10 +150,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("minatod.sock");
 
-        // 誰も listen していない残骸。
-        std::fs::write(&socket, b"").expect("作れる");
+        // Leftovers nobody is listening on.
+        std::fs::write(&socket, b"").expect("creates it");
 
-        let listener = bind(&socket).expect("残骸を消して bind できる");
+        let listener = bind(&socket).expect("clears the leftovers and binds");
         drop(listener);
     }
 
@@ -161,7 +162,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("nested").join("minatod.sock");
 
-        let listener = bind(&socket).expect("親ごと作る");
+        let listener = bind(&socket).expect("creates the parent too");
         assert!(socket.exists());
         drop(listener);
     }

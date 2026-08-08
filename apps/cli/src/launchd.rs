@@ -299,7 +299,10 @@ mod tests {
         )
         .expect("writes it");
 
-        assert!(plan.source.is_file(), "writing the plist needs no privileges");
+        assert!(
+            plan.source.is_file(),
+            "writing the plist needs no privileges"
+        );
         assert!(plan.destination.starts_with(INSTALL_DIR));
 
         // Installing needs root, so it only ever comes back as steps.

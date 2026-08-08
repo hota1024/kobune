@@ -298,8 +298,9 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
         return handle_skill(cli, command, &cwd);
     }
 
-    let client = Client::from_env()
-        .map_err(|err| CliError::Local(format!("cannot resolve the configuration directory: {err}")))?;
+    let client = Client::from_env().map_err(|err| {
+        CliError::Local(format!("cannot resolve the configuration directory: {err}"))
+    })?;
 
     if let Command::Daemon { command } = &cli.command {
         return handle_daemon(cli, &client, command).await;
@@ -540,9 +541,7 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
 
 fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<(), CliError> {
     let Response::Workspace { workspace } = response else {
-        return Err(CliError::Local(
-            "cannot read the workspace".to_string(),
-        ));
+        return Err(CliError::Local("cannot read the workspace".to_string()));
     };
 
     let target = match service {
@@ -558,10 +557,7 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
             .iter()
             .find(|s| s.access().is_some())
             .ok_or_else(|| {
-                CliError::Local(
-                    "no service is reachable. Start one with `minato up`"
-                        .to_string(),
-                )
+                CliError::Local("no service is reachable. Start one with `minato up`".to_string())
             })?,
     };
 
@@ -590,9 +586,7 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
 /// What `minato env get` prints: the value, on one line.
 fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), CliError> {
     let Response::Env { entries } = response else {
-        return Err(CliError::Local(
-            "cannot read the environment".to_string(),
-        ));
+        return Err(CliError::Local("cannot read the environment".to_string()));
     };
 
     let entry = entries
@@ -619,9 +613,7 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), Cl
 /// CLI checks those itself and presents one combined result.
 fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
     let Response::Diagnostics(diagnostics) = response else {
-        return Err(CliError::Local(
-            "cannot read the diagnostics".to_string(),
-        ));
+        return Err(CliError::Local("cannot read the diagnostics".to_string()));
     };
 
     let dns_port = find_port(diagnostics, "dns");
@@ -673,8 +665,7 @@ fn present_setup(
     if launchd_pending {
         match prepare_launchd() {
             Ok((source, commands)) => steps.push((
-                "let launchd hold 80/443/53 (the daemon itself stays non-root)"
-                    .to_string(),
+                "let launchd hold 80/443/53 (the daemon itself stays non-root)".to_string(),
                 Some(format!("generated plist: {}", source.display())),
                 commands,
             )),

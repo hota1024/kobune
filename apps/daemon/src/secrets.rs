@@ -1,39 +1,42 @@
-//! シークレット参照の解決。
+//! Resolving secret references.
 //!
-//! **解決した値はディスクに書かない。** メモリ上でコンテナに渡すだけに
-//! 留める。これがあるおかげで、リポジトリに置くのは参照だけで済む。
+//! **A resolved value never touches disk.** It goes to the container in
+//! memory and no further, which is what lets the repository hold nothing
+//! but references.
 //!
-//! 解決に失敗しても daemon は落とさない。1Password にサインインして
-//! いないだけということが多く、その 1 つのために環境全体が起動しない
-//! 方が困る。失敗は警告として伝え、そのキーだけ落とす。
+//! A failure here does not take the daemon down. Usually it just means
+//! nobody is signed in to 1Password, and letting that keep the whole
+//! environment from starting is the worse outcome. Failures come back as
+//! warnings, and only that key is dropped.
 
 use std::collections::HashMap;
 
 use minato_core::SecretRef;
 use tokio::process::Command;
 
-/// 外部コマンドを待つ上限。
+/// How long to wait for an external command.
 ///
-/// 1Password はサインインを求めて対話的に止まることがある。daemon は
-/// 応答できないので、待ち続けずに諦める。
+/// 1Password can stop and ask to be signed in. The daemon has no way to
+/// answer, so it gives up rather than wait forever.
 const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// 解決の結果。
+/// What resolution produced.
 pub struct Resolved {
-    /// 解決できた値。
+    /// The values that resolved.
     pub values: HashMap<String, String>,
-    /// 解決できなかったキーと理由。
+    /// The keys that did not, and why.
     pub failures: Vec<(String, String)>,
 }
 
-/// シークレット参照を解決する。
+/// Resolves secret references.
 ///
-/// `entries` は（キー, 参照）の並び。参照でない値はここに渡さない。
+/// `entries` is a list of (key, reference). Plain values do not belong
+/// here.
 pub async fn resolve(entries: &[(String, SecretRef)]) -> Resolved {
     let mut values = HashMap::new();
     let mut failures = Vec::new();
 
-    // 同じ参照が複数のキーから使われることがある。1 度だけ引く。
+    // Several keys can share one reference. Fetch it once.
     let mut cache: HashMap<SecretRef, Result<String, String>> = HashMap::new();
 
     for (key, reference) in entries {
@@ -59,8 +62,9 @@ pub async fn resolve(entries: &[(String, SecretRef)]) -> Resolved {
 
 async fn fetch(reference: &SecretRef) -> Result<String, String> {
     match reference {
-        SecretRef::Env(name) => std::env::var(name)
-            .map_err(|_| format!("daemon の環境変数 `{name}` が設定されていません")),
+        SecretRef::Env(name) => {
+            std::env::var(name).map_err(|_| format!("the daemon's environment has no `{name}`"))
+        }
         SecretRef::OnePassword(uri) => run("op", &["read", "--no-newline", uri]).await,
         SecretRef::Keychain { service, account } => {
             run(
@@ -77,16 +81,16 @@ async fn run(program: &str, args: &[&str]) -> Result<String, String> {
         .await
         .map_err(|_| {
             format!(
-                "{program} が {}秒 以内に応答しませんでした（サインインを求めている可能性があります）",
+                "{program} did not answer within {} seconds (it may be asking to be signed in)",
                 RESOLVE_TIMEOUT.as_secs()
             )
         })?;
 
     let output = output.map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
-            format!("`{program}` が見つかりません")
+            format!("no `{program}` found")
         } else {
-            format!("`{program}` を実行できません: {err}")
+            format!("cannot run `{program}`: {err}")
         }
     })?;
 
@@ -94,7 +98,7 @@ async fn run(program: &str, args: &[&str]) -> Result<String, String> {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
             format!(
-                "`{program}` が終了コード {} で失敗しました",
+                "`{program}` failed with exit code {}",
                 output.status.code().unwrap_or(-1)
             )
         } else {
@@ -102,7 +106,8 @@ async fn run(program: &str, args: &[&str]) -> Result<String, String> {
         });
     }
 
-    // `security -w` は末尾に改行を付ける。値に混ぜると認証に失敗する。
+    // `security -w` adds a trailing newline. Left in the value, it makes
+    // authentication fail.
     Ok(String::from_utf8_lossy(&output.stdout)
         .trim_end_matches('\n')
         .to_string())
@@ -114,8 +119,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_from_the_daemon_environment() {
-        // SAFETY: テストは同一プロセスで並行実行されるが、この変数名は
-        // このテストでしか使わない。
+        // SAFETY: tests run concurrently in one process, but this
+        // variable name is used by this test alone.
         unsafe { std::env::set_var("MINATO_TEST_SECRET", "s3cret") };
 
         let resolved = resolve(&[(
@@ -142,12 +147,12 @@ mod tests {
         assert!(resolved.values.is_empty());
         assert_eq!(resolved.failures.len(), 1);
         assert_eq!(resolved.failures[0].0, "API_KEY");
-        assert!(resolved.failures[0].1.contains("設定されていません"));
+        assert!(resolved.failures[0].1.contains("no `"));
     }
 
     #[tokio::test]
     async fn other_keys_survive_one_failure() {
-        // 1 つ解決できないだけで環境全体が起動しないのは困る。
+        // One unresolvable key must not keep the whole environment down.
         unsafe { std::env::set_var("MINATO_TEST_OK", "fine") };
 
         let resolved = resolve(&[
@@ -172,24 +177,25 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(err.contains("見つかりません"), "got: {err}");
+        assert!(err.contains("no `"), "got: {err}");
     }
 
     #[tokio::test]
     async fn trailing_newline_is_stripped() {
-        // `security -w` も `op read` も改行を付けることがある。
-        // 値に混ざると認証に失敗し、原因が非常に分かりにくい。
-        let value = run("printf", &["token\n"]).await.expect("実行できる");
+        // Both `security -w` and `op read` can add a newline. Left in
+        // the value it fails authentication, and the cause is very hard to
+        // see.
+        let value = run("printf", &["token\n"]).await.expect("runs");
         assert_eq!(value, "token");
     }
 
     #[tokio::test]
     async fn nonzero_exit_carries_stderr() {
-        let err = run("sh", &["-c", "echo 詳細 >&2; exit 1"])
+        let err = run("sh", &["-c", "echo details >&2; exit 1"])
             .await
             .unwrap_err();
 
-        assert!(err.contains("詳細"), "got: {err}");
+        assert!(err.contains("details"), "got: {err}");
     }
 
     #[tokio::test]

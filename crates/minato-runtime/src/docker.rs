@@ -575,21 +575,13 @@ impl Runtime for DockerRuntime {
 
     async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
         let Some(container) = self.find_container(key).await? else {
-            events.step_skipped(
-                "stop",
-                format!("stopping {}", key.service),
-                "not running",
-            );
+            events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
         };
 
         let id = container.id.unwrap_or_default();
         if container.state.as_deref() != Some("running") {
-            events.step_skipped(
-                "stop",
-                format!("stopping {}", key.service),
-                "not running",
-            );
+            events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
         }
 

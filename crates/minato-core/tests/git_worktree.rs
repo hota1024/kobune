@@ -64,10 +64,7 @@ fn reports_not_a_repository_outside_git() {
 
     // Fails unless an ancestor of the tempdir happens to be a repository.
     if let Ok(repo) = result {
-        panic!(
-            "expected no repository, but found {}",
-            repo.root.display()
-        );
+        panic!("expected no repository, but found {}", repo.root.display());
     }
 }
 
@@ -90,7 +87,10 @@ fn adds_worktree_with_new_branch() {
 
     let worktrees = repo.worktrees().expect("enumerates");
     assert_eq!(worktrees.len(), 2);
-    assert_eq!(worktrees[0].path, root, "the first entry is the main worktree");
+    assert_eq!(
+        worktrees[0].path, root,
+        "the first entry is the main worktree"
+    );
 
     let added = worktrees
         .iter()

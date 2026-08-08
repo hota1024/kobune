@@ -144,10 +144,7 @@ mod tests {
 
     #[test]
     fn outcome_flattens_beside_the_id() {
-        let message = ServerMessage::err(
-            RequestId(3),
-            ApiError::not_found("no such workspace"),
-        );
+        let message = ServerMessage::err(RequestId(3), ApiError::not_found("no such workspace"));
         let json = serde_json::to_string(&message).expect("serializes");
 
         assert!(json.contains(r#""kind":"response""#), "got: {json}");

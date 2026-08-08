@@ -1,8 +1,10 @@
-//! 外から環境に届くための入り口。プロキシと DNS の待ち受けをまとめる。
+//! The way in to an environment: the proxy's and DNS's listeners, in one
+//! place.
 //!
-//! bind に失敗しても daemon は落とさない。80/443 は特権ポートで、
-//! 権限が無い環境は珍しくない。その場合 URL を発行せず、`endpoint`
-//! （ホストのポート直指定）だけを案内する方が、何も動かないより良い。
+//! A failed bind does not take the daemon down. 80 and 443 are privileged,
+//! and machines without that permission are common enough. Issuing no URLs
+//! and pointing at the raw `endpoint` instead beats nothing working at
+//! all.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
@@ -15,12 +17,12 @@ use minato_proxy::{Activator, LocalCa, Routes, serve_http, serve_https, server_c
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
-/// 待ち受けポートを上書きする環境変数。
+/// The environment variables that override the listening ports.
 pub const HTTP_PORT_ENV: &str = "MINATO_HTTP_PORT";
 pub const HTTPS_PORT_ENV: &str = "MINATO_HTTPS_PORT";
 pub const DNS_PORT_ENV: &str = "MINATO_DNS_PORT";
 
-/// DNS の既定ポート。
+/// The default DNS port.
 pub const DEFAULT_DNS_PORT: u16 = 53;
 
 #[derive(Debug, Clone)]
@@ -28,18 +30,18 @@ pub struct GatewaySettings {
     pub http_port: u16,
     pub https_port: u16,
     pub dns_port: u16,
-    /// プロキシの待ち受けアドレス。
+    /// Where the proxy listens.
     ///
-    /// **IPv4 と IPv6 の両方のループバックで待ち受ける。** macOS は
-    /// `*.localhost` を `::1` と `127.0.0.1` の両方に解決し、クライアントは
-    /// IPv6 を優先する。片方しか押さえないと、`[::1]` にいる無関係の
-    /// アプリへ silently 繋がってしまう。
+    /// **Both loopback families.** macOS resolves `*.localhost` to `::1`
+    /// and `127.0.0.1` alike, and clients prefer IPv6. Holding only one of
+    /// them silently routes traffic to whatever unrelated app happens to
+    /// be on `[::1]`.
     ///
-    /// ローカル開発用なのでループバックに限る。0.0.0.0 にすると
-    /// 同じ LAN の他人から開発環境が見えてしまう。
+    /// Loopback only: this is for local development, and 0.0.0.0 would put
+    /// the environment in front of everyone else on the LAN.
     pub bind: Vec<IpAddr>,
-    /// DNS の待ち受けアドレス。resolver 設定が 127.0.0.1 を名指しするため
-    /// 曖昧さがなく、IPv4 だけでよい。
+    /// Where DNS listens. The resolver configuration names 127.0.0.1
+    /// outright, so there is no ambiguity and IPv4 alone will do.
     pub dns_bind: IpAddr,
 }
 
@@ -59,7 +61,7 @@ impl Default for GatewaySettings {
 }
 
 impl GatewaySettings {
-    /// 環境変数で上書きする。特権ポートを避けたい場合に使う。
+    /// Overrides from the environment, for staying off privileged ports.
     pub fn from_env() -> Self {
         let mut settings = Self::default();
 
@@ -82,31 +84,33 @@ fn port_from_env(key: &str) -> Option<u16> {
     match raw.parse::<u16>() {
         Ok(port) => Some(port),
         Err(_) => {
-            tracing::warn!("{key} の値 `{raw}` はポート番号として解釈できません");
+            tracing::warn!("{key}'s value `{raw}` is not a port number");
             None
         }
     }
 }
 
-/// 起動済みの入り口。
+/// A running gateway.
 pub struct Gateway {
     routes: Routes,
-    /// 実際に bind できたアドレス。
+    /// The addresses actually bound.
     ///
-    /// ポートだけでなくアドレスを持つのは、**片方のアドレス族だけ
-    /// 取れた状態を検出するため**。`*.localhost` は `::1` と `127.0.0.1`
-    /// の両方に解決されるので、IPv6 を取り損ねると別のアプリに
-    /// リクエストが吸われる（実際に起きた）。
+    /// Whole addresses rather than ports, **so a bind that only got one
+    /// family can be spotted**. `*.localhost` resolves to both `::1` and
+    /// `127.0.0.1`, and missing IPv6 hands requests to a different app —
+    /// which is exactly what happened.
     http_addrs: Vec<SocketAddr>,
     https_addrs: Vec<SocketAddr>,
     dns_port: Option<u16>,
     ca_path: Option<PathBuf>,
-    /// 設定上の待ち受けアドレス。取れなかったものの検出に使う。
+    /// The addresses that were meant to be bound, for working out which
+    /// were missed.
     wanted: Vec<IpAddr>,
 }
 
 impl Gateway {
-    /// プロキシと DNS を起動する。失敗したものは無効のまま先へ進む。
+    /// Starts the proxy and DNS. Whatever fails stays off, and the rest
+    /// carries on.
     pub async fn start(
         paths: &Paths,
         settings: &GatewaySettings,
@@ -137,8 +141,8 @@ impl Gateway {
         activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
     ) -> Vec<SocketAddr> {
-        // launchd が bind 済みの socket を持っていればそれを使う。
-        // 80 は特権ポートなので、非 root ではこれ以外に確保する手段がない。
+        // Use launchd's already-bound socket when there is one. 80 is
+        // privileged, so unprivileged there is no other way to hold it.
         let activated = adopt_listeners(activation::HTTP_SOCKET);
         if !activated.is_empty() {
             let addrs: Vec<SocketAddr> = activated
@@ -152,12 +156,12 @@ impl Gateway {
                 let shutdown = shutdown.clone();
                 tokio::spawn(async move {
                     if let Err(err) = serve_http(listener, routes, activator, shutdown).await {
-                        tracing::warn!("HTTP プロキシが停止しました: {err}");
+                        tracing::warn!("the HTTP proxy stopped: {err}");
                     }
                 });
             }
 
-            tracing::info!("HTTP プロキシ: launchd から継承 ({addrs:?})");
+            tracing::info!("HTTP proxy: inherited from launchd ({addrs:?})");
             return addrs;
         }
 
@@ -176,13 +180,13 @@ impl Gateway {
 
                     tokio::spawn(async move {
                         if let Err(err) = serve_http(listener, routes, activator, shutdown).await {
-                            tracing::warn!("HTTP プロキシが停止しました: {err}");
+                            tracing::warn!("the HTTP proxy stopped: {err}");
                         }
                     });
 
-                    tracing::info!("HTTP プロキシ: {addr}");
+                    tracing::info!("HTTP proxy: {addr}");
                 }
-                Err(err) => report_bind_failure("HTTP プロキシ", addr, &err),
+                Err(err) => report_bind_failure("the HTTP proxy", addr, &err),
             }
         }
 
@@ -199,7 +203,7 @@ impl Gateway {
         let ca = match LocalCa::load_or_create(&paths.ca_dir()) {
             Ok(ca) => Arc::new(ca),
             Err(err) => {
-                tracing::warn!("CA を用意できないため HTTPS を無効にします: {err}");
+                tracing::warn!("no CA available, so HTTPS stays off: {err}");
                 return (Vec::new(), None);
             }
         };
@@ -222,12 +226,12 @@ impl Gateway {
                 tokio::spawn(async move {
                     if let Err(err) = serve_https(listener, routes, activator, tls, shutdown).await
                     {
-                        tracing::warn!("HTTPS プロキシが停止しました: {err}");
+                        tracing::warn!("the HTTPS proxy stopped: {err}");
                     }
                 });
             }
 
-            tracing::info!("HTTPS プロキシ: launchd から継承 ({addrs:?})");
+            tracing::info!("HTTPS proxy: inherited from launchd ({addrs:?})");
             return (addrs, Some(ca_path));
         }
 
@@ -249,13 +253,13 @@ impl Gateway {
                         if let Err(err) =
                             serve_https(listener, routes, activator, tls, shutdown).await
                         {
-                            tracing::warn!("HTTPS プロキシが停止しました: {err}");
+                            tracing::warn!("the HTTPS proxy stopped: {err}");
                         }
                     });
 
-                    tracing::info!("HTTPS プロキシ: {addr}");
+                    tracing::info!("HTTPS proxy: {addr}");
                 }
-                Err(err) => report_bind_failure("HTTPS プロキシ", addr, &err),
+                Err(err) => report_bind_failure("the HTTPS proxy", addr, &err),
             }
         }
 
@@ -263,7 +267,7 @@ impl Gateway {
     }
 
     async fn start_dns(settings: &GatewaySettings, shutdown: Arc<Notify>) -> Option<u16> {
-        // :53 も特権ポート。launchd が持っていればそれを使う。
+        // :53 is privileged too. Use launchd's if it has one.
         let udp = adopt_udp(activation::DNS_UDP_SOCKET);
         let tcp = adopt_listeners(activation::DNS_TCP_SOCKET);
 
@@ -281,18 +285,18 @@ impl Gateway {
             let config = DnsConfig::default();
             tokio::spawn(async move {
                 if let Err(err) = minato_dns::serve_sockets(udp, tcp, config, shutdown).await {
-                    tracing::warn!("DNS サーバが停止しました: {err}");
+                    tracing::warn!("the DNS server stopped: {err}");
                 }
             });
 
-            tracing::info!("DNS: launchd から継承 (:{})", port.unwrap_or(0));
+            tracing::info!("DNS: inherited from launchd (:{})", port.unwrap_or(0));
             return port.or(Some(settings.dns_port));
         }
 
         let addr = SocketAddr::new(settings.dns_bind, settings.dns_port);
 
-        // 先に bind できるか確かめる。serve() の中で失敗すると
-        // 起動したのかどうかが呼び出し側から分からない。
+        // Check the bind first. A failure inside serve() would leave the
+        // caller unable to tell whether it started.
         match tokio::net::UdpSocket::bind(addr).await {
             Ok(socket) => drop(socket),
             Err(err) => {
@@ -304,7 +308,7 @@ impl Gateway {
         let config = DnsConfig::default();
         tokio::spawn(async move {
             if let Err(err) = minato_dns::serve(addr, config, shutdown).await {
-                tracing::warn!("DNS サーバが停止しました: {err}");
+                tracing::warn!("the DNS server stopped: {err}");
             }
         });
 
@@ -312,7 +316,7 @@ impl Gateway {
         Some(settings.dns_port)
     }
 
-    /// 何も待ち受けていない入り口。bind に全部失敗した状況と同じ。
+    /// A gateway listening on nothing — the same as every bind failing.
     #[cfg(test)]
     pub(crate) fn inert() -> Self {
         Self {
@@ -325,7 +329,7 @@ impl Gateway {
         }
     }
 
-    /// ポートを指定した入り口。テストで URL の組み立てを確かめるのに使う。
+    /// A gateway with fixed ports, for testing how URLs are built.
     #[cfg(test)]
     pub(crate) fn with_ports(http: Option<u16>, https: Option<u16>) -> Self {
         let both = |port: u16| {
@@ -360,10 +364,10 @@ impl Gateway {
         self.https_addrs.first().map(|addr| addr.port())
     }
 
-    /// 待ち受けたかったのに取れなかったアドレス族。
+    /// The address families that were wanted but not bound.
     ///
-    /// 空でなければ、そのアドレスに来たリクエストは別のプロセスに
-    /// 渡ってしまう。`*.localhost` は両方に解決されるので実害が出る。
+    /// Anything here means requests to that address reach some other
+    /// process. `*.localhost` resolves to both, so the damage is real.
     pub fn missing_families(&self) -> Vec<IpAddr> {
         if self.http_addrs.is_empty() && self.https_addrs.is_empty() {
             return Vec::new();
@@ -391,15 +395,15 @@ impl Gateway {
         self.ca_path.as_deref()
     }
 
-    /// プロキシが動いているか。動いていなければ URL を発行しない。
+    /// Whether the proxy is running. No URLs are issued when it is not.
     pub fn is_serving(&self) -> bool {
         !self.http_addrs.is_empty() || !self.https_addrs.is_empty()
     }
 
-    /// ホスト名に対応する URL。プロキシが動いていなければ `None`。
+    /// The URL for a hostname, or `None` when the proxy is not running.
     ///
-    /// HTTPS を優先する。ブラウザは HTTP の開発サーバに対しても
-    /// 混在コンテンツや Secure Cookie の制約をかけるため。
+    /// HTTPS wins: browsers apply mixed-content and Secure-cookie rules to
+    /// a plain HTTP dev server too.
     pub fn url_for(&self, host: &str) -> Option<String> {
         if let Some(port) = self.https_port() {
             return Some(format_url("https", host, port, 443));
@@ -410,7 +414,7 @@ impl Gateway {
     }
 }
 
-/// 既定ポートなら省略した URL を作る。
+/// Builds a URL, leaving the port off when it is the default.
 fn format_url(scheme: &str, host: &str, port: u16, default_port: u16) -> String {
     if port == default_port {
         format!("{scheme}://{host}")
@@ -419,14 +423,14 @@ fn format_url(scheme: &str, host: &str, port: u16, default_port: u16) -> String 
     }
 }
 
-/// launchd から受け取った fd を tokio のリスナーにする。
+/// Turns a descriptor from launchd into a tokio listener.
 fn adopt_listeners(name: &str) -> Vec<TcpListener> {
     activation::tcp_listeners(name)
         .into_iter()
         .filter_map(|listener| match TcpListener::from_std(listener) {
             Ok(listener) => Some(listener),
             Err(err) => {
-                tracing::warn!("{name} の socket を引き継げません: {err}");
+                tracing::warn!("cannot take over {name}'s socket: {err}");
                 None
             }
         })
@@ -439,7 +443,7 @@ fn adopt_udp(name: &str) -> Vec<tokio::net::UdpSocket> {
         .filter_map(|socket| match tokio::net::UdpSocket::from_std(socket) {
             Ok(socket) => Some(socket),
             Err(err) => {
-                tracing::warn!("{name} の socket を引き継げません: {err}");
+                tracing::warn!("cannot take over {name}'s socket: {err}");
                 None
             }
         })
@@ -449,16 +453,16 @@ fn adopt_udp(name: &str) -> Vec<tokio::net::UdpSocket> {
 fn report_bind_failure(what: &str, addr: SocketAddr, err: &std::io::Error) {
     if err.kind() == std::io::ErrorKind::PermissionDenied && addr.port() < 1024 {
         tracing::warn!(
-            "{what} が {addr} を確保できません（1024 未満のポートには権限が要ります）。\
-             `minato doctor` に対処方法があります"
+            "{what} cannot hold {addr} (a port below 1024 needs privileges). \
+             `minato doctor` says what to do about it"
         );
     } else if err.kind() == std::io::ErrorKind::AddrInUse {
         tracing::warn!(
-            "{what} が {addr} を確保できません（他のプロセスが使用中）。\
-             `minato doctor` で確認してください"
+            "{what} cannot hold {addr} (another process has it). \
+             Check `minato doctor`"
         );
     } else {
-        tracing::warn!("{what} が {addr} を確保できません: {err}");
+        tracing::warn!("{what} cannot hold {addr}: {err}");
     }
 }
 
@@ -499,7 +503,7 @@ mod tests {
 
     #[test]
     fn issues_no_url_when_nothing_is_listening() {
-        // 待ち受けていないのに URL を出すと、繋がらない先を案内することになる。
+        // A URL with nothing listening behind it points at a dead end.
         let gateway = gateway(None, None);
 
         assert!(!gateway.is_serving());
@@ -516,15 +520,15 @@ mod tests {
         assert_eq!(
             settings.dns_bind,
             IpAddr::V4(Ipv4Addr::LOCALHOST),
-            "0.0.0.0 にすると LAN から開発環境が見えてしまう"
+            "0.0.0.0 would put the environment in front of the LAN"
         );
     }
 
     #[test]
     fn detects_a_missing_address_family() {
-        // 別のアプリが [::1]:8080 を持っていると、こちらは IPv4 しか
-        // 取れない。*.localhost は両方に解決されるので、IPv6 で来た
-        // リクエストは相手のアプリに吸われる。黙って進んではいけない。
+        // With another app holding [::1]:8080, only IPv4 is available
+        // here. *.localhost resolves to both, so anything arriving over
+        // IPv6 goes to that app instead. This must not pass silently.
         let gateway = Gateway {
             routes: Routes::new(),
             http_addrs: vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)],
@@ -554,21 +558,21 @@ mod tests {
 
     #[test]
     fn nothing_bound_is_reported_separately() {
-        // 全部失敗している場合は「片方だけ取れた」問題ではない。
+        // Everything failing is not the "only one family" problem.
         assert!(Gateway::inert().missing_families().is_empty());
     }
 
     #[test]
     fn listens_on_both_loopback_families() {
-        // *.localhost は ::1 と 127.0.0.1 の両方に解決される。片方しか
-        // 押さえないと、もう片方にいる別のアプリへ繋がってしまう。
+        // *.localhost resolves to both ::1 and 127.0.0.1. Holding one
+        // sends the rest to whatever app is on the other.
         let settings = GatewaySettings::default();
 
         assert!(settings.bind.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(settings.bind.contains(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
         assert!(
             settings.bind.iter().all(|ip| ip.is_loopback()),
-            "ループバック以外に晒さない"
+            "nothing outside loopback is exposed"
         );
     }
 }

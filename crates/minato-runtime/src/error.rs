@@ -67,7 +67,10 @@ mod tests {
         let api: ApiError = err.into();
 
         assert_eq!(api.code, ErrorCode::RuntimeUnavailable);
-        assert!(api.code.is_retryable(), "starting it fixes this, so retrying is worth it");
+        assert!(
+            api.code.is_retryable(),
+            "starting it fixes this, so retrying is worth it"
+        );
         assert!(api.hint.expect("has a hint").contains("Docker"));
     }
 

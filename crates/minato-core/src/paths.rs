@@ -120,10 +120,7 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("too long"), "got: {message}");
-        assert!(
-            message.contains(HOME_ENV),
-            "say how to fix it: {message}"
-        );
+        assert!(message.contains(HOME_ENV), "say how to fix it: {message}");
     }
 
     #[test]
@@ -138,7 +135,9 @@ mod tests {
             paths.socket().as_os_str().as_encoded_bytes().len(),
             MAX_SOCKET_PATH_LEN
         );
-        paths.check_socket_length().expect("exactly at the limit is fine");
+        paths
+            .check_socket_length()
+            .expect("exactly at the limit is fine");
     }
 
     #[test]
