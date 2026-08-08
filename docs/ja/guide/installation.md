@@ -1,19 +1,19 @@
 # インストール
 
-Minato はまだ crates.io に公開していないので、ソースからビルドします。
+Minato はまだ crates.io に公開していないため、ソースからビルドします。
 
 ## 必要なもの
 
 | | |
 | --- | --- |
 | **Rust** | 1.85 以降 |
-| **コンテナランタイム** | Docker / OrbStack / colima、または macOS 26 以降の Apple Container |
-| **macOS** | 完全にサポート。Linux でも中核は動きますが launchd socket activation はありません |
+| **コンテナランタイム** | Docker / OrbStack / colima のいずれか。または macOS 26 以降の Apple Container |
+| **macOS** | 全機能に対応しています。Linux でも中核機能は動作しますが、launchd socket activation は利用できません |
 
-デスクトップアプリは任意で、もう少し条件があります。
+デスクトップアプリは任意です。追加の条件については
 [デスクトップアプリ](./gui) を参照してください。
 
-## ビルドする
+## ビルド
 
 ```console
 $ git clone https://github.com/hota1024/minato
@@ -21,27 +21,28 @@ $ cd minato
 $ cargo build --release --workspace
 ```
 
-`target/release` に 2 つのバイナリができます。
+`target/release` に 2 つのバイナリが生成されます。
 
-- `minato` — あなたが使う CLI
-- `minatod` — CLI が話しかける daemon
+- `minato` — 操作に使う CLI
+- `minatod` — CLI が通信する daemon
 
-`PATH` の通った場所に置きます。
+`PATH` の通ったディレクトリに配置します。
 
 ```console
 $ cp target/release/minato target/release/minatod ~/.local/bin/
 ```
 
-この 2 つは一緒に配布され、隣り合っていることを前提にしています。CLI は自分の
-隣を見て daemon を起動します。
+この 2 つは同じディレクトリに置いてください。CLI は自身と同じ場所を参照して
+daemon を起動します。
 
-## ランタイムを選ぶ
+## コンテナランタイムの選択
 
 ### Docker
 
-設定は要りません。Minato は Docker API を直接叩き、`docker` CLI を呼ばないので、
-CLI 自体は入っていなくても構いません。API に届きさえすれば、Docker Desktop /
-OrbStack / colima のどれでも動きます。
+追加の設定は不要です。Minato は Docker API を直接利用し、`docker` CLI を
+呼び出しません。そのため CLI 自体はインストールされていなくても、API に
+到達できれば動作します。Docker Desktop、OrbStack、colima のいずれでも
+構いません。
 
 ```console
 $ minato doctor
@@ -63,23 +64,24 @@ $ container system start
 default = "apple"
 ```
 
-選ぶ前に知っておくべき違いが 2 つあります。[ランタイム](./runtimes) を
-参照してください。
+選択する前に把握しておくべき制約が 2 点あります。
+[ランタイム](./runtimes) を参照してください。
 
-## daemon を起動する
+## daemon の起動
 
 ```console
 $ minato daemon start
 minatod 0.1.0 is running
 ```
 
-手で叩くことはほとんどありません。どのコマンドも、daemon が動いていなければ
-起動します。プロキシ・DNS・アイドル判定を持つため、常駐が必要になっています。
+通常は手動で実行する必要はありません。いずれのコマンドも、daemon が停止して
+いれば自動的に起動します。プロキシ、DNS、アイドル判定を担当するため、
+常駐プロセスとして動作します。
 
-## 権限の要る設定
+## 管理者権限が必要な設定
 
-`https://web.myapp.localhost` にポート番号なしで届くには、3 つだけ root が
-必要です。一度きりです。
+`https://web.myapp.localhost` にポート番号なしでアクセスするには、3 つの設定に
+管理者権限が必要です。設定は初回の 1 度だけです。
 
 ```console
 $ minato setup
@@ -97,45 +99,47 @@ It requires root, so read each command before running it.
    sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/…
 ```
 
-**`minato setup` はこれらを表示するだけで、実行はしません。** 勝手に `sudo` を
-走らせるとエージェントはパスワード待ちで固まり、利用者から見れば黙って権限
-昇格したことになります。内容を確認してから、自分で実行してください。
+**`minato setup` はコマンドを表示するだけで、実行はしません。** 自動で `sudo`
+を実行すると、エージェントはパスワード入力待ちで停止し、利用者から見れば
+黙って権限昇格が行われたことになります。内容を確認したうえで、手動で実行して
+ください。
 
-そのあと:
+実行後は次のようにします。
 
 ```console
-$ minato daemon stop   # launchd が起動し直し、本来のポートを確保します
+$ minato daemon stop   # launchd が起動し直し、標準ポートを確保します
 $ minato doctor
 ```
 
-### 省略する場合
+### 設定を省略する場合
 
-必須ではありません。非特権ポートを指定すれば、URL にポートが付くだけで
-すべて動きます。
+この設定は必須ではありません。非特権ポートを指定すれば、URL にポート番号が
+付く点を除いてすべて動作します。
 
 ```console
 $ export MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353
 $ minato daemon start
 ```
 
-ただし `*.localhost` を解決させるには `/etc/resolver` の設定が要ります。これは
-Minato ではなく macOS の都合です。`minato doctor` が、正しいポートを含んだ
-コマンドをそのまま出します。
+ただし `*.localhost` を解決させるには `/etc/resolver` の設定が必要です。
+これは Minato ではなく macOS 側の仕様です。`minato doctor` が、指定した
+ポートを含んだコマンドをそのまま出力します。
 
-## 確認する
+## 動作確認
 
 ```console
 $ minato doctor
 ```
 
-`✓` でない行には必ず直し方が付きます。ここが赤いまま先に進まないでください。
-あとで起きる分かりにくい挙動は、たいていここに行き着きます。
+`✓` 以外の行には、必ず対処方法が併記されます。ここに問題が残ったまま先に
+進まないでください。後から発生する原因の分かりにくい不具合は、多くの場合
+ここに起因します。
 
-## 置き場所
+## ファイルの配置場所
 
-`MINATO_HOME`（既定は `~/.minato`）に、daemon のソケット・状態ファイル・
-ログ・ローカル CA・生成されたトンネル設定が置かれます。
+`MINATO_HOME`（既定値 `~/.minato`）に、daemon のソケット、状態ファイル、
+ログ、ローカル CA、生成されたトンネル設定が保存されます。
 
-Unix ソケットのパスは約 100 バイトまでなので、`MINATO_HOME` を深い場所には
-置けません。Minato は起動時にこれを確認し、分かりにくいエラーで落ちる代わりに
-そう伝えます。
+Unix ソケットのパスは約 100 バイトまでという制限があるため、`MINATO_HOME` に
+深い階層のディレクトリは指定できません。Minato は起動時にこれを検証し、
+原因の分かりにくいエラーで失敗する代わりに、その旨を明示します。

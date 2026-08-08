@@ -1,16 +1,18 @@
 # 環境変数
 
-3 つの層を後勝ちで解決し、そのさらに下に Minato が注入する変数があります。
+3 つの層を後勝ちで解決します。さらにその下に、Minato が自動的に注入する変数が
+あります。
 
-## 層
+## 3 つの層
 
-| 層 | 場所 | コミットする? |
+| 層 | 保存先 | コミット対象 |
 | --- | --- | --- |
-| **global** | `~/.minato/env` | しない。マシン固有 |
-| **project** | `minato.toml` の `env` と `.minato/env` | する |
-| **workspace** | `.minato/env.local` | しない。gitignore する |
+| **global** | `~/.minato/env` | 対象外。マシン固有の設定 |
+| **project** | `minato.toml` の `env` と `.minato/env` | 対象 |
+| **workspace** | `.minato/env.local` | 対象外。gitignore に追加する |
 
-後ろが勝ちます。workspace の値が project に勝ち、project が global に勝ちます。
+後に定義された層が優先されます。workspace が project より優先され、project が
+global より優先されます。
 
 ```console
 $ minato env ls
@@ -19,30 +21,30 @@ LOG_LEVEL      workspace   debug
 API_KEY        global      ****
 ```
 
-**層は必ず併記されます。** 3 つあるので、いちばん厄介なのは「見ていない層の
-値が効いている」状況だからです。
+**定義元の層は常に併記されます。** 層が 3 つあるため、意図しない層の値が
+優先されている状況が最も特定しにくいためです。
 
-## 設定する
+## 値を設定する
 
 ```console
 $ minato env set LOG_LEVEL=debug                    # 既定は workspace
-$ minato env set DATABASE_URL=… --scope project     # コミットされ、共有される
-$ minato env set GITHUB_TOKEN=… --scope global      # すべてのプロジェクト
+$ minato env set DATABASE_URL=… --scope project     # コミット対象、全体で共有
+$ minato env set GITHUB_TOKEN=… --scope global      # 全プロジェクト共通
 $ minato env unset LOG_LEVEL
 ```
 
-ファイルを直接編集せず `minato env` から書いてください。意図した層に置かれ、
-書式も揃います。
+ファイルを直接編集せず、`minato env` から設定してください。指定した層に確実に
+書き込まれ、書式も統一されます。
 
-::: warning 変更には再起動が要ります
-すでに動いているコンテナは新しい値を拾いません。
-`minato down && minato up` してください。
+::: warning 反映には再起動が必要です
+すでに稼働しているコンテナは、新しい値を読み込みません。
+`minato down && minato up` を実行してください。
 :::
 
-## Minato が注入する変数
+## 自動的に注入される変数
 
-すべてのサービスが以下を受け取ります。あなたの値より下の層なので、どれでも
-上書きできます。
+すべてのサービスに次の変数が渡されます。利用者が設定する値より下の層に位置する
+ため、いずれも上書きできます。
 
 ```
 MINATO_PROJECT      = myapp
@@ -52,30 +54,31 @@ MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 ```
 
-重要なのは `MINATO_URL_<SERVICE>` です。worktree ごとの環境が成立するのは
-これがあるからで、フロントエンドは API の URL をハードコードできません
-—— URL はブランチごとに違うからです。
+とくに重要なのが `MINATO_URL_<SERVICE>` です。URL はブランチごとに異なるため、
+フロントエンドは API の URL をハードコードできません。worktree ごとの環境が
+成立するのは、この変数があるためです。
 
 ```js
 const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
 ```
 
-サービス名の `-` は `_` になります。`api-server` なら
-`MINATO_URL_API_SERVER` です。
+サービス名に含まれる `-` は `_` に変換されます。`api-server` であれば
+`MINATO_URL_API_SERVER` になります。
 
-::: tip URL が無いのはプロキシが動いていないとき
-プロキシが待ち受けていないときは、空文字ではなく変数そのものが設定されません。
-空文字だと「設定されているのに壊れている」状態になり、変数が無いより
-ずっと分かりにくくなります。
+::: tip プロキシが停止している場合
+プロキシが待ち受けていないときは、空文字ではなく変数自体が設定されません。
+空文字を設定すると「値はあるのに接続できない」状態になり、変数が存在しない
+場合よりも原因の特定が困難になるためです。
 :::
 
-Apple Container では、peer の IP アドレスを持つ `MINATO_HOST_<SERVICE>` も
-あります。[ランタイム](./runtimes) を参照。
+Apple Container では、これに加えて他サービスの IP アドレスを保持する
+`MINATO_HOST_<SERVICE>` が注入されます。[ランタイム](./runtimes) を参照して
+ください。
 
 ## シークレット
 
-秘密をコミットしないでください。参照を書けば、コンテナ起動時に Minato が
-解決します。
+秘匿すべき値はコミットしないでください。参照形式で記述しておけば、コンテナの
+起動時に Minato が解決します。
 
 ```
 DATABASE_PASSWORD = op://Development/myapp/password    # 1Password CLI
@@ -83,39 +86,41 @@ API_KEY           = keychain://minato/myapp/api-key    # macOS Keychain
 STRIPE_KEY        = env://STRIPE_KEY                   # daemon の環境変数
 ```
 
-解決した値はメモリ上でコンテナに渡り、**ディスクには書かれません。**
-`minato env ls` は値ではなく参照を表示します。`--reveal` を付けても同じで、
-実体を出すには解決が必要で、それは起動時にしか行わないからです。
+解決された値はメモリ上でコンテナに渡され、**ディスクには書き込まれません。**
+`minato env ls` は値ではなく参照を表示します。`--reveal` を指定した場合も
+同様です。実際の値を表示するには解決処理が必要ですが、それは起動時にのみ
+実行するためです。
 
-### 解決に失敗したとき
+### 解決に失敗した場合
 
-daemon は落ちません。たいていは 1Password にサインインしていないだけで、
-そのために環境全体が起動しないほうが困ります。そのキーだけ落として警告します。
+daemon は停止しません。多くの場合は 1Password にサインインしていないだけで
+あり、それによって環境全体が起動しなくなるほうが問題だからです。該当する
+キーのみを除外し、警告を出力します。
 
 ```
 warning: cannot resolve the secret for DATABASE_PASSWORD: cannot reach op
 ```
 
-アプリは変数が無いことで失敗します。間違った値で動くよりは、はっきりした
-失敗です。
+アプリケーションは変数が未設定であることを理由に失敗します。誤った値で
+動作し続けるよりも、明確な失敗です。
 
-## 1 つの値を読む
+## 単一の値を取得する
 
 ```console
 $ minato env get DATABASE_URL
 postgres://db:5432/app
 ```
 
-スクリプト用に 1 行だけ、装飾なしで出します。`env ls` と違って実際の値が
-出るのは、名指しで聞いているからです。
+スクリプトから利用できるよう、値を 1 行だけ出力します。`env ls` と異なり
+実際の値が表示されるのは、キーを明示的に指定しているためです。
 
-## ファイルで扱う場合
+## ファイルで管理する場合
 
 ```
 ~/.minato/env              global
-.minato/env                project、コミットする
-.minato/env.local          workspace、gitignore する
+.minato/env                project、コミット対象
+.minato/env.local          workspace、gitignore に追加する
 ```
 
-`KEY=value` を 1 行ずつ、`#` がコメントです。`.minato/env.local` は
-`.gitignore` に入れてください。
+書式は 1 行につき `KEY=value` で、`#` から始まる行はコメントです。
+`.minato/env.local` は `.gitignore` に追加してください。

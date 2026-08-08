@@ -1,7 +1,7 @@
 # `minato.toml`
 
-リポジトリルートに置き、コミットします。すべての worktree が同じものを
-読みます。
+リポジトリルートに配置し、リポジトリで管理します。すべての worktree が同じ
+内容を参照します。
 
 ```toml
 [project]
@@ -30,116 +30,117 @@ volumes = ["pgdata:/var/lib/postgresql/data"]
 
 ## `[project]`
 
-| キー | 型 | | |
+| キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `name` | string | **必須** | すべての URL に現れます。1 つの daemon が管理するプロジェクト内で一意である必要があります |
-| `domain` | string | `{name}.localhost` | URL の接尾辞。`.localhost` 以外は `/etc/resolver` の設定が別途必要です |
+| `name` | string | **必須** | すべての URL に含まれます。1 つの daemon が管理するプロジェクト間で一意である必要があります |
+| `domain` | string | `{name}.localhost` | URL の接尾辞。`.localhost` 以外を指定する場合は `/etc/resolver` の設定が別途必要です |
 
-同じ名前で 2 つ登録しようとすると、衝突させる代わりに拒否されます。
+同名のプロジェクトを 2 つ登録しようとした場合は、衝突させずにエラーとします。
 
 ## `[runtime]`
 
-| キー | 型 | | |
+| キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
 | `default` | string | `"docker"` | `"docker"` または `"apple"` |
 
-[ランタイム](../guide/runtimes) を参照。
+[ランタイム](../guide/runtimes) を参照してください。
 
 ## `[services.<name>]`
 
-サービス名は URL と `MINATO_URL_<SERVICE>` に現れるので、英数字と `-` に
-留めてください。
+サービス名は URL と `MINATO_URL_<SERVICE>` に含まれるため、英数字と `-` の
+範囲に留めてください。
 
 ### イメージとコマンド
 
-| キー | 型 | | |
+| キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `image` | string | **必須** | 既製イメージ。`postgres:16`、`docker.io/library/node:22` |
-| `build` | string | — | **未対応。** Dockerfile のビルド用に予約 |
-| `command` | string | イメージの既定 | イメージのコマンドを置き換えます。シェル風に解釈され、引用符は 1 引数にまとまります |
+| `image` | string | **必須** | 既製イメージ。`postgres:16`、`docker.io/library/node:22` など |
+| `build` | string | — | **未対応。** Dockerfile のビルド用に予約されています |
+| `command` | string | イメージの既定値 | イメージ側のコマンドを上書きします。シェルと同様に解釈され、引用符で囲んだ範囲は 1 つの引数になります |
 | `workdir` | string | `/workspace` | コンテナ内の作業ディレクトリ |
 
-worktree は `/workspace` にマウントされるので、それが既定になっています。
+worktree は `/workspace` にマウントされるため、これが既定値になっています。
 
 ### ネットワーク
 
-| キー | 型 | | |
+| キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `port` | integer | — | アプリが **コンテナの中で** 待ち受けるポート |
-| `expose` | boolean | `port` があれば `true` | URL を生やすかどうか |
+| `port` | integer | — | アプリケーションが**コンテナ内で**待ち受けるポート |
+| `expose` | boolean | `port` があれば `true` | URL を割り当てるかどうか |
 
-ホスト側のポートを設定する場所はありません。Docker は自分で選んだポートに
-フォワードし、Apple Container はコンテナに自分の IP を与えます。
+ホスト側のポートを設定する項目はありません。Docker は自動的に選択したポートへ
+フォワードし、Apple Container はコンテナに専用の IP アドレスを割り当てます。
 
-コンテナの中では `127.0.0.1` ではなく `0.0.0.0` に bind してください。
-コンテナ内のループバックに bind したサーバは、外から届きません。
+コンテナ内では `127.0.0.1` ではなく `0.0.0.0` にバインドしてください。
+コンテナ内のループバックにバインドしたサーバには、外部から到達できません。
 
 ### 起動完了の判定
 
-| キー | 型 | | |
+| キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `health` | string | TCP 接続 | 受け付け可能かどうかの判定方法 |
+| `health` | string | TCP 接続 | リクエストを受け付けられる状態かどうかの判定方法 |
 
 ```toml
 health = "http://localhost:3000/healthz"   # 2xx または 3xx
-health = "tcp://localhost:5432"            # 接続が通る
+health = "tcp://localhost:5432"            # 接続が成功する
 health = "cmd:pg_isready"                  # 未対応
 ```
 
-`http://` では **パスだけが使われます。** 書くのはコンテナの中から見た
-アドレスで、Minato はランタイムが割り当てたアドレスに届きます。
+`http://` で**使われるのはパスのみ**です。記述するのはコンテナ内から見た
+アドレスですが、Minato はランタイムが割り当てたアドレスに接続します。
 
 ### ライフサイクル
 
-| キー | 型 | | |
+| キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `idle_timeout` | duration | `"30m"` | リクエストが来ないまま自分を止めるまでの時間 |
+| `idle_timeout` | duration | `"30m"` | リクエストが来ない状態が続いたとき、自動停止するまでの時間 |
 | `depends_on` | array | `[]` | 先に起動するサービス |
 | `scope` | string | `"workspace"` | `"workspace"` または `"project"` |
 
-時間は `humantime` 形式です。`"30s"`、`"10m"`、`"2h"`。
+時間は `humantime` 形式で指定します。`"30s"`、`"10m"`、`"2h"` など。
 
-`depends_on` は順序を決めます。Apple Container では、`MINATO_HOST_<PEER>` が
-使えるかどうかもこれで決まります。アドレスはサービス起動時に読むためです。
+`depends_on` は起動順序を指定します。Apple Container では、
+`MINATO_HOST_<PEER>` が利用可能かどうかもこの指定に依存します。アドレスを
+サービスの起動時に取得するためです。
 
-`scope = "project"` はすべての worktree で 1 インスタンスを共有します。何度も
-seed したくないデータベースには向き、互換性のないマイグレーションを持つ
-ブランチが 2 つあるときには向きません。
+`scope = "project"` は、すべての worktree で 1 インスタンスを共有します。
+初期データの投入を繰り返したくないデータベースには適していますが、互換性の
+ないマイグレーションを持つブランチが複数ある場合には適しません。
 
 ### ストレージ
 
-| キー | 型 | | |
+| キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `volumes` | array | `[]` | マウント |
+| `volumes` | array | `[]` | マウント定義 |
 
 ```toml
 volumes = [
-  "pgdata:/var/lib/postgresql/data",   # 名前付き。worktree 間で共有
-  "./seed:/seed",                      # ホストのパス。worktree からの相対
+  "pgdata:/var/lib/postgresql/data",   # 名前付き。worktree 間で共有される
+  "./seed:/seed",                      # ホストのパス。worktree からの相対パス
   "/etc/ssl/certs:/certs:ro",          # 絶対パス、読み取り専用
-  "~/.cache/npm:/root/.npm",           # ホームからの相対
+  "~/.cache/npm:/root/.npm",           # ホームディレクトリからの相対パス
 ]
 ```
 
-`/` を含まない source は名前付き領域、`/` `./` `~/` で始まるものはホストの
-パスです。末尾の `:ro` / `:rw` でモードを指定し、既定は読み書き可です。
-コンテナ側のパスは絶対パスである必要があります。
+`/` を含まない source は名前付き領域、`/`、`./`、`~/` で始まるものはホストの
+パスとして扱われます。末尾の `:ro` / `:rw` でモードを指定でき、既定値は
+読み書き可能です。コンテナ側のパスは絶対パスである必要があります。
 
-Apple Container に名前付きボリュームは無いので、
-`~/.minato/volumes/<project>/` の bind mount になります。
+Apple Container には名前付きボリュームがないため、
+`~/.minato/volumes/<project>/` へのバインドマウントに置き換えられます。
 
 ### 環境変数
 
-| キー | 型 | | |
+| キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `env` | table | `{}` | このサービスの変数 |
+| `env` | table | `{}` | このサービスに渡す環境変数 |
 
 ```toml
 env = { NODE_ENV = "development", PORT = "3000" }
 ```
 
-これは *project* 層で、コミットされます。シークレットは入れないでください。
-[環境変数](../guide/environment-variables) を参照。
+これは project 層にあたり、リポジトリで管理されます。秘匿すべき値は記述しない
+でください。[環境変数](../guide/environment-variables) を参照してください。
 
 ## 検証
 
@@ -148,5 +149,6 @@ $ minato status
 error: invalid configuration: service `web`: depends_on names an unknown service `database`
 ```
 
-設定は読み込み時に検証されます。存在しないサービスの参照、`depends_on` の
-循環、不正なボリューム指定、不正な時間表記は、何かが起動する前に見つかります。
+設定は読み込み時に検証されます。存在しないサービスへの参照、`depends_on` の
+循環参照、不正なボリューム指定、不正な時間表記は、いずれもサービスの起動前に
+検出されます。

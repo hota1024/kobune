@@ -2,42 +2,43 @@
 
 すべてのコマンドが `--json` と `-w, --workspace` を受け付けます。
 
-| フラグ | |
+| フラグ | 説明 |
 | --- | --- |
-| `--json` | 応答を JSON で出力。エラーも stdout に出るので、エージェントは 1 本のストリームだけを見れば済みます |
-| `-w, --workspace <name>` | 対象の workspace。省略時は現在のディレクトリから判定 |
+| `--json` | 応答を JSON で出力します。エラーも stdout に出力されるため、エージェントは 1 つのストリームのみを監視すれば済みます |
+| `-w, --workspace <name>` | 対象の workspace。省略した場合はカレントディレクトリから判定します |
 
-## 準備
+## 初期設定
 
 ### `minato init`
 
-リポジトリルートに `minato.toml` のひな形を書き、ディレクトリ名から
-プロジェクト名を推測します。worktree の中で実行しても main worktree に
-書きます。
+リポジトリルートに `minato.toml` のひな形を生成し、ディレクトリ名から
+プロジェクト名を推測します。worktree 内で実行した場合も、main worktree に
+生成します。
 
 ```console
 $ minato init
-$ minato init --force    # 既存を上書き
+$ minato init --force    # 既存のファイルを上書きする
 ```
 
 ### `minato doctor`
 
-環境を診断し、`✓` でないものすべてに直し方を出します。プロジェクトが使う
-ランタイム、プロキシと DNS の待ち受け、launchd socket activation、ローカル CA
-とその信頼、`/etc/resolver`、そして実際に 127.0.0.1 に解決されるかを見ます。
+環境を診断し、`✓` 以外のすべての項目に対処方法を表示します。診断対象は、
+プロジェクトが使用するランタイム、プロキシと DNS の待ち受け状態、launchd
+socket activation、ローカル CA とその信頼状態、`/etc/resolver` の設定、
+および名前が実際に 127.0.0.1 へ解決されるかどうかです。
 
 ### `minato setup`
 
-root が要る部分のコマンドを表示します。LaunchDaemon、resolver の設定、CA の
-信頼登録。**実行はしません。** 手順は設定 *後* の状態に合わせて生成されます
-—— launchd を設置すると DNS は :53 に移るので、resolver に書くポートもそう
-なります。
+管理者権限が必要な設定のコマンドを表示します。対象は LaunchDaemon の配置、
+resolver の設定、CA の信頼登録です。**実行は行いません。** 手順は設定「後」の
+状態に合わせて生成されます。launchd を配置すると DNS は 53 番ポートに移るため、
+resolver に記述するポート番号もそれに合わせたものになります。
 
-## workspace
+## workspace の操作
 
 ### `minato new <branch>`
 
-worktree を作り、環境を起動し、URL を出します。
+worktree を作成し、環境を起動して URL を表示します。
 
 ```console
 $ minato new feature/user-auth
@@ -46,66 +47,68 @@ $ minato new feature/x --path ../elsewhere
 $ minato new feature/x --no-start
 ```
 
-| フラグ | |
+| フラグ | 説明 |
 | --- | --- |
 | `--base <ref>` | 新規ブランチの分岐元 |
-| `--path <dir>` | worktree の置き場所。既定は `../{repo}.wt/{branch}` |
-| `--no-start` | 作るだけで起動しない |
+| `--path <dir>` | worktree の作成先。既定値は `../{repo}.wt/{branch}` |
+| `--no-start` | 作成のみ行い、起動しない |
 
-既存のブランチは作らずにチェックアウトします。
+既存のブランチは、新規作成せずチェックアウトします。
 
 ### `minato ls`
 
-すべての workspace と、いくつのサービスが動いているか。
+すべての workspace と、稼働中のサービス数を表示します。
 
 ```console
 $ minato ls
-$ minato ls --all-projects   # 現状はまだ現在のプロジェクトのみ
+$ minato ls --all-projects   # 現時点ではカレントプロジェクトのみ
 ```
 
 ### `minato status`
 
-現在の workspace の詳細。各サービスの状態、URL、プロキシの転送先アドレス。
+対象 workspace の詳細を表示します。各サービスの状態、URL、プロキシの転送先
+アドレスが含まれます。
 
 ### `minato rm`
 
-worktree とコンテナを削除します。ブランチは残り、共有サービス
-（`scope = "project"`）も他の worktree が使うので残ります。
+worktree とコンテナを削除します。ブランチは残ります。共有サービス
+（`scope = "project"`）も、他の worktree が使用しているため残ります。
 
 ```console
 $ minato rm -w feature-auth
-$ minato rm -w feature-auth -f   # 未コミットの変更があっても
+$ minato rm -w feature-auth -f   # 未コミットの変更があっても削除する
 ```
 
-## サービス
+## サービスの操作
 
 ### `minato up [services…]`
 
-サービスと、その依存先を起動します。名前がなければすべて。
+サービスとその依存先を起動します。サービス名を省略した場合はすべてが対象です。
 
-動いているコンテナには触れません。停止中のものは設定変更を反映するため
-作り直します。
+稼働中のコンテナには変更を加えません。停止中のコンテナは、設定変更を反映する
+ため再作成します。
 
 ### `minato down [services…]`
 
 ```console
 $ minato down
 $ minato down web
-$ minato down --all    # プロジェクト内のすべての workspace
+$ minato down --all    # プロジェクト内の全 workspace
 ```
 
-共有サービスは、名前を明示したときだけ止まります。他の worktree が使って
-いるかもしれないからです。
+共有サービスは、名前を明示的に指定した場合のみ停止します。他の worktree が
+使用している可能性があるためです。
 
 ### `minato url [service]`
 
-1 行だけを出力します。名前がなければ最初の到達可能なサービス。
+1 行のみを出力します。サービス名を省略した場合は、最初にアクセス可能な
+サービスが対象です。
 
 ```console
 $ curl -sS --fail-with-body "$(minato url web)/api/health"
 ```
 
-停止中でも URL は有効です。リクエストが起動させます。
+停止中でも URL は有効です。リクエストによって起動します。
 
 ### `minato logs [services…]`
 
@@ -115,12 +118,12 @@ $ minato logs web -n 100
 $ minato logs web -f
 ```
 
-| フラグ | |
+| フラグ | 説明 |
 | --- | --- |
-| `-f, --follow` | 流し続ける |
-| `-n, --tail <n>` | 末尾から何行 |
+| `-f, --follow` | 継続的に出力する |
+| `-n, --tail <n>` | 末尾から表示する行数 |
 
-装飾なしで、stdout と stderr は分かれたままです。
+装飾を含まず、stdout と stderr は分離されたままです。
 
 ### `minato exec <service> -- <command>`
 
@@ -129,8 +132,8 @@ $ minato exec web -- npm test
 $ minato exec web -- sh
 ```
 
-**終了コードはコマンドのものです。** TTY は要求しないので、入力待ちの
-コマンドはプロンプトを出さずに固まります。
+**終了コードは実行したコマンドのものです。** TTY は要求しないため、入力待ちに
+なるコマンドはプロンプトを表示せず停止します。
 
 ## 環境変数
 
@@ -141,11 +144,11 @@ $ minato env set <KEY=VALUE> [--scope global|project|workspace]
 $ minato env unset <KEY> [--scope …]
 ```
 
-`ls` はどの層の値かを表示し、シークレットは伏せます。`--reveal` で平文の値は
-出ますが、シークレット *参照* は参照のままです。`get` はパイプ用に 1 つの値を
-出します。
+`ls` は定義元の層を表示し、シークレットはマスクします。`--reveal` を指定すると
+平文の値が表示されますが、シークレット「参照」は参照のまま表示されます。
+`get` はパイプで利用できるよう、値を 1 行だけ出力します。
 
-`--scope` の既定は `workspace` です。
+`--scope` の既定値は `workspace` です。
 
 ## トンネル
 
@@ -155,8 +158,8 @@ $ minato tunnel disable
 $ minato tunnel status
 ```
 
-`--public` は必須で、Minato が確認できない状態でインターネットに出すことを
-承認します。ドメインは初回以降記憶されます。
+`--public` は必須です。Minato が検証できない状態でインターネットに公開する
+ことへの同意を意味します。ドメインは初回実行時に保存されます。
 
 ## エージェント
 
@@ -165,7 +168,8 @@ $ minato skill install [--force]
 $ minato skill show
 ```
 
-`.claude/skills/minato/SKILL.md` を書き出します。内容が同じなら書き直しません。
+`.claude/skills/minato/SKILL.md` を生成します。内容に変更がなければ書き込みを
+行いません。
 
 ## daemon
 
@@ -175,17 +179,18 @@ $ minato daemon stop
 $ minato daemon status
 ```
 
-どのコマンドも止まっていれば daemon を起動するので、ほとんど必要ありません。
-LaunchDaemon を設置したマシンでは `stop` の直後に launchd が起動し直します
-—— 80/443 を保ったまま新しい設定を読む手段です。
+いずれのコマンドも daemon が停止していれば自動的に起動するため、これらの操作
+はほとんど必要ありません。LaunchDaemon を配置したマシンでは、`stop` の直後に
+launchd が再起動します。80/443 番ポートを保持したまま設定を再読み込みする
+手段です。
 
-## Minato 自身を設定する環境変数
+## Minato 自体の設定に使う環境変数
 
-| | |
+| 変数 | 説明 |
 | --- | --- |
-| `MINATO_HOME` | 状態・ログ・ソケット・CA の置き場所。既定 `~/.minato` |
-| `MINATO_HTTP_PORT` | プロキシの HTTP ポート。既定 80 |
-| `MINATO_HTTPS_PORT` | プロキシの HTTPS ポート。既定 443 |
-| `MINATO_DNS_PORT` | DNS のポート。既定 53 |
-| `MINATO_CLOUDFLARED` | `PATH` 以外にある `cloudflared` |
-| `MINATO_LOG` | daemon のログフィルタ。例 `debug` |
+| `MINATO_HOME` | 状態、ログ、ソケット、CA の保存先。既定値 `~/.minato` |
+| `MINATO_HTTP_PORT` | プロキシの HTTP ポート。既定値 80 |
+| `MINATO_HTTPS_PORT` | プロキシの HTTPS ポート。既定値 443 |
+| `MINATO_DNS_PORT` | DNS のポート。既定値 53 |
+| `MINATO_CLOUDFLARED` | `PATH` 以外に配置された `cloudflared` のパス |
+| `MINATO_LOG` | daemon のログフィルタ。例: `debug` |

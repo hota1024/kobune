@@ -1,32 +1,32 @@
 # プレビューを共有する
 
-ブランチの環境をインターネットに置き、スマホ・デザイナー・webhook から
-届くようにします。
+ブランチの環境をインターネットに公開し、スマートフォン、デザイナー、webhook
+などからアクセスできるようにします。
 
-::: danger 先に読んでください
-トンネルを張ると、URL を知っている人なら誰でも開発環境に到達できます。
-Minato は Cloudflare Access のポリシーを **適用できません** —— それには
-Cloudflare の API が必要で、ここでの操作はすべて `cloudflared` CLI 経由です
-—— ので、何かが守っていると保証できません。
+::: danger 事前にお読みください
+トンネルを有効化すると、URL を知っている人であれば誰でも開発環境にアクセス
+できます。Minato は Cloudflare Access のポリシーを**適用できません**。適用には
+Cloudflare の API が必要ですが、Minato の操作はすべて `cloudflared` CLI を
+経由するためです。したがって、アクセス制御がかかっていることを保証できません。
 
-ホスト名の前に Access ポリシーを自分で置いてください。Minato は `--public`
-なしでは何も公開せず、毎回警告を繰り返します。
+ホスト名に対する Access ポリシーは、利用者側で設定してください。Minato は
+`--public` を指定しない限り公開せず、実行のたびに警告を表示します。
 :::
 
-ドメインが載った Cloudflare アカウントが必要です。
+ドメインを登録した Cloudflare アカウントが必要です。
 
-## インストールしてログインする
+## インストールとログイン
 
 ```console
 $ brew install cloudflared
 $ cloudflared tunnel login
 ```
 
-ブラウザが開きます。Minato が代わりに実行しないのは、daemon の中の対話
-プロンプトがエージェントを答えられない場所で固まらせるからで、
+このコマンドはブラウザを開きます。Minato が代行しないのは、daemon 内で対話的な
+プロンプトが表示されるとエージェントが応答できず停止するためです。
 `minato setup` が `sudo` コマンドを実行せず提示するのと同じ理由です。
 
-## 有効にする
+## 有効化する
 
 ```console
 $ minato tunnel enable --domain example.com --public
@@ -38,11 +38,11 @@ tunnel: running  (*.example.com)
   Minato cannot see whether a Cloudflare Access policy is in front of it.
 ```
 
-裏では named tunnel を作り、プロジェクト用のワイルドカード DNS レコードを
-張り、`cloudflared` を起動しています。すべて冪等なので、もう一度実行しても
-構いません。
+内部では named tunnel の作成、プロジェクト用ワイルドカード DNS レコードの
+登録、`cloudflared` の起動を行っています。いずれも冪等なため、繰り返し実行
+しても問題ありません。
 
-## リンク
+## 共有する URL
 
 ```console
 $ minato status -w feature-checkout
@@ -52,77 +52,80 @@ $ minato status -w feature-checkout
   web   https://web-feature-checkout.myapp.example.com
 ```
 
-後者を送ります。サービスと workspace が `-` で繋がっているのは、トンネルの
-ホスト名がサブドメインを 1 段しか確実に扱えないためです。
+共有するのは後者の URL です。サービス名と workspace 名が `-` で連結されて
+いるのは、トンネル側のホスト名ではサブドメインを 1 階層しか確実に扱えない
+ためです。
 
 ```console
 $ minato status -w feature-checkout --json \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspace"]["services"][0]["tunnel_url"])'
 ```
 
-## レビュアーから見えるもの
+## 共有先から見た挙動
 
-- **停止中でも動きます。** 最初のリクエストが 1〜2 秒で環境を起こします。
-  ローカルとまったく同じで、トンネルのホスト名は同じテーブルの普通のルート
-  だからです。
-- **公開したサービスだけ届きます。** `expose = false` のもの —— データベース
-  —— にはトンネルのホスト名が無く、推測しても届きません。
-- **本物の証明書です。** TLS は Cloudflare のエッジで終端するので警告は出ず、
-  信頼させるものもありません。ローカル CA は関係しません。
+- **停止中の環境も利用できます。** 最初のリクエストで環境が起動し、1〜2 秒で
+  応答します。ローカルからのアクセスと同じ動作で、トンネル側のホスト名も
+  同じルーティングテーブル上の通常のルートとして扱われるためです。
+- **公開したサービスのみアクセスできます。** `expose = false` を指定した
+  サービス、たとえばデータベースにはトンネル側のホスト名が存在せず、
+  推測されても到達できません。
+- **正規の証明書が使われます。** TLS は Cloudflare のエッジで終端されるため
+  警告は表示されず、証明書を信頼させる作業も不要です。ローカル CA は関与
+  しません。
 
 ## Access を設定する
 
-ここは Minato にはできません。Cloudflare のダッシュボードで
-Zero Trust → Access → Applications から、`*.myapp.example.com` に対する
-self-hosted application とポリシーを作ります。メールドメイン、または社外の
-人には ワンタイム PIN を。
+この作業は Minato では実行できません。Cloudflare のダッシュボードで
+Zero Trust → Access → Applications を開き、`*.myapp.example.com` に対する
+self-hosted application とポリシーを作成してください。メールドメインによる
+制限や、社外の相手にはワンタイム PIN が利用できます。
 
-公開 Web サーバに置きたくないものを共有する前に、必ず設定してください。
+公開 Web サーバに置けないものを共有する前に、必ず設定してください。
 
-## 止める
+## 停止する
 
 ```console
 $ minato tunnel disable
 tunnel: disabled  (*.example.com)
 ```
 
-トンネルのホスト名はすぐにルーティングされなくなり、ローカルの URL は
-そのままです。named tunnel と DNS レコードは Cloudflare に残るので、
-再開にログインは要りません。
+トンネル側のホスト名は即座に無効になり、ローカルの URL には影響しません。
+named tunnel と DNS レコードは Cloudflare 側に残るため、再開時にログインは
+不要です。
 
 ```console
 $ minato tunnel enable --public
 ```
 
-## 再起動をまたいで
+## 再起動後の挙動
 
-daemon は再起動時に、有効だったトンネルを復帰させ、ルーティングテーブルも
-作り直します。誰かに渡したリンクは、あなたが再起動しても生きています。
+daemon は再起動時に、有効化されていたトンネルを復元し、ルーティングテーブルも
+再構築します。共有した URL は、マシンを再起動しても引き続き使用できます。
 
-## うまくいかないとき
+## 問題が起きた場合
 
 ```console
 $ minato tunnel status
 $ minato doctor | grep -i tunnel
-$ tail -f ~/.minato/logs/minatod.log   # cloudflared のログもここに出ます
+$ tail -f ~/.minato/logs/minatod.log   # cloudflared のログもここに出力されます
 ```
 
-| 症状 | 原因 |
+| 症状 | 想定される原因 |
 | --- | --- |
-| `needs login` | `cloudflared tunnel login` がまだ |
-| `not installed` | `brew install cloudflared` |
+| `needs login` | `cloudflared tunnel login` が未実行 |
+| `not installed` | `brew install cloudflared` が必要 |
 | 有効なのに `stopped` | `cloudflared` が終了した。daemon のログを確認 |
-| Cloudflare 1016 | DNS レコードが無い。`tunnel enable` をやり直す |
-| ワイルドカードのレコードが拒否される | Cloudflare のプランが許していない可能性 |
+| Cloudflare 1016 | DNS レコードが存在しない。`tunnel enable` を再実行 |
+| ワイルドカードレコードが拒否される | Cloudflare のプランが対応していない可能性 |
 
-::: tip スタブでの検証です
-ルーティング、生成される設定、CLI の引数、トンネル経由の scale-to-zero は
-テストされています。実行していないのは、実際のゾーンに対する実際の
-named tunnel です。
+::: tip 検証はスタブによるものです
+ルーティング、生成される設定ファイル、CLI に渡す引数、トンネル経由での自動
+起動については、テストで検証しています。未検証なのは、実際のゾーンに対する
+実際の named tunnel での動作です。
 :::
 
-## 次に
+## 次に読むもの
 
-- [トンネルで共有する](../guide/tunnel) — どう構成され、なぜそうなのか
+- [トンネルで共有する](../guide/tunnel) — 構成とその設計理由
 - [AI エージェントと使う](../guide/agents) — エージェントが `tunnel enable` を
-  自分で実行すべきでない理由も
+  自ら実行すべきでない理由も含みます

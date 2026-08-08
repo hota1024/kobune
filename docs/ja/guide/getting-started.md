@@ -1,12 +1,14 @@
 # 最初の環境
 
-空のリポジトリから動く URL まで。10 分ほど、その大半はイメージの取得待ちです。
+空のリポジトリから、URL でアクセスできる状態までを一通り行います。所要時間は
+10 分程度で、その大半はイメージの取得待ちです。
 
-[インストール](./installation) を済ませ、`minato doctor` が通っている前提です。
+[インストール](./installation) を済ませ、`minato doctor` が問題なく通ることを
+前提とします。
 
-## 1. プロジェクトを書く
+## 1. プロジェクトを定義する
 
-git リポジトリのルートで:
+git リポジトリのルートで実行します。
 
 ```console
 $ minato init
@@ -16,8 +18,8 @@ project: myapp
 next, bring the environment up with `minato up`
 ```
 
-`minato init` はひな形を書き、ディレクトリ名からプロジェクト名を推測します。
-開いて、実際のものに向けます。
+`minato init` はひな形を生成し、ディレクトリ名からプロジェクト名を推測します。
+生成されたファイルを開き、実際の構成に合わせて編集します。
 
 ```toml
 [project]
@@ -32,17 +34,17 @@ port = 3000
 command = "npm run dev"
 ```
 
-大事なのは 3 つです。
+ここで重要なのは次の 3 点です。
 
-- **`port`** は、アプリが**コンテナの中で**待ち受けるポートです。ホスト側の
-  ポートを聞かれることはありませんし、知る必要もありません。
-- **`command`** はイメージのコマンドを置き換えます。省略すればイメージの
-  既定が使われます。
+- **`port`** はアプリケーションが**コンテナ内で**待ち受けるポートです。ホスト
+  側のポートを指定する項目はなく、意識する必要もありません。
+- **`command`** はイメージ側のコマンドを上書きします。省略した場合はイメージの
+  既定値が使われます。
 - worktree は **`/workspace`** にマウントされ、そこが作業ディレクトリになり
-  ます。つまり `npm run dev` はそのブランチのコードに対して走ります。
+  ます。したがって `npm run dev` は、そのブランチのコードに対して実行されます。
 
-コミットしてください。`minato.toml` はリポジトリに属します。すべての worktree
-が同じものを読みます。
+編集したらコミットしてください。`minato.toml` はリポジトリで管理するファイル
+であり、すべての worktree が同じ内容を参照します。
 
 ## 2. 起動する
 
@@ -59,12 +61,12 @@ myapp / (main)  (main)
   web   ready     https://web.myapp.localhost
 ```
 
-main worktree は URL から workspace ラベルを省くので、
+main worktree は URL から workspace 名を省略するため、
 `web.main.myapp.localhost` ではなく `web.myapp.localhost` になります。
 
-最後の `waiting for web` は、コンテナができるのを待っているのではなく、
-アプリが実際に応答するのを待っています。この 2 つは別物で、コンテナ起動直後の
-`curl` はたいてい失敗します。
+最後の `waiting for web` は、コンテナの起動ではなくアプリケーションが実際に
+応答するまでを待っています。この 2 つは別の状態であり、コンテナ起動直後の
+`curl` は多くの場合失敗します。
 
 ## 3. アクセスする
 
@@ -72,25 +74,25 @@ main worktree は URL から workspace ラベルを省くので、
 $ curl -sS --fail-with-body https://web.myapp.localhost
 ```
 
-または URL を受け取って使います。
+URL を取得してから使うこともできます。
 
 ```console
 $ minato url web
 https://web.myapp.localhost
 ```
 
-`minato url` は 1 行だけを出すので、パイプにもコマンド置換にもそのまま
-使えます。URL を手で書く代わりに、こちらを使ってください。
+`minato url` は 1 行だけを出力するため、パイプやコマンド置換にそのまま使え
+ます。URL を直接記述するのではなく、このコマンドで取得してください。
 
-::: tip 証明書エラー
-`curl` が終了コード 60 で失敗するのは、ローカル CA がまだ信頼されていない
-ためです。`minato doctor` が直し方を出します。最初にぶつかるものとして、
-これが一番多いです。
+::: tip 証明書エラーが出る場合
+`curl` が終了コード 60 で失敗するのは、ローカル CA がまだ信頼されていないため
+です。`minato doctor` が対処方法を出力します。最初に遭遇する問題としては、
+これが最も多いものです。
 :::
 
-## 4. ブランチを切って、2 つ目の環境を得る
+## 4. ブランチを作り、2 つ目の環境を得る
 
-worktree を使う意味が出てくるのはここからです。
+worktree を使う利点が現れるのはここからです。
 
 ```console
 $ minato new feature/user-auth
@@ -104,11 +106,11 @@ myapp / feature-user-auth  (feature/user-auth)
   web   ready     https://web.feature-user-auth.myapp.localhost
 ```
 
-これで 2 つの環境が、別々の URL・別々のチェックアウトで動いています。何も
-止まっておらず、誰もポートを選んでいません。
+2 つの環境が、別々の URL と別々のチェックアウトで動作しています。既存の環境は
+停止しておらず、ポート番号の指定も不要です。
 
-worktree は `../myapp.wt/feature-user-auth` にできます。リポジトリの中ではなく
-隣なので、エディタや検索が二重に拾いません。
+worktree は `../myapp.wt/feature-user-auth` に作成されます。リポジトリの内側
+ではなく隣接するディレクトリに置くため、エディタや検索の対象が二重になりません。
 
 ```console
 $ minato ls
@@ -117,51 +119,51 @@ WORKSPACE            SERVICES    BRANCH
 feature-user-auth    1/1         feature/user-auth
 ```
 
-## 5. その中で作業する
+## 5. worktree 内で作業する
 
 ```console
 $ cd ../myapp.wt/feature-user-auth
 ```
 
-worktree の中では、コマンドは既定でその workspace を対象にします。
+worktree の内側では、コマンドは既定でその workspace を対象とします。
 
 ```console
-$ minato logs web -f          # このブランチのログを追う
-$ minato exec web -- npm test # そのコンテナの中でテストを走らせる
-$ minato status               # 何が動いていて、どこにあるか
+$ minato logs web -f          # このブランチのログを追跡する
+$ minato exec web -- npm test # このコンテナ内でテストを実行する
+$ minato status               # 起動状況とアクセス先を確認する
 ```
 
-別の場所からは `-w` で指定します。
+別のディレクトリからは `-w` で対象を指定します。
 
 ```console
 $ minato logs -w feature-user-auth web
 ```
 
-## 6. 放っておく
+## 6. 放置した場合の挙動
 
-しばらく触らなければ環境は自分で止まります。戻ってくれば、最初のリクエストが
-起こします。
+一定時間アクセスがなければ、環境は自動的に停止します。再びアクセスすると、
+最初のリクエストで起動します。
 
 ```console
 $ curl -sS https://web.feature-user-auth.myapp.localhost
-# 1〜2 秒待って、応答
+# 1〜2 秒待って応答が返る
 ```
 
-まだ使っているブランチに対して `minato up` を打ち直す必要はありません。
-worktree を気軽に作れるのは、放置した環境が何も食わないからです。
+作業中のブランチに対して `minato up` を再実行する必要はありません。放置した
+環境がリソースを消費しないため、worktree を必要なだけ作成できます。
 
-## 7. 片付ける
+## 7. 後片付け
 
 ```console
 $ minato rm -w feature-user-auth
 ```
 
-worktree とコンテナを消します。ブランチは残ります。これは
-`git branch -d` ではありません。
+worktree とコンテナを削除します。ブランチは残ります。このコマンドは
+`git branch -d` とは異なります。
 
-## 次に
+## 次に読むもの
 
 - [設定](./configuration) — 複数サービス、ヘルスチェック、ボリューム
-- [日々の使い方](./workflow) — 実際に使うコマンド
+- [日々の使い方](./workflow) — 実際によく使うコマンド
 - [ブランチごとのプレビュー](../tutorials/first-preview) — 同じ内容を実際の
-  アプリで通しでやる
+  アプリケーションで一通り実施する

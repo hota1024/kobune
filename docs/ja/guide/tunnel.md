@@ -1,33 +1,34 @@
 # トンネルで共有する
 
-Cloudflare Tunnel を使うと、環境をマシンの外から —— スマホ、レビュアー、
-届く必要のある webhook から —— 到達可能にできます。
+Cloudflare Tunnel を使うと、開発マシンの外部から環境にアクセスできるように
+なります。スマートフォン、レビュアー、到達が必要な webhook などが対象です。
 
-::: danger これは環境をインターネットに置く操作です
-Minato は Cloudflare Access のポリシーを適用できません。それには Cloudflare の
-API が必要で、ここでの操作はすべて `cloudflared` CLI 経由だからです。
-ポリシーがあると保証できない以上、`--public` なしでは何も公開せず、毎回その
-旨を表示します。
+::: danger 環境をインターネットに公開する操作です
+Minato は Cloudflare Access のポリシーを適用できません。適用には Cloudflare の
+API が必要ですが、Minato の操作はすべて `cloudflared` CLI を経由するためです。
+ポリシーの存在を保証できないため、`--public` を指定しない限り公開せず、
+実行のたびに警告を表示します。
 
-ホスト名の前に Access ポリシーを自分で置いてください。
+ホスト名に対する Access ポリシーは、利用者側で設定してください。
 :::
 
 ## 必要なもの
 
-- ドメインが載った Cloudflare アカウント
+- ドメインを登録した Cloudflare アカウント
 - `cloudflared`（`brew install cloudflared`）
 
-## 設定する
+## 設定手順
 
 ```console
 $ cloudflared tunnel login
 ```
 
-ブラウザが開いて待ちます。Minato が代わりに実行しないのは、daemon の中で
-対話プロンプトが出るとエージェントが答えられない場所で固まるからで、
-`minato setup` が `sudo` コマンドを実行せず提示するのと同じ理由です。
+このコマンドはブラウザを開いて入力を待ちます。Minato が代行しないのは、
+daemon 内で対話的なプロンプトが表示されるとエージェントが応答できず停止する
+ためです。`minato setup` が `sudo` コマンドを実行せず提示するのと同じ理由に
+なります。
 
-ログイン後は Minato がやります。
+ログイン後の処理は Minato が実行します。
 
 ```console
 $ minato tunnel enable --domain example.com --public
@@ -39,8 +40,9 @@ tunnel: running  (*.example.com)
   Minato cannot see whether a Cloudflare Access policy is in front of it.
 ```
 
-named tunnel を作り、プロジェクト用のワイルドカード DNS レコードを張り、
-`cloudflared` を起動します。すべて冪等なので、もう一度実行しても構いません。
+named tunnel の作成、プロジェクト用ワイルドカード DNS レコードの登録、
+`cloudflared` の起動を行います。いずれも冪等なため、繰り返し実行しても問題
+ありません。
 
 ## URL
 
@@ -52,73 +54,75 @@ $ minato status
   web   https://web-feature-auth.myapp.example.com
 ```
 
-トンネルのホスト名はサービスと workspace を `-` で繋ぎます。トンネル側の
-ホスト名はサブドメインが 1 段しか確実に使えないためです。
+トンネル側のホスト名は、サービス名と workspace 名を `-` で連結します。トンネル
+のホスト名では、サブドメインを 1 階層しか確実に扱えないためです。
 
-`expose = false` のサービスにはトンネルのホスト名がありません。データベースは
-名前を推測しても外から届きません。
+`expose = false` のサービスにはトンネル側のホスト名が割り当てられません。
+データベースは、ホスト名を推測されても外部から到達できません。
 
-## scale-to-zero もそのまま効く
+## 停止中の環境も起動する
 
-レビュアーの最初のリクエストが、ローカルと同じように停止中の環境を起こします。
-1〜2 秒待ってページが出ます。
+レビュアーからの最初のリクエストでも、ローカルと同様に停止中の環境が起動
+します。1〜2 秒待つとページが表示されます。
 
-これはルーティングの仕組みから自然に出てきます。トンネルのホスト名は
-プロキシのルーティングテーブルに `.localhost` の隣として登録され、同じ
-サービスを指します。どちらも普通のルートです。
+これはルーティングの構造から自然に得られる挙動です。トンネル側のホスト名は
+プロキシのルーティングテーブルに `.localhost` と並べて登録され、同じサービスを
+参照します。どちらも通常のルートとして扱われます。
 
-## 止める
+## 停止する
 
 ```console
 $ minato tunnel disable
 tunnel: disabled  (*.example.com)
 ```
 
-`cloudflared` を止め、トンネルのホスト名を落とします。named tunnel と DNS
-レコードは Cloudflare に残ります。放っておいてもコストはかからず、残して
-おけば再開にログインが要らないからです。
+`cloudflared` を停止し、トンネル側のホスト名を削除します。named tunnel と DNS
+レコードは Cloudflare 側に残ります。維持コストがかからず、残しておけば再開時に
+ログインが不要になるためです。
 
-ドメインは覚えているので、次からは:
+ドメインは保持されるため、次回以降は次のように実行できます。
 
 ```console
 $ minato tunnel enable --public
 ```
 
-## 状況を見る
+## 状態を確認する
 
 ```console
 $ minato tunnel status
 $ minato doctor | grep -i tunnel
 ```
 
-`status` は何も実行しません。設定が途中なら、残っているコマンドを出します。
+`status` は何も実行しません。設定が完了していない場合は、残りの手順を表示
+します。
 
 | 状態 | 意味 |
 | --- | --- |
-| `disabled` | 未設定、または止めた |
-| `not installed` | `cloudflared` が無い |
-| `needs login` | `cloudflared tunnel login` がまだ |
-| `stopped` | 設定済みだが動いていない |
-| `running` | トラフィックを流している |
+| `disabled` | 未設定、または停止中 |
+| `not installed` | `cloudflared` が存在しない |
+| `needs login` | `cloudflared tunnel login` が未実行 |
+| `stopped` | 設定済みだが稼働していない |
+| `running` | 通信を中継している |
 
-daemon は再起動時に、有効だったトンネルを復帰させます。誰かに渡したリンクは
-そのまま生きます。
+daemon は再起動時に、有効化されていたトンネルを復元します。共有した URL は
+そのまま使用できます。
 
-## どう構成されているか
+## 構成
 
-マシンに 1 本の named tunnel がすべてのプロジェクトを運びます。ingress ルールは
-1 つで、ゾーン全体をローカルのプロキシに送り、Host での振り分けはプロキシに
-任せます。プロジェクトごとに 1 つのワイルドカードレコード
-（`*.myapp.example.com`）なので、worktree が増減しても DNS も `cloudflared`
-の再読み込みも発生しません。
+1 台のマシンにつき 1 本の named tunnel が、すべてのプロジェクトを中継します。
+ingress ルールは 1 つのみで、ゾーン全体をローカルのプロキシへ転送し、Host に
+よる振り分けはプロキシが担当します。DNS レコードはプロジェクトごとに
+ワイルドカード 1 件（`*.myapp.example.com`）のみのため、worktree が増減しても
+DNS の更新も `cloudflared` の再読み込みも発生しません。
 
-`cloudflared` からプロキシへの区間はループバック上の平文 HTTP です。TLS は
-Cloudflare のエッジで終端され、`cloudflared` にローカル CA を信頼する理由は
-ありません。
+`cloudflared` からプロキシまでの区間は、ループバック上の平文 HTTP です。TLS は
+Cloudflare のエッジで終端されており、また `cloudflared` にローカル CA を信頼
+させる理由もないためです。
 
-::: tip スタブでの検証です
-ホスト名のルーティング、生成される設定、CLI の引数、トンネル経由の
-scale-to-zero はテストされています。実行されていないのは、実際のゾーンに対する
-実際の named tunnel です。想定外の挙動があれば、Cloudflare のプランが
-ワイルドカードの DNS レコードを許しているか確認してください。
+::: tip 検証はスタブによるものです
+ホスト名のルーティング、生成される設定ファイル、CLI に渡す引数、トンネル経由
+での自動起動については、テストで検証しています。未検証なのは、実際のゾーンに
+対する実際の named tunnel での動作です。想定と異なる挙動があった場合は、
+Cloudflare のプランがワイルドカード DNS レコードに対応しているか確認して
+ください。
 :::

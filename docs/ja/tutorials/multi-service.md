@@ -1,11 +1,11 @@
 # Web アプリとデータベース
 
-サービスを 2 つ、そのあとすべてのブランチで共有する 3 つ目を足します。
-`scope` と `depends_on` が効いてくるところです。
+サービスを 2 つ構成し、そのあと全ブランチで共有する 3 つ目を追加します。
+`scope` と `depends_on` が重要になる場面です。
 
 [ブランチごとのプレビュー](./first-preview) の続きです。
 
-## サービス 2 つ
+## サービスを 2 つ構成する
 
 ```toml
 [project]
@@ -38,12 +38,13 @@ $ minato up
   api   ready     https://api.myapp.localhost
 ```
 
-`depends_on` で `api` が先に起動しました。どちらにも URL が生えています。
+`depends_on` の指定により `api` が先に起動しました。どちらにも URL が
+割り当てられています。
 
-## フロントエンドに API を見つけさせる
+## フロントエンドから API を参照する
 
-API の URL はブランチごとに違うので、ハードコードできません。Minato が
-注入します。
+API の URL はブランチごとに異なるため、ハードコードできません。Minato が
+環境変数として注入します。
 
 ```js
 const api = process.env.MINATO_URL_API   // https://api.feature-x.myapp.localhost
@@ -54,15 +55,15 @@ $ minato exec web -- printenv MINATO_URL_API
 https://api.myapp.localhost
 ```
 
-すべてのサービスが、他のすべてのサービスの `MINATO_URL_<SERVICE>` を受け取り
-ます。**worktree ごとの環境が成立するのはこれのおかげ** で、無ければ
-フロントエンドは推測するしかありません。
+すべてのサービスに、他のすべてのサービスの `MINATO_URL_<SERVICE>` が渡されます。
+**worktree ごとの環境が成立するのは、この仕組みによるものです。** これがなけ
+れば、フロントエンドは URL を推測するほかありません。
 
-同じ workspace 内のサーバ間通信なら、Docker ではサービス名を直接使えます
-（`http://api:8080`）。プロキシを経由しません。Apple Container では動きません。
-[ランタイム](../guide/runtimes) を参照。
+同一 workspace 内のサーバ間通信であれば、Docker ではサービス名を直接使用でき
+ます（`http://api:8080`）。この場合はプロキシを経由しません。Apple Container
+では利用できないため、[ランタイム](../guide/runtimes) を参照してください。
 
-## データベースを足す
+## データベースを追加する
 
 ```toml
 [services.db]
@@ -80,17 +81,18 @@ command = "npm run api"
 depends_on = ["db"]
 ```
 
-3 つの判断が入っています。
+ここには 3 つの判断が含まれています。
 
-**`scope = "project"`** — worktree ごとに 1 つではなく、全体で 1 つの
-データベース。seed は一度で済み、ブランチは同じデータを見ます。
+**`scope = "project"`** — worktree ごとではなく、全体で 1 つのデータベースを
+使用します。初期データの投入は 1 回で済み、すべてのブランチが同じデータを
+参照します。
 
-**`expose = false`** — URL もルートも無し。他のサービスからは届き、それ以外
-からは届きません。データベースには必ず付けてください。
+**`expose = false`** — URL もルーティングも作成しません。他のサービスからは
+到達でき、それ以外からは到達できません。データベースには必ず指定してください。
 
-**`volumes`** — 名前付き領域なので `down` / `up` を挟んでもデータが残ります。
-ホストのパスではなく名前付きなので、ランタイムが管理し、プロジェクト単位に
-なります。
+**`volumes`** — 名前付き領域を使うことで、`down` と `up` を挟んでもデータが
+残ります。ホストのパスではなく名前付き領域のため、ランタイムが管理し、
+プロジェクト単位で共有されます。
 
 ```console
 $ minato up
@@ -103,9 +105,9 @@ $ minato up
   db    ready     (internal only)
 ```
 
-`(internal only)` が `expose = false` の効果です。
+`(internal only)` は `expose = false` が機能していることを示します。
 
-## 共有されているか確かめる
+## 共有されていることを確認する
 
 ```console
 $ minato new feature/reports
@@ -116,7 +118,7 @@ $ minato status
   db    ready     (internal only)
 ```
 
-`web` と `api` は新しく、`db` は *同じもの* です。
+`web` と `api` は新しく作成され、`db` は既存のものが使われています。
 
 ```console
 $ docker ps --filter label=dev.minato.project=myapp --format '{{.Names}}'
@@ -127,52 +129,56 @@ minato-myapp-main-api
 minato-myapp-shared-db
 ```
 
-`minato-myapp-shared-db` が 1 つだけ、worktree ごとではありません。片方の
-ブランチで書いた行が、もう片方から見えます。
+`minato-myapp-shared-db` は 1 つだけで、worktree ごとには作成されていません。
+一方のブランチで書き込んだデータは、もう一方からも参照できます。
 
-## 共有が向かないとき
+## 共有が適さない場合
 
-互換性のないマイグレーションを持つ 2 つのブランチが 1 つのデータベースを
-共有すれば、ぶつかります。Minato はこれを解決しません。当てはまるときは:
+互換性のないマイグレーションを持つ 2 つのブランチが 1 つのデータベースを共有
+すれば、当然衝突します。Minato はこの問題を解決しません。該当する場合は次の
+ように設定します。
 
 ```toml
 [services.db]
-scope = "workspace"   # 1 つずつ
+scope = "workspace"   # worktree ごとに 1 つ
 ```
 
-seed のコストを払って独立を得ます。プロジェクトごとに決め、マイグレーションを
-足すブランチで考えが変わることを見込んでおいてください。
+初期データ投入のコストと引き換えに、ブランチ間の独立性が得られます。この
+判断はプロジェクトごとに行ってください。マイグレーションを追加するブランチが
+出てきた時点で、方針を見直すことになるケースもあります。
 
-## 接続する
+## データベースへの接続設定
 
 ```toml
 [services.api]
 env = { DATABASE_URL = "postgres://postgres:postgres@db:5432/myapp" }
 ```
 
-Docker では `db:5432` が解決します。より良いのは、パスワードをリポジトリから
-出すことです。
+Docker では `db:5432` が解決されます。ただし、パスワードはリポジトリに含めない
+ほうが望ましいでしょう。
 
 ```console
 $ minato env set DATABASE_PASSWORD='op://Development/myapp/db' --scope project
 ```
 
-これは値ではなく参照です。コンテナ起動時に解決され、ディスクには書かれません。
-[環境変数](../guide/environment-variables) を参照。
+これは値ではなく参照です。コンテナの起動時に解決され、ディスクには書き込まれ
+ません。[環境変数](../guide/environment-variables) を参照してください。
 
 ## 複数サービスとアイドルタイムアウト
 
-活動として数えるのは **プロキシを通ったリクエスト** だけです。API しか
-話しかけないデータベースは、API が忙しくてもアイドルに見えて止まります。
+アクセスとして計測されるのは、**プロキシを経由したリクエストのみ**です。API
+からしかアクセスされないデータベースは、API が稼働中でもアイドル状態と判定
+され、停止します。
 
 ```toml
 [services.db]
 idle_timeout = "8h"
 ```
 
-必要になれば起こされますが、1 日の作業中に再起動を繰り返さずに済みます。
+必要になれば起動しますが、この設定により作業中に再起動が繰り返されることを
+避けられます。
 
-## 次に
+## 次に読むもの
 
-- [プレビューを共有する](./sharing) — ブランチをインターネットに置く
-- [設定](../guide/configuration) — 残りのキー
+- [プレビューを共有する](./sharing) — ブランチをインターネットに公開する
+- [設定](../guide/configuration) — その他の設定項目

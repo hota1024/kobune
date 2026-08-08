@@ -1,18 +1,19 @@
 # 困ったときは
 
-この順で進めてください。推測で `docker` に手を伸ばすと、状態が食い違います。
+次の順序で確認してください。推測で `docker` を直接操作すると、状態が食い違う
+原因になります。
 
 ```console
-$ minato status      # サービスはどういう状態か
-$ minato logs web    # アプリは何と言っているか
-$ minato doctor      # 環境は何と言っているか
+$ minato status      # サービスの状態を確認する
+$ minato logs web    # アプリケーション側のエラーを確認する
+$ minato doctor      # 環境側の問題を確認する
 ```
 
-`minato doctor` は `✓` でない行すべてに直し方を出します。
+`minato doctor` は、`✓` 以外のすべての項目に対処方法を表示します。
 
 ## よくある症状
 
-### `curl` が終了コード 60 で落ちる
+### `curl` が終了コード 60 で失敗する
 
 ローカル CA が信頼されていません。
 
@@ -23,18 +24,19 @@ $ minato doctor
       -k /Library/Keychains/System.keychain ~/.minato/ca/minato-ca.crt
 ```
 
-最初にぶつかるものとして一番多いです。素の `curl -s` はこのエラーを握り潰し、
-空の応答のように見えるので `-sS --fail-with-body` を使ってください。
+最初に遭遇する問題として最も多いものです。`curl -s` だけではこのエラーが
+握り潰され、空の応答が返ったように見えるため、`-sS --fail-with-body` を
+指定してください。
 
-### URL が解決しない
+### URL が解決されない
 
 ```console
 $ minato doctor
   ✗ DNS resolver (/etc/resolver/localhost)   not installed
 ```
 
-macOS は `*.localhost` を自分では解決しません。直し方は出力にあり、daemon の
-動かし方に合ったポートが入っています。
+macOS は `*.localhost` を標準では解決しません。対処方法は出力に含まれており、
+daemon の起動方法に応じた正しいポート番号が入っています。
 
 ### プロキシが 404 を返す
 
@@ -43,61 +45,63 @@ Minato: there is no environment behind `web.feat-1.myapp.localhost`.
 Run `minato ls` to see which workspaces are up.
 ```
 
-ホスト名が登録されたサービスと一致しません。打ち間違い、リネーム後の古い URL、
-`expose = false` のいずれかがほとんどです。`minato url` で取り直してください。
+ホスト名が登録済みのサービスと一致していません。入力ミス、リネーム後の古い
+URL、`expose = false` の指定のいずれかが大半です。`minato url` で URL を
+取得し直してください。
 
 ### 502 が返る
 
-サービスは登録されているのに応答していません。起動したあと落ちたか、
-`minato.toml` と違うポートで待ち受けています。
+サービスは登録されていますが、応答していません。起動後に停止したか、
+`minato.toml` の指定とは異なるポートで待ち受けています。
 
 ```console
 $ minato logs web -n 50
-$ minato status          # ready か、failed か
+$ minato status          # ready か failed か
 ```
 
-`port` がアプリの実際の bind と一致しているか、そして `127.0.0.1` ではなく
-`0.0.0.0` に bind しているか確認してください。コンテナ内でループバックに
-bind したサーバは、外から届きません。
+`port` の指定がアプリケーションの実際のバインド先と一致しているか、そして
+`127.0.0.1` ではなく `0.0.0.0` にバインドしているかを確認してください。
+コンテナ内でループバックにバインドしたサーバには、外部から到達できません。
 
-### いつまでも起動が終わらない
+### 起動が完了しない
 
 ```console
 $ minato logs web -f
 ```
 
-Minato は 15 秒待ってから、警告を出して先に進みます。依存解決やコンパイルを
-する初回起動はそれより長くかかります。コンテナはまだ立ち上がり中です。
-
-`health` を書くと精度が上がります。無い場合、判定は「TCP 接続が通った」だけ
+Minato は 15 秒待機したあと、警告を出力して処理を継続します。依存関係の解決や
+コンパイルを行う初回起動はそれより時間がかかるため、コンテナはまだ起動処理中
 です。
 
-### 設定を変えたのに効かない
+`health` を設定すると判定の精度が上がります。未設定の場合、判定は TCP 接続の
+可否のみです。
 
-すでに動いているコンテナは変更を拾いません。
+### 設定を変更しても反映されない
+
+稼働中のコンテナは変更を読み込みません。
 
 ```console
 $ minato down && minato up
 ```
 
-`minato.toml` でも環境変数でも同じです。
+`minato.toml` の変更でも環境変数の変更でも同様です。
 
-### 再起動したら何も動かない
+### 再起動後に動作しない
 
 ```console
 $ minato daemon status
 $ minato doctor
 ```
 
-LaunchDaemon を設置していないと、daemon は自分では戻ってきません。
-`minato setup` が設置方法を出します。
+LaunchDaemon を設定していない場合、daemon は自動的には復帰しません。
+`minato setup` が設定方法を表示します。
 
-### 「the Unix socket path is too long」
+### 「the Unix socket path is too long」と表示される
 
-`MINATO_HOME` が深すぎます。ソケットのパスは約 100 バイトまでです。もっと
-浅い場所に —— 既定の `~/.minato` で問題ありません。
+`MINATO_HOME` の階層が深すぎます。ソケットのパスは約 100 バイトまでです。
+より浅い階層を指定してください。既定値の `~/.minato` であれば問題ありません。
 
-### 別のアプリにリクエストが届く
+### 別のアプリケーションにリクエストが届く
 
 ```console
 $ minato doctor
@@ -106,43 +110,44 @@ $ minato doctor
                           process
 ```
 
-ループバックのどちらかのアドレスを別のプロセスが持っています。`*.localhost` は
-`::1` と `127.0.0.1` の両方に解決され、クライアントは IPv6 を優先するので、
-片方しか押さえていないと別の場所に流れます。相手のプロセスを止めるか、
-`MINATO_HTTP_PORT` で Minato を動かしてください。
+ループバックアドレスの一方を別のプロセスが使用しています。`*.localhost` は
+`::1` と `127.0.0.1` の両方に解決され、クライアントは IPv6 を優先するため、
+一方しか確保できていないと別のプロセスにリクエストが到達します。当該プロセスを
+停止するか、`MINATO_HTTP_PORT` で Minato のポートを変更してください。
 
-## Apple Container
+## Apple Container 固有の問題
 
 ### `MINATO_HOST_<SERVICE>` が設定されていない
 
-このサービスが起動した時点で peer が動いていませんでした。`depends_on` を
-足して、先に起動させてください。
+このサービスの起動時点で、参照先のサービスが稼働していませんでした。`depends_on`
+を追加して、先に起動させてください。
 
-変数が無いのは意図的です。Apple Container にはコンテナ間 DNS が無いので、
-ホスト名を渡しても解決されず、間違った問題を探すことになります。
-[ランタイム](./runtimes) を参照。
+変数を未設定のままにしているのは意図的です。Apple Container にはコンテナ間
+DNS が存在しないため、ホスト名を渡しても解決されず、原因の特定が難しくなり
+ます。[ランタイム](./runtimes) を参照してください。
 
-### `container system status` が running でない
+### `container system status` が running にならない
 
 ```console
 $ container system start
 ```
 
-Docker と同様、Minato が代わりに起動することはありません。
+Docker と同様に、Minato が代わりに起動することはありません。
 
-## もっと深く見る
+## 詳細な調査
 
 ```console
 $ tail -f ~/.minato/logs/minatod.log
-$ MINATO_LOG=debug minatod          # フォアグラウンドで
+$ MINATO_LOG=debug minatod          # フォアグラウンドで実行する
 ```
 
-どうしてもコンテナを直接見るなら、読むだけにしてください。
+コンテナを直接確認する必要がある場合は、参照のみに留めてください。
 
 ```console
 $ docker ps --filter label=dev.minato.managed=1
 $ container ls --all
 ```
 
-Minato が管理するものにはすべて `dev.minato.*` ラベルが付いており、それが
-状態の正です。裏でコンテナを変更すると、この 2 つが食い違います。
+Minato が管理するリソースにはすべて `dev.minato.*` ラベルが付与されており、
+これが状態の正となります。Minato を介さずにコンテナを変更すると、両者の状態が
+食い違います。
