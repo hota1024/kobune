@@ -1,0 +1,5 @@
+# esbuild, which VitePress builds on, ships a prebuilt binary and needs its
+# install script to run. pnpm blocks install scripts unless they are allowed
+# by name.
+allowBuilds:
+  esbuild: true

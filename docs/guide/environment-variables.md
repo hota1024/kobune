@@ -1,0 +1,123 @@
+# Environment variables
+
+Three layers, resolved last-wins, plus a set Minato injects underneath all of
+them.
+
+## The layers
+
+| Layer | Where | Committed? |
+| --- | --- | --- |
+| **global** | `~/.minato/env` | No — your machine |
+| **project** | `env` in `minato.toml`, and `.minato/env` | Yes |
+| **workspace** | `.minato/env.local` | No — gitignore it |
+
+Later wins. A workspace value beats a project value beats a global one.
+
+```console
+$ minato env ls
+DATABASE_URL   project     postgres://db:5432/app
+LOG_LEVEL      workspace   debug
+API_KEY        global      ****
+```
+
+**The layer is always shown**, because with three of them the hardest bug is a
+value winning from somewhere you weren't looking.
+
+## Setting them
+
+```console
+$ minato env set LOG_LEVEL=debug                    # workspace, the default
+$ minato env set DATABASE_URL=… --scope project     # committed, shared
+$ minato env set GITHUB_TOKEN=… --scope global      # every project
+$ minato env unset LOG_LEVEL
+```
+
+Write through `minato env` rather than editing the files. It puts the value in
+the layer you meant and keeps the format consistent.
+
+::: warning A change needs a restart
+Containers that are already running do not pick up a new value.
+`minato down && minato up`.
+:::
+
+## What Minato injects
+
+Every service receives these, underneath your own values so you can override
+any of them:
+
+```
+MINATO_PROJECT      = myapp
+MINATO_WORKSPACE    = feature-user-auth
+MINATO_SERVICE      = web
+MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
+MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
+```
+
+`MINATO_URL_<SERVICE>` is the important one. It is what makes a per-worktree
+environment hold together: the frontend cannot hardcode the API's URL, because
+the URL is different on every branch.
+
+```js
+const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
+```
+
+A `-` in a service name becomes `_`: `api-server` gives
+`MINATO_URL_API_SERVER`.
+
+::: tip No URL means no proxy
+The variable is left unset rather than empty when the proxy is not listening.
+An empty string would leave it "set, but broken", which is much harder to
+diagnose than a missing variable.
+:::
+
+On Apple Container there is also `MINATO_HOST_<SERVICE>`, carrying a peer's IP
+address. See [Runtimes](./runtimes).
+
+## Secrets
+
+Do not commit secrets. Write a reference and Minato resolves it when the
+container starts:
+
+```
+DATABASE_PASSWORD = op://Development/myapp/password    # 1Password CLI
+API_KEY           = keychain://minato/myapp/api-key    # macOS Keychain
+STRIPE_KEY        = env://STRIPE_KEY                   # the daemon's environment
+```
+
+The resolved value goes to the container in memory and **never touches disk**.
+`minato env ls` shows the reference, not the value — including with `--reveal`,
+because printing it would mean resolving it, and that only happens at start.
+
+### When resolution fails
+
+The daemon does not stop. Usually it means nobody is signed in to 1Password,
+and letting that keep an entire environment down would be the wrong trade. The
+key is dropped and you get a warning:
+
+```
+warning: cannot resolve the secret for DATABASE_PASSWORD: cannot reach op
+```
+
+Your app then fails on a missing variable, which is a clearer failure than a
+wrong one.
+
+## Reading one value
+
+```console
+$ minato env get DATABASE_URL
+postgres://db:5432/app
+```
+
+One line, no decoration, for scripts. Unlike `env ls` this prints the real
+value — you asked for it specifically.
+
+## Files, if you prefer
+
+```
+~/.minato/env              global
+.minato/env                project, committed
+.minato/env.local          workspace, gitignored
+```
+
+Plain `KEY=value`, one per line, `#` for comments. Add `.minato/env.local` to
+`.gitignore`.

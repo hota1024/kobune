@@ -100,6 +100,16 @@ network would cut off `scope = "project"` services.
 
 Firecracker is not implemented. It needs KVM and cannot run on macOS.
 
+## Documentation
+
+Full documentation, in English and Japanese, lives in [`docs/`](docs/) — a
+VitePress site covering installation, configuration, everyday use, the runtimes,
+tunnels, tutorials, and a CLI and `minato.toml` reference.
+
+```console
+$ cd docs && pnpm install && pnpm dev
+```
+
 - Design notes: [docs/DESIGN.md](docs/DESIGN.md)
 
 ## Roadmap

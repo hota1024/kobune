@@ -793,8 +793,13 @@ redraw is requested only when an event arrives; idle costs nothing.
 
 ## 13. Repository layout
 
-One Cargo workspace, self-contained. With GPUI there is no Node.js or pnpm
-toolchain and no `packages/` for TypeScript.
+One Cargo workspace for the product. With GPUI there is no Node.js in
+anything that ships, and no `packages/` for TypeScript.
+
+The one exception is `docs/`, which is a VitePress site and therefore has its
+own `package.json`. It is build tooling for the documentation and no part of it
+reaches a binary, so the rule it bends — no Node toolchain — still holds where
+it was meant to.
 
 ```
 minato/
@@ -814,10 +819,30 @@ minato/
 │   └── desktop/          #   minato-desktop — the GPUI GUI
 ├── skills/
 │   └── minato/SKILL.md
-├── xtask/                # cargo xtask: building, packaging, generating the launchd plist
-└── docs/
-    └── DESIGN.md
+├── xtask/                # cargo xtask: docs snapshots, packaging, the launchd plist
+└── docs/                 # the VitePress site, English and Japanese
+    ├── guide/  reference/  tutorials/
+    ├── ja/               #   the same tree, translated
+    ├── v0.1/             #   a frozen release, made by `cargo xtask docs snapshot`
+    └── DESIGN.md         #   this file. Excluded from the site
 ```
+
+### Versioning the documentation
+
+VitePress has no versioning of its own, but it keys locales by directory, and
+`docs/.vitepress/config.ts` generates one locale per (version, language) pair
+from `versions.json`. So freezing a release is a copy of the tree plus a line
+in that file — no configuration to edit, and the sidebar and version switcher
+follow.
+
+Current docs stay at the root, where they are edited. `cargo xtask docs
+snapshot 0.1` copies them to `/v0.1/` and rewrites absolute links to point
+inside the copy; relative ones already resolve. Snapshots are history and are
+not edited afterwards.
+
+The alternative — every page under a version directory from day one — was
+rejected because it puts every edit inside a version folder before there is
+more than one version to distinguish.
 
 ### The direction of dependencies
 
