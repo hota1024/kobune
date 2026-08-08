@@ -103,6 +103,38 @@ const DOCKERFILE_ENTRY: &str = ".minato-dockerfile";
 /// How many seconds a stop waits before it escalates to SIGKILL.
 const STOP_TIMEOUT_SECS: i64 = 10;
 
+/// Exit codes that mean "asked to stop" rather than "fell over".
+///
+/// `docker stop` sends SIGTERM and then SIGKILL, and a process that lets
+/// either through exits `128 + signal`. Reading those as failures would
+/// paint every `minato down` red.
+///
+/// 137 is therefore forgiven, which also forgives an OOM kill. Telling them
+/// apart needs `oom_killed`, and that only comes from inspecting each
+/// container — a round trip per service on a path that lists them all.
+const CLEAN_EXITS: [i64; 3] = [0, 143, 137];
+
+/// The exit code of a container that fell over, if that is what happened.
+///
+/// **A container that died is not the same as one that was stopped.**
+/// Reporting both as `stopped` leaves a start-up script that failed looking
+/// like a service nobody started, and nothing but the logs to tell them
+/// apart. `None` covers all three ways that is not what happened: no status
+/// line, one that cannot be read, and a clean exit.
+fn crash_code(status: Option<&str>) -> Option<i64> {
+    exit_code_from(status?).filter(|code| !CLEAN_EXITS.contains(code))
+}
+
+/// Takes `127` out of `Exited (127) 3 seconds ago`.
+///
+/// The exit code is not a field of its own on the list response, and
+/// inspecting every container to read one would cost a round trip each.
+fn exit_code_from(status: &str) -> Option<i64> {
+    let (_, rest) = status.split_once('(')?;
+    let (code, _) = rest.split_once(')')?;
+    code.trim().parse().ok()
+}
+
 pub struct DockerRuntime {
     docker: Docker,
 }
@@ -565,14 +597,22 @@ impl DockerRuntime {
             .get(labels::PORT)
             .and_then(|value| value.parse::<u16>().ok());
 
-        // The `docker ps` state is a string. Anything but running counts
-        // as stopped.
+        // The `docker ps` state is a string.
         let state = match summary.state.as_deref() {
             Some("running") => ServiceState::Ready,
-            Some("created") | Some("restarting") => ServiceState::Starting,
-            Some("exited") | Some("dead") | Some("paused") | Some("removing") => {
-                ServiceState::Stopped
-            }
+            Some("created" | "restarting") => ServiceState::Starting,
+            Some("exited") => match crash_code(summary.status.as_deref()) {
+                Some(code) => ServiceState::failed(format!(
+                    "the container exited with code {code}. \
+                     `minato logs {service}` has the output"
+                )),
+                None => ServiceState::Stopped,
+            },
+            Some("dead") => ServiceState::failed(format!(
+                "the container is dead. `minato logs {service}` has whatever it \
+                 managed to write"
+            )),
+            Some("paused" | "removing") => ServiceState::Stopped,
             _ => ServiceState::Unknown,
         };
 
@@ -939,9 +979,20 @@ impl Runtime for DockerRuntime {
         })?;
 
         if container.state.as_deref() != Some("running") {
+            // Wanting to exec into a container is at its most likely just
+            // after one fell over, and "start it with `minato up`" describes
+            // the wrong problem.
+            let detail = match crash_code(container.status.as_deref()) {
+                Some(code) => format!(
+                    "the container exited with code {code}. `minato logs {}` says why",
+                    key.service
+                ),
+                None => "the container is not running. Start it with `minato up`".to_string(),
+            };
+
             return Err(RuntimeError::failed(
                 format!("running a command in {}", key.service),
-                "the container is not running. Start it with `minato up`",
+                detail,
             ));
         }
 
@@ -1139,8 +1190,6 @@ mod tests {
             ("running", ServiceState::Ready),
             ("created", ServiceState::Starting),
             ("restarting", ServiceState::Starting),
-            ("exited", ServiceState::Stopped),
-            ("dead", ServiceState::Stopped),
             ("paused", ServiceState::Stopped),
         ];
 
@@ -1149,6 +1198,77 @@ mod tests {
                 DockerRuntime::summary_to_status(&summary_with(minato_labels(), docker_state))
                     .expect("recovers");
             assert_eq!(status.state, expected, "docker state = {docker_state}");
+        }
+    }
+
+    /// A summary that also carries the `Status` line `docker ps` shows.
+    fn exited_with(status: &str) -> ContainerSummary {
+        ContainerSummary {
+            status: Some(status.into()),
+            ..summary_with(minato_labels(), "exited")
+        }
+    }
+
+    #[test]
+    fn a_container_that_fell_over_is_failed_not_stopped() {
+        // The reason SKILL.md promises. Without it a start-up script that
+        // died looks exactly like a service nobody started.
+        let status = DockerRuntime::summary_to_status(&exited_with("Exited (127) 2 seconds ago"))
+            .expect("recovers");
+
+        let ServiceState::Failed { reason } = &status.state else {
+            panic!("expected a failure, got {:?}", status.state);
+        };
+        assert!(reason.contains("127"), "name the exit code: {reason}");
+        assert!(
+            reason.contains("minato logs web"),
+            "say where to look: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_dead_container_is_failed_too() {
+        let status = DockerRuntime::summary_to_status(&summary_with(minato_labels(), "dead"))
+            .expect("recovers");
+
+        let ServiceState::Failed { reason } = &status.state else {
+            panic!("expected a failure, got {:?}", status.state);
+        };
+        assert!(reason.contains("minato logs web"), "{reason}");
+    }
+
+    #[test]
+    fn anything_but_a_crash_stays_stopped() {
+        // `docker stop` sends SIGTERM, and a shell exits 143 for it, so
+        // every `minato down` would otherwise end in red. An unreadable or
+        // absent status line must not be guessed at either.
+        for line in [
+            "Exited (0) 1 second ago",
+            "Exited (143) 1 second ago",
+            "Exited (137) 1 second ago",
+            "Exited (oops) 1 second ago",
+        ] {
+            let status = DockerRuntime::summary_to_status(&exited_with(line)).expect("recovers");
+            assert_eq!(status.state, ServiceState::Stopped, "{line}");
+        }
+
+        let no_status =
+            DockerRuntime::summary_to_status(&summary_with(minato_labels(), "exited")).expect("ok");
+        assert_eq!(no_status.state, ServiceState::Stopped, "no status line");
+    }
+
+    #[test]
+    fn a_crash_is_told_from_a_clean_exit() {
+        assert_eq!(crash_code(Some("Exited (127) 2 seconds ago")), Some(127));
+
+        for clean in [
+            Some("Exited (0) 5 minutes ago"),
+            Some("Exited (143) 5 minutes ago"),
+            Some("Up 3 hours"),
+            Some("Exited (oops) ago"),
+            None,
+        ] {
+            assert_eq!(crash_code(clean), None, "{clean:?}");
         }
     }
 

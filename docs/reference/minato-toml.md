@@ -123,6 +123,18 @@ health = "cmd:pg_isready -U postgres"      # runs inside the container
 inside the container; Minato reaches it at whatever address the runtime
 assigned.
 
+Starting a service waits for this check to pass before moving on, which is
+what keeps the `curl` right after `minato up` from meeting a connection
+refused.
+
+::: warning The wait gives up after 15 seconds
+Waiting forever would mean `minato up` never returns, so a service that is
+not ready by then is left starting and the command carries on. A dev server
+that compiles for a minute on its first run will hit this. Nothing is
+broken — the URL still works once it comes up, because reaching for it waits
+— but `depends_on` stops being a guarantee at that point.
+:::
+
 ### Lifecycle
 
 | Key | Type | | |
@@ -133,9 +145,11 @@ assigned.
 
 Durations are `humantime`: `"30s"`, `"10m"`, `"2h"`.
 
-`depends_on` sets order. On Apple Container it also decides whether
-`MINATO_HOST_<PEER>` is available, since the address is read when the service
-starts.
+`depends_on` starts a dependency first **and waits for it to be ready**, by
+the same check [Readiness](#readiness) describes — so a service can assume
+the ones it names are answering, up to the 15-second limit noted there. On
+Apple Container it also decides whether `MINATO_HOST_<PEER>` is available,
+since the address is read when the service starts.
 
 `scope = "project"` shares one instance across every worktree. Good for a
 database you do not want to seed repeatedly; bad when two branches carry
@@ -159,6 +173,19 @@ volumes = [
 A source with no `/` is named storage; anything starting with `/`, `./` or `~/`
 is a host path. A `:ro` or `:rw` suffix sets the mode, defaulting to read-write.
 The container path must be absolute.
+
+**Named storage is already namespaced per project.** `pgdata` becomes the
+Docker volume `minato-{project}-pgdata`, so there is no need to prefix the
+name yourself — `myapp-pgdata` under project `myapp` would end up as
+`minato-myapp-myapp-pgdata`.
+
+::: warning Named storage is shared by every worktree
+The name carries the project, not the workspace, so two worktrees mount the
+same volume. That is what makes it useful for a package cache, and what makes
+it wrong for anything a branch can change the shape of — `node_modules`
+against a lockfile that differs per branch will fight itself. Use a host path
+under the worktree for those, or give each branch its own volume name.
+:::
 
 Apple Container has no named volumes, so they become bind mounts under
 `~/.minato/volumes/<project>/`.

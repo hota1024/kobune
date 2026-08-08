@@ -955,6 +955,10 @@ impl AppleContainerRecord {
         self.ip().map(|ip| SocketAddr::new(IpAddr::V4(ip), port))
     }
 
+    /// **No `Failed` here, unlike Docker.** The Apple CLI reports a state and
+    /// nothing else — there is no exit code to read — so a container that
+    /// died is indistinguishable from one that was stopped. Not an
+    /// oversight; there is nothing to tell them apart with.
     pub fn state(&self) -> ServiceState {
         match self.status.state.as_deref() {
             Some("running") => ServiceState::Ready,

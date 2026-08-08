@@ -86,6 +86,11 @@ pub trait Runtime: Send + Sync {
     async fn destroy_workspace(&self, key: &WorkspaceKey, events: &EventSink) -> Result<()>;
 
     /// The current state of one service.
+    ///
+    /// A container that exited abnormally is [`ServiceState::Failed`], not
+    /// [`ServiceState::Stopped`] — see the contract on those variants. A
+    /// backend whose API cannot tell the two apart says so where it maps
+    /// its states, rather than leaving the next reader to wonder.
     async fn inspect(&self, key: &ServiceKey) -> Result<ServiceStatus>;
 
     /// Reads logs.

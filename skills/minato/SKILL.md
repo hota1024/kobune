@@ -30,6 +30,44 @@ minato status --json
 That gives the current workspace, the state of each service, and the URLs.
 With no `minato.toml`, `minato init` writes a starter one.
 
+## Configuration
+
+`minato.toml` sits at the repository root and every worktree reads the same
+one. **The full reference is
+<https://minato.1024.works/reference/minato-toml>** — read it before writing
+one rather than guessing at key names.
+
+Two services, which is the shape most projects want:
+
+```toml
+[project]
+name = "myapp"
+
+[services.api]
+image = "node:22"
+port = 8787
+command = "sh -c 'npm run dev:api'"
+
+[services.web]
+image = "node:22"
+port = 3000
+command = "sh -c 'npm run dev:web'"
+depends_on = ["api"]     # starts api first, and waits for it to be ready
+```
+
+Worth knowing before you hit them:
+
+- `command` is split shell-style, so `sh -c '...'` works as written
+- `depends_on` **waits for the dependency to be ready**, not just to start.
+  The wait gives up after 15 seconds and carries on, so a dependency that
+  takes longer than that is not a guarantee
+- A named volume (`cache:/path`) is per project and **shared by every
+  worktree**. Minato namespaces it, so writing your own project prefix
+  gets you `minato-myapp-myapp-cache`
+- Your worktree is mounted at `/workspace`. Anything a build writes under
+  it lands in the repository on the host — point caches at a named volume
+  instead
+
 ## Everyday work
 
 ### Start on a new branch
@@ -96,6 +134,13 @@ Every service receives the other services' URLs as `MINATO_URL_<SERVICE>`
 (`MINATO_URL_API` for a service named `api`). Use those when the frontend calls
 the API — hardcoding breaks from one worktree to the next.
 
+**They are only there while the proxy is listening.** With no proxy there is
+no URL to hand out, so the variable is left unset rather than set to
+something that does not work, and a start-up script reading it fails with
+`MINATO_URL_WEB: parameter not set`. `minato up` warns when this is the case;
+`minato env ls` shows what is actually injected, and `minato doctor` says how
+to get the proxy up.
+
 ### Share it with someone
 
 ```bash
@@ -123,9 +168,12 @@ Removes the worktree and its environment. The branch stays.
 1. `minato status --json` — look at each service's `state`
    - `stopped` → reach for it, or run `minato up`
    - `starting` → wait
-   - `failed` → `reason` says why
+   - `failed` → `reason` says why. A container that exited non-zero lands
+     here, so this is what a start-up script that died looks like
 2. `minato logs <service>` — errors from the app itself
-3. `minato doctor` — problems with the environment. **The fix is in `fix`**
+3. `minato env ls` — what the containers are actually given, and which layer
+   each value came from. Check here before concluding a variable is wrong
+4. `minato doctor` — problems with the environment. **The fix is in `fix`**
 
 ### Common symptoms
 
@@ -135,6 +183,7 @@ Removes the worktree and its environment. The branch stays.
 | The URL does not connect | `minato doctor`. Usually DNS or the proxy is not set up yet |
 | A 404 comes back | Wrong hostname. Get it again from `minato url` |
 | A 502 comes back | The service is registered but not answering. `minato logs` |
+| `MINATO_URL_*: parameter not set` | The proxy is not listening, so no URL was injected. `minato doctor` |
 | Startup never finishes | Watch it with `minato logs -f` |
 | A config change does nothing | `minato down && minato up` |
 

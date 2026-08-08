@@ -21,7 +21,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ServiceState {
-    /// No container exists, or it is stopped.
+    /// No container exists, or one was stopped on purpose.
+    ///
+    /// **Only when nothing went wrong.** A container that exited abnormally
+    /// is [`Self::Failed`]; folding the two together leaves a start-up
+    /// script that died looking like a service nobody started.
     Stopped,
     /// Starting up; the health check has not passed yet.
     Starting,
@@ -30,6 +34,9 @@ pub enum ServiceState {
     /// Running, but untouched for a while. A candidate for stopping.
     Idle,
     /// Failed to start, or exited abnormally.
+    ///
+    /// `reason` is shown to whoever asks, so it says what happened and
+    /// where to look next.
     Failed { reason: String },
     /// The runtime could not be queried.
     Unknown,
