@@ -8,9 +8,9 @@ $ curl -fsSL https://minato.1024.works/install.sh | sh
 `minatod` を `~/.local/bin` に配置します。bash / zsh / fish のうちインストール
 済みのシェルには、補完スクリプトも書き込みます。
 
-root 権限は一切必要ありません。`PATH` の設定が必要な場合は、最後に該当する 1 行
-を表示します。使っているシェルに合わせて出し分けるので、fish に `export PATH`
-を勧めることはありません。
+root 権限は一切必要ありません。`PATH` の設定が必要な場合は、いま使っている
+シェルの書き方で 1 行だけ表示します。fish なら `fish_add_path` を示すので、
+fish が受け付けない `export` 行を渡されることはありません。
 
 ## 必要なもの
 
@@ -36,6 +36,57 @@ root 権限は一切必要ありません。`PATH` の設定が必要な場合�
 ```console
 $ curl -fsSL https://minato.1024.works/install.sh | MINATO_INSTALL_DIR=/usr/local/bin sh
 ```
+
+### PATH の設定
+
+配置先が `PATH` に入っていない場合、追加する方法を表示します。示すのは 1 つ、
+いま使っているシェルの分だけです。
+
+::: code-group
+```console [fish]
+fish_add_path ~/.local/bin
+```
+
+```console [zsh]
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+. ~/.zshrc
+```
+
+```console [bash]
+# macOS は ~/.bash_profile、Linux は ~/.bashrc。ログインシェルは前者しか
+# 読まず、macOS のターミナルはログインシェルとして起動します。
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bash_profile
+. ~/.bash_profile
+```
+
+```console [tcsh]
+echo 'setenv PATH $HOME/.local/bin:$PATH' >> ~/.tcshrc
+source ~/.tcshrc
+```
+
+```console [nushell]
+# $nu.config-path に追記
+$env.PATH = ($env.PATH | prepend '~/.local/bin')
+```
+
+```console [elvish]
+# ~/.config/elvish/rc.elv に追記
+set paths = ['~/.local/bin' $@paths]
+```
+
+```console [powershell]
+# $PROFILE に追記
+$env:PATH = "$HOME/.local/bin" + [IO.Path]::PathSeparator + $env:PATH
+```
+:::
+
+判定には `$SHELL` ではなくプロセスツリーを使います。`$SHELL` はログイン
+シェルであり、zsh でログインしてから fish を起動した時点で別のものになります。
+fish で `export PATH` を渡されると、そのまま設定ファイルに貼られて何か月も
+壊れたままになりがちです。`ksh` / `mksh` / `dash` も判別し、`~/.profile` を
+案内します。
+
+判定できなかったときは推測せず、すべてのシェルの方法を並べて表示します。
 
 インストールされるのは `nightly` ビルドです。`main` へのマージごとに差し替え
 られる最新ビルドであり、リリースではありません。バージョンは付かず、内容は

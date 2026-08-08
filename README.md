@@ -167,9 +167,13 @@ $ curl -fsSL https://minato.1024.works/install.sh | sh
 
 Picks the archive for the machine, checks it against its `.sha256`, installs
 both binaries into `~/.local/bin` (`MINATO_INSTALL_DIR` to change that) and
-writes completions for bash, zsh and fish. `minato update` does the same
-thing later, and a check runs once a day on its own —
-`MINATO_NO_UPDATE_CHECK=1` stops it, and `--json` never carries it.
+writes completions for bash, zsh and fish. If the directory is not on `PATH`
+it says how to add it, in the syntax of the shell you are in — worked out
+from the process tree rather than `$SHELL`, so fish gets `fish_add_path` and
+not an `export` line it would reject.
+
+`minato update` does the same thing later, and a check runs once a day on its
+own — `MINATO_NO_UPDATE_CHECK=1` stops it, and `--json` never carries it.
 
 Every merge to `main` replaces the [`nightly`](https://github.com/hota1024/minato/releases/tag/nightly)
 pre-release, for macOS (Apple Silicon and Intel) and Linux x86_64. By hand:

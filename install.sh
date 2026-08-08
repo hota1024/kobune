@@ -141,6 +141,124 @@ write_completion() {
     return 1
 }
 
+# The shell the person is actually using.
+#
+# `$SHELL` is only the login shell, and it is wrong often enough to matter:
+# someone whose login shell is zsh but who works in fish would be handed
+# `export PATH`, which fish does not understand. So the process tree is
+# asked first — under `curl … | sh` the parent of this script *is* the
+# interactive shell — and `$SHELL` is the fallback.
+#
+# Prints nothing and fails when it cannot tell.
+detect_shell() {
+    pid=""
+    need ps && pid="${PPID:-}"
+    depth=0
+
+    # Up a few levels, because the immediate parent can be another `sh`
+    # (`sh -c "curl … | sh"`) or the pipeline's `curl`.
+    while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$depth" -lt 5 ]; do
+        # `-fish` for a login shell, and an absolute path on some systems.
+        name="$(ps -o comm= -p "$pid" 2>/dev/null | sed 's|^-||; s|.*/||')"
+
+        if known_shell "$name"; then
+            printf '%s' "$name"
+            return 0
+        fi
+
+        pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+        depth=$((depth + 1))
+    done
+
+    name="$(basename "${SHELL:-}" 2>/dev/null || true)"
+    if known_shell "$name"; then
+        printf '%s' "$name"
+        return 0
+    fi
+
+    return 1
+}
+
+known_shell() {
+    case "$1" in
+        fish | zsh | bash | ksh | ksh93 | mksh | dash | ash | tcsh | csh | nu | elvish | pwsh | powershell)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Where a shell reads its startup configuration.
+#
+# bash differs by platform: macOS opens login shells in Terminal, which read
+# `.bash_profile` and never `.bashrc`, and on Linux it is the other way
+# round. Writing to the wrong one is a line that appears to do nothing.
+shell_config() {
+    case "$1" in
+        zsh) printf '~/.zshrc' ;;
+        bash)
+            if [ "$(uname -s)" = "Darwin" ]; then
+                printf '~/.bash_profile'
+            else
+                printf '~/.bashrc'
+            fi
+            ;;
+        ksh | ksh93 | mksh | dash | ash) printf '~/.profile' ;;
+        tcsh) printf '~/.tcshrc' ;;
+        csh) printf '~/.cshrc' ;;
+        elvish) printf '~/.config/elvish/rc.elv' ;;
+        *) printf '' ;;
+    esac
+}
+
+# How to put a directory on PATH, in one shell's own syntax.
+#
+# Two lines where it can be: the one that makes it stick, and the one that
+# makes it take effect in the shell that is already open. `.` rather than
+# `source` for the POSIX family, since dash does not have `source`.
+#
+# Indented two spaces, ready to print.
+path_advice() {
+    # $1 shell, $2 directory
+    config="$(shell_config "$1")"
+
+    case "$1" in
+        fish)
+            # Persists by itself, so there is no file to edit and no
+            # duplicate entry on the next login.
+            say "  fish_add_path $2"
+            ;;
+        zsh | bash | ksh | ksh93 | mksh | dash | ash)
+            say "  echo 'export PATH=\"$2:\$PATH\"' >> $config"
+            say "  . $config"
+            ;;
+        tcsh | csh)
+            say "  echo 'setenv PATH $2:\$PATH' >> $config"
+            say "  source $config"
+            ;;
+        nu)
+            # Nushell has no append-and-forget line: its configuration is a
+            # script, and `$nu.config-path` is where it lives.
+            say "  Add this to your config (\`config nu\` opens it):"
+            say ""
+            say "    \$env.PATH = (\$env.PATH | prepend '$2')"
+            ;;
+        elvish)
+            say "  Add this to $config:"
+            say ""
+            say "    set paths = ['$2' \$@paths]"
+            ;;
+        pwsh | powershell)
+            say "  Add this to your profile (\`\$PROFILE\`):"
+            say ""
+            say "    \$env:PATH = '$2' + [IO.Path]::PathSeparator + \$env:PATH"
+            ;;
+        *)
+            say "  export PATH=\"$2:\$PATH\""
+            ;;
+    esac
+}
+
 target="$(detect_target)"
 archive="minato-$target.tar.gz"
 base="https://github.com/$REPO/releases/download/$CHANNEL"
@@ -215,33 +333,35 @@ if [ -n "$completions_written" ]; then
     say "  completions: $completions_written"
 fi
 
-# Only when it is not already reachable, and named for the shell the person
-# is actually in — `export PATH` advice is wrong in fish, and follows people
-# around for months once it is pasted into a config file.
+# Only when it is not already reachable, and in the syntax of the shell the
+# person is actually in. A wrong line here gets pasted into a config file
+# and stays there for months.
+shell="$(detect_shell || true)"
+
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
         say ""
-        say "$INSTALL_DIR is not on your PATH. Add it:"
-        say ""
-        case "$(basename "${SHELL:-sh}")" in
-            fish)
-                say "  fish_add_path $INSTALL_DIR"
-                ;;
-            zsh)
-                say "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
-                ;;
-            bash)
-                say "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
-                ;;
-            *)
-                say "  export PATH=\"$INSTALL_DIR:\$PATH\""
-                ;;
-        esac
+        if [ -n "$shell" ]; then
+            say "$INSTALL_DIR is not on your PATH. For $shell:"
+            say ""
+            path_advice "$shell" "$INSTALL_DIR"
+        else
+            # Rather than guessing: an `export` line shown to a fish user
+            # fails, and a fish line shown to a bash user fails too.
+            say "$INSTALL_DIR is not on your PATH. Add it, in your shell:"
+            for candidate in fish zsh bash tcsh nu elvish pwsh; do
+                say ""
+                say "$candidate"
+                path_advice "$candidate" "$INSTALL_DIR"
+            done
+        fi
         ;;
 esac
 
-if [ -n "${zsh_fpath:-}" ]; then
+# Written because zsh is installed, which is not the same as zsh being what
+# anyone uses. Someone in fish does not need to hear about `fpath`.
+if [ -n "${zsh_fpath:-}" ] && { [ "$shell" = "zsh" ] || [ -z "$shell" ]; }; then
     say ""
     say "For zsh completions, if they do not work yet:"
     say ""

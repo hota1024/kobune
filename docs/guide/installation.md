@@ -9,7 +9,8 @@ That picks the archive for your machine, checks it against its published
 completions for whichever of bash, zsh and fish you have.
 
 Nothing it does needs root, and it prints the one PATH line you may need at the
-end — written for your shell, so fish users do not get `export PATH`.
+end — in the syntax of the shell you are actually in, so a fish user is told
+`fish_add_path` rather than an `export` line that fish would reject.
 
 ## Requirements
 
@@ -35,6 +36,58 @@ is about 250 lines of POSIX shell and does nothing surprising. Two settings:
 ```console
 $ curl -fsSL https://minato.1024.works/install.sh | MINATO_INSTALL_DIR=/usr/local/bin sh
 ```
+
+### The PATH line
+
+If the install directory is not already on `PATH`, the script says how to add
+it — for one shell, the one you are in:
+
+::: code-group
+```console [fish]
+fish_add_path ~/.local/bin
+```
+
+```console [zsh]
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+. ~/.zshrc
+```
+
+```console [bash]
+# ~/.bash_profile on macOS, ~/.bashrc on Linux: a login shell reads only
+# the first, and macOS Terminal opens login shells.
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bash_profile
+. ~/.bash_profile
+```
+
+```console [tcsh]
+echo 'setenv PATH $HOME/.local/bin:$PATH' >> ~/.tcshrc
+source ~/.tcshrc
+```
+
+```console [nushell]
+# in $nu.config-path
+$env.PATH = ($env.PATH | prepend '~/.local/bin')
+```
+
+```console [elvish]
+# in ~/.config/elvish/rc.elv
+set paths = ['~/.local/bin' $@paths]
+```
+
+```console [powershell]
+# in $PROFILE
+$env:PATH = "$HOME/.local/bin" + [IO.Path]::PathSeparator + $env:PATH
+```
+:::
+
+It works out which one you are in from the process tree, not from `$SHELL`.
+`$SHELL` is the *login* shell, which is a different thing the moment you start
+fish from a zsh login — and being handed `export PATH` in fish is exactly the
+kind of line that gets pasted into a config file and stays broken for months.
+`ksh`, `mksh` and `dash` are recognised too, and fall back to `~/.profile`.
+
+When it cannot tell, it prints all of them and lets you pick, rather than
+guessing.
 
 It installs the `nightly` build, which is replaced on every merge to `main`.
 That is the latest build rather than a release: nothing in it carries a version,
