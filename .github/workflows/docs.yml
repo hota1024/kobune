@@ -85,13 +85,99 @@ jobs:
       # in the lockfile. Pinning it here makes the version reproducible and
       # the install one `pnpm install`.
       - name: Deploy
+        id: deploy
         if: env.CLOUDFLARE_API_TOKEN != ''
         working-directory: docs
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
         # Any branch other than main becomes a preview deployment with its
         # own URL, which is the point of hosting the docs here: prose is
         # reviewed by reading it, not by reading its diff.
-        run: >-
-          pnpm deploy:pages
-          --branch=${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Piped through `tee` rather than read from a file alone, so a
+          # failed deploy is still diagnosed from this step's log instead of
+          # from an empty one. `pipefail` keeps the failure from being
+          # swallowed by `tee` succeeding.
+          log="$RUNNER_TEMP/deploy.log"
+          pnpm deploy:pages --branch="$BRANCH" | tee "$log"
+
+          # A preview deploy prints two URLs: one naming the deployment,
+          # which stays pinned to this commit, and an alias that follows the
+          # branch. Both are worth having — the alias is the link to keep in
+          # the pull request, the other is what to open when a comment is
+          # about a revision that has since been pushed over.
+          #
+          # The alias comes from polling the deployment after the upload, so
+          # wrangler omits it if the deployment is not ready in time. Falling
+          # back to the pinned URL leaves the comment correct rather than
+          # empty.
+          commit_url=$(sed -n \
+            's/.*Take a peek over at \(https:[^ ]*\).*/\1/p' "$log" | tail -1)
+          alias_url=$(sed -n \
+            's/.*Deployment alias URL: \(https:[^ ]*\).*/\1/p' "$log" | tail -1)
+
+          {
+            echo "commit-url=$commit_url"
+            echo "alias-url=${alias_url:-$commit_url}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Skipped when the deploy was, which covers both the pushes to main
+      # that have no pull request to comment on and the forks whose
+      # `GITHUB_TOKEN` is read-only anyway.
+      - name: Comment the preview URL on the pull request
+        if: >-
+          github.event_name == 'pull_request'
+          && steps.deploy.outputs.alias-url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ALIAS_URL: ${{ steps.deploy.outputs.alias-url }}
+          COMMIT_URL: ${{ steps.deploy.outputs.commit-url }}
+          # Marks the comment as this workflow's, so the next push edits it
+          # instead of adding another. HTML comments do not render.
+          MARKER: '<!-- docs-preview -->'
+        run: |
+          set -euo pipefail
+
+          body=$(printf '%s\n' \
+            "$MARKER" \
+            "### 📖 Documentation preview" \
+            "" \
+            "- Latest: $ALIAS_URL" \
+            "- This revision (\`${HEAD_SHA:0:7}\`): $COMMIT_URL" \
+            "" \
+            "The first follows the branch and is replaced by every push; the" \
+            "second stays on the commit a review comment was written about." \
+            "" \
+            "The site serves the install script too, so" \
+            "\`curl -fsSL $ALIAS_URL/install.sh | sh\` installs using this" \
+            "branch's copy of it.")
+
+          # One comment per pull request, edited in place: a new one on every
+          # push would bury the review under links to builds nobody is
+          # looking at any more.
+          #
+          # `env.MARKER` rather than the string inline, so the marker written
+          # above is the one matched here and the two cannot drift apart.
+          #
+          # The first line is taken by expansion rather than by `head`, which
+          # would close the pipe under `pipefail` and fail the step on a
+          # pull request long enough to paginate.
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --paginate \
+            --jq '.[] | select((.body // "") | startswith(env.MARKER)) | .id')
+          id=${ids%%$'\n'*}
+
+          if [ -n "$id" ]; then
+            # `--silent` because the response is the whole comment, and the
+            # log is more useful without a copy of what was just written.
+            gh api --method PATCH --silent \
+              "repos/$GITHUB_REPOSITORY/issues/comments/$id" \
+              --field body="$body"
+          else
+            gh pr comment "$PR" --body "$body"
+          fi
