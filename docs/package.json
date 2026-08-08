@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "mkdir -p public && cp ../install.sh public/install.sh",
     "dev": "vitepress dev",
+    "prebuild": "mkdir -p public && cp ../install.sh public/install.sh",
     "build": "vitepress build",
     "preview": "vitepress preview",
     "deploy:pages": "wrangler pages deploy .vitepress/dist --project-name=minato-docs"

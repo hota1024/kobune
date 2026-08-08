@@ -61,6 +61,6 @@ person, print the same information without the JSON.
 
 ## Where to go next
 
-- [Installation](./installation) — build it, and pick a container runtime
+- [Installation](./installation) — one command, then pick a container runtime
 - [Your first environment](./getting-started) — from nothing to a URL
 - [How it works](./how-it-works) — the DNS, the proxy, and why there is a daemon

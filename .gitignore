@@ -2,3 +2,6 @@
 node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+
+# copied from the repository root by the docs build
+docs/public/install.sh

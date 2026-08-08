@@ -7,6 +7,10 @@ A development environment manager for AI agents.
 **Create a git worktree, and its preview environment is up.**
 
 ```console
+$ curl -fsSL https://minato.1024.works/install.sh | sh
+```
+
+```console
 $ minato new feature/user-auth
 ✓ worktree created  ~/ghq/github.com/hota1024/myapp.wt/feature-user-auth
 ✓ web   https://web.feature-user-auth.myapp.localhost
@@ -157,8 +161,18 @@ $ cargo test --workspace
 
 ### A prebuilt binary
 
+```console
+$ curl -fsSL https://minato.1024.works/install.sh | sh
+```
+
+Picks the archive for the machine, checks it against its `.sha256`, installs
+both binaries into `~/.local/bin` (`MINATO_INSTALL_DIR` to change that) and
+writes completions for bash, zsh and fish. `minato update` does the same
+thing later, and a check runs once a day on its own —
+`MINATO_NO_UPDATE_CHECK=1` stops it, and `--json` never carries it.
+
 Every merge to `main` replaces the [`nightly`](https://github.com/hota1024/minato/releases/tag/nightly)
-pre-release, for macOS (Apple Silicon and Intel) and Linux x86_64.
+pre-release, for macOS (Apple Silicon and Intel) and Linux x86_64. By hand:
 
 ```console
 $ gh release download nightly --repo hota1024/minato \
@@ -174,9 +188,10 @@ $ tar xzf minato-aarch64-apple-darwin.tar.gz
 | Linux x86_64 | `minato-x86_64-unknown-linux-gnu.tar.gz` |
 
 The CLI and the daemon are not signed, so macOS quarantines them on first
-run. `xattr -d com.apple.quarantine minato minatod` clears it, or build from
-source. The desktop app is not shipped at all for the same reason —
-Gatekeeper stops an unsigned `.app` outright.
+run — the install script clears the flag, and by hand it is
+`xattr -d com.apple.quarantine minato minatod`. The desktop app is not
+shipped at all for the same reason: Gatekeeper stops an unsigned `.app`
+outright.
 
 `minato` and `minatod` have to stay in the same directory: the CLI starts the
 daemon by looking next to itself.

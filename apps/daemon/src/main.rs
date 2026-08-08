@@ -29,8 +29,17 @@ use crate::server::Server;
 use crate::supervisor::Supervisor;
 use crate::tunnel::TunnelHandle;
 
+/// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
+/// is what tells one build from another.
+fn version() -> &'static str {
+    // Leaked once at startup: clap wants a `&'static str`, and the string is
+    // built from two compile-time constants so there is nothing to free.
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| minato_core::version_string(env!("CARGO_PKG_VERSION")))
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "minatod", version, about = "Minato's resident process")]
+#[command(name = "minatod", version = version(), about = "Minato's resident process")]
 struct Args {
     /// Also log to stderr. For debugging by hand.
     #[arg(long)]

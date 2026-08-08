@@ -207,6 +207,36 @@ Any command starts the daemon if it is down, so these are rarely needed.
 launchd starting it again — that is how it picks up new settings while keeping
 ports 80 and 443.
 
+## Keeping it current
+
+```console
+$ minato update
+$ minato update --check
+```
+
+Replaces both binaries in the directory the running `minato` came from with the
+current `nightly`. `--check` reports and installs nothing. Under `--json`:
+
+```json
+{ "status": "available", "commit": "…", "running": "…" }
+```
+
+`status` is one of `current`, `available`, `installed` or `unknown` — `unknown`
+meaning this build records no commit, so there is nothing to compare.
+
+A check runs by itself once a day after any command and prints one line to
+stderr. `MINATO_NO_UPDATE_CHECK` turns it off, and `--json` never includes it.
+
+## Completions
+
+```console
+$ minato completions <bash|zsh|fish|elvish|powershell>
+```
+
+Writes the script to stdout. See
+[Installation](../guide/installation#shell-completions) for where each shell
+expects it; the install script does this already.
+
 ## Environment variables that configure Minato
 
 | | |
@@ -217,3 +247,4 @@ ports 80 and 443.
 | `MINATO_DNS_PORT` | DNS port. Default 53 |
 | `MINATO_CLOUDFLARED` | A `cloudflared` binary somewhere other than `PATH` |
 | `MINATO_LOG` | Log filter for the daemon, e.g. `debug` |
+| `MINATO_NO_UPDATE_CHECK` | Set to anything to stop the daily update check |

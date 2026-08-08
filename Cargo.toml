@@ -61,6 +61,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 
 # Networking
 hyper = { version = "1", features = ["full"] }
@@ -77,6 +78,10 @@ hickory-proto = "0.24"
 
 # Runtime
 bollard = "0.18"
+
+# HTTP client, for the update check. rustls rather than the system TLS:
+# the proxy already depends on it, so nothing new is pulled in.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 
 # GUI
 #
