@@ -116,7 +116,7 @@ The fingerprint cannot see files the Dockerfile `COPY`s in, so editing
 ```toml
 health = "http://localhost:3000/healthz"   # 2xx or 3xx
 health = "tcp://localhost:5432"            # a connection succeeds
-health = "cmd:pg_isready"                  # not supported yet
+health = "cmd:pg_isready -U postgres"      # runs inside the container
 ```
 
 **Only the path is used** for `http://`. What you write is the address from

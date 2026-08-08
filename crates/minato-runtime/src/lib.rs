@@ -82,12 +82,20 @@ mod tests {
     }
 
     #[test]
-    fn every_available_runtime_can_be_created() {
+    fn no_available_runtime_is_unknown() {
         // `AVAILABLE_RUNTIMES` is what `doctor` iterates and what the
-        // "unknown runtime" message lists. An entry `create` rejects would
-        // be advertised and then refused.
+        // "unknown runtime" message lists. An entry `create` does not
+        // recognise would be advertised and then refused.
+        //
+        // Only `Unsupported` is checked, not success: `create` reaches for
+        // a Docker socket, so demanding success would make this a test of
+        // whether Docker happens to be running. It passed on a laptop and
+        // failed in a container, which is the definition of the wrong
+        // assertion.
         for id in AVAILABLE_RUNTIMES {
-            create(id).unwrap_or_else(|err| panic!("{id}: {err}"));
+            if let Err(RuntimeError::Unsupported(message)) = create(id) {
+                panic!("{id} is advertised but not recognised: {message}");
+            }
         }
     }
 

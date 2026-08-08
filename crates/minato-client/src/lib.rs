@@ -241,21 +241,59 @@ impl Connection {
 
     /// Sends a request, passing each event to `on_event` while awaiting
     /// the response.
-    pub async fn call<F>(
+    pub async fn call<F>(&mut self, request: Request, on_event: F) -> Result<Response, ClientError>
+    where
+        F: FnMut(Event),
+    {
+        self.call_until(request, on_event, std::future::pending::<()>())
+            .await
+    }
+
+    /// Runs a request, giving up if `cancel` resolves first.
+    ///
+    /// Cancelling asks the daemon to stop and then **waits for its reply**
+    /// rather than dropping the connection. The daemon is the one that
+    /// knows what it managed to do, and its response is what says whether
+    /// the work was stopped or had already finished.
+    ///
+    /// Work already done is not undone. A cancelled `up` can leave a
+    /// container running, which `minato status` shows and `minato down`
+    /// clears.
+    pub async fn call_until<F, C>(
         &mut self,
         request: Request,
         mut on_event: F,
+        cancel: C,
     ) -> Result<Response, ClientError>
     where
         F: FnMut(Event),
+        C: std::future::Future<Output = ()>,
     {
         let id = self.take_id();
 
         write_message(&mut self.writer, &ClientMessage::Request { id, request }).await?;
 
+        let mut cancel = std::pin::pin!(cancel);
+        let mut asked_to_stop = false;
+
         loop {
-            let message: ServerMessage =
-                self.reader.recv().await?.ok_or(ClientError::Disconnected)?;
+            let message: ServerMessage = if asked_to_stop {
+                // Already asked; now just wait for the daemon to answer.
+                as_message(self.reader.recv().await)?
+            } else {
+                tokio::select! {
+                    // Bias towards the socket so a response that is already
+                    // in flight is not overtaken by a cancel racing it.
+                    biased;
+
+                    message = self.reader.recv() => as_message(message)?,
+                    () = &mut cancel => {
+                        write_message(&mut self.writer, &ClientMessage::Cancel { id }).await?;
+                        asked_to_stop = true;
+                        continue;
+                    }
+                }
+            };
 
             match message {
                 ServerMessage::Event {
@@ -305,6 +343,37 @@ impl Connection {
 
         Ok(pong)
     }
+}
+
+/// Turns a read into a message, or into the right kind of failure.
+///
+/// A daemon that goes away mid-request looks different per platform: macOS
+/// gives a clean EOF, Linux an ECONNRESET. Both mean the same thing, and
+/// without this a Linux user gets "connection I/O failed: Connection reset
+/// by peer (os error 104)" where a macOS one gets "the connection to the
+/// daemon was closed".
+fn as_message<T>(
+    read: std::result::Result<Option<T>, minato_api::CodecError>,
+) -> Result<T, ClientError> {
+    match read {
+        Ok(Some(message)) => Ok(message),
+        Ok(None) => Err(ClientError::Disconnected),
+        Err(minato_api::CodecError::Io(err)) if is_disconnect(&err) => {
+            Err(ClientError::Disconnected)
+        }
+        Err(err) => Err(ClientError::Codec(err)),
+    }
+}
+
+/// Whether an io error is the other end having gone.
+fn is_disconnect(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof
+    )
 }
 
 #[cfg(test)]
@@ -477,7 +546,8 @@ mod tests {
         let path = socket_path(&dir);
         let listener = UnixListener::bind(&path).expect("bind");
 
-        // Close without answering.
+        // Close without answering. macOS surfaces this as EOF and Linux as
+        // ECONNRESET; both have to read as the daemon having gone.
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accepts");
             drop(stream);

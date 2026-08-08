@@ -30,19 +30,65 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How long a single check may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Runs a health command inside the service's container.
+///
+/// Narrower than [`crate::Runtime::exec`] on purpose: that one streams the
+/// output as events, and a check running every 100ms would bury everything
+/// else. Only the exit status matters here.
+#[async_trait::async_trait]
+pub trait CommandProbe: Send + Sync {
+    /// Whether the command exited 0.
+    ///
+    /// Anything that goes wrong — the container is gone, the binary is not
+    /// in the image — reads as "not ready yet". A check that has not
+    /// succeeded is the same to the caller however it failed, and the
+    /// timeout is what turns a permanent failure into a warning.
+    async fn succeeds(&self, command: &[String]) -> bool;
+}
+
 /// Checks once.
 ///
 /// A `health` of `None` means "can a TCP connection be made".
-pub async fn probe(endpoint: SocketAddr, health: Option<&HealthCheck>) -> Result<bool> {
+///
+/// `exec` is what runs a `cmd:` check. Without one — nothing to run it
+/// through — such a check is reported as unsupported rather than silently
+/// passing.
+pub async fn probe(
+    endpoint: SocketAddr,
+    health: Option<&HealthCheck>,
+    exec: Option<&dyn CommandProbe>,
+) -> Result<bool> {
     match health {
         None => Ok(probe_tcp(endpoint).await),
         Some(HealthCheck::Tcp(_)) => Ok(probe_tcp(endpoint).await),
         Some(HealthCheck::Http(url)) => Ok(probe_http(endpoint, url).await),
-        Some(HealthCheck::Cmd(command)) => Err(RuntimeError::Unsupported(format!(
-            "health = \"cmd:{command}\" is not supported yet. \
-             Use `http://...` or `tcp://...`"
-        ))),
+        Some(HealthCheck::Cmd(command)) => match exec {
+            Some(exec) => Ok(probe_cmd(command, exec).await),
+            None => Err(RuntimeError::Unsupported(format!(
+                "health = \"cmd:{command}\" cannot run here. \
+                 Use `http://...` or `tcp://...`"
+            ))),
+        },
     }
+}
+
+/// Whether the health command succeeds inside the container.
+///
+/// The command is split shell-style, so `cmd:pg_isready -U postgres` works
+/// as written. It runs without a shell, so pipes and redirections do not —
+/// wrap them in `sh -c` if you need them.
+async fn probe_cmd(command: &str, exec: &dyn CommandProbe) -> bool {
+    let Ok(argv) = shell_words::split(command) else {
+        return false;
+    };
+
+    if argv.is_empty() {
+        return false;
+    }
+
+    tokio::time::timeout(PROBE_TIMEOUT, exec.succeeds(&argv))
+        .await
+        .unwrap_or(false)
 }
 
 /// Whether a TCP connection can be made.
@@ -118,12 +164,13 @@ fn status_code(status_line: &str) -> Option<u16> {
 pub async fn wait_until_ready(
     endpoint: SocketAddr,
     health: Option<&HealthCheck>,
+    exec: Option<&dyn CommandProbe>,
     timeout: Duration,
 ) -> bool {
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
-        match probe(endpoint, health).await {
+        match probe(endpoint, health, exec).await {
             Ok(true) => return true,
             // An unsupported check will not start working if we wait.
             Err(_) => return false,
@@ -143,18 +190,25 @@ pub async fn await_service(
     service: &str,
     endpoint: Option<SocketAddr>,
     health: Option<&HealthCheck>,
+    exec: Option<&dyn CommandProbe>,
     timeout: Duration,
     events: &EventSink,
 ) -> bool {
     let Some(addr) = endpoint else {
         // A service that publishes no port cannot be connected to at all.
-        return true;
+        // A `cmd:` check does not need one, though, so it still runs.
+        return match health {
+            Some(HealthCheck::Cmd(_)) => {
+                await_command_only(service, health, exec, timeout, events).await
+            }
+            _ => true,
+        };
     };
 
     let label = format!("waiting for {service}");
     events.step_started("await", &label);
 
-    if wait_until_ready(addr, health, timeout).await {
+    if wait_until_ready(addr, health, exec, timeout).await {
         events.step_done("await", &label);
         return true;
     }
@@ -170,6 +224,52 @@ pub async fn await_service(
     ));
 
     false
+}
+
+/// Waits on a `cmd:` check for a service that publishes no port.
+///
+/// The usual readiness path needs an address to connect to. A command runs
+/// inside the container and needs none, which is exactly the case for a
+/// database that is reached only by other services.
+async fn await_command_only(
+    service: &str,
+    health: Option<&HealthCheck>,
+    exec: Option<&dyn CommandProbe>,
+    timeout: Duration,
+    events: &EventSink,
+) -> bool {
+    let label = format!("waiting for {service}");
+    events.step_started("await", &label);
+
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        // A dummy address: `probe` does not touch it on the `cmd:` path.
+        let unused = SocketAddr::from(([127, 0, 0, 1], 0));
+
+        match probe(unused, health, exec).await {
+            Ok(true) => {
+                events.step_done("await", &label);
+                return true;
+            }
+            Err(_) => {
+                events.step_skipped("await", &label, "the check cannot run here");
+                return false;
+            }
+            Ok(false) => {}
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            events.step_skipped(
+                "await",
+                &label,
+                format!("no answer within {} seconds", timeout.as_secs()),
+            );
+            return false;
+        }
+
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 #[cfg(test)]
@@ -234,10 +334,14 @@ mod tests {
             .expect("bind");
         let addr = listener.local_addr().expect("addr");
 
-        assert!(probe(addr, None).await.expect("can decide"));
+        assert!(probe(addr, None, None).await.expect("can decide"));
 
         drop(listener);
-        assert!(!probe(closed_port().await, None).await.expect("can decide"));
+        assert!(
+            !probe(closed_port().await, None, None)
+                .await
+                .expect("can decide")
+        );
     }
 
     #[tokio::test]
@@ -247,7 +351,7 @@ mod tests {
             let health = HealthCheck::Http("http://localhost/healthz".into());
 
             assert!(
-                probe(addr, Some(&health)).await.expect("can decide"),
+                probe(addr, Some(&health), None).await.expect("can decide"),
                 "{status} counts as ready"
             );
         }
@@ -259,7 +363,7 @@ mod tests {
         let addr = spawn_http("503 Service Unavailable").await;
         let health = HealthCheck::Http("http://localhost/healthz".into());
 
-        assert!(!probe(addr, Some(&health)).await.expect("can decide"));
+        assert!(!probe(addr, Some(&health), None).await.expect("can decide"));
     }
 
     #[tokio::test]
@@ -267,7 +371,7 @@ mod tests {
         let addr = closed_port().await;
         let health = HealthCheck::Http("http://localhost/healthz".into());
 
-        assert!(!probe(addr, Some(&health)).await.expect("can decide"));
+        assert!(!probe(addr, Some(&health), None).await.expect("can decide"));
     }
 
     #[tokio::test]
@@ -279,16 +383,99 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         let health = HealthCheck::Tcp("localhost:5432".into());
 
-        assert!(probe(addr, Some(&health)).await.expect("can decide"));
+        assert!(probe(addr, Some(&health), None).await.expect("can decide"));
     }
 
     #[tokio::test]
-    async fn cmd_health_reports_that_it_is_unsupported() {
+    async fn a_cmd_check_without_anywhere_to_run_it_is_unsupported() {
+        // Reachable only through a runtime. Reporting it as unsupported
+        // beats passing a check that never ran.
         let addr = closed_port().await;
         let health = HealthCheck::Cmd("pg_isready".into());
 
-        let err = probe(addr, Some(&health)).await.unwrap_err();
-        assert!(err.to_string().contains("not supported"), "got: {err}");
+        let err = probe(addr, Some(&health), None).await.unwrap_err();
+        assert!(err.to_string().contains("cannot run here"), "got: {err}");
+    }
+
+    /// Reports whatever it was told to.
+    struct Scripted {
+        succeeds: bool,
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandProbe for Scripted {
+        async fn succeeds(&self, command: &[String]) -> bool {
+            self.calls.lock().expect("lock").push(command.to_vec());
+            self.succeeds
+        }
+    }
+
+    fn scripted(succeeds: bool) -> Scripted {
+        Scripted {
+            succeeds,
+            calls: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cmd_check_passes_when_the_command_does() {
+        let addr = closed_port().await;
+        let health = HealthCheck::Cmd("pg_isready -U postgres".into());
+        let exec = scripted(true);
+
+        assert!(probe(addr, Some(&health), Some(&exec)).await.expect("runs"));
+
+        // Split shell-style, so arguments arrive as arguments rather than
+        // one string the container would try to exec as a filename.
+        let calls = exec.calls.lock().expect("lock").clone();
+        assert_eq!(calls, vec![vec!["pg_isready", "-U", "postgres"]]);
+    }
+
+    #[tokio::test]
+    async fn a_failing_command_is_not_ready() {
+        // A database that accepts TCP before it accepts queries is the
+        // reason cmd: exists, so a non-zero exit has to mean "keep waiting".
+        let addr = closed_port().await;
+        let health = HealthCheck::Cmd("pg_isready".into());
+
+        assert!(
+            !probe(addr, Some(&health), Some(&scripted(false)))
+                .await
+                .expect("runs")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cmd_check_does_not_need_a_port() {
+        // The case it is for: a database other services reach directly,
+        // with expose = false and nothing for the host to connect to.
+        let health = HealthCheck::Cmd("pg_isready".into());
+        let (sink, _rx) = EventSink::channel();
+
+        assert!(
+            await_service(
+                "db",
+                None,
+                Some(&health),
+                Some(&scripted(true)),
+                Duration::from_millis(500),
+                &sink,
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_command_is_not_ready() {
+        let addr = closed_port().await;
+        let health = HealthCheck::Cmd("pg_isready \"unclosed".into());
+
+        assert!(
+            !probe(addr, Some(&health), Some(&scripted(true)))
+                .await
+                .expect("runs")
+        );
     }
 
     #[tokio::test]
@@ -298,7 +485,7 @@ mod tests {
         let health = HealthCheck::Cmd("pg_isready".into());
 
         let started = std::time::Instant::now();
-        let ready = wait_until_ready(addr, Some(&health), Duration::from_secs(5)).await;
+        let ready = wait_until_ready(addr, Some(&health), None, Duration::from_secs(5)).await;
 
         assert!(!ready);
         assert!(
@@ -322,14 +509,14 @@ mod tests {
             drop(late);
         });
 
-        assert!(wait_until_ready(addr, None, Duration::from_secs(3)).await);
+        assert!(wait_until_ready(addr, None, None, Duration::from_secs(3)).await);
     }
 
     #[tokio::test]
     async fn services_without_a_port_are_considered_ready() {
         let (sink, mut rx) = EventSink::channel();
 
-        assert!(await_service("db", None, None, Duration::from_millis(100), &sink).await);
+        assert!(await_service("db", None, None, None, Duration::from_millis(100), &sink).await);
         drop(sink);
 
         assert!(
@@ -343,7 +530,15 @@ mod tests {
         let addr = closed_port().await;
         let (sink, mut rx) = EventSink::channel();
 
-        let ready = await_service("web", Some(addr), None, Duration::from_millis(200), &sink).await;
+        let ready = await_service(
+            "web",
+            Some(addr),
+            None,
+            None,
+            Duration::from_millis(200),
+            &sink,
+        )
+        .await;
         drop(sink);
 
         assert!(!ready, "the caller is told it never answered");

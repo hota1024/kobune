@@ -19,9 +19,19 @@ env:
 jobs:
   # Everything but the desktop app. Fast, and the signal that matters for
   # almost every change.
+  #
+  # Both platforms: macOS is what the project targets, and Linux is where
+  # the differences show up. Reading a closed socket gives EOF on one and
+  # ECONNRESET on the other, and a test that raced on process-global state
+  # only ever failed under Linux's scheduling. Neither would have been
+  # noticed on macOS alone.
   rust:
-    name: Rust
-    runs-on: macos-latest
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +41,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # One platform is enough for formatting; it cannot differ.
       - name: Formatting
+        if: matrix.os == 'macos-latest'
         run: cargo fmt --all --check
 
       # `minato-desktop` is excluded here and built in its own job: it pulls

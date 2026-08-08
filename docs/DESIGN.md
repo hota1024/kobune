@@ -146,7 +146,9 @@ database sets it to `false` and gets no URL.
 
 **`health`**: what scale-to-zero rests on. Without it the proxy 502s a service
 that has started but is not answering yet. Three forms are supported:
-`http://`, `tcp://` and `cmd:`.
+`http://`, `tcp://` and `cmd:`. The last runs inside the container, which is
+the only way to tell a database that accepts connections from one that will
+answer a query — `postgres` listens well before it has finished initialising.
 
 **Resolving service names**: within a workspace, the runtime's network resolves
 service names (`db:5432`). Across scopes — a workspace's api reaching a
@@ -958,6 +960,51 @@ design would have assumed blocking, and the GUI could never show progress.
 - After a daemon restart, a host that is running with no record gets a
   baseline. Without one it never looks idle and never stops
 
+### Cancellation needed the loop turned inside out (M0.5)
+
+`Request::Cancel` was in the protocol from M0 and ignored by the daemon, and
+the reason turned out to be structural rather than missing work. The
+connection loop read a message, awaited the whole request, then read the next
+one — so a `Cancel` sat unread in the socket until the thing it referred to
+had already finished. There was no point at which it could have been
+honoured.
+
+Each request now runs in its own task and the read loop keeps going, which is
+what the request ids were always for. Requests on one connection can overlap
+as a result; the CLI sends one at a time regardless.
+
+Cancelling aborts the task and answers `Cancelled`, and **the client waits for
+that answer** rather than dropping the connection. The daemon is the one that
+knows how far it got. Work already done is not undone: a cancelled `up` can
+leave a container running, which `status` shows and `down` clears. Checking
+for cancellation between every step would be a lot of machinery for an
+operation someone has already walked away from.
+
+Ctrl-C in the CLI is wired to this, so it asks the daemon to stop instead of
+killing the client and leaving the daemon working on something nobody is
+waiting for. `logs -f` is exempt: Ctrl-C is how you leave it, and there is
+nothing in flight to abandon.
+
+### Running on Linux (checked in M0.5)
+
+The core builds and its 384 tests pass on Linux. Two things only showed up
+there, and neither would have been found on macOS:
+
+- **A closed socket reads differently.** macOS gives a clean EOF, Linux an
+  ECONNRESET. The client reported the first as "the connection to the daemon
+  was closed" and the second as "connection I/O failed: Connection reset by
+  peer (os error 104)", so a Linux user whose daemon died got the worse
+  message. Both now mean the same thing.
+- **A test raced on process-global state.** One test set an environment
+  variable that every other test read while building settings. It passed
+  consistently on macOS and failed under Linux's scheduling. The variable is
+  no longer touched; the function that reads it takes the value as an
+  argument.
+
+CI runs both platforms for this reason. launchd socket activation remains
+macOS-only, and the fallback path — an ordinary bind on unprivileged ports —
+is what Linux uses.
+
 ### Handling the privileged setup
 
 **sudo is never run automatically.** An agent doing so hangs at the password
@@ -982,8 +1029,6 @@ would leave nothing resolving once it lands.
 
 | Item | Why | When |
 | --- | --- | --- |
-| `Request::Cancel` | In the protocol, unimplemented in the daemon. Long-running work is confined to prepare and start, and nobody has asked to cancel one | M2 |
-| `ls --all-projects` | The state store does not know where other projects' `minato.toml` files are | M3 |
 | `minato.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Undecided |
 
 ## 15. Open questions

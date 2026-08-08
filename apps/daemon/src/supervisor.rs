@@ -1296,6 +1296,62 @@ impl Supervisor {
         Ok(stopped)
     }
 
+    /// Every other project's workspaces.
+    ///
+    /// A project whose repository has moved or gone is skipped rather than
+    /// failing the listing: `ls --all-projects` is how someone finds out
+    /// what is registered, so it is the wrong moment to refuse to answer.
+    /// The reason goes to the log.
+    async fn other_projects(&self, current: &str) -> Vec<minato_api::WorkspaceInfo> {
+        let projects = match self.known_projects().await {
+            Ok(projects) => projects,
+            Err(err) => {
+                tracing::warn!("cannot read the registered projects: {err}");
+                return Vec::new();
+            }
+        };
+
+        let mut workspaces = Vec::new();
+
+        for project in projects {
+            if project == current {
+                continue;
+            }
+
+            match self.project_workspaces(&project).await {
+                Ok(found) => workspaces.extend(found),
+                Err(err) => tracing::debug!("skipping {project} in the listing: {err}"),
+            }
+        }
+
+        workspaces
+    }
+
+    /// One project's workspaces, read through its own configuration.
+    async fn project_workspaces(
+        &self,
+        project: &str,
+    ) -> Result<Vec<minato_api::WorkspaceInfo>, ApiError> {
+        let config = self.project_config(project).await?;
+        let records = self.workspace_records(project).await?;
+
+        // Registered worktrees only. Finding unregistered ones would mean
+        // opening someone else's repository, and a worktree nobody has run
+        // a command in is not one this daemon manages.
+        let statuses = self.refresh(project, &config).await?;
+
+        // Main first, matching how the current project is listed. Records
+        // come back keyed by label, which would put `feature-x` above
+        // `main` and make one project read differently from the next.
+        let mut records = records;
+        records.sort_by_key(|record| (!record.is_main, record.label.clone()));
+
+        Ok(records
+            .iter()
+            .map(|record| self.build_workspace_info(&config, project, record, &statuses))
+            .collect())
+    }
+
     /// The workspaces registered in the state store.
     async fn workspace_records(&self, project: &str) -> Result<Vec<WorkspaceRecord>, ApiError> {
         let _guard = self.state_lock.lock().await;
@@ -1344,10 +1400,7 @@ impl Supervisor {
         }
 
         if all_projects {
-            // The current project only, for now. Covering every project
-            // needs the state store to hold the other projects'
-            // configuration paths first.
-            tracing::debug!("all_projects still returns only the current project");
+            workspaces.extend(self.other_projects(&context.project).await);
         }
 
         Ok(Response::Workspaces { workspaces })

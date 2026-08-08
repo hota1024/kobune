@@ -115,7 +115,7 @@ fingerprint は Dockerfile が `COPY` するファイルまでは見ないため
 ```toml
 health = "http://localhost:3000/healthz"   # 2xx または 3xx
 health = "tcp://localhost:5432"            # 接続が成功する
-health = "cmd:pg_isready"                  # 未対応
+health = "cmd:pg_isready -U postgres"      # コンテナ内で実行
 ```
 
 `http://` で**使われるのはパスのみ**です。記述するのはコンテナ内から見た

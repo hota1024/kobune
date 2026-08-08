@@ -116,11 +116,26 @@ pub fn print_workspace(workspace: &WorkspaceInfo) {
 }
 
 /// Prints a listing of workspaces.
+///
+/// The project column appears only when more than one is listed. With a
+/// single project it is the same word on every row, and `ls` is something
+/// people read at a glance.
 pub fn print_workspaces(workspaces: &[WorkspaceInfo]) {
     if workspaces.is_empty() {
         println!("no workspaces. Create one with `minato new <branch>`");
         return;
     }
+
+    let projects: std::collections::BTreeSet<&str> =
+        workspaces.iter().map(|w| w.project.as_str()).collect();
+    let show_project = projects.len() > 1;
+
+    let project_width = projects
+        .iter()
+        .map(|p| p.chars().count())
+        .max()
+        .unwrap_or(7)
+        .max(7);
 
     let name_width = workspaces
         .iter()
@@ -129,6 +144,13 @@ pub fn print_workspaces(workspaces: &[WorkspaceInfo]) {
         .unwrap_or(9)
         .max(9);
 
+    if show_project {
+        print!(
+            "{:<project_width$}  ",
+            "PROJECT",
+            project_width = project_width
+        );
+    }
     println!(
         "{:<name_width$}  {:<10}  BRANCH",
         "WORKSPACE",
@@ -143,6 +165,13 @@ pub fn print_workspaces(workspaces: &[WorkspaceInfo]) {
             .filter(|s| s.state.is_running())
             .count();
 
+        if show_project {
+            print!(
+                "{:<project_width$}  ",
+                workspace.project,
+                project_width = project_width
+            );
+        }
         println!(
             "{:<name_width$}  {:<10}  {}",
             workspace.display_name(),

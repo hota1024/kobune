@@ -436,6 +436,27 @@ impl AppleContainerRuntime {
     }
 }
 
+/// Runs a `cmd:` health check inside a container.
+struct AppleCommandProbe {
+    program: String,
+    container: String,
+}
+
+#[async_trait]
+impl crate::health::CommandProbe for AppleCommandProbe {
+    async fn succeeds(&self, command: &[String]) -> bool {
+        Command::new(&self.program)
+            .arg("exec")
+            .arg(&self.container)
+            .args(command)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .is_ok_and(|status| status.success())
+    }
+}
+
 /// The labels put on a container. The same keys as the Docker backend.
 fn container_labels(spec: &ServiceSpec) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
@@ -606,10 +627,16 @@ impl Runtime for AppleContainerRuntime {
 
         // For the same reason as the Docker backend: confirm it answers
         // before declaring it ready.
+        let probe = AppleCommandProbe {
+            program: self.program.clone(),
+            container: name.clone(),
+        };
+
         await_service(
             spec.name(),
             endpoint,
             spec.health.as_ref(),
+            Some(&probe),
             DEFAULT_READINESS_TIMEOUT,
             events,
         )

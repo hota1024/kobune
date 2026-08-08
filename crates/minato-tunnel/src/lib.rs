@@ -36,10 +36,20 @@ pub const PROGRAM_ENV: &str = "MINATO_CLOUDFLARED";
 
 /// The command to run, honouring [`PROGRAM_ENV`].
 pub fn program() -> String {
-    std::env::var(PROGRAM_ENV)
-        .ok()
+    program_from(std::env::var(PROGRAM_ENV).ok().as_deref())
+}
+
+/// Picks the command from an override, if there is a usable one.
+///
+/// Split out from [`program`] so it can be tested without setting a process
+/// variable. A test that did would race every other test in the crate:
+/// they all build settings, and building settings reads this. That race
+/// existed, passed on macOS, and failed under Linux's scheduling.
+fn program_from(override_value: Option<&str>) -> String {
+    override_value
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| PROGRAM.to_string())
+        .unwrap_or(PROGRAM)
+        .to_string()
 }
 
 /// Where `cloudflared tunnel login` leaves its certificate.
@@ -232,21 +242,16 @@ mod tests {
 
     #[test]
     fn the_program_can_be_pointed_elsewhere() {
-        // A cloudflared installed off PATH, and the hook the daemon's own
-        // tunnel path is exercised through.
-        //
-        // SAFETY: the variable is only read while building settings, and
-        // no other test in this crate touches it.
-        unsafe { std::env::set_var(PROGRAM_ENV, "/opt/custom/cloudflared") };
-        let settings = TunnelSettings::new("example.com", "/tmp", 80);
-        unsafe { std::env::remove_var(PROGRAM_ENV) };
-
-        assert_eq!(settings.program, "/opt/custom/cloudflared");
+        // For a cloudflared installed off PATH, and the hook the daemon's
+        // own tunnel path is exercised through.
         assert_eq!(
-            TunnelSettings::new("example.com", "/tmp", 80).program,
-            PROGRAM,
-            "and back to the default once it is unset"
+            program_from(Some("/opt/custom/cloudflared")),
+            "/opt/custom/cloudflared"
         );
+        assert_eq!(program_from(None), PROGRAM);
+
+        // An exported-but-empty variable is how a shell says "unset".
+        assert_eq!(program_from(Some("")), PROGRAM);
     }
 
     #[test]

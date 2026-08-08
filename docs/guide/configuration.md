@@ -97,8 +97,11 @@ Two things to know:
 - **Only the path is used** for `http://`. What you write is the address from
   inside the container; what Minato can reach is whatever the runtime assigned.
   The host and port you write are ignored.
-- **`cmd:` is not supported yet.** It would have to run inside the container,
-  and that is not wired up.
+- **`cmd:` runs inside the container.** `health = "cmd:pg_isready -U postgres"`
+  is the only way to tell a database that accepts connections from one that
+  will answer a query — postgres listens well before it has finished
+  initialising. The command is split shell-style but runs without a shell, so
+  wrap pipes in `sh -c`.
 
 Readiness is also what scale-to-zero waits for when a request wakes a stopped
 service, so a good health check makes the first request faster and more

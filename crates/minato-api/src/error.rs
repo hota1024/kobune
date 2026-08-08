@@ -41,6 +41,14 @@ impl ApiError {
     pub fn unsupported(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Unsupported, message)
     }
+
+    /// The caller gave up on this request.
+    ///
+    /// Work already done is not undone: the daemon stops where it is, and
+    /// `up` or `rm` picks up from whatever state that left.
+    pub fn cancelled() -> Self {
+        Self::new(ErrorCode::Cancelled, "cancelled by the caller")
+    }
 }
 
 impl std::fmt::Display for ApiError {

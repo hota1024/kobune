@@ -359,15 +359,31 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     let raw_output = matches!(cli.command, Command::Logs { .. } | Command::Exec { .. });
     let show_progress = !cli.json && request.is_long_running() && !raw_output;
 
-    let response = connection
-        .call(request, |event| {
-            if raw_output {
-                output::print_output_event(&event);
-            } else if show_progress {
-                output::print_event(&event);
-            }
-        })
-        .await?;
+    // Ctrl-C asks the daemon to stop rather than killing the CLI where it
+    // stands. Dropping the connection would leave the daemon working on
+    // something nobody is waiting for, and say nothing about what it got
+    // done. `logs -f` is the exception: Ctrl-C is how you leave it, and
+    // there is nothing in flight to abandon.
+    let response = if raw_output {
+        connection
+            .call(request, |event| output::print_output_event(&event))
+            .await?
+    } else {
+        connection
+            .call_until(
+                request,
+                |event| {
+                    if show_progress {
+                        output::print_event(&event);
+                    }
+                },
+                async {
+                    let _ = tokio::signal::ctrl_c().await;
+                    eprintln!("\nstopping… (the daemon is finishing what it can)");
+                },
+            )
+            .await?
+    };
 
     present(cli, &response)?;
 

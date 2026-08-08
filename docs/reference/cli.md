@@ -52,6 +52,7 @@ $ minato new feature/x --no-start
 | `--base <ref>` | What to branch from, for a new branch |
 | `--path <dir>` | Where to put the worktree. Default `../{repo}.wt/{branch}` |
 | `--no-start` | Create it without starting anything |
+| `--build` | Rebuild images even when nothing has changed |
 
 An existing branch is checked out rather than created.
 
@@ -61,8 +62,13 @@ Every workspace, with how many of its services are running.
 
 ```console
 $ minato ls
-$ minato ls --all-projects   # currently still the current project only
+$ minato ls --all-projects   # every project this daemon knows about
 ```
+
+With `--all-projects` a `PROJECT` column appears. Other projects contribute
+their **registered** worktrees only — finding unregistered ones would mean
+opening someone else's repository — so a project you have never run a command
+in shows fewer rows than it would from inside.
 
 ### `minato status`
 
@@ -85,8 +91,15 @@ $ minato rm -w feature-auth -f   # even with uncommitted changes
 
 Starts services, and whatever they depend on. Everything when none are named.
 
-A running container is left alone. A stopped one is recreated so configuration
-changes take effect.
+| Flag | |
+| --- | --- |
+| `--build` | Rebuild images even when nothing Minato can see has changed |
+
+A running container is left alone unless its image has changed. A stopped one
+is recreated so configuration changes take effect.
+
+`--build` is for a change the fingerprint cannot see, such as a file the
+Dockerfile copies in.
 
 ### `minato down [services…]`
 
@@ -134,6 +147,16 @@ $ minato exec web -- sh
 
 **The exit code is the command's own.** No TTY is requested, so anything
 waiting for input hangs rather than prompts.
+
+## Interrupting
+
+Ctrl-C asks the daemon to stop and waits for its reply, rather than killing the
+CLI where it stands. The exit code is 130.
+
+Work already done is not undone: a cancelled `up` can leave a container
+running, which `minato status` shows and `minato down` clears.
+
+`minato logs -f` is the exception — Ctrl-C is simply how you leave it.
 
 ## Environment variables
 

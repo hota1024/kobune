@@ -40,6 +40,55 @@ use crate::spec::{
 
 const RUNTIME_ID: &str = "docker";
 
+/// Runs a `cmd:` health check inside a container.
+///
+/// Its own path rather than [`DockerRuntime::exec`]: that one streams output
+/// as events, and a check running every 100ms would drown the log.
+struct DockerCommandProbe {
+    docker: Docker,
+    container: String,
+}
+
+#[async_trait]
+impl crate::health::CommandProbe for DockerCommandProbe {
+    async fn succeeds(&self, command: &[String]) -> bool {
+        let created = self
+            .docker
+            .create_exec(
+                &self.container,
+                CreateExecOptions {
+                    cmd: Some(command.to_vec()),
+                    // The output is not read, only the status, but Docker
+                    // needs somewhere to put it.
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    tty: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        let Ok(created) = created else {
+            return false;
+        };
+
+        // The exec has to be driven to completion before its status is
+        // meaningful; starting it and not reading leaves it pending.
+        if let Ok(StartExecResults::Attached { mut output, .. }) =
+            self.docker.start_exec(&created.id, None).await
+        {
+            while output.next().await.is_some() {}
+        }
+
+        self.docker
+            .inspect_exec(&created.id)
+            .await
+            .ok()
+            .and_then(|inspected| inspected.exit_code)
+            .is_some_and(|code| code == 0)
+    }
+}
+
 /// How many lines of build output a failure carries with it.
 ///
 /// Enough to see the failing command and what it printed, without turning
@@ -686,10 +735,16 @@ impl Runtime for DockerRuntime {
         // A container being up does not mean the app inside is listening.
         // Without this wait, the curl right after `minato new` fails with
         // connection refused.
+        let probe = DockerCommandProbe {
+            docker: self.docker.clone(),
+            container: id.clone(),
+        };
+
         await_service(
             spec.name(),
             endpoint,
             spec.health.as_ref(),
+            Some(&probe),
             DEFAULT_READINESS_TIMEOUT,
             events,
         )
