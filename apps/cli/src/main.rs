@@ -819,15 +819,33 @@ async fn handle_uninstall(
         if let Err(err) = outcome {
             ui::error(&format!("cannot take the containers down: {err}"), None);
         }
+    }
 
-        // Stopping it is what releases the socket and the ports, and what
-        // stops it writing the state file back out after it is deleted.
+    // Order matters here, and it is not the obvious one.
+    //
+    // The privileged steps come before anything is deleted, because two of
+    // them depend on the state that deleting would destroy.
+    //
+    // `security remove-trusted-cert` names a *file*. Remove `~/.minato`
+    // first and there is no certificate left to point at, the command
+    // fails, and the CA stays trusted for good — which is the one thing an
+    // uninstall really has to get right, since a trusted CA goes on
+    // trusting anything signed by it.
+    //
+    // Booting the LaunchDaemon out has to come before asking the daemon to
+    // stop, too. That is the whole point of launchd: `minato daemon stop`
+    // with it installed is immediately followed by launchd starting the
+    // daemon again, which would recreate the state directory a moment
+    // before it was deleted.
+    let privileged = run_privileged(&plan, yes);
+
+    // Now nothing will restart it, so it can go. This releases the socket
+    // and stops it writing the state file back out from memory.
+    if let Some(connection) = &mut connection {
         let _ = connection.request(Request::Shutdown).await;
     }
 
     let failures = uninstall::remove_files(&plan);
-
-    let privileged = run_privileged(&plan, yes);
 
     if cli.json {
         output::print_json(&as_json(true, &failures, &privileged));

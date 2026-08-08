@@ -239,6 +239,29 @@ mod tests {
     }
 
     #[test]
+    fn the_certificate_to_untrust_sits_inside_what_gets_deleted() {
+        // This is the reason the privileged steps run before anything is
+        // removed. `security remove-trusted-cert` names a file; if the
+        // state directory has already gone, there is nothing to point at,
+        // the command fails, and the CA stays trusted for good.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("minato");
+        let ca = root.join("ca/minato-ca.crt");
+        std::fs::create_dir_all(ca.parent().expect("parent")).expect("creates");
+        std::fs::write(&ca, "-----BEGIN CERTIFICATE-----").expect("writes");
+
+        assert!(
+            ca.starts_with(&root),
+            "the certificate is expected under the state root: {}",
+            ca.display()
+        );
+
+        // And the command really does name that path, so deleting the
+        // root first would break it.
+        assert!(system::untrust_command(&ca).contains(&ca.display().to_string()));
+    }
+
+    #[test]
     fn removing_what_is_already_gone_is_not_a_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
 
