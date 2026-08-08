@@ -49,7 +49,7 @@ const TEXT = {
     reference: 'リファレンス',
     tutorials: 'チュートリアル',
     started: 'はじめる',
-    usingIt: '日々の使い方',
+    usingIt: '使い方',
     goingFurther: 'さらに詳しく',
     editLink: 'このページを修正する',
     lastUpdated: '最終更新',
@@ -73,11 +73,11 @@ const PAGES = {
   started: [
     ['guide/', { en: 'What is Minato?', ja: 'Minato とは' }],
     ['guide/installation', { en: 'Installation', ja: 'インストール' }],
-    ['guide/getting-started', { en: 'Your first environment', ja: '最初の環境' }],
+    ['guide/getting-started', { en: 'Your first environment', ja: '最初の環境を作る' }],
     ['guide/configuration', { en: 'Configuration', ja: '設定' }],
   ],
   usingIt: [
-    ['guide/workflow', { en: 'Everyday workflow', ja: '日々の使い方' }],
+    ['guide/workflow', { en: 'Everyday workflow', ja: '基本操作' }],
     ['guide/environment-variables', { en: 'Environment variables', ja: '環境変数' }],
     ['guide/agents', { en: 'Working with AI agents', ja: 'AI エージェントと使う' }],
     ['guide/gui', { en: 'The desktop app', ja: 'デスクトップアプリ' }],

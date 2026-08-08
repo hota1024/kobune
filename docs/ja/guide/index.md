@@ -63,5 +63,5 @@ Minato が受け持つのは、それを実際に動かす部分です。
 ## 次に読むもの
 
 - [インストール](./installation) — ビルドとランタイムの選択
-- [最初の環境](./getting-started) — 環境構築から URL でのアクセスまで
+- [最初の環境を作る](./getting-started) — 環境構築から URL でのアクセスまで
 - [仕組み](./how-it-works) — DNS、プロキシ、daemon を置いている理由

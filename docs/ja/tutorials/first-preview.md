@@ -175,4 +175,4 @@ WORKSPACE   SERVICES   BRANCH
 
 - [Web アプリとデータベース](./multi-service) — 複数サービスと、ブランチ間で
   共有するサービス
-- [日々の使い方](../guide/workflow)
+- [基本操作](../guide/workflow)
