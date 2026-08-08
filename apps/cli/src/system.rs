@@ -198,6 +198,11 @@ pub fn trust_command(ca_path: &Path) -> String {
 /// Left behind, the certificate stays trusted for anything signed by it —
 /// including a future Minato with a *different* private key, since the two
 /// are only ever matched by the subject name.
+///
+/// `ca_path` is used on macOS, where `remove-trusted-cert` names the file
+/// it is undoing. Elsewhere the certificate was copied into the system
+/// store on the way in, so what comes out is that copy and the argument
+/// goes unused — which is why the two branches do not look alike.
 pub fn untrust_command(ca_path: &Path) -> String {
     if cfg!(target_os = "macos") {
         // By file rather than by name: `-d` names the admin domain, and
