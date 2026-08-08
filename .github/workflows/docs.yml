@@ -20,6 +20,11 @@ jobs:
     name: Build and deploy
     runs-on: ubuntu-latest
 
+    # The Cloudflare credentials are environment secrets, so the job has to
+    # name the environment or they are simply absent — which reads exactly
+    # like a fork's pull request and skips the deploy without complaining.
+    environment: Release
+
     # At job level so the deploy step's `if` can see it. A step's own `env`
     # is in scope for its `if` on paper; keeping it here removes the doubt.
     env:
