@@ -34,9 +34,32 @@ volumes = ["pgdata:/var/lib/postgresql/data"]
 | --- | --- | --- | --- |
 | `name` | string | **required** | Appears in every URL. Must be unique across the projects one daemon manages |
 | `domain` | string | `{name}.localhost` | The URL suffix. Anything other than `.localhost` needs its own `/etc/resolver` entry |
+| `carry` | array | `[]` | Files to copy into a new worktree, relative to the repository root |
 
 Registering two projects under one name is refused rather than allowed to
 collide.
+
+### `carry`
+
+```toml
+[project]
+carry = [".env", "apps/api/.dev.vars"]
+```
+
+`git worktree add` gives a new worktree the tracked files and nothing else, so
+an untracked but required `.env` is missing and the services cannot start.
+These are copied from the main worktree during `minato new`, before anything
+starts.
+
+- **A missing source is not an error.** Not every checkout has a `.env` yet,
+  and failing `minato new` over one would be worse than the gap it fills. It
+  is reported, not passed over in silence.
+- **An existing destination is never overwritten.** Whatever git just checked
+  out wins — this is for what git does not carry, not a way to replace what it
+  does.
+- Permissions come along, so a `0600` `.env` stays `0600`.
+- Paths that leave the repository are refused, including through a symlink.
+  Directories are not copied; name the files.
 
 ## `[runtime]`
 

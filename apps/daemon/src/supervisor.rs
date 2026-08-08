@@ -1503,6 +1503,15 @@ impl Supervisor {
             })?;
         events.step_done("worktree", format!("creating worktree {branch}"));
 
+        // Before anything starts: what git does not carry is exactly what
+        // the services will fail without.
+        carry_files(
+            &context.config.project.carry,
+            &context.repo.main_root,
+            &worktree_path,
+            events,
+        );
+
         // Register the new worktree, which settles the label its URLs
         // use.
         let record = {
@@ -1935,6 +1944,96 @@ impl Supervisor {
             ),
         })
     }
+}
+
+/// Copies the declared files into a freshly created worktree.
+///
+/// **Nothing here fails the creation.** The worktree already exists by this
+/// point, and a `.env` that was never there is not a reason to leave
+/// someone with a half-made one. Whatever is skipped is said out loud
+/// instead, so it is visible rather than silently missing.
+fn carry_files(
+    entries: &[String],
+    main_root: &std::path::Path,
+    worktree: &std::path::Path,
+    events: &EventSink,
+) {
+    if entries.is_empty() {
+        return;
+    }
+
+    let step = "carry";
+    events.step_started(step, "carrying files over");
+
+    let mut carried = 0usize;
+
+    for entry in entries {
+        match carry_one(entry, main_root, worktree) {
+            Ok(true) => carried += 1,
+            Ok(false) => {}
+            Err(reason) => events.warn(format!("cannot carry `{entry}`: {reason}")),
+        }
+    }
+
+    match carried {
+        0 => events.step_skipped(step, "carrying files over", "nothing to copy"),
+        1 => events.step_done(step, "carried 1 file over"),
+        n => events.step_done(step, format!("carried {n} files over")),
+    }
+}
+
+/// Copies one entry. `Ok(false)` means there was nothing to do.
+fn carry_one(
+    entry: &str,
+    main_root: &std::path::Path,
+    worktree: &std::path::Path,
+) -> Result<bool, String> {
+    let source = main_root.join(entry);
+
+    // Not every checkout has one yet, and refusing to make a worktree over
+    // a file the user never created would be worse than the gap it fills.
+    if !source.exists() {
+        return Ok(false);
+    }
+
+    // Against the resolved path, so a symlink inside the repository cannot
+    // be used to read something outside it.
+    let resolved = source
+        .canonicalize()
+        .map_err(|err| format!("cannot resolve {}: {err}", source.display()))?;
+    let root = main_root
+        .canonicalize()
+        .unwrap_or_else(|_| main_root.to_path_buf());
+
+    if !resolved.starts_with(&root) {
+        return Err(format!(
+            "it resolves to {}, which is outside the repository",
+            resolved.display()
+        ));
+    }
+
+    if !resolved.is_file() {
+        return Err("only files are carried, and this is not one".to_string());
+    }
+
+    let destination = worktree.join(entry);
+
+    // Anything git just checked out wins. This is for what git does not
+    // carry, not a way to overwrite what it does.
+    if destination.exists() {
+        return Ok(false);
+    }
+
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("cannot make {}: {err}", parent.display()))?;
+    }
+
+    // `copy` brings the permissions with it, so a 0600 .env stays 0600.
+    std::fs::copy(&resolved, &destination)
+        .map_err(|err| format!("cannot copy to {}: {err}", destination.display()))?;
+
+    Ok(true)
 }
 
 /// How a listener that did come up is described.
@@ -2387,6 +2486,111 @@ mod tests {
         assert_eq!(err.code, ErrorCode::NotFound);
         let hint = err.hint.expect("has a hint");
         assert!(hint.contains("web") && hint.contains("api"), "got: {hint}");
+    }
+
+    /// A main checkout and an empty worktree beside it.
+    fn carry_dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("repo");
+        let worktree = dir.path().join("repo.wt/feat-1");
+
+        std::fs::create_dir_all(&main).expect("creates");
+        std::fs::create_dir_all(&worktree).expect("creates");
+
+        (dir, main, worktree)
+    }
+
+    #[test]
+    fn carries_a_file_git_leaves_behind() {
+        // The whole point: `git worktree add` gives the tracked files and
+        // nothing else, so an untracked .env is simply absent.
+        let (_dir, main, worktree) = carry_dirs();
+        std::fs::write(main.join(".env"), "SECRET=1\n").expect("writes");
+
+        assert_eq!(carry_one(".env", &main, &worktree), Ok(true));
+        assert_eq!(
+            std::fs::read_to_string(worktree.join(".env")).expect("carried"),
+            "SECRET=1\n"
+        );
+    }
+
+    #[test]
+    fn carries_into_a_directory_that_does_not_exist_yet() {
+        let (_dir, main, worktree) = carry_dirs();
+        std::fs::create_dir_all(main.join("apps/api")).expect("creates");
+        std::fs::write(main.join("apps/api/.dev.vars"), "K=v\n").expect("writes");
+
+        assert_eq!(carry_one("apps/api/.dev.vars", &main, &worktree), Ok(true));
+        assert!(worktree.join("apps/api/.dev.vars").is_file());
+    }
+
+    #[test]
+    fn a_missing_source_is_not_a_failure() {
+        // Not every checkout has a .env yet, and refusing to finish a
+        // worktree over one would be worse than the gap it fills.
+        let (_dir, main, worktree) = carry_dirs();
+
+        assert_eq!(carry_one(".env", &main, &worktree), Ok(false));
+        assert!(!worktree.join(".env").exists());
+    }
+
+    #[test]
+    fn what_git_checked_out_is_never_overwritten() {
+        let (_dir, main, worktree) = carry_dirs();
+        std::fs::write(main.join(".env"), "from main\n").expect("writes");
+        std::fs::write(worktree.join(".env"), "from git\n").expect("writes");
+
+        assert_eq!(carry_one(".env", &main, &worktree), Ok(false));
+        assert_eq!(
+            std::fs::read_to_string(worktree.join(".env")).expect("kept"),
+            "from git\n",
+            "the carry is for what git does not carry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_repository_is_refused() {
+        // The syntax check in config.rs cannot see this one: the entry is
+        // a plain relative path, and only the resolved target leaves.
+        let (dir, main, worktree) = carry_dirs();
+        let outside = dir.path().join("secrets");
+        std::fs::write(&outside, "not yours\n").expect("writes");
+        std::os::unix::fs::symlink(&outside, main.join(".env")).expect("links");
+
+        let err = carry_one(".env", &main, &worktree).unwrap_err();
+        assert!(err.contains("outside the repository"), "{err}");
+        assert!(!worktree.join(".env").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_carried_file_keeps_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // A .env holds secrets. Widening it on the way over would be a
+        // quiet downgrade.
+        let (_dir, main, worktree) = carry_dirs();
+        let source = main.join(".env");
+        std::fs::write(&source, "SECRET=1\n").expect("writes");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+
+        assert_eq!(carry_one(".env", &main, &worktree), Ok(true));
+
+        let mode = std::fs::metadata(worktree.join(".env"))
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_directory_is_not_carried() {
+        let (_dir, main, worktree) = carry_dirs();
+        std::fs::create_dir_all(main.join("config")).expect("creates");
+
+        let err = carry_one("config", &main, &worktree).unwrap_err();
+        assert!(err.contains("only files"), "{err}");
     }
 
     #[test]

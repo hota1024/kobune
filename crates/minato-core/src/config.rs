@@ -40,6 +40,16 @@ pub struct ProjectSection {
     /// The URL suffix. Defaults to `{name}.localhost`.
     #[serde(default)]
     pub domain: Option<String>,
+
+    /// Files to copy into a new worktree, relative to the repository root.
+    ///
+    /// **For what git does not carry.** `git worktree add` gives a new
+    /// worktree the tracked files and nothing else, so an untracked but
+    /// required `.env` is missing and the environment cannot start — which
+    /// makes "create a worktree and its preview is up" untrue for any
+    /// project that needs one.
+    #[serde(default)]
+    pub carry: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -59,6 +69,44 @@ impl Default for RuntimeSection {
 
 fn default_runtime() -> String {
     "docker".to_string()
+}
+
+/// Checks one `carry` entry before anything is copied.
+///
+/// **These name files Minato reads on the user's behalf**, and a
+/// `minato.toml` arrives with a cloned repository as readily as it is
+/// written by hand. Anything reaching outside the repository is refused
+/// here rather than at copy time, so a bad entry is a configuration error
+/// with a clear message instead of a surprise during `minato new`.
+///
+/// Syntax only. A symlink inside the repository can still point out of it,
+/// and that is caught where the copy happens, against the resolved path.
+fn validate_carry_entry(entry: &str) -> Result<()> {
+    let refuse = |why: &str| {
+        Err(Error::ConfigInvalid(format!(
+            "[project] carry entry `{entry}` {why}. Use a path relative to \
+             the repository root, like \".env\" or \"apps/api/.env\""
+        )))
+    };
+
+    if entry.trim().is_empty() {
+        return refuse("is empty");
+    }
+
+    let path = Path::new(entry);
+
+    if path.is_absolute() || entry.starts_with('~') {
+        return refuse("is an absolute path");
+    }
+
+    if path
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return refuse("leaves the repository");
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -264,6 +312,10 @@ impl MinatoConfig {
                  Use lowercase letters, digits and hyphens, up to 63 characters",
                 self.project.name
             )));
+        }
+
+        for entry in &self.project.carry {
+            validate_carry_entry(entry)?;
         }
 
         if self.services.is_empty() {
@@ -546,6 +598,78 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("one of image or build"));
+    }
+
+    #[test]
+    fn accepts_files_to_carry() {
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            carry = [".env", "apps/api/.dev.vars"]
+            [services.web]
+            image = "node:22"
+        "#,
+        )
+        .expect("is valid");
+
+        assert_eq!(config.project.carry, vec![".env", "apps/api/.dev.vars"]);
+    }
+
+    #[test]
+    fn carry_defaults_to_nothing() {
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+        "#,
+        )
+        .expect("is valid");
+
+        assert!(config.project.carry.is_empty());
+    }
+
+    #[test]
+    fn refuses_carry_entries_that_leave_the_repository() {
+        // These name files Minato reads on someone's behalf, and a
+        // minato.toml arrives with a clone as readily as it is hand-written.
+        for entry in ["../.env", "a/../../b", "/etc/passwd", "~/.aws/credentials"] {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                carry = ["{entry}"]
+                [services.web]
+                image = "node:22"
+            "#
+            ))
+            .unwrap_err();
+
+            let message = err.to_string();
+            assert!(message.contains("carry"), "{entry}: {message}");
+            assert!(
+                message.contains("absolute") || message.contains("leaves the repository"),
+                "{entry}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_an_empty_carry_entry() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            carry = ["  "]
+            [services.web]
+            image = "node:22"
+        "#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("is empty"), "{err}");
     }
 
     #[test]
