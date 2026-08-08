@@ -25,8 +25,32 @@ docs/
   .vitepress/
     config.ts         nav, sidebar and locales, generated from one page list
     versions.json     which versions have been snapshotted
+  scripts/og.mjs      draws the social card
+  public/             git-ignored; filled by `pnpm sync`, see below
   DESIGN.md           the design record. Not part of the site
 ```
+
+## What the site serves that is not written here
+
+`pnpm sync` runs before `dev` and before `build`, and fills `public/`:
+
+- `install.sh` from the repository root, so
+  <https://minato.1024.works/install.sh> is the script the README tells
+  people to pipe into a shell.
+- `assets/logo/` as `public/logo/`, which is where the nav logo, the
+  favicon and the home page hero come from. `assets/README.md` says which
+  file is which and what to do when the logo changes.
+- `og.png`, the social card, drawn by `scripts/og.mjs` from that same logo.
+
+None of it is committed: the sources live outside `docs/`, and the card is
+composed rather than stored, so a new logo reaches all three by being
+dropped into `assets/logo/`. `.github/workflows/docs.yml` watches both
+paths, so changing either deploys the site.
+
+The card is set in Inter, read from the copy VitePress installs. resvg
+cannot read woff2, so `wawoff2` decompresses it first — the alternative is
+`loadSystemFonts`, which would set the card in whatever the machine
+happens to have and make a runner's output differ from a laptop's.
 
 ## Adding a page
 

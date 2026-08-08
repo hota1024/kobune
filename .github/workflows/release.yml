@@ -12,8 +12,12 @@ on:
     # `skills/minato/SKILL.md`, which `include_str!` puts inside the binary
     # — so both change what is released, and ignoring them would leave
     # `minato skill install` writing last month's text.
+    #
+    # `assets/**` is the logo. It is served by the site and shown in the
+    # README; nothing in it has ever been inside a binary.
     paths-ignore:
       - 'docs/**'
+      - 'assets/**'
       - '.github/workflows/docs.yml'
 
   # For rebuilding without an empty commit, after a runner-side failure.

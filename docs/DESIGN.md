@@ -886,6 +886,8 @@ minato/
 │   ├── daemon/           #   minatod — the supervisor and the RPC server
 │   ├── cli/              #   minato
 │   └── desktop/          #   minato-desktop — the GPUI GUI
+├── assets/               # the logo, in one place; see assets/README.md
+│   └── logo/             #   copied into docs/public/logo/ by the docs build
 ├── skills/
 │   └── minato/SKILL.md
 ├── xtask/                # cargo xtask: docs snapshots, packaging, the launchd plist

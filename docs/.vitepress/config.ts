@@ -11,6 +11,18 @@ import versions from './versions.json'
 const CURRENT = '0.1'
 
 /**
+ * The blue the logo is drawn in.
+ *
+ * Only the browser's own chrome is tinted with it — the site still uses
+ * VitePress's default accent, which is a darker indigo and passes contrast
+ * on white where this does not.
+ */
+const BRAND = '#0092FA'
+
+/** Where the site is served. The sitemap and the social card need it spelled out. */
+const HOSTNAME = 'https://minato.1024.works'
+
+/**
  * Where each locale lives.
  *
  * English at the root and Japanese under `/ja/`, matching the README and
@@ -237,7 +249,9 @@ export default defineConfig({
   // Absolute, because a sitemap has to be. Preview deployments get their
   // own hostname and therefore a sitemap pointing at production; nothing
   // crawls a preview, so that is the harmless direction to be wrong in.
-  sitemap: { hostname: 'https://minato.1024.works' },
+  // The social card below is absolute for the same reason and shares the
+  // hostname, so a move is one edit.
+  sitemap: { hostname: HOSTNAME },
 
   // DESIGN.md predates this site and is an internal record — the decisions
   // and the ones that were reversed — not a page for readers. It stays in
@@ -248,14 +262,35 @@ export default defineConfig({
   srcExclude: ['DESIGN.md', 'README.md'],
 
   head: [
-    ['meta', { name: 'theme-color', content: '#3451b2' }],
+    // The icon rather than the mark: a favicon is drawn at 16px against
+    // whatever colour the browser's chrome happens to be, and the mark
+    // alone would be competing with it.
+    //
+    // SVG only, with no .ico beside it. Every browser that has shipped in
+    // the last five years takes one, and the fallback would be a raster to
+    // regenerate by hand every time the logo changes.
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo/minato-icon.svg' }],
+    ['link', { rel: 'apple-touch-icon', href: '/logo/minato-icon.svg' }],
+    ['meta', { name: 'theme-color', content: BRAND }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:title', content: 'Minato' }],
     ['meta', { property: 'og:description', content: TEXT.en.description }],
+
+    // Drawn from the logo by `scripts/og.mjs` on every build, so it is
+    // never a copy to remember to redo. SVG is not an option here: no
+    // crawler renders one, and a card that does not appear is worse than
+    // none at all.
+    ['meta', { property: 'og:image', content: `${HOSTNAME}/og.png` }],
+    ['meta', { property: 'og:image:width', content: '1200' }],
+    ['meta', { property: 'og:image:height', content: '630' }],
+    ['meta', { property: 'og:image:alt', content: 'Minato' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
   ],
 
   themeConfig: {
-    logo: undefined,
+    // Copied out of `assets/logo/` by `pnpm sync`, so the repository holds
+    // one copy of it. See `assets/README.md`.
+    logo: { src: '/logo/minato-mark.svg', alt: 'Minato' },
     socialLinks: [{ icon: 'github', link: 'https://github.com/hota1024/minato' }],
     search: { provider: 'local' },
     footer: {

@@ -5,6 +5,8 @@ docs/.vitepress/cache/
 
 # copied from the repository root by the docs build
 docs/public/install.sh
+docs/public/logo/
+docs/public/og.png
 
 # Working copies, not settings. `.claude/` itself is shared — project
 # settings, commands and agents belong in the repository — but a worktree

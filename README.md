@@ -1,3 +1,7 @@
+<!-- The mark alone, which reads on GitHub's light theme and its dark one
+     alike. It lives in `assets/logo/`; see `assets/README.md`. -->
+<img src="assets/logo/minato-mark.svg" alt="" width="96" height="96">
+
 # Minato
 
 [![CI](https://github.com/hota1024/minato/actions/workflows/ci.yml/badge.svg)](https://github.com/hota1024/minato/actions/workflows/ci.yml)
