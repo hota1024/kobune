@@ -149,9 +149,15 @@ step_drop_line() {
 # busybox does not have. The tenth of a megabyte is divided out rather
 # than multiplied into, which keeps every value well inside the 32-bit
 # signed range a shell is only promised to have.
+#
+# 104857 and not 104858: a tenth of a mebibyte is 104857.6, and rounding
+# it *up* puts every exact megabyte one whole tenth low — `1048576` came
+# out as `1.9 MB`, because 1048576/104858 is 9 rather than 10. Rounding
+# down is wrong by less than a byte per tenth, which no size here can
+# accumulate into a visible digit.
 human() {
     if [ "$1" -ge 1048576 ]; then
-        printf '%d.%d MB' "$(($1 / 1048576))" "$(($1 / 104858 % 10))"
+        printf '%d.%d MB' "$(($1 / 1048576))" "$(($1 / 104857 % 10))"
     else
         printf '%d kB' "$(($1 / 1024))"
     fi
@@ -357,8 +363,14 @@ install_completions() {
     data="${XDG_DATA_HOME:-$HOME/.local/share}"
     config="${XDG_CONFIG_HOME:-$HOME/.config}"
 
+    # `|| true` on every call, and it is not decoration. `set -e` aborts
+    # on a failing command in an `if` *body*, and `write_completion`
+    # failing is an expected path — it is how a build too old to have
+    # `minato completions` is handled. Without this the script dies here,
+    # before the summary, the paths and the PATH advice, and says nothing
+    # about why.
     if need bash; then
-        write_completion "$1" bash "$data/bash-completion/completions" minato
+        write_completion "$1" bash "$data/bash-completion/completions" minato || true
     fi
 
     # Only advertise the fpath line when a file was actually written.
@@ -367,8 +379,12 @@ install_completions() {
     fi
 
     if need fish; then
-        write_completion "$1" fish "$config/fish/completions" minato.fish
+        write_completion "$1" fish "$config/fish/completions" minato.fish || true
     fi
+
+    # And not the status of the last `if` either. Completions are a
+    # nicety; they cannot be what decides whether an install finished.
+    return 0
 }
 
 # Writes one script, and says whether it managed to.
