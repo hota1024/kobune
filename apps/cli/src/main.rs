@@ -310,7 +310,13 @@ enum DaemonCommand {
 async fn main() -> ExitCode {
     restore_sigpipe();
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => match missing_subcommand(&err) {
+            Some(group) => return print_group_help(&group, wants_json()),
+            None => err.exit(),
+        },
+    };
 
     let outcome = run(&cli).await;
 
@@ -344,6 +350,78 @@ async fn main() -> ExitCode {
             ExitCode::from(exit_code_for(&err) as u8)
         }
     }
+}
+
+/// The group a parse failure is about, when it is about a group that was
+/// named without one of its subcommands — `["skill"]` for `minato skill`,
+/// and empty for `minato` itself. `None` for every other failure.
+///
+/// Clap answers `minato skill` with the group's help, but only because
+/// nothing at all followed it: `arg_required_else_help` counts arguments,
+/// and a global flag is one. So `minato skill --json` came back as a usage
+/// error instead — the same missing subcommand, a different answer,
+/// decided by a flag that says nothing about which subcommand was meant.
+fn missing_subcommand(err: &clap::Error) -> Option<Vec<String>> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+
+    if err.kind() != ErrorKind::MissingSubcommand {
+        return None;
+    }
+
+    // Clap names the invocation that was left without one, the binary
+    // first: `minato skill`.
+    let Some(ContextValue::String(invocation)) = err.get(ContextKind::InvalidSubcommand) else {
+        return None;
+    };
+
+    Some(
+        invocation
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// Prints a group's help, and gives back the code to leave with.
+///
+/// Under `--json` it goes to stderr, and unstyled: stdout carries the one
+/// JSON document a command answers with, this is not one, and nobody
+/// parsing it wants escape codes. Everywhere else it is stdout, which is
+/// where `minato skill` has always put it.
+fn print_group_help(group: &[String], json: bool) -> ExitCode {
+    // Built first, so the groups carry their full name: the usage line
+    // reads `minato skill`, not `skill`.
+    let mut help = <Cli as CommandFactory>::command();
+    help.build();
+
+    for name in group {
+        // Clap named the group, so it is there. The root's help is still
+        // an answer if that ever stops being true.
+        let Some(sub) = help.find_subcommand(name).cloned() else {
+            break;
+        };
+        help = sub;
+    }
+
+    if json {
+        eprint!("{}", help.render_help());
+    } else {
+        let _ = help.print_help();
+    }
+
+    // 2, the usage code — what clap leaves with both for this error and
+    // for the help it prints when the group is named with nothing after
+    // it at all.
+    ExitCode::from(2)
+}
+
+/// Whether `--json` was asked for, read off the command line.
+///
+/// The parse failed, so there is no [`Cli`] to ask. Only the exact flag
+/// counts, and all this decides is which stream some help goes to.
+fn wants_json() -> bool {
+    std::env::args().any(|arg| arg == "--json")
 }
 
 /// Restores the default action for SIGPIPE.
@@ -1548,6 +1626,60 @@ mod tests {
         ] {
             let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert!(cli.json, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_group_named_without_a_subcommand_is_answered_with_its_help() {
+        // `minato skill` prints the group's help, and adding a global
+        // flag must not turn that into a usage error: --json says
+        // nothing about which subcommand was meant.
+        for (args, expected) in [
+            (vec!["minato", "skill", "--json"], vec!["skill"]),
+            (vec!["minato", "env", "--json"], vec!["env"]),
+            (
+                vec!["minato", "daemon", "--workspace", "feat-1"],
+                vec!["daemon"],
+            ),
+            (vec!["minato", "tunnel", "-w", "feat-1"], vec!["tunnel"]),
+            // The root has the same shape, and the same flag on it.
+            (vec!["minato", "--json"], vec![]),
+        ] {
+            let err = Cli::try_parse_from(&args).expect_err("no subcommand was named");
+            let group = missing_subcommand(&err)
+                .unwrap_or_else(|| panic!("{args:?}: {} is not answered with help", err.kind()));
+
+            assert_eq!(group, expected, "{args:?}");
+
+            // The name has to reach the help that gets printed.
+            let mut command = Cli::command();
+            command.build();
+            for name in &group {
+                command = command
+                    .find_subcommand(name)
+                    .unwrap_or_else(|| panic!("{args:?}: no `{name}` to print help for"))
+                    .clone();
+            }
+        }
+    }
+
+    #[test]
+    fn every_other_parse_failure_is_left_to_clap() {
+        // Help, a typo and a missing argument each say something clap
+        // says better than a group's help would.
+        for args in [
+            vec!["minato", "--help"],
+            vec!["minato", "--version"],
+            vec!["minato", "bogus"],
+            vec!["minato", "exec"],
+            vec!["minato", "ls", "--nope"],
+        ] {
+            let err = Cli::try_parse_from(&args).expect_err("does not parse");
+            assert!(
+                missing_subcommand(&err).is_none(),
+                "{args:?}: {}",
+                err.kind()
+            );
         }
     }
 
