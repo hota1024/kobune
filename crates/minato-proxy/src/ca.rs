@@ -1,11 +1,13 @@
-//! ローカル CA と、SNI ごとの証明書の動的発行。
+//! A local CA, issuing a certificate per SNI name on demand.
 //!
-//! ワイルドカード証明書は 1 ラベルしかカバーしない。`*.localhost` では
-//! `web.feat-1.myapp.localhost` を賄えず、worktree が増えるたびに
-//! 深さの違う名前が生まれる。証明書を事前に用意する方法では追いつかない。
+//! A wildcard certificate covers exactly one label. `*.localhost` cannot
+//! cover `web.feat-1.myapp.localhost`, and every new worktree invents a
+//! name at a new depth, so preparing certificates ahead of time never
+//! keeps up.
 //!
-//! そこで CA を 1 つ持ち、**SNI で要求された名前の証明書をその場で発行して
-//! キャッシュする**。利用者が信頼するのは CA 1 枚だけで済む。
+//! So there is one CA, and it **issues a certificate for whatever name SNI
+//! asks for, on the spot, and caches it**. The user only ever has to trust
+//! that single CA.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,41 +20,41 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
-/// CA 証明書のファイル名。利用者がこれをシステムに信頼させる。
+/// The CA certificate. This is the file the user tells the system to trust.
 pub const CA_CERT_FILE: &str = "minato-ca.crt";
 
-/// CA の秘密鍵。
+/// The CA's private key.
 pub const CA_KEY_FILE: &str = "minato-ca.key";
 
-/// CA 証明書の有効期間（年）。
+/// How long the CA certificate is valid, in years.
 const CA_VALIDITY_YEARS: i64 = 10;
 
-/// 発行する leaf 証明書の有効期間（日）。
+/// How long an issued leaf certificate is valid, in days.
 ///
-/// ブラウザは長すぎる有効期間の証明書を拒否する。Safari と Chrome は
-/// 398 日を超えるものを受け付けないため、余裕を持たせて短くする。
+/// Browsers reject certificates that live too long: Safari and Chrome
+/// refuse anything over 398 days. This stays comfortably under that.
 const LEAF_VALIDITY_DAYS: i64 = 300;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CaError {
-    #[error("CA の生成に失敗しました: {0}")]
+    #[error("cannot generate the CA: {0}")]
     Generate(#[source] rcgen::Error),
 
-    #[error("CA の読み込みに失敗しました ({path}): {source}")]
+    #[error("cannot read the CA ({path}): {source}")]
     Read {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("CA の書き出しに失敗しました ({path}): {source}")]
+    #[error("cannot write the CA ({path}): {source}")]
     Write {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("CA の内容を解釈できません ({path}): {source}")]
+    #[error("the CA is not readable as a certificate ({path}): {source}")]
     Parse {
         path: PathBuf,
         #[source]
@@ -60,24 +62,25 @@ pub enum CaError {
     },
 }
 
-/// ローカル CA。
+/// The local CA.
 pub struct LocalCa {
-    /// leaf に署名するときの発行者として使う。
+    /// The issuer used to sign leaves.
     ///
-    /// 読み込み時にはディスクの内容から作り直すため、署名バイト列は
-    /// ディスク上のものと一致しない（ECDSA の署名は毎回変わる）。
-    /// チェーンとして送るのは必ず [`Self::der`] の方。
+    /// On load this is rebuilt from what is on disk, so its signature bytes
+    /// differ from the ones on disk — an ECDSA signature is different every
+    /// time. What goes out as the chain is always [`Self::der`].
     certificate: rcgen::Certificate,
     key_pair: KeyPair,
-    /// ディスク上の CA 証明書そのもの。leaf と一緒にチェーンとして送る。
+    /// The CA certificate exactly as it is on disk. Sent as the chain
+    /// alongside each leaf.
     der: CertificateDer<'static>,
-    /// ディスク上の PEM。利用者が信頼したものと同一であることを保証する。
+    /// The PEM on disk, guaranteed identical to what the user trusted.
     pem: String,
     dir: PathBuf,
 }
 
 impl LocalCa {
-    /// `dir` の CA を読み込む。無ければ作る。
+    /// Loads the CA in `dir`, creating one if there is none.
     pub fn load_or_create(dir: &Path) -> Result<Self, CaError> {
         let cert_path = dir.join(CA_CERT_FILE);
         let key_path = dir.join(CA_KEY_FILE);
@@ -86,9 +89,10 @@ impl LocalCa {
             match Self::load(dir) {
                 Ok(ca) => return Ok(ca),
                 Err(err) => {
-                    // 壊れた CA を抱えたまま起動しても TLS が通らない。
-                    // 作り直して先に進む（利用者は再度信頼させる必要がある）。
-                    tracing::warn!("既存の CA を読めないため作り直します: {err}");
+                    // Starting up with a corrupt CA means TLS never works.
+                    // Regenerate and carry on — the user has to trust the
+                    // new one again.
+                    tracing::warn!("cannot read the existing CA, regenerating: {err}");
                 }
             }
         }
@@ -120,11 +124,11 @@ impl LocalCa {
                 source,
             })?;
 
-        // 署名の発行者としてだけ使う。ここで得られる証明書の署名バイト列は
-        // ディスク上のものと一致しないので、チェーンには使わない。
+        // Only ever used as the signing issuer. Its signature bytes do not
+        // match the ones on disk, so it must not go out as the chain.
         let certificate = params.self_signed(&key_pair).map_err(CaError::Generate)?;
 
-        // 利用者が信頼したのはディスク上の証明書。それをそのまま送る。
+        // What the user trusted is the certificate on disk. Send that.
         let der = pem_to_der(&cert_pem, dir.join(CA_CERT_FILE))?;
 
         Ok(Self {
@@ -151,7 +155,7 @@ impl LocalCa {
         ];
 
         let mut name = DistinguishedName::new();
-        // 利用者がキーチェーンで見つけられる名前にする。
+        // A name the user can find in Keychain.
         name.push(DnType::CommonName, "Minato Local CA");
         name.push(DnType::OrganizationName, "Minato");
         params.distinguished_name = name;
@@ -171,7 +175,7 @@ impl LocalCa {
             source,
         })?;
 
-        // 秘密鍵は本人だけが読めるようにする。
+        // Only the owner may read the private key.
         write_private(&key_path, key_pair.serialize_pem().as_bytes())?;
 
         let der = CertificateDer::from(certificate.der().to_vec());
@@ -185,17 +189,18 @@ impl LocalCa {
         })
     }
 
-    /// CA 証明書のパス。利用者がこれをシステムに信頼させる。
+    /// The path to the CA certificate — what the user tells the system
+    /// to trust.
     pub fn certificate_path(&self) -> PathBuf {
         self.dir.join(CA_CERT_FILE)
     }
 
-    /// ディスク上の CA 証明書。利用者が信頼したものと同一。
+    /// The CA certificate on disk, identical to what the user trusted.
     pub fn certificate_pem(&self) -> &str {
         &self.pem
     }
 
-    /// `host` 向けの証明書を発行する。
+    /// Issues a certificate for `host`.
     pub fn issue(&self, host: &str) -> Result<CertifiedKey, CaError> {
         let mut params =
             CertificateParams::new(vec![host.to_string()]).map_err(CaError::Generate)?;
@@ -218,7 +223,8 @@ impl LocalCa {
         let signing_key = rustls::crypto::ring::sign::any_supported_type(&key_der)
             .map_err(|_| CaError::Generate(rcgen::Error::UnsupportedSignatureAlgorithm))?;
 
-        // leaf と CA を並べて送る。CA を信頼していれば検証が通る。
+        // Send the leaf and the CA together: trusting the CA is enough
+        // for verification to pass.
         Ok(CertifiedKey::new(
             vec![leaf_der, self.der.clone()],
             signing_key,
@@ -256,7 +262,7 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<(), CaError> {
     })
 }
 
-/// PEM から最初の証明書を DER として取り出す。
+/// Extracts the first certificate in a PEM as DER.
 fn pem_to_der(pem: &str, path: PathBuf) -> Result<CertificateDer<'static>, CaError> {
     let mut reader = std::io::BufReader::new(pem.as_bytes());
 
@@ -268,7 +274,7 @@ fn pem_to_der(pem: &str, path: PathBuf) -> Result<CertificateDer<'static>, CaErr
             path,
             source: std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "証明書が含まれていません",
+                "contains no certificate",
             ),
         })
 }
@@ -277,7 +283,8 @@ fn now() -> time::OffsetDateTime {
     time::OffsetDateTime::now_utc()
 }
 
-/// SNI を見て証明書を返す。未知の名前はその場で発行する。
+/// Resolves a certificate from SNI, issuing one on the spot for names it
+/// has not seen.
 pub struct DynamicCertResolver {
     ca: Arc<LocalCa>,
     cache: RwLock<HashMap<String, Arc<CertifiedKey>>>,
@@ -291,14 +298,14 @@ impl DynamicCertResolver {
         }
     }
 
-    /// `host` の証明書を取得する。無ければ発行してキャッシュする。
+    /// The certificate for `host`, issued and cached if it is new.
     pub fn certificate_for(&self, host: &str) -> Option<Arc<CertifiedKey>> {
         let key = host.to_ascii_lowercase();
 
         if let Some(existing) = self
             .cache
             .read()
-            .expect("証明書キャッシュのロックが壊れている")
+            .expect("the certificate cache lock is poisoned")
             .get(&key)
         {
             return Some(existing.clone());
@@ -307,14 +314,14 @@ impl DynamicCertResolver {
         let issued = match self.ca.issue(&key) {
             Ok(certified) => Arc::new(certified),
             Err(err) => {
-                tracing::warn!("{key} の証明書を発行できませんでした: {err}");
+                tracing::warn!("cannot issue a certificate for {key}: {err}");
                 return None;
             }
         };
 
         self.cache
             .write()
-            .expect("証明書キャッシュのロックが壊れている")
+            .expect("the certificate cache lock is poisoned")
             .insert(key, issued.clone());
 
         Some(issued)
@@ -330,14 +337,14 @@ impl std::fmt::Debug for DynamicCertResolver {
 
 impl ResolvesServerCert for DynamicCertResolver {
     fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        // SNI を送らないクライアントには証明書を出せない。
-        // どの名前で検証されるべきか決められないため。
+        // A client that sends no SNI gets nothing: there is no way to know
+        // which name the certificate should be verified against.
         let name = hello.server_name()?;
         self.certificate_for(name)
     }
 }
 
-/// SNI ごとに証明書を発行する TLS 設定を作る。
+/// Builds a TLS config that issues a certificate per SNI name.
 pub fn server_config(ca: Arc<LocalCa>) -> Arc<rustls::ServerConfig> {
     let resolver = Arc::new(DynamicCertResolver::new(ca));
 
@@ -345,8 +352,8 @@ pub fn server_config(ca: Arc<LocalCa>) -> Arc<rustls::ServerConfig> {
         .with_no_client_auth()
         .with_cert_resolver(resolver);
 
-    // HTTP/2 はまだ通していない。WebSocket の upgrade は HTTP/1.1 で行うため、
-    // ここで h2 を広告すると HMR が繋がらなくなる。
+    // HTTP/2 is not supported yet. WebSocket upgrades happen over
+    // HTTP/1.1, so advertising h2 here would break HMR.
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
     Arc::new(config)
@@ -358,7 +365,7 @@ mod tests {
 
     fn temp_ca() -> (tempfile::TempDir, LocalCa) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ca = LocalCa::load_or_create(dir.path()).expect("CA を作れる");
+        let ca = LocalCa::load_or_create(dir.path()).expect("creates a CA");
         (dir, ca)
     }
 
@@ -377,7 +384,7 @@ mod tests {
                 .expect("metadata")
                 .permissions()
                 .mode();
-            assert_eq!(mode & 0o777, 0o600, "秘密鍵は本人だけが読める必要がある");
+            assert_eq!(mode & 0o777, 0o600, "only the owner may read the private key");
         }
     }
 
@@ -385,53 +392,54 @@ mod tests {
     fn reuses_an_existing_ca() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let first = LocalCa::load_or_create(dir.path()).expect("作れる");
+        let first = LocalCa::load_or_create(dir.path()).expect("creates");
         let first_pem = first.certificate_pem().to_string();
         drop(first);
 
-        let second = LocalCa::load_or_create(dir.path()).expect("読める");
+        let second = LocalCa::load_or_create(dir.path()).expect("loads");
 
         assert_eq!(
             first_pem,
             second.certificate_pem(),
-            "作り直すと利用者が再び信頼させる羽目になる"
+            "regenerating would make the user trust it all over again"
         );
     }
 
     #[test]
     fn presents_the_certificate_that_is_on_disk() {
-        // 利用者が信頼するのはディスク上の CA。読み込みのたびに署名し直すと
-        // 送出するチェーンが別物になり、検証の前提が崩れる。
+        // What the user trusts is the CA on disk. Re-signing on every load
+        // would send out a different chain, and verification would have
+        // nothing to stand on.
         let dir = tempfile::tempdir().expect("tempdir");
-        let created = LocalCa::load_or_create(dir.path()).expect("作れる");
+        let created = LocalCa::load_or_create(dir.path()).expect("creates");
         drop(created);
 
-        let loaded = LocalCa::load_or_create(dir.path()).expect("読める");
-        let on_disk = std::fs::read_to_string(dir.path().join(CA_CERT_FILE)).expect("読める");
+        let loaded = LocalCa::load_or_create(dir.path()).expect("loads");
+        let on_disk = std::fs::read_to_string(dir.path().join(CA_CERT_FILE)).expect("reads");
 
         assert_eq!(loaded.certificate_pem(), on_disk);
 
-        let chain_der = pem_to_der(&on_disk, dir.path().join(CA_CERT_FILE)).expect("DER にできる");
-        let issued = loaded.issue("web.myapp.localhost").expect("発行できる");
+        let chain_der = pem_to_der(&on_disk, dir.path().join(CA_CERT_FILE)).expect("converts to DER");
+        let issued = loaded.issue("web.myapp.localhost").expect("issues");
         assert_eq!(
             issued.cert[1], chain_der,
-            "チェーンに載せる CA はディスク上のものと同一でなければならない"
+            "the CA in the chain must be the one on disk"
         );
     }
 
     #[test]
     fn regenerates_when_the_ca_is_corrupt() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join(CA_CERT_FILE), "garbage").expect("書ける");
-        std::fs::write(dir.path().join(CA_KEY_FILE), "garbage").expect("書ける");
+        std::fs::write(dir.path().join(CA_CERT_FILE), "garbage").expect("writes");
+        std::fs::write(dir.path().join(CA_KEY_FILE), "garbage").expect("writes");
 
-        let ca = LocalCa::load_or_create(dir.path()).expect("壊れていても起動できる");
+        let ca = LocalCa::load_or_create(dir.path()).expect("starts even when corrupt");
         assert!(ca.certificate_pem().contains("BEGIN CERTIFICATE"));
     }
 
     #[test]
     fn issues_certificates_for_nested_names() {
-        // ワイルドカードでは賄えない深さ。これが動的発行の理由。
+        // Depths a wildcard cannot cover. This is why issuance is dynamic.
         let (_dir, ca) = temp_ca();
 
         for host in [
@@ -439,11 +447,11 @@ mod tests {
             "api.feature-user-auth.myapp.localhost",
             "web.myapp.localhost",
         ] {
-            let certified = ca.issue(host).expect("発行できる");
+            let certified = ca.issue(host).expect("issues");
             assert_eq!(
                 certified.cert.len(),
                 2,
-                "leaf と CA を並べて送る必要がある: {host}"
+                "the leaf and the CA have to go out together: {host}"
             );
         }
     }
@@ -455,14 +463,14 @@ mod tests {
 
         let first = resolver
             .certificate_for("web.feat-1.myapp.localhost")
-            .expect("発行できる");
+            .expect("issues");
         let second = resolver
             .certificate_for("web.feat-1.myapp.localhost")
-            .expect("キャッシュから返る");
+            .expect("comes back from the cache");
 
         assert!(
             Arc::ptr_eq(&first, &second),
-            "リクエストごとに発行すると handshake が遅くなる"
+            "issuing per request would slow every handshake down"
         );
     }
 
@@ -473,10 +481,10 @@ mod tests {
 
         let lower = resolver
             .certificate_for("web.myapp.localhost")
-            .expect("発行");
+            .expect("issues");
         let upper = resolver
             .certificate_for("WEB.MyApp.localhost")
-            .expect("発行");
+            .expect("issues");
 
         assert!(Arc::ptr_eq(&lower, &upper));
     }
@@ -489,7 +497,7 @@ mod tests {
         assert_eq!(
             config.alpn_protocols,
             vec![b"http/1.1".to_vec()],
-            "h2 を広告すると WebSocket の upgrade が使えなくなる"
+            "advertising h2 would rule out WebSocket upgrades"
         );
     }
 }

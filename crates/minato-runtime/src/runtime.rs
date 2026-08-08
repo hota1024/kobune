@@ -1,8 +1,9 @@
-//! 仮想化バックエンドの共通インタフェース。
+//! The interface every virtualisation backend shares.
 //!
-//! この trait が返す [`RunningService::endpoint`] は「プロキシが転送する先」
-//! であって、それがホストのフォワードポートなのかコンテナ自身の IP なのかは
-//! 実装の裁量に委ねる。プロキシと Supervisor はその差を知らない。
+//! The [`RunningService::endpoint`] this trait returns is "where the proxy
+//! forwards to". Whether that is a forwarded host port or the container's
+//! own IP is up to the implementation; neither the proxy nor the
+//! supervisor knows the difference.
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -14,86 +15,87 @@ use crate::spec::{
     RunningService, ServiceKey, ServiceSpec, ServiceStatus, WorkspaceKey, WorkspaceSpec,
 };
 
-/// ログの取り方。
+/// How to read logs.
 #[derive(Debug, Clone, Default)]
 pub struct LogOptions {
-    /// 新しい行を待ち続ける。
+    /// Keep waiting for new lines.
     pub follow: bool,
-    /// 末尾から何行取るか。`None` は全部。
+    /// How many lines to take from the end. `None` means all of them.
     pub tail: Option<usize>,
 }
 
-/// ログ 1 行。
+/// One line of log output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogLine {
     pub stream: OutputStream,
     pub line: String,
 }
 
-/// コンテナ内でコマンドを実行した結果。
+/// The result of running a command inside a container.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecOutcome {
-    /// 実行したコマンドの終了コード。
+    /// The exit code of the command that ran.
     ///
-    /// **そのまま呼び出し元に伝える。** `minato exec web -- pnpm test` の
-    /// 成否をエージェントが終了コードで判定できる必要がある。
+    /// **Passed straight back to the caller.** An agent has to be able to
+    /// judge `minato exec web -- pnpm test` by its exit code alone.
     pub exit_code: i32,
 }
 
-/// runtime の素性。`minato doctor` と `minato ping` が表示する。
+/// What a runtime is. Shown by `minato doctor` and `minato ping`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeInfo {
     pub id: String,
     pub version: String,
-    /// ネットワークを自前で作れるか。
+    /// Whether it can create its own networks.
     ///
-    /// Apple Container では macOS 26 未満だとネットワークを作成できず、
-    /// 既定のネットワークに相乗りするしかない。
+    /// Apple Container cannot before macOS 26, leaving nothing to do but
+    /// share the default network.
     pub supports_custom_networks: bool,
 }
 
-/// 仮想化バックエンド。
+/// A virtualisation backend.
 #[async_trait]
 pub trait Runtime: Send + Sync {
-    /// `minato.toml` の `[runtime] default` に書く識別子。
+    /// The identifier written under `[runtime] default` in `minato.toml`.
     fn id(&self) -> &'static str;
 
-    /// 接続できるか、使えるバージョンかを確認する。
+    /// Checks that it can be reached and that its version is usable.
     async fn probe(&self) -> Result<RuntimeInfo>;
 
-    /// workspace 単位の下準備。ネットワークとボリュームの用意、イメージの取得。
+    /// Groundwork for one workspace: networks, volumes and images.
     async fn prepare(&self, spec: &WorkspaceSpec, events: &EventSink) -> Result<()>;
 
-    /// サービスを起動する。既に起動していれば何もせず現状を返す。
+    /// Starts a service. Already running: returns as-is, does nothing.
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService>;
 
-    /// サービスを停止する。コンテナは残す（次回の起動を速くするため）。
+    /// Stops a service, keeping the container so the next start is fast.
     async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()>;
 
-    /// サービスのコンテナを削除する。
+    /// Removes a service's container.
     async fn remove(&self, key: &ServiceKey, events: &EventSink) -> Result<()>;
 
-    /// workspace に属するものをすべて片付ける。ネットワークも消す。
+    /// Clears away everything belonging to a workspace, network included.
     ///
-    /// 共有サービス（`scope = "project"`）は他の workspace が使っているため対象外。
+    /// Shared services (`scope = "project"`) are left alone: other
+    /// workspaces are using them.
     async fn destroy_workspace(&self, key: &WorkspaceKey, events: &EventSink) -> Result<()>;
 
-    /// 1 サービスの現在の状態。
+    /// The current state of one service.
     async fn inspect(&self, key: &ServiceKey) -> Result<ServiceStatus>;
 
-    /// ログを読む。
+    /// Reads logs.
     ///
-    /// これが無いとエージェントは `docker logs` に戻るしかなくなる。
+    /// Without this an agent has nothing to fall back on but `docker logs`.
     async fn logs(
         &self,
         key: &ServiceKey,
         options: LogOptions,
     ) -> Result<BoxStream<'static, LogLine>>;
 
-    /// コンテナ内でコマンドを実行する。
+    /// Runs a command inside the container.
     ///
-    /// 出力は `events` に流し、終了コードを返す。TTY は要求しない
-    /// （エージェントが使う用途では対話が発生しない方が安全）。
+    /// Output goes to `events`; the exit code comes back. No TTY is
+    /// requested — for agent use, no interaction is the safer default.
     async fn exec(
         &self,
         key: &ServiceKey,
@@ -101,39 +103,41 @@ pub trait Runtime: Send + Sync {
         events: &EventSink,
     ) -> Result<ExecOutcome>;
 
-    /// プロジェクトに属する Minato 管理下のサービスをすべて列挙する。
+    /// Every Minato-managed service in a project.
     ///
-    /// daemon はこれを使って再起動後の状態を復元する。状態ストアではなく
-    /// runtime が状態の正であるため、この一覧が信頼できる必要がある。
+    /// This is how the daemon recovers its state after a restart. The
+    /// runtime, not a state store, is the source of truth, so this listing
+    /// has to be trustworthy.
     async fn list_project(&self, project: &str) -> Result<Vec<ServiceStatus>>;
 }
 
-/// コンテナに付けるラベルのキー。
+/// The label keys put on containers.
 ///
-/// runtime をまたいで同じキーを使う。daemon はこのラベルだけを頼りに
-/// 自分の管理下のコンテナを判別する。
+/// The same keys across every runtime. These labels are all the daemon has
+/// to tell its own containers apart from everyone else's.
 pub mod labels {
-    /// Minato が作ったことを示す。値は `"1"`。
+    /// Marks a container as Minato's. The value is `"1"`.
     pub const MANAGED: &str = "dev.minato.managed";
     pub const PROJECT: &str = "dev.minato.project";
-    /// workspace ラベル。共有サービスでは `_shared`。
+    /// The workspace label. `_shared` for a shared service.
     pub const WORKSPACE: &str = "dev.minato.workspace";
     pub const SERVICE: &str = "dev.minato.service";
-    /// `workspace` または `project`。
+    /// Either `workspace` or `project`.
     pub const SCOPE: &str = "dev.minato.scope";
-    /// コンテナ内で待ち受けるポート。
+    /// The port listened on inside the container.
     pub const PORT: &str = "dev.minato.port";
 
     pub const MANAGED_VALUE: &str = "1";
 }
 
-/// 共通の命名規則。runtime 実装はこれに従う。
+/// The shared naming rules every runtime implementation follows.
 pub mod names {
     use crate::spec::{ServiceKey, WorkspaceKey};
 
-    /// コンテナ名。
+    /// The container name.
     ///
-    /// 人間が `docker ps` や `container ls` で見て意味が分かる形にする。
+    /// Shaped so it means something to a person reading `docker ps` or
+    /// `container ls`.
     pub fn container(key: &ServiceKey) -> String {
         format!(
             "minato-{}-{}-{}",
@@ -143,7 +147,7 @@ pub mod names {
         )
     }
 
-    /// workspace ごとのネットワーク名。
+    /// The network name for one workspace.
     pub fn network(key: &WorkspaceKey) -> String {
         format!(
             "minato-{}-{}",
@@ -152,12 +156,13 @@ pub mod names {
         )
     }
 
-    /// 名前付きボリュームの実体名。プロジェクト間で衝突させない。
+    /// The real name of a named volume. Never collides across projects.
     pub fn volume(project: &str, name: &str) -> String {
         format!("minato-{project}-{name}")
     }
 
-    /// `_shared` の先頭 `_` はコンテナ名に使えない実装があるため落とす。
+    /// Some implementations reject a leading `_` in a container name, so
+    /// `_shared` loses it.
     fn sanitize_segment(segment: &str) -> String {
         segment.trim_start_matches('_').to_string()
     }
@@ -182,7 +187,7 @@ mod tests {
         assert_eq!(name, "minato-myapp-shared-db");
         assert!(
             !name.contains('_'),
-            "コンテナ名に `_` を含めない実装があるため落とす: {name}"
+            "dropped because some implementations reject `_`: {name}"
         );
     }
 
@@ -200,7 +205,7 @@ mod tests {
         assert_ne!(
             names::volume("myapp", "pgdata"),
             names::volume("other", "pgdata"),
-            "プロジェクトが違えば別の領域になる"
+            "a different project means different storage"
         );
     }
 }

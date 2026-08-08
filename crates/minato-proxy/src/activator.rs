@@ -1,52 +1,54 @@
-//! 停止しているサービスを起こす口。
+//! The hook for waking a stopped service.
 //!
-//! プロキシは `minato-runtime` に依存できない（`docs/DESIGN.md` §13）。
-//! かといって「リクエストが来たら起動する」には runtime を動かす必要がある。
-//! そこでこの trait を境界にし、実装は daemon 側に置く。
-//! プロキシは「このホストを受け付けられる状態にしてくれ」と頼むだけでよい。
+//! The proxy cannot depend on `minato-runtime` (`docs/DESIGN.md` §13), yet
+//! "start it when a request arrives" needs the runtime. This trait is the
+//! boundary; the daemon supplies the implementation. All the proxy does is
+//! ask for a host to be made ready.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-/// 起動要求の結果。
+/// The outcome of a wake request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activation {
-    /// 受け付け可能。ここに転送する。
+    /// Ready. Forward here.
     Ready(SocketAddr),
 
-    /// 起動処理を始めたが、まだ受け付けられない。
+    /// Starting, but not yet ready.
     ///
-    /// ブラウザには待機ページを返し、それ以外は待たせる。
+    /// Browsers get a waiting page; everyone else waits.
     Starting,
 
-    /// そんなホストは知らない。
+    /// No such host.
     Unknown,
 
-    /// 起動を試みたが失敗した。
+    /// Tried to start, and failed.
     Failed(String),
 }
 
 #[async_trait]
 pub trait Activator: Send + Sync + 'static {
-    /// ホストに対応するサービスを受け付け可能にする。
+    /// Makes the service behind a host ready to serve.
     ///
-    /// 既に起動していれば何もせず転送先を返す。停止していれば起動する。
+    /// Already running: returns the target and does nothing. Stopped:
+    /// starts it.
     ///
-    /// `wait` は受け付け可能になるまで待つ上限。ブラウザには短く指定して
-    /// 待機ページを見せ、それ以外は長く待たせる。時間内に上がらなければ
-    /// [`Activation::Starting`] を返す（起動処理自体は続く）。
+    /// `wait` bounds how long to wait for readiness — short for browsers,
+    /// which then get a waiting page, longer for everyone else. Returns
+    /// [`Activation::Starting`] on timeout; the start continues regardless.
     async fn ensure_ready(&self, host: &str, wait: Duration) -> Activation;
 
-    /// アクセスがあったことを記録する。
+    /// Records that the host was accessed.
     ///
-    /// アイドル判定の基準になる。リクエストごとに呼ばれるため、
-    /// **速くなければならない**（ロックを長く持たない、I/O をしない）。
+    /// This is what idle detection measures. Called on every request, so
+    /// it **must be fast**: hold no lock for long and do no I/O.
     fn touch(&self, host: &str);
 }
 
-/// 何も起こさない実装。scale-to-zero を使わない場合とテスト用。
+/// An implementation that wakes nothing. For tests, and for setups
+/// without scale-to-zero.
 pub struct NoopActivator;
 
 #[async_trait]

@@ -1,7 +1,8 @@
-//! 実際に TCP を張ってプロキシの振る舞いを確かめる。
+//! Exercises the proxy over real TCP.
 //!
-//! 転送・エラー応答・WebSocket の upgrade・TLS は、単体テストでは
-//! 検証しきれない。ここが M1 で最も壊れやすい部分なので実通信で押さえる。
+//! Forwarding, error responses, WebSocket upgrades and TLS cannot be
+//! covered by unit tests. This is the most fragile part of M1, so it is
+//! pinned down with real traffic.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -31,7 +32,7 @@ fn text(body: &str) -> TestBody {
         .boxed()
 }
 
-/// テスト用の upstream。パスを反射し、Upgrade 要求にはエコーで応じる。
+/// An upstream for tests. Reflects the path, and echoes on upgrade.
 async fn spawn_upstream() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -46,7 +47,7 @@ async fn spawn_upstream() -> SocketAddr {
                 let io = TokioIo::new(stream);
                 let service = service_fn(|mut request: Request<Incoming>| async move {
                     if request.headers().contains_key(UPGRADE) {
-                        // 101 を返したあと、生のバイト列をそのまま返す。
+                        // After the 101, echo raw bytes back.
                         tokio::spawn(async move {
                             let Ok(upgraded) = hyper::upgrade::on(&mut request).await else {
                                 return;
@@ -75,7 +76,7 @@ async fn spawn_upstream() -> SocketAddr {
                                         .map_err(|never| match never {})
                                         .boxed(),
                                 )
-                                .expect("組み立てられる"),
+                                .expect("builds"),
                         );
                     }
 
@@ -103,7 +104,7 @@ async fn spawn_upstream() -> SocketAddr {
     addr
 }
 
-/// プロキシを起動して待ち受けアドレスを返す。
+/// Starts the proxy and returns the address it listens on.
 async fn spawn_proxy(routes: Routes) -> SocketAddr {
     spawn_proxy_with(routes, Arc::new(NoopActivator)).await
 }
@@ -120,12 +121,12 @@ async fn spawn_proxy_with(routes: Routes, activator: Arc<dyn Activator>) -> Sock
     addr
 }
 
-/// 呼ばれた回数を数え、決まった結果を返す Activator。
+/// An activator that counts calls and returns a fixed result.
 struct ScriptedActivator {
     result: Activation,
     woken: AtomicUsize,
     touched: AtomicUsize,
-    /// touch / ensure_ready に渡されたホスト名。
+    /// The hostnames passed to `touch` and `ensure_ready`.
     seen: std::sync::Mutex<Vec<String>>,
 }
 
@@ -154,9 +155,9 @@ impl Activator for ScriptedActivator {
     }
 }
 
-/// `Accept: text/html` を付けてリクエストする（ブラウザからの遷移を模す）。
+/// Requests with `Accept: text/html`, standing in for a browser.
 async fn request_as_browser(proxy: SocketAddr, host: &str) -> (StatusCode, String) {
-    let stream = TcpStream::connect(proxy).await.expect("接続できる");
+    let stream = TcpStream::connect(proxy).await.expect("connects");
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .expect("handshake");
@@ -174,23 +175,23 @@ async fn request_as_browser(proxy: SocketAddr, host: &str) -> (StatusCode, Strin
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .expect("組み立てられる");
+        .expect("builds");
 
-    let response = sender.send_request(request).await.expect("応答が返る");
+    let response = sender.send_request(request).await.expect("gets a response");
     let status = response.status();
     let body = response
         .into_body()
         .collect()
         .await
-        .expect("本文を読める")
+        .expect("reads the body")
         .to_bytes();
 
     (status, String::from_utf8_lossy(&body).to_string())
 }
 
-/// プロキシに 1 リクエスト送って応答を受け取る。
+/// Sends one request through the proxy and takes the response.
 async fn request_through(proxy: SocketAddr, host: &str, path: &str) -> (StatusCode, String) {
-    let stream = TcpStream::connect(proxy).await.expect("接続できる");
+    let stream = TcpStream::connect(proxy).await.expect("connects");
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .expect("handshake");
@@ -207,15 +208,15 @@ async fn request_through(proxy: SocketAddr, host: &str, path: &str) -> (StatusCo
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .expect("組み立てられる");
+        .expect("builds");
 
-    let response = sender.send_request(request).await.expect("応答が返る");
+    let response = sender.send_request(request).await.expect("gets a response");
     let status = response.status();
     let body = response
         .into_body()
         .collect()
         .await
-        .expect("本文を読める")
+        .expect("reads the body")
         .to_bytes();
 
     (status, String::from_utf8_lossy(&body).to_string())
@@ -239,7 +240,8 @@ async fn forwards_to_the_matching_upstream() {
 
 #[tokio::test]
 async fn preserves_the_original_host_header() {
-    // Vite などは Host を見て許可判定をする。書き換えると弾かれる。
+    // Vite and friends check Host against an allowlist; rewriting it
+    // gets the request rejected.
     let upstream = spawn_upstream().await;
     let routes = Routes::new();
     routes.insert(
@@ -252,7 +254,7 @@ async fn preserves_the_original_host_header() {
 
     assert!(
         body.contains("host=web.feat-1.myapp.localhost"),
-        "ブラウザで開いた URL がそのままアプリに見える必要がある: {body}"
+        "the app has to see the same URL the browser opened: {body}"
     );
 }
 
@@ -288,13 +290,13 @@ async fn unknown_host_explains_itself() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         body.contains("minato ls"),
-        "何をすればよいか書かれている必要がある: {body}"
+        "it has to say what to do next: {body}"
     );
 }
 
 #[tokio::test]
 async fn dead_upstream_returns_bad_gateway() {
-    // 誰も listen していないアドレス。
+    // An address nobody is listening on.
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let dead = listener.local_addr().expect("addr");
     drop(listener);
@@ -311,13 +313,13 @@ async fn dead_upstream_returns_bad_gateway() {
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(
         body.contains("minato status"),
-        "切り分けの手掛かりを出す: {body}"
+        "it has to give something to go on: {body}"
     );
 }
 
 #[tokio::test]
 async fn passes_websocket_style_upgrades_through() {
-    // HMR はこれに依存している。通らないと Minato は使いものにならない。
+    // HMR depends on this. Without it Minato is useless.
     let upstream = spawn_upstream().await;
     let routes = Routes::new();
     routes.insert(
@@ -327,7 +329,7 @@ async fn passes_websocket_style_upgrades_through() {
 
     let proxy = spawn_proxy(routes).await;
 
-    let stream = TcpStream::connect(proxy).await.expect("接続できる");
+    let stream = TcpStream::connect(proxy).await.expect("connects");
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .expect("handshake");
@@ -346,40 +348,40 @@ async fn passes_websocket_style_upgrades_through() {
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .expect("組み立てられる");
+        .expect("builds");
 
-    let response = sender.send_request(request).await.expect("応答が返る");
+    let response = sender.send_request(request).await.expect("gets a response");
     assert_eq!(
         response.status(),
         StatusCode::SWITCHING_PROTOCOLS,
-        "101 が返らないと WebSocket は張れない"
+        "without a 101 there is no WebSocket"
     );
 
-    let upgraded = hyper::upgrade::on(response).await.expect("upgrade できる");
+    let upgraded = hyper::upgrade::on(response).await.expect("upgrades");
     let mut io = TokioIo::new(upgraded);
 
-    io.write_all(b"hello over websocket").await.expect("送れる");
+    io.write_all(b"hello over websocket").await.expect("sends");
 
     let mut buffer = vec![0u8; 20];
-    io.read_exact(&mut buffer).await.expect("返ってくる");
+    io.read_exact(&mut buffer).await.expect("comes back");
 
     assert_eq!(
         &buffer, b"hello over websocket",
-        "双方向にバイトが流れる必要がある"
+        "bytes have to flow both ways"
     );
 }
 
 #[tokio::test]
 async fn serves_https_with_a_certificate_for_the_sni_name() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ca = Arc::new(LocalCa::load_or_create(dir.path()).expect("CA を作れる"));
+    let ca = Arc::new(LocalCa::load_or_create(dir.path()).expect("creates a CA"));
     let ca_der = rustls::pki_types::CertificateDer::from(
         rustls_pemfile::certs(&mut std::io::BufReader::new(
             ca.certificate_pem().as_bytes(),
         ))
         .next()
-        .expect("証明書がある")
-        .expect("読める")
+        .expect("has a certificate")
+        .expect("reads")
         .to_vec(),
     );
 
@@ -405,9 +407,10 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
         .await;
     });
 
-    // CA だけを信頼したクライアントで繋ぐ。実際のブラウザと同じ条件。
+    // Connect as a client that trusts only the CA — the same footing as
+    // a real browser.
     let mut roots = rustls::RootCertStore::empty();
-    roots.add(ca_der).expect("CA を信頼できる");
+    roots.add(ca_der).expect("trusts the CA");
 
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
@@ -415,13 +418,13 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
 
     let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
     let server_name =
-        rustls::pki_types::ServerName::try_from("web.feat-1.myapp.localhost").expect("名前");
+        rustls::pki_types::ServerName::try_from("web.feat-1.myapp.localhost").expect("a valid name");
 
-    let tcp = TcpStream::connect(addr).await.expect("接続できる");
+    let tcp = TcpStream::connect(addr).await.expect("connects");
     let tls = connector
         .connect(server_name, tcp)
         .await
-        .expect("動的に発行された証明書で検証が通る");
+        .expect("the dynamically issued certificate verifies");
 
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
         .await
@@ -439,16 +442,16 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .expect("組み立てられる");
+        .expect("builds");
 
-    let response = sender.send_request(request).await.expect("応答が返る");
+    let response = sender.send_request(request).await.expect("gets a response");
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = response
         .into_body()
         .collect()
         .await
-        .expect("本文を読める")
+        .expect("reads the body")
         .to_bytes();
 
     assert!(String::from_utf8_lossy(&body).contains("upstream /secure"));
@@ -456,7 +459,8 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
 
 #[tokio::test]
 async fn wakes_a_stopped_service_and_forwards() {
-    // scale-to-zero の本体。停止中でもリクエストで起きて、そのまま繋がる。
+    // Scale-to-zero itself: a request wakes a stopped service and goes
+    // straight through.
     let upstream = spawn_upstream().await;
     let routes = Routes::new();
     routes.insert(
@@ -471,17 +475,18 @@ async fn wakes_a_stopped_service_and_forwards() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("upstream /woken"), "got: {body}");
-    assert_eq!(activator.woken.load(Ordering::SeqCst), 1, "起動を要求する");
+    assert_eq!(activator.woken.load(Ordering::SeqCst), 1, "asks for a start");
     assert_eq!(
         activator.touched.load(Ordering::SeqCst),
         1,
-        "アクセスを記録する"
+        "records the access"
     );
 }
 
 #[tokio::test]
 async fn running_services_are_not_woken() {
-    // 起動済みのリクエストで毎回 activator を呼ぶと、ここが律速になる。
+    // Calling the activator on every request to a running service would
+    // make it the bottleneck.
     let upstream = spawn_upstream().await;
     let routes = Routes::new();
     routes.insert(
@@ -494,11 +499,11 @@ async fn running_services_are_not_woken() {
 
     request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
 
-    assert_eq!(activator.woken.load(Ordering::SeqCst), 0, "起動要求は不要");
+    assert_eq!(activator.woken.load(Ordering::SeqCst), 0, "no start needed");
     assert_eq!(
         activator.touched.load(Ordering::SeqCst),
         1,
-        "アイドル判定のために記録は要る"
+        "idle detection still needs the record"
     );
 }
 
@@ -516,17 +521,17 @@ async fn browsers_get_a_self_refreshing_page_while_starting() {
     let (status, body) = request_as_browser(proxy, "web.feat-1.myapp.localhost").await;
 
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(body.contains("<!doctype html>"), "HTML を返す");
+    assert!(body.contains("<!doctype html>"), "returns HTML");
     assert!(
         body.contains("http-equiv=\"refresh\""),
-        "自動で読み直さないと利用者が手で reload することになる"
+        "without a self-reload the user has to hit refresh"
     );
     assert!(body.contains("web.feat-1.myapp.localhost"));
 }
 
 #[tokio::test]
 async fn non_browser_clients_get_a_timeout_not_a_html_page() {
-    // エージェントの curl に HTML の待機ページを返すと解釈できない。
+    // An agent's curl cannot make sense of an HTML waiting page.
     let routes = Routes::new();
     routes.insert(
         "web.feat-1.myapp.localhost",
@@ -539,8 +544,8 @@ async fn non_browser_clients_get_a_timeout_not_a_html_page() {
     let (status, body) = request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
 
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
-    assert!(!body.contains("<!doctype"), "HTML は返さない: {body}");
-    assert!(body.contains("minato status"), "切り分けの手掛かりを出す");
+    assert!(!body.contains("<!doctype"), "no HTML here: {body}");
+    assert!(body.contains("minato status"), "gives something to go on");
 }
 
 #[tokio::test]
@@ -551,24 +556,24 @@ async fn failed_activation_explains_itself() {
         Route::stopped("myapp", "feat-1", "web"),
     );
 
-    let activator = ScriptedActivator::new(Activation::Failed("イメージがありません".into()));
+    let activator = ScriptedActivator::new(Activation::Failed("no such image".into()));
     let proxy = spawn_proxy_with(routes, activator).await;
 
     let (status, body) = request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(
-        body.contains("イメージがありません"),
-        "理由をそのまま伝える"
+        body.contains("no such image"),
+        "passes the reason through as-is"
     );
     assert!(body.contains("minato logs"));
 }
 
 #[tokio::test]
 async fn activator_receives_normalised_hosts() {
-    // アイドル判定はルーティングと同じキーで引く。ここでポート付きの
-    // ホスト名を渡すと、アクセスが記録されず、使用中のサービスが
-    // アイドルとして停止される。
+    // Idle detection uses the same key as routing. Handing it a host with
+    // a port would leave accesses unrecorded, and a service in active use
+    // would be stopped as idle.
     let upstream = spawn_upstream().await;
     let routes = Routes::new();
     routes.insert(
@@ -579,14 +584,14 @@ async fn activator_receives_normalised_hosts() {
     let activator = ScriptedActivator::new(Activation::Ready(upstream));
     let proxy = spawn_proxy_with(routes, activator.clone()).await;
 
-    // ブラウザは非標準ポートだと Host にポートを付けて送る。
+    // On a non-standard port the browser includes it in Host.
     request_through(proxy, "WEB.feat-1.myapp.localhost:8443", "/").await;
 
     let seen = activator.seen.lock().expect("lock").clone();
     assert_eq!(
         seen,
         vec!["web.feat-1.myapp.localhost".to_string()],
-        "ポートと大文字小文字を落としてから渡す必要がある"
+        "the port and the casing have to be dropped first"
     );
 }
 

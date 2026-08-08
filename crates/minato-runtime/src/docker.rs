@@ -1,10 +1,12 @@
-//! Docker バックエンド。
+//! The Docker backend.
 //!
-//! `docker compose` CLI は呼ばず、Docker API を直接叩く。compose に乗ると
-//! 「compose にできること」が仕様の上限になり、他の runtime と揃わなくなるため。
+//! Talks to the Docker API directly rather than shelling out to `docker
+//! compose`. Building on compose would cap the design at "whatever compose
+//! can do", and the other runtimes could not follow.
 //!
-//! ポートはホストの `127.0.0.1` に動的割り当てでフォワードする。
-//! `0.0.0.0` に晒すと同じ LAN の他人から開発環境が見えてしまう。
+//! Ports are forwarded to a dynamically assigned port on `127.0.0.1`.
+//! Exposing them on `0.0.0.0` would put the development environment in
+//! front of everyone else on the LAN.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -37,7 +39,7 @@ use crate::spec::{
 
 const RUNTIME_ID: &str = "docker";
 
-/// 停止時に SIGKILL へ切り替えるまでの秒数。
+/// How many seconds a stop waits before it escalates to SIGKILL.
 const STOP_TIMEOUT_SECS: i64 = 10;
 
 pub struct DockerRuntime {
@@ -45,10 +47,11 @@ pub struct DockerRuntime {
 }
 
 impl DockerRuntime {
-    /// 環境変数と既定のソケットから接続先を決める。
+    /// Works out where to connect from the environment and the default
+    /// socket.
     ///
-    /// この時点では通信しないため、Docker が起動していなくても成功する。
-    /// 実際の到達性は [`Runtime::probe`] で確かめる。
+    /// Nothing is sent yet, so this succeeds even with Docker down. Actual
+    /// reachability is [`Runtime::probe`]'s business.
     pub fn connect() -> Result<Self> {
         let docker =
             Docker::connect_with_local_defaults().map_err(|err| RuntimeError::Unavailable {
@@ -70,7 +73,7 @@ impl DockerRuntime {
         }
     }
 
-    /// ネットワークがなければ作る。
+    /// Creates the network if it is not there.
     async fn ensure_network(&self, key: &WorkspaceKey) -> Result<String> {
         let name = names::network(key);
 
@@ -81,9 +84,9 @@ impl DockerRuntime {
             .docker
             .list_networks(Some(ListNetworksOptions { filters }))
             .await
-            .map_err(|e| RuntimeError::failed("ネットワークの一覧取得", e))?;
+            .map_err(|e| RuntimeError::failed("listing networks", e))?;
 
-        // 前方一致で返るため、名前が完全に一致するものだけを見る。
+        // The filter is a prefix match, so only an exact name counts.
         if existing
             .iter()
             .any(|n| n.name.as_deref() == Some(name.as_str()))
@@ -107,19 +110,19 @@ impl DockerRuntime {
                 ..Default::default()
             })
             .await
-            .map_err(|e| RuntimeError::failed("ネットワークの作成", e))?;
+            .map_err(|e| RuntimeError::failed("creating the network", e))?;
 
         Ok(name)
     }
 
-    /// イメージがローカルになければ取得する。
+    /// Pulls the image unless it is already local.
     async fn ensure_image(&self, image: &str, events: &EventSink) -> Result<()> {
         if self.docker.inspect_image(image).await.is_ok() {
-            events.step_skipped("pull", format!("イメージ {image}"), "既に存在します");
+            events.step_skipped("pull", format!("image {image}"), "already present");
             return Ok(());
         }
 
-        events.step_started("pull", format!("イメージ {image} を取得"));
+        events.step_started("pull", format!("pulling image {image}"));
 
         let mut stream = self.docker.create_image(
             Some(CreateImageOptions {
@@ -134,11 +137,11 @@ impl DockerRuntime {
             match item {
                 Ok(info) => {
                     if let Some(status) = info.status {
-                        events.step_progress("pull", format!("イメージ {image} を取得"), status);
+                        events.step_progress("pull", format!("pulling image {image}"), status);
                     }
                 }
                 Err(err) => {
-                    events.step_failed("pull", format!("イメージ {image} を取得"), err.to_string());
+                    events.step_failed("pull", format!("pulling image {image}"), err.to_string());
                     return Err(RuntimeError::ImageUnavailable {
                         image: image.to_string(),
                         message: err.to_string(),
@@ -147,11 +150,11 @@ impl DockerRuntime {
             }
         }
 
-        events.step_done("pull", format!("イメージ {image} を取得"));
+        events.step_done("pull", format!("pulling image {image}"));
         Ok(())
     }
 
-    /// 名前付きボリュームを用意する。
+    /// Makes sure a named volume exists.
     async fn ensure_volume(&self, project: &str, name: &str) -> Result<String> {
         let full = names::volume(project, name);
 
@@ -173,12 +176,12 @@ impl DockerRuntime {
                 ..Default::default()
             })
             .await
-            .map_err(|e| RuntimeError::failed("ボリュームの作成", e))?;
+            .map_err(|e| RuntimeError::failed("creating the volume", e))?;
 
         Ok(full)
     }
 
-    /// コンテナが存在すればそのサマリを返す。
+    /// The container's summary, if there is a container.
     async fn find_container(&self, key: &ServiceKey) -> Result<Option<ContainerSummary>> {
         let mut filters = HashMap::new();
         filters.insert(
@@ -203,7 +206,7 @@ impl DockerRuntime {
         Ok(containers.into_iter().next())
     }
 
-    /// コンテナを作る。既存があれば作り直す。
+    /// Creates the container, replacing any existing one.
     async fn create_container(&self, spec: &ServiceSpec, network: &str) -> Result<String> {
         let name = names::container(&spec.key);
         let port = spec.port;
@@ -233,8 +236,8 @@ impl DockerRuntime {
             container_labels.insert(labels::PORT.to_string(), port.to_string());
         }
 
-        // ホスト側ポートを空にすると Docker が空きポートを選ぶ。
-        // 127.0.0.1 に限定して LAN には出さない。
+        // An empty host port lets Docker pick a free one. Bound to
+        // 127.0.0.1 so it never reaches the LAN.
         let mut port_bindings = HashMap::new();
         let mut exposed_ports = HashMap::new();
         if let Some(port) = port {
@@ -293,7 +296,8 @@ impl DockerRuntime {
             }
         }
 
-        // サービス名でも引けるようにする。`api` から `db:5432` で繋がる。
+        // Make the service name resolvable, so `api` can reach
+        // `db:5432`.
         let mut endpoints = HashMap::new();
         endpoints.insert(
             network.to_string(),
@@ -343,12 +347,12 @@ impl DockerRuntime {
                 config,
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("コンテナ {name} の作成"), e))?;
+            .map_err(|e| RuntimeError::failed(format!("creating container {name}"), e))?;
 
         Ok(created.id)
     }
 
-    /// 起動中のコンテナからホスト側の待ち受けアドレスを取り出す。
+    /// The host-side address a running container listens on.
     async fn resolve_endpoint(
         &self,
         container_id: &str,
@@ -362,7 +366,7 @@ impl DockerRuntime {
             .docker
             .inspect_container(container_id, None)
             .await
-            .map_err(|e| RuntimeError::failed("コンテナの状態取得", e))?;
+            .map_err(|e| RuntimeError::failed("inspecting the container", e))?;
 
         let bindings = details
             .network_settings
@@ -394,7 +398,8 @@ impl DockerRuntime {
             .get(labels::PORT)
             .and_then(|value| value.parse::<u16>().ok());
 
-        // `docker ps` の state は文字列。running 以外は停止扱いにする。
+        // The `docker ps` state is a string. Anything but running counts
+        // as stopped.
         let state = match summary.state.as_deref() {
             Some("running") => ServiceState::Ready,
             Some("created") | Some("restarting") => ServiceState::Starting,
@@ -404,7 +409,7 @@ impl DockerRuntime {
             _ => ServiceState::Unknown,
         };
 
-        // 公開ポートからホスト側アドレスを拾う。
+        // Take the host address from the published port.
         let endpoint = summary
             .ports
             .as_ref()
@@ -446,10 +451,10 @@ impl Runtime for DockerRuntime {
     }
 
     async fn prepare(&self, spec: &WorkspaceSpec, events: &EventSink) -> Result<()> {
-        events.step_started("network", "ネットワークを用意");
+        events.step_started("network", "preparing the network");
         self.ensure_network(&spec.key).await?;
 
-        // 共有サービスがいる場合、共有ネットワークも用意しておく。
+        // With a shared service around, prepare the shared network too.
         if spec
             .services
             .iter()
@@ -458,7 +463,7 @@ impl Runtime for DockerRuntime {
             self.ensure_network(&WorkspaceKey::shared(&spec.key.project))
                 .await?;
         }
-        events.step_done("network", "ネットワークを用意");
+        events.step_done("network", "preparing the network");
 
         for service in &spec.services {
             self.ensure_image(&service.image, events).await?;
@@ -470,15 +475,16 @@ impl Runtime for DockerRuntime {
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
         let name = names::container(&spec.key);
 
-        // 既に動いていれば何もしない。`minato up` を何度叩いても同じ結果になる。
+        // Already running: do nothing. `minato up` gives the same result
+        // however many times it is run.
         if let Some(existing) = self.find_container(&spec.key).await? {
             let id = existing.id.clone().unwrap_or_default();
 
             if existing.state.as_deref() == Some("running") {
                 events.step_skipped(
                     "start",
-                    format!("{} を起動", spec.name()),
-                    "既に起動しています",
+                    format!("starting {}", spec.name()),
+                    "already running",
                 );
                 let endpoint = self.resolve_endpoint(&id, spec.port).await?;
                 events.service_state(spec.name(), ServiceState::Ready);
@@ -490,8 +496,9 @@ impl Runtime for DockerRuntime {
                 });
             }
 
-            // 停止中のコンテナは設定が古い可能性があるので作り直す。
-            // 起動が数秒遅くなるが、設定変更が反映されない方が混乱を招く。
+            // A stopped container may be carrying a stale configuration,
+            // so recreate it. That costs a few seconds; a configuration
+            // change silently not taking effect costs more.
             self.docker
                 .remove_container(
                     &id,
@@ -501,10 +508,10 @@ impl Runtime for DockerRuntime {
                     }),
                 )
                 .await
-                .map_err(|e| RuntimeError::failed(format!("コンテナ {name} の削除"), e))?;
+                .map_err(|e| RuntimeError::failed(format!("removing container {name}"), e))?;
         }
 
-        events.step_started("start", format!("{} を起動", spec.name()));
+        events.step_started("start", format!("starting {}", spec.name()));
         events.service_state(spec.name(), ServiceState::Starting);
 
         let network = names::network(&spec.attached_to);
@@ -512,7 +519,7 @@ impl Runtime for DockerRuntime {
 
         let id = self.create_container(spec, &network).await?;
 
-        // 共有サービスは呼び出し元の workspace ネットワークにも参加させる。
+        // A shared service joins the caller's workspace network as well.
         if spec.scope == ServiceScope::Project {
             let shared = self
                 .ensure_network(&WorkspaceKey::shared(&spec.key.workspace.project))
@@ -537,16 +544,17 @@ impl Runtime for DockerRuntime {
             .start_container(&id, None::<StartContainerOptions<String>>)
             .await
             .map_err(|e| {
-                events.step_failed("start", format!("{} を起動", spec.name()), e.to_string());
-                RuntimeError::failed(format!("コンテナ {name} の起動"), e)
+                events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
+                RuntimeError::failed(format!("starting container {name}"), e)
             })?;
 
         let endpoint = self.resolve_endpoint(&id, spec.port).await?;
 
-        events.step_done("start", format!("{} を起動", spec.name()));
+        events.step_done("start", format!("starting {}", spec.name()));
 
-        // コンテナが動き出しても、中のアプリはまだ listen していないことがある。
-        // ここで待たないと `minato new` 直後の curl が connection refused になる。
+        // A container being up does not mean the app inside is listening.
+        // Without this wait, the curl right after `minato new` fails with
+        // connection refused.
         await_service(
             spec.name(),
             endpoint,
@@ -569,8 +577,8 @@ impl Runtime for DockerRuntime {
         let Some(container) = self.find_container(key).await? else {
             events.step_skipped(
                 "stop",
-                format!("{} を停止", key.service),
-                "起動していません",
+                format!("stopping {}", key.service),
+                "not running",
             );
             return Ok(());
         };
@@ -579,13 +587,13 @@ impl Runtime for DockerRuntime {
         if container.state.as_deref() != Some("running") {
             events.step_skipped(
                 "stop",
-                format!("{} を停止", key.service),
-                "起動していません",
+                format!("stopping {}", key.service),
+                "not running",
             );
             return Ok(());
         }
 
-        events.step_started("stop", format!("{} を停止", key.service));
+        events.step_started("stop", format!("stopping {}", key.service));
 
         self.docker
             .stop_container(
@@ -595,9 +603,9 @@ impl Runtime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("コンテナ {id} の停止"), e))?;
+            .map_err(|e| RuntimeError::failed(format!("stopping container {id}"), e))?;
 
-        events.step_done("stop", format!("{} を停止", key.service));
+        events.step_done("stop", format!("stopping {}", key.service));
         events.service_state(&key.service, ServiceState::Stopped);
         Ok(())
     }
@@ -608,7 +616,7 @@ impl Runtime for DockerRuntime {
         };
 
         let id = container.id.unwrap_or_default();
-        events.step_started("remove", format!("{} を削除", key.service));
+        events.step_started("remove", format!("removing {}", key.service));
 
         self.docker
             .remove_container(
@@ -619,9 +627,9 @@ impl Runtime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("コンテナ {id} の削除"), e))?;
+            .map_err(|e| RuntimeError::failed(format!("removing container {id}"), e))?;
 
-        events.step_done("remove", format!("{} を削除", key.service));
+        events.step_done("remove", format!("removing {}", key.service));
         Ok(())
     }
 
@@ -645,7 +653,7 @@ impl Runtime for DockerRuntime {
             .await
             .map_err(Self::unavailable)?;
 
-        events.step_started("destroy", "コンテナを削除");
+        events.step_started("destroy", "removing containers");
         for container in containers {
             if let Some(id) = container.id {
                 self.docker
@@ -657,17 +665,16 @@ impl Runtime for DockerRuntime {
                         }),
                     )
                     .await
-                    .map_err(|e| RuntimeError::failed(format!("コンテナ {id} の削除"), e))?;
+                    .map_err(|e| RuntimeError::failed(format!("removing container {id}"), e))?;
             }
         }
-        events.step_done("destroy", "コンテナを削除");
+        events.step_done("destroy", "removing containers");
 
-        // ネットワークは他に参加者がいなければ消える。失敗しても致命的ではない。
+        // The network goes away once nobody else is on it. Failing here
+        // is not fatal.
         let network = names::network(key);
         if let Err(err) = self.docker.remove_network(&network).await {
-            events.debug(format!(
-                "ネットワーク {network} は削除しませんでした: {err}"
-            ));
+            events.debug(format!("network {network} was not removed: {err}"));
         }
 
         Ok(())
@@ -688,8 +695,8 @@ impl Runtime for DockerRuntime {
     ) -> Result<BoxStream<'static, LogLine>> {
         let container = self.find_container(key).await?.ok_or_else(|| {
             RuntimeError::failed(
-                format!("{} のログ取得", key.service),
-                "コンテナが存在しません",
+                format!("reading logs for {}", key.service),
+                "there is no container",
             )
         })?;
 
@@ -708,12 +715,12 @@ impl Runtime for DockerRuntime {
             }),
         );
 
-        // Docker は 1 チャンクに複数行を詰めてくることがある。行に割る。
+        // Docker can pack several lines into one chunk. Split them.
         let lines = stream.flat_map(|item| {
             let chunk = match item {
                 Ok(output) => output,
                 Err(err) => {
-                    tracing::debug!("ログの読み取りが終了しました: {err}");
+                    tracing::debug!("log reading finished: {err}");
                     return futures::stream::iter(Vec::new());
                 }
             };
@@ -748,15 +755,15 @@ impl Runtime for DockerRuntime {
     ) -> Result<ExecOutcome> {
         let container = self.find_container(key).await?.ok_or_else(|| {
             RuntimeError::failed(
-                format!("{} でのコマンド実行", key.service),
-                "コンテナが存在しません。`minato up` で起動してください",
+                format!("running a command in {}", key.service),
+                "there is no container. Start it with `minato up`",
             )
         })?;
 
         if container.state.as_deref() != Some("running") {
             return Err(RuntimeError::failed(
-                format!("{} でのコマンド実行", key.service),
-                "コンテナが起動していません。`minato up` で起動してください",
+                format!("running a command in {}", key.service),
+                "the container is not running. Start it with `minato up`",
             ));
         }
 
@@ -769,19 +776,19 @@ impl Runtime for DockerRuntime {
                     cmd: Some(command.to_vec()),
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
-                    // TTY は要求しない。対話を待って固まる方が危険。
+                    // No TTY: hanging on a prompt is the worse outcome.
                     tty: Some(false),
                     ..Default::default()
                 },
             )
             .await
-            .map_err(|e| RuntimeError::failed("exec の作成", e))?;
+            .map_err(|e| RuntimeError::failed("creating the exec", e))?;
 
         let started = self
             .docker
             .start_exec(&created.id, None)
             .await
-            .map_err(|e| RuntimeError::failed("exec の開始", e))?;
+            .map_err(|e| RuntimeError::failed("starting the exec", e))?;
 
         if let StartExecResults::Attached { mut output, .. } = started {
             while let Some(chunk) = output.next().await {
@@ -804,7 +811,7 @@ impl Runtime for DockerRuntime {
             .docker
             .inspect_exec(&created.id)
             .await
-            .map_err(|e| RuntimeError::failed("exec の状態取得", e))?;
+            .map_err(|e| RuntimeError::failed("inspecting the exec", e))?;
 
         Ok(ExecOutcome {
             exit_code: inspected.exit_code.unwrap_or(-1) as i32,
@@ -870,9 +877,10 @@ mod tests {
 
     #[test]
     fn reconstructs_state_from_labels() {
-        // daemon が再起動しても、この復元だけで状態が戻せる必要がある。
+        // A daemon restart has nothing but this to recover its state
+        // from.
         let status = DockerRuntime::summary_to_status(&summary_with(minato_labels(), "running"))
-            .expect("Minato のラベルが揃っていれば復元できる");
+            .expect("recovers when the Minato labels are all there");
 
         assert_eq!(status.key.workspace.project, "myapp");
         assert_eq!(status.key.workspace.workspace, "feat-1");
@@ -893,7 +901,7 @@ mod tests {
 
         assert!(
             DockerRuntime::summary_to_status(&summary_with(foreign, "running")).is_none(),
-            "他人のコンテナを拾ってはいけない"
+            "someone else's container must not be picked up"
         );
     }
 
@@ -911,7 +919,7 @@ mod tests {
         for (docker_state, expected) in cases {
             let status =
                 DockerRuntime::summary_to_status(&summary_with(minato_labels(), docker_state))
-                    .expect("復元できる");
+                    .expect("recovers");
             assert_eq!(status.state, expected, "docker state = {docker_state}");
         }
     }
@@ -923,7 +931,7 @@ mod tests {
         shared.insert(labels::WORKSPACE.to_string(), "_shared".to_string());
 
         let status =
-            DockerRuntime::summary_to_status(&summary_with(shared, "running")).expect("復元できる");
+            DockerRuntime::summary_to_status(&summary_with(shared, "running")).expect("recovers");
 
         assert_eq!(status.scope, ServiceScope::Project);
         assert!(status.key.workspace.is_shared());
@@ -937,7 +945,7 @@ mod tests {
         let mut summary = summary_with(no_port, "running");
         summary.ports = None;
 
-        let status = DockerRuntime::summary_to_status(&summary).expect("復元できる");
+        let status = DockerRuntime::summary_to_status(&summary).expect("recovers");
         assert_eq!(status.port, None);
         assert_eq!(status.endpoint, None);
     }

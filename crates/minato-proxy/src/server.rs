@@ -1,4 +1,4 @@
-//! 待ち受けとコネクションの受け入れ。
+//! Listening and accepting connections.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -12,9 +12,10 @@ use crate::activator::Activator;
 use crate::proxy;
 use crate::routes::Routes;
 
-/// 平文 HTTP で待ち受ける。
+/// Listens for plain HTTP.
 ///
-/// `with_upgrades` を付けないと WebSocket が確立できない。HMR が動かなくなる。
+/// Without `with_upgrades` no WebSocket can be established, and HMR
+/// stops working.
 pub async fn serve_http(
     listener: TcpListener,
     routes: Routes,
@@ -26,7 +27,7 @@ pub async fn serve_http(
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => stream,
                 Err(err) => {
-                    tracing::warn!("接続の受け入れに失敗しました: {err}");
+                    tracing::warn!("cannot accept the connection: {err}");
                     continue;
                 }
             },
@@ -50,7 +51,7 @@ pub async fn serve_http(
                 .with_upgrades()
                 .await
             {
-                tracing::trace!("接続を終了しました: {err}");
+                tracing::trace!("connection closed: {err}");
             }
         });
     }
@@ -58,7 +59,7 @@ pub async fn serve_http(
     Ok(())
 }
 
-/// TLS で待ち受ける。証明書は SNI ごとに [`crate::ca`] が発行する。
+/// Listens for TLS. [`crate::ca`] issues a certificate per SNI name.
 pub async fn serve_https(
     listener: TcpListener,
     routes: Routes,
@@ -73,7 +74,7 @@ pub async fn serve_https(
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => stream,
                 Err(err) => {
-                    tracing::warn!("接続の受け入れに失敗しました: {err}");
+                    tracing::warn!("cannot accept the connection: {err}");
                     continue;
                 }
             },
@@ -87,12 +88,12 @@ pub async fn serve_https(
         tokio::spawn(async move {
             let _ = stream.set_nodelay(true);
 
-            // 信頼されていない CA だとここで失敗する。よくある状況なので
-            // エラーとして騒がず、trace に落とす（`minato doctor` が診断する）。
+            // An untrusted CA fails right here. That is common enough not
+            // to shout about; `minato doctor` diagnoses it.
             let stream = match acceptor.accept(stream).await {
                 Ok(stream) => stream,
                 Err(err) => {
-                    tracing::trace!("TLS handshake に失敗しました: {err}");
+                    tracing::trace!("TLS handshake failed: {err}");
                     return;
                 }
             };
@@ -109,7 +110,7 @@ pub async fn serve_https(
                 .with_upgrades()
                 .await
             {
-                tracing::trace!("接続を終了しました: {err}");
+                tracing::trace!("connection closed: {err}");
             }
         });
     }

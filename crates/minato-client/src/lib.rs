@@ -399,9 +399,9 @@ mod tests {
         tokio::spawn(serve(
             listener,
             vec![vec![
-                ServerMessage::event(id, Event::step_started("pull", "取得")),
-                ServerMessage::event(id, Event::info("進行中")),
-                ServerMessage::event(id, Event::step_done("pull", "取得")),
+                ServerMessage::event(id, Event::step_started("pull", "pulling")),
+                ServerMessage::event(id, Event::info("in progress")),
+                ServerMessage::event(id, Event::step_done("pull", "pulling")),
                 ServerMessage::ok(id, Response::Empty),
             ]],
         ));

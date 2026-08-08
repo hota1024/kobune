@@ -1,11 +1,11 @@
-//! リバースプロキシ本体。
+//! The reverse proxy itself.
 //!
-//! upstream への接続はリクエストごとに張る。プール化していないのは、
-//! WebSocket の upgrade を素直に扱えることと、開発環境では接続数が
-//! 問題にならないため。
+//! Upstream connections are made per request. There is no pool: it keeps
+//! WebSocket upgrades straightforward, and connection count is not a
+//! concern in a development environment.
 //!
-//! **WebSocket と SSE は必ず通す。** 開発サーバの HMR がこれに依存しており、
-//! ここが動かないと Minato は使いものにならない。
+//! **WebSocket and SSE must always get through.** Dev-server HMR depends on
+//! them, and Minato is useless if they do not work.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,31 +21,31 @@ use hyper_util::rt::TokioIo;
 use crate::activator::{Activation, Activator};
 use crate::routes::{Routes, normalize_host};
 
-/// upstream への接続を諦めるまでの時間。
+/// How long to keep trying to reach an upstream.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub type ProxyBody = BoxBody<Bytes, hyper::Error>;
 
-/// ブラウザからの遷移で、待機ページを出す前にどれだけ待つか。
+/// How long a browser navigation waits before it gets the waiting page.
 ///
-/// 温まったコンテナならこの間に上がる。待機ページを一瞬見せて
-/// すぐ消える方が、体験としては悪い。
+/// A warm container comes up within this. Flashing a waiting page that
+/// vanishes immediately is worse than a short pause.
 const BROWSER_GRACE: Duration = Duration::from_millis(1500);
 
-/// ブラウザ以外（curl / fetch / エージェント）を待たせる上限。
+/// How long everything else (curl, fetch, an agent) waits.
 ///
-/// **中途半端にエラーを返さない。** 起動中に 503 を返すと、
-/// エージェントは「サーバが壊れている」と誤って判断する。
+/// **No half-hearted errors.** A 503 during startup reads to an agent as
+/// "the server is broken".
 const CLIENT_WAIT: Duration = Duration::from_secs(120);
 
-/// 待機ページの自動リロード間隔（秒）。
+/// How often the waiting page reloads itself, in seconds.
 const RETRY_AFTER_SECS: u32 = 2;
 
-/// 1 リクエストを処理する。
+/// Handles one request.
 ///
-/// ルートが見つからなければ 404、upstream に繋がらなければ 502 を返す。
-/// どちらも本文に理由を書く。ブラウザに空白のページを出しても、
-/// エージェントに空の応答を返しても、原因の切り分けができないため。
+/// No route is a 404; an unreachable upstream is a 502. Both explain
+/// themselves in the body — a blank page in the browser or an empty
+/// response to an agent gives neither of them anything to go on.
 pub async fn handle(
     request: Request<Incoming>,
     routes: Routes,
@@ -56,33 +56,34 @@ pub async fn handle(
         .get(HOST)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
-        // HTTP/2 では :authority を使う。
+        // HTTP/2 uses :authority.
         .or_else(|| request.uri().host().map(str::to_string))
         .unwrap_or_default();
 
-    // **必ず正規化してから使う。** `Host` にはポートが付くことがあり、
-    // 生のまま Activator に渡すと、アイドル判定のキーが
-    // ルーティングのキー（正規化済み）と食い違う。その状態では
-    // アクセスがアクセスとして数えられず、使用中のサービスが停止される。
+    // **Always normalise first.** `Host` can carry a port, and passing it
+    // raw to the activator makes the idle-tracking key disagree with the
+    // routing key, which is normalised. Accesses then stop counting as
+    // accesses, and a service in active use gets shut down.
     let Some(host) = normalize_host(&raw_host) else {
         return error_response(
             StatusCode::BAD_REQUEST,
-            format!("Minato: Host ヘッダ `{raw_host}` を解釈できません。\n"),
+            format!("Minato: cannot make sense of the Host header `{raw_host}`.\n"),
         );
     };
 
     let Some(route) = routes.get(&host) else {
-        tracing::debug!("ルートが見つかりません: {host}");
+        tracing::debug!("no route for {host}");
         return error_response(
             StatusCode::NOT_FOUND,
             format!(
-                "Minato: `{host}` に対応する環境がありません。\n\
-                 `minato ls` で起動している workspace を確認してください。\n"
+                "Minato: there is no environment behind `{host}`.\n\
+                 Run `minato ls` to see which workspaces are up.\n"
             ),
         );
     };
 
-    // 起動済みなら最短経路で転送する。ここがほとんどのリクエストの通り道。
+    // Already up: forward by the shortest path. Almost every request
+    // goes this way.
     let endpoint = match route.endpoint {
         Some(endpoint) => {
             activator.touch(&host);
@@ -97,24 +98,24 @@ pub async fn handle(
     match forward(request, endpoint).await {
         Ok(response) => response,
         Err(err) => {
-            tracing::debug!("転送に失敗しました ({endpoint}): {err}");
+            tracing::debug!("cannot forward to {endpoint}: {err}");
             error_response(
                 StatusCode::BAD_GATEWAY,
                 format!(
-                    "Minato: {}/{} の {} に転送できませんでした ({endpoint}).\n\
-                     サービスが起動しているか `minato status` で確認してください。\n\
-                     詳細: {err}\n",
-                    route.project, route.workspace, route.service
+                    "Minato: cannot forward to {} of {}/{} ({endpoint}).\n\
+                     Run `minato status` to check whether the service is up.\n\
+                     Details: {err}\n",
+                    route.service, route.project, route.workspace
                 ),
             )
         }
     }
 }
 
-/// 停止しているサービスを起こす。
+/// Wakes a stopped service.
 ///
-/// 待ち方をクライアントで変える。ブラウザには待機ページを見せて
-/// 自動リロードさせ、それ以外は受け付けられるまで待たせる。
+/// How long to wait depends on the client: a browser gets the waiting page
+/// and reloads itself, everything else waits for readiness.
 async fn wake(
     host: &str,
     request: &Request<Incoming>,
@@ -131,35 +132,35 @@ async fn wake(
         Activation::Starting => Err(if browser {
             starting_page(host)
         } else {
-            // ここに来るのは CLIENT_WAIT を使い切った場合だけ。
+            // Only reached once CLIENT_WAIT has run out.
             error_response(
                 StatusCode::GATEWAY_TIMEOUT,
                 format!(
-                    "Minato: `{host}` の起動が {}秒 以内に終わりませんでした。\n\
-                     `minato status` で状態を、`minato logs` で原因を確認してください。\n",
+                    "Minato: `{host}` did not come up within {} seconds.\n\
+                     Check the state with `minato status` and the cause with `minato logs`.\n",
                     CLIENT_WAIT.as_secs()
                 ),
             )
         }),
         Activation::Unknown => Err(error_response(
             StatusCode::NOT_FOUND,
-            format!("Minato: `{host}` に対応する環境がありません。\n"),
+            format!("Minato: there is no environment behind `{host}`.\n"),
         )),
         Activation::Failed(reason) => Err(error_response(
             StatusCode::BAD_GATEWAY,
             format!(
-                "Minato: `{host}` を起動できませんでした。\n\
+                "Minato: cannot start `{host}`.\n\
                  {reason}\n\
-                 `minato logs` で詳細を確認してください。\n"
+                 Run `minato logs` for the details.\n"
             ),
         )),
     }
 }
 
-/// ブラウザからの遷移か。
+/// Whether this is a browser navigation.
 ///
-/// `Accept` に `text/html` があるかで判断する。API 呼び出しや
-/// エージェントの curl はこれを送らない。
+/// Decided by `text/html` in `Accept`. API calls and an agent's curl do
+/// not send it.
 fn wants_html(request: &Request<Incoming>) -> bool {
     request
         .headers()
@@ -168,15 +169,15 @@ fn wants_html(request: &Request<Incoming>) -> bool {
         .is_some_and(|accept| accept.contains("text/html"))
 }
 
-/// 起動中であることを伝え、自動で読み直すページ。
+/// The page that says "starting" and reloads itself.
 fn starting_page(host: &str) -> Response<ProxyBody> {
     let body = format!(
         r#"<!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="{RETRY_AFTER_SECS}">
-<title>起動中 — {host}</title>
+<title>Starting — {host}</title>
 <style>
   body {{ font-family: ui-sans-serif, system-ui, sans-serif; display: grid;
          place-items: center; min-height: 100vh; margin: 0; color: #333; }}
@@ -196,8 +197,8 @@ fn starting_page(host: &str) -> Response<ProxyBody> {
 <body>
 <main>
   <div class="spinner"></div>
-  <p><code>{host}</code> を起動しています</p>
-  <p>準備ができ次第このページは自動で切り替わります</p>
+  <p>Starting <code>{host}</code></p>
+  <p>This page reloads itself once it is ready</p>
 </main>
 </body>
 </html>
@@ -208,17 +209,18 @@ fn starting_page(host: &str) -> Response<ProxyBody> {
         .status(StatusCode::SERVICE_UNAVAILABLE)
         .header(hyper::header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(hyper::header::RETRY_AFTER, RETRY_AFTER_SECS.to_string())
-        // 起動中の応答をキャッシュされると、上がった後も出続ける。
+        // A cached "starting" response would keep showing up after the
+        // service is live.
         .header(hyper::header::CACHE_CONTROL, "no-store")
         .body(
             Full::new(Bytes::from(body))
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .expect("固定のレスポンスは常に組み立てられる")
+        .expect("a fixed response always builds")
 }
 
-/// upstream に転送する。upgrade（WebSocket）にも対応する。
+/// Forwards to the upstream, upgrades (WebSocket) included.
 async fn forward(
     mut request: Request<Incoming>,
     upstream: SocketAddr,
@@ -228,36 +230,36 @@ async fn forward(
         .map_err(|_| ProxyError::ConnectTimeout(upstream))?
         .map_err(|source| ProxyError::Connect { upstream, source })?;
 
-    // Nagle を切る。HMR の小さなメッセージが遅延するのを避ける。
+    // Turn Nagle off, so HMR's small messages are not delayed.
     let _ = stream.set_nodelay(true);
 
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .map_err(ProxyError::Handshake)?;
 
-    // upgrade の際にコネクションの所有権が必要になるため、
-    // `with_upgrades` で駆動しておく。
+    // An upgrade needs ownership of the connection, so drive it with
+    // `with_upgrades`.
     let connection = connection.with_upgrades();
     let connection_task = tokio::spawn(async move {
         if let Err(err) = connection.await {
-            tracing::trace!("upstream との接続が終了しました: {err}");
+            tracing::trace!("upstream connection closed: {err}");
         }
     });
 
-    // upgrade 要求かどうかは転送前に見ておく。転送後は request を触れない。
+    // Check for an upgrade before forwarding — the request is gone after.
     let upgrade_requested = request.headers().get(hyper::header::UPGRADE).is_some();
 
-    // Host は upstream から見た値に書き換えない。
-    // Vite などは Host を見て許可判定をするため、元の値を保つ方が
-    // 「ブラウザで開いた URL がそのままアプリに見える」形になる。
-    // ただし Host が無いリクエストには補う。
+    // Host is not rewritten to what the upstream would see. Vite and
+    // friends check Host against an allowlist, and keeping the original
+    // means the app sees the same URL the browser opened. A request
+    // without a Host does get one.
     if !request.headers().contains_key(HOST) {
         if let Ok(value) = HeaderValue::from_str(&upstream.to_string()) {
             request.headers_mut().insert(HOST, value);
         }
     }
 
-    // upgrade する場合は元のリクエストの upgrade ハンドルを先に確保する。
+    // For an upgrade, take the handle off the original request first.
     let client_upgrade = if upgrade_requested {
         Some(hyper::upgrade::on(&mut request))
     } else {
@@ -273,7 +275,8 @@ async fn forward(
         return Ok(splice_upgrade(response, client_upgrade, connection_task).await);
     }
 
-    // 通常のレスポンスはそのまま流す。接続は本文を読み終えるまで生かす。
+    // An ordinary response streams straight through. The connection stays
+    // alive until the body is done.
     tokio::spawn(async move {
         let _ = connection_task.await;
     });
@@ -281,7 +284,7 @@ async fn forward(
     Ok(response.map(|body| body.boxed()))
 }
 
-/// 101 応答を受けたら、両側の upgrade を繋いで双方向にコピーする。
+/// On a 101, joins both upgrades and copies in both directions.
 async fn splice_upgrade(
     response: Response<Incoming>,
     client_upgrade: Option<hyper::upgrade::OnUpgrade>,
@@ -291,11 +294,11 @@ async fn splice_upgrade(
     let upstream_upgrade = hyper::upgrade::on(Response::from_parts(parts.clone(), body));
 
     let Some(client_upgrade) = client_upgrade else {
-        // upgrade を要求していないのに 101 が返るのは upstream の異常。
+        // A 101 without an upgrade request means the upstream is broken.
         connection_task.abort();
         return error_response(
             StatusCode::BAD_GATEWAY,
-            "Minato: upgrade を要求していないのに 101 が返りました\n".to_string(),
+            "Minato: the upstream returned 101 without an upgrade request\n".to_string(),
         );
     };
 
@@ -303,7 +306,7 @@ async fn splice_upgrade(
         let (client, upstream) = match tokio::try_join!(client_upgrade, upstream_upgrade) {
             Ok(pair) => pair,
             Err(err) => {
-                tracing::debug!("upgrade を確立できませんでした: {err}");
+                tracing::debug!("cannot establish the upgrade: {err}");
                 connection_task.abort();
                 return;
             }
@@ -312,13 +315,13 @@ async fn splice_upgrade(
         let mut client = TokioIo::new(client);
         let mut upstream = TokioIo::new(upstream);
 
-        // WebSocket はどちらからでもデータが流れる。
-        // 片方が閉じたらもう片方も閉じる。
+        // WebSocket data flows either way. When one side closes, so does
+        // the other.
         match tokio::io::copy_bidirectional(&mut client, &mut upstream).await {
             Ok((to_upstream, to_client)) => {
-                tracing::trace!("upgrade 終了: ↑{to_upstream}B ↓{to_client}B");
+                tracing::trace!("upgrade finished: ↑{to_upstream}B ↓{to_client}B");
             }
-            Err(err) => tracing::trace!("upgrade の中継が終了しました: {err}"),
+            Err(err) => tracing::trace!("upgrade relay finished: {err}"),
         }
 
         connection_task.abort();
@@ -336,7 +339,7 @@ fn error_response(status: StatusCode, message: String) -> Response<ProxyBody> {
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .expect("固定のレスポンスは常に組み立てられる")
+        .expect("a fixed response always builds")
 }
 
 fn empty_body() -> ProxyBody {
@@ -347,19 +350,19 @@ fn empty_body() -> ProxyBody {
 
 #[derive(Debug, thiserror::Error)]
 enum ProxyError {
-    #[error("{0} への接続がタイムアウトしました")]
+    #[error("timed out connecting to {0}")]
     ConnectTimeout(SocketAddr),
 
-    #[error("{upstream} に接続できません: {source}")]
+    #[error("cannot connect to {upstream}: {source}")]
     Connect {
         upstream: SocketAddr,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("upstream との handshake に失敗しました: {0}")]
+    #[error("handshake with the upstream failed: {0}")]
     Handshake(#[source] hyper::Error),
 
-    #[error("upstream がエラーを返しました: {0}")]
+    #[error("the upstream returned an error: {0}")]
     Upstream(#[source] hyper::Error),
 }

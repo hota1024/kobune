@@ -4,21 +4,22 @@ pub type Result<T, E = RuntimeError> = std::result::Result<T, E>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
-    /// runtime そのものに接続できない。Docker Desktop が起動していないなど。
-    #[error("{runtime} に接続できません: {message}")]
+    /// The runtime itself is unreachable — Docker Desktop is not running,
+    /// for instance.
+    #[error("cannot reach {runtime}: {message}")]
     Unavailable { runtime: String, message: String },
 
-    #[error("イメージ `{image}` を取得できません: {message}")]
+    #[error("cannot pull the image `{image}`: {message}")]
     ImageUnavailable { image: String, message: String },
 
-    #[error("{operation} に失敗しました: {message}")]
+    #[error("{operation} failed: {message}")]
     Failed { operation: String, message: String },
 
-    /// この runtime 実装では未対応の指定。
+    /// Something this runtime implementation does not support.
     #[error("{0}")]
     Unsupported(String),
 
-    /// 仕様として成立していない入力。設定の書き方が悪い場合。
+    /// An input that is not a coherent spec — the configuration is wrong.
     #[error("{0}")]
     InvalidSpec(String),
 }
@@ -38,13 +39,13 @@ impl From<RuntimeError> for ApiError {
         match err {
             RuntimeError::Unavailable { .. } => {
                 ApiError::new(ErrorCode::RuntimeUnavailable, message).with_hint(
-                    "コンテナランタイムが起動しているか確認してください\
-                     （Docker Desktop / OrbStack / colima など）",
+                    "check that the container runtime is running \
+                     (Docker Desktop, OrbStack, colima, …)",
                 )
             }
             RuntimeError::ImageUnavailable { .. } => {
                 ApiError::new(ErrorCode::RuntimeFailed, message)
-                    .with_hint("イメージ名が正しいか、ネットワークに接続できるか確認してください")
+                    .with_hint("check that the image name is right and the network is up")
             }
             RuntimeError::Failed { .. } => ApiError::new(ErrorCode::RuntimeFailed, message),
             RuntimeError::Unsupported(_) => ApiError::new(ErrorCode::Unsupported, message),
@@ -66,17 +67,17 @@ mod tests {
         let api: ApiError = err.into();
 
         assert_eq!(api.code, ErrorCode::RuntimeUnavailable);
-        assert!(api.code.is_retryable(), "起動すれば直るので再試行可能");
-        assert!(api.hint.expect("hint がある").contains("Docker"));
+        assert!(api.code.is_retryable(), "starting it fixes this, so retrying is worth it");
+        assert!(api.hint.expect("has a hint").contains("Docker"));
     }
 
     #[test]
     fn invalid_spec_is_a_config_problem_not_a_runtime_one() {
-        let api: ApiError = RuntimeError::InvalidSpec("volumes の書式が不正".into()).into();
+        let api: ApiError = RuntimeError::InvalidSpec("volumes is malformed".into()).into();
         assert_eq!(api.code, ErrorCode::InvalidConfig);
         assert!(
             !api.code.is_retryable(),
-            "設定を直さない限り再試行しても無駄"
+            "retrying gets nowhere until the config is fixed"
         );
     }
 }

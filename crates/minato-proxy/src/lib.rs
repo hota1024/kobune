@@ -1,8 +1,8 @@
-//! リバースプロキシと、そのためのローカル CA。
+//! The reverse proxy, and the local CA it needs.
 //!
-//! プロキシは runtime の実装を知らない。[`Routes`] に入っている
-//! `SocketAddr` へ転送するだけで、それがホストのフォワードポートか
-//! コンテナ自身の IP かは区別しない。
+//! The proxy knows nothing about runtimes. It forwards to the `SocketAddr`
+//! in [`Routes`] without caring whether that is a forwarded host port or a
+//! container's own IP.
 
 pub mod activator;
 pub mod ca;
@@ -15,8 +15,8 @@ pub use ca::{CA_CERT_FILE, CA_KEY_FILE, CaError, DynamicCertResolver, LocalCa, s
 pub use routes::{Route, Routes, normalize_host};
 pub use server::{serve_http, serve_https};
 
-/// 既定の HTTP 待ち受けポート。
+/// The default HTTP port.
 pub const DEFAULT_HTTP_PORT: u16 = 80;
 
-/// 既定の HTTPS 待ち受けポート。
+/// The default HTTPS port.
 pub const DEFAULT_HTTPS_PORT: u16 = 443;

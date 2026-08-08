@@ -1,11 +1,12 @@
-//! サービスが「受け付けられる」状態かを判定する。
+//! Deciding whether a service is ready to serve.
 //!
-//! コンテナが起動したことと、中のアプリが応答できることは別。両者を
-//! 混同すると `minato up` の直後の `curl` が connection refused になり、
-//! エージェントは「サーバが壊れている」と誤って判断する。
+//! A container having started and the app inside being able to answer are
+//! two different things. Confusing them makes the `curl` right after
+//! `minato up` fail with connection refused, and an agent reads that as
+//! "the server is broken".
 //!
-//! `minato.toml` の `health` が指定されていればそれに従い、無ければ
-//! TCP 接続が確立できるかだけを見る。
+//! Follows `health` from `minato.toml` when it is set; otherwise all that
+//! matters is whether a TCP connection can be made.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -16,47 +17,47 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 
-/// 受け付け可能になるまで待つ既定の上限。
+/// How long to wait for readiness by default.
 ///
-/// 開発サーバの初回起動（依存の解決やコンパイル）はこれより長くかかる
-/// ことがある。その場合は待たずに進み、警告だけ出す。無限に待つと
-/// `minato up` が返らなくなる。
+/// A dev server's first start — resolving dependencies, compiling — can
+/// take longer than this. When it does, carry on and warn rather than
+/// wait: waiting forever means `minato up` never returns.
 pub const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// 判定の間隔。
+/// How often to check.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// 1 回の判定に許す時間。
+/// How long a single check may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// 1 回だけ判定する。
+/// Checks once.
 ///
-/// `health` が `None` なら TCP 接続の可否で判断する。
+/// A `health` of `None` means "can a TCP connection be made".
 pub async fn probe(endpoint: SocketAddr, health: Option<&HealthCheck>) -> Result<bool> {
     match health {
         None => Ok(probe_tcp(endpoint).await),
         Some(HealthCheck::Tcp(_)) => Ok(probe_tcp(endpoint).await),
         Some(HealthCheck::Http(url)) => Ok(probe_http(endpoint, url).await),
         Some(HealthCheck::Cmd(command)) => Err(RuntimeError::Unsupported(format!(
-            "health = \"cmd:{command}\" はまだ対応していません。\
-             `http://...` か `tcp://...` を指定してください"
+            "health = \"cmd:{command}\" is not supported yet. \
+             Use `http://...` or `tcp://...`"
         ))),
     }
 }
 
-/// TCP 接続が確立できるか。
+/// Whether a TCP connection can be made.
 async fn probe_tcp(endpoint: SocketAddr) -> bool {
     tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect(endpoint))
         .await
         .is_ok_and(|result| result.is_ok())
 }
 
-/// HTTP で叩いて 2xx / 3xx が返るか。
+/// Whether an HTTP request comes back 2xx or 3xx.
 ///
-/// `health` に書かれた URL のホストは無視し、**パスだけを使って
-/// `endpoint` に対して発行する**。設定にはコンテナ内から見たアドレス
-/// （`http://localhost:3000/healthz`）を書くが、ホスト側から届くのは
-/// runtime が割り当てた別のアドレスであるため。
+/// The host in the `health` URL is ignored: **only its path is used, and
+/// the request goes to `endpoint`**. The configuration is written from
+/// inside the container (`http://localhost:3000/healthz`), but what the
+/// host can reach is whatever address the runtime assigned.
 async fn probe_http(endpoint: SocketAddr, url: &str) -> bool {
     let path = path_of(url);
 
@@ -66,8 +67,8 @@ async fn probe_http(endpoint: SocketAddr, url: &str) -> bool {
         return false;
     };
 
-    // 依存を増やさないよう、最小限の HTTP/1.1 リクエストを手で書く。
-    // health check は応答行だけ見れば足りる。
+    // A minimal HTTP/1.1 request, written by hand to avoid another
+    // dependency. A health check only needs the status line.
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: {endpoint}\r\nConnection: close\r\nUser-Agent: minato-health\r\n\r\n"
     );
@@ -92,7 +93,7 @@ async fn probe_http(endpoint: SocketAddr, url: &str) -> bool {
     matches!(status_code(&status_line), Some(code) if (200..400).contains(&code))
 }
 
-/// `http://localhost:3000/healthz?x=1` から `/healthz?x=1` を取り出す。
+/// Takes `/healthz?x=1` out of `http://localhost:3000/healthz?x=1`.
 fn path_of(url: &str) -> String {
     let without_scheme = url
         .strip_prefix("https://")
@@ -105,15 +106,15 @@ fn path_of(url: &str) -> String {
     }
 }
 
-/// `HTTP/1.1 200 OK` から `200` を取り出す。
+/// Takes `200` out of `HTTP/1.1 200 OK`.
 fn status_code(status_line: &str) -> Option<u16> {
     status_line.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// 受け付け可能になるまで待つ。
+/// Waits for readiness.
 ///
-/// 待てなかったこと自体は失敗として扱わない（アプリの起動が遅いだけの
-/// 場合がある）。受け付けられるようになったかを `bool` で返す。
+/// Running out of time is not itself a failure — the app may simply be
+/// slow to start. Returns whether it became ready.
 pub async fn wait_until_ready(
     endpoint: SocketAddr,
     health: Option<&HealthCheck>,
@@ -124,7 +125,7 @@ pub async fn wait_until_ready(
     loop {
         match probe(endpoint, health).await {
             Ok(true) => return true,
-            // 判定方法が未対応なら、待っても状況は変わらない。
+            // An unsupported check will not start working if we wait.
             Err(_) => return false,
             Ok(false) => {}
         }
@@ -137,7 +138,7 @@ pub async fn wait_until_ready(
     }
 }
 
-/// サービスが受け付けるまで待ち、待てなかった場合は警告を出す。
+/// Waits for a service to answer, warning if it does not.
 pub async fn await_service(
     service: &str,
     endpoint: Option<SocketAddr>,
@@ -146,11 +147,11 @@ pub async fn await_service(
     events: &EventSink,
 ) -> bool {
     let Some(addr) = endpoint else {
-        // ポートを公開していないサービスは接続確認のしようがない。
+        // A service that publishes no port cannot be connected to at all.
         return true;
     };
 
-    let label = format!("{service} の応答を待機");
+    let label = format!("waiting for {service}");
     events.step_started("await", &label);
 
     if wait_until_ready(addr, health, timeout).await {
@@ -161,11 +162,11 @@ pub async fn await_service(
     events.step_skipped(
         "await",
         &label,
-        format!("{}秒以内に応答しませんでした", timeout.as_secs()),
+        format!("no answer within {} seconds", timeout.as_secs()),
     );
     events.warn(format!(
-        "{service} はまだ {addr} で応答していません。\
-         起動に時間がかかっている可能性があります"
+        "{service} is not answering on {addr} yet. \
+         It may just be slow to start"
     ));
 
     false
@@ -178,8 +179,9 @@ mod tests {
 
     #[test]
     fn extracts_the_path_from_a_health_url() {
-        // 設定にはコンテナ内から見たアドレスを書く。ホスト側から届く
-        // アドレスは別なので、パスだけを使う。
+        // The configuration is written from inside the container. What
+        // the host can reach is a different address, so only the path is
+        // used.
         assert_eq!(path_of("http://localhost:3000/healthz"), "/healthz");
         assert_eq!(path_of("https://localhost/ready?deep=1"), "/ready?deep=1");
         assert_eq!(path_of("http://localhost:3000"), "/");
@@ -194,7 +196,7 @@ mod tests {
         assert_eq!(status_code(""), None);
     }
 
-    /// 指定のステータス行を返すだけの HTTP サーバ。
+    /// An HTTP server that returns one fixed status line.
     async fn spawn_http(status: &'static str) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -232,10 +234,10 @@ mod tests {
             .expect("bind");
         let addr = listener.local_addr().expect("addr");
 
-        assert!(probe(addr, None).await.expect("判定できる"));
+        assert!(probe(addr, None).await.expect("can decide"));
 
         drop(listener);
-        assert!(!probe(closed_port().await, None).await.expect("判定できる"));
+        assert!(!probe(closed_port().await, None).await.expect("can decide"));
     }
 
     #[tokio::test]
@@ -245,19 +247,19 @@ mod tests {
             let health = HealthCheck::Http("http://localhost/healthz".into());
 
             assert!(
-                probe(addr, Some(&health)).await.expect("判定できる"),
-                "{status} は ready 扱いにする"
+                probe(addr, Some(&health)).await.expect("can decide"),
+                "{status} counts as ready"
             );
         }
     }
 
     #[tokio::test]
     async fn http_probe_rejects_server_errors() {
-        // 起動はしたが依存に繋がっていない、という状態を弾く。
+        // Rejects "started, but not connected to its dependencies".
         let addr = spawn_http("503 Service Unavailable").await;
         let health = HealthCheck::Http("http://localhost/healthz".into());
 
-        assert!(!probe(addr, Some(&health)).await.expect("判定できる"));
+        assert!(!probe(addr, Some(&health)).await.expect("can decide"));
     }
 
     #[tokio::test]
@@ -265,19 +267,19 @@ mod tests {
         let addr = closed_port().await;
         let health = HealthCheck::Http("http://localhost/healthz".into());
 
-        assert!(!probe(addr, Some(&health)).await.expect("判定できる"));
+        assert!(!probe(addr, Some(&health)).await.expect("can decide"));
     }
 
     #[tokio::test]
     async fn tcp_health_only_needs_a_connection() {
-        // TCP 指定なら HTTP を話さないサービスでも ready になる。
+        // With a TCP check, a service that speaks no HTTP is still ready.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("addr");
         let health = HealthCheck::Tcp("localhost:5432".into());
 
-        assert!(probe(addr, Some(&health)).await.expect("判定できる"));
+        assert!(probe(addr, Some(&health)).await.expect("can decide"));
     }
 
     #[tokio::test]
@@ -286,12 +288,12 @@ mod tests {
         let health = HealthCheck::Cmd("pg_isready".into());
 
         let err = probe(addr, Some(&health)).await.unwrap_err();
-        assert!(err.to_string().contains("対応していません"), "got: {err}");
+        assert!(err.to_string().contains("not supported"), "got: {err}");
     }
 
     #[tokio::test]
     async fn waiting_gives_up_on_unsupported_checks() {
-        // 待っても状況が変わらないものを待ち続けない。
+        // Do not keep waiting on something waiting cannot fix.
         let addr = closed_port().await;
         let health = HealthCheck::Cmd("pg_isready".into());
 
@@ -301,7 +303,7 @@ mod tests {
         assert!(!ready);
         assert!(
             started.elapsed() < Duration::from_secs(1),
-            "即座に諦める必要がある"
+            "it has to give up immediately"
         );
     }
 
@@ -315,7 +317,7 @@ mod tests {
 
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let late = tokio::net::TcpListener::bind(addr).await.expect("再 bind");
+            let late = tokio::net::TcpListener::bind(addr).await.expect("rebinds");
             tokio::time::sleep(Duration::from_secs(5)).await;
             drop(late);
         });
@@ -330,7 +332,7 @@ mod tests {
         assert!(await_service("db", None, None, Duration::from_millis(100), &sink).await);
         drop(sink);
 
-        assert!(rx.recv().await.is_none(), "待つ必要がないので何も出さない");
+        assert!(rx.recv().await.is_none(), "nothing to wait for, so nothing to report");
     }
 
     #[tokio::test]
@@ -341,7 +343,7 @@ mod tests {
         let ready = await_service("web", Some(addr), None, Duration::from_millis(200), &sink).await;
         drop(sink);
 
-        assert!(!ready, "応答しなかったことは呼び出し側に伝える");
+        assert!(!ready, "the caller is told it never answered");
 
         let mut saw_warning = false;
         while let Some(event) = rx.recv().await {
@@ -354,6 +356,6 @@ mod tests {
             }
         }
 
-        assert!(saw_warning, "利用者に状況を伝える必要がある");
+        assert!(saw_warning, "the user has to be told what happened");
     }
 }

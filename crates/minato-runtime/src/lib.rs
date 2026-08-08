@@ -1,8 +1,9 @@
-//! 仮想化バックエンドの抽象と実装。
+//! The virtualisation-backend abstraction, and its implementations.
 //!
-//! `Runtime` trait が返す `endpoint` はプロキシの転送先であり、それが
-//! ホストのフォワードポートかコンテナ自身の IP かは実装が決める。
-//! この 1 点で Docker と Apple Container の構造的な違いを吸収している。
+//! The `endpoint` a `Runtime` returns is where the proxy forwards to; each
+//! implementation decides whether that is a forwarded host port or the
+//! container's own IP. That single choice absorbs the structural
+//! difference between Docker and Apple Container.
 
 pub mod apple;
 pub mod docker;
@@ -23,21 +24,21 @@ pub use spec::{
     WorkspaceSpec,
 };
 
-/// 識別子から runtime 実装を作る。
+/// Builds a runtime implementation from its identifier.
 ///
-/// 接続確認はしないため、ここで成功しても使えるとは限らない。
-/// 呼び出し側は [`Runtime::probe`] で到達性を確かめる。
+/// Nothing is connected to, so success here does not mean the runtime is
+/// usable. Callers check reachability with [`Runtime::probe`].
 pub fn create(id: &str) -> Result<Box<dyn Runtime>> {
     match id {
         "docker" => Ok(Box::new(DockerRuntime::connect()?)),
         "apple" | "apple-container" | "container" => Ok(Box::new(AppleContainerRuntime::new())),
         other => Err(RuntimeError::Unsupported(format!(
-            "runtime `{other}` は未対応です。`docker` または `apple` を指定してください"
+            "no such runtime `{other}`. Use `docker` or `apple`"
         ))),
     }
 }
 
-/// 対応している runtime 識別子。
+/// The runtime identifiers that are supported.
 pub const AVAILABLE_RUNTIMES: &[&str] = &["docker", "apple"];
 
 #[cfg(test)]
@@ -46,20 +47,20 @@ mod tests {
 
     #[test]
     fn rejects_unknown_runtime_with_a_useful_message() {
-        // `Box<dyn Runtime>` は Debug を実装しないので unwrap_err は使えない。
+        // `Box<dyn Runtime>` is not Debug, so unwrap_err is out.
         let message = match create("podman") {
-            Ok(runtime) => panic!("未対応のはずが {} を返した", runtime.id()),
+            Ok(runtime) => panic!("expected no support, got {}", runtime.id()),
             Err(err) => err.to_string(),
         };
 
-        assert!(message.contains("podman"), "何が悪いか: {message}");
-        assert!(message.contains("docker"), "何が使えるか: {message}");
+        assert!(message.contains("podman"), "what went wrong: {message}");
+        assert!(message.contains("docker"), "what to use instead: {message}");
     }
 
     #[test]
     fn accepts_apple_container_aliases() {
         for id in ["apple", "apple-container", "container"] {
-            let runtime = create(id).expect("作れる");
+            let runtime = create(id).expect("creates");
             assert_eq!(runtime.id(), "apple");
         }
     }

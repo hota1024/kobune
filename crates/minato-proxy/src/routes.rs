@@ -1,30 +1,31 @@
-//! ホスト名から転送先を引くテーブル。
+//! The table mapping hostnames to forwarding targets.
 //!
-//! daemon（Supervisor）が書き、プロキシが読む。プロキシは runtime の
-//! 実装を知らず、[`Route::endpoint`] に転送するだけでよい。Docker では
-//! ホストのフォワードポート、Apple Container ではコンテナ自身の IP が入る。
+//! Written by the daemon's supervisor, read by the proxy. The proxy knows
+//! nothing about runtimes and simply forwards to [`Route::endpoint`] —
+//! a forwarded host port under Docker, the container's own IP under Apple
+//! Container.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
-/// 1 つのホスト名に対応する転送先。
+/// Where one hostname forwards to.
 ///
-/// **停止中のサービスも登録する。** scale-to-zero では「止まっている」ことと
-/// 「存在しない」ことを区別する必要がある。前者はリクエストで起こし、
-/// 後者は 404 を返す。
+/// **Stopped services are registered too.** Scale-to-zero has to tell
+/// "stopped" apart from "does not exist": the first is woken by a request,
+/// the second gets a 404.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
-    /// 転送先。停止中は `None`。
+    /// The forwarding target. `None` while stopped.
     pub endpoint: Option<SocketAddr>,
-    /// 診断とログのための識別子。
+    /// Identifiers, for diagnostics and logs.
     pub project: String,
     pub workspace: String,
     pub service: String,
 }
 
 impl Route {
-    /// 起動中のサービス。
+    /// A running service.
     pub fn new(
         endpoint: SocketAddr,
         project: impl Into<String>,
@@ -39,7 +40,7 @@ impl Route {
         }
     }
 
-    /// 停止中のサービス。リクエストが来たら起動する。
+    /// A stopped service, to be woken by a request.
     pub fn stopped(
         project: impl Into<String>,
         workspace: impl Into<String>,
@@ -58,10 +59,10 @@ impl Route {
     }
 }
 
-/// スレッド間で共有するルーティングテーブル。
+/// The routing table, shared across threads.
 ///
-/// 読みが圧倒的に多く（リクエストごと）、書きは稀（サービスの起動停止）
-/// なので `RwLock` で足りる。
+/// Reads dominate (one per request) and writes are rare (a service
+/// starting or stopping), so an `RwLock` is enough.
 #[derive(Clone, Default)]
 pub struct Routes {
     inner: Arc<RwLock<HashMap<String, Route>>>,
@@ -72,25 +73,25 @@ impl Routes {
         Self::default()
     }
 
-    /// ホスト名から転送先を引く。`host` は正規化していなくてよい。
+    /// Looks up a target. `host` need not be normalised.
     pub fn get(&self, host: &str) -> Option<Route> {
         let key = normalize_host(host)?;
         self.inner
             .read()
-            .expect("ルーティングテーブルのロックが壊れている")
+            .expect("the routing table lock is poisoned")
             .get(&key)
             .cloned()
     }
 
     pub fn insert(&self, host: &str, route: Route) {
         let Some(key) = normalize_host(host) else {
-            tracing::warn!("ホスト名として解釈できないため登録しません: {host}");
+            tracing::warn!("not a usable hostname, so not registered: {host}");
             return;
         };
 
         self.inner
             .write()
-            .expect("ルーティングテーブルのロックが壊れている")
+            .expect("the routing table lock is poisoned")
             .insert(key, route);
     }
 
@@ -101,19 +102,20 @@ impl Routes {
 
         self.inner
             .write()
-            .expect("ルーティングテーブルのロックが壊れている")
+            .expect("the routing table lock is poisoned")
             .remove(&key);
     }
 
-    /// あるプロジェクトのルートをまとめて差し替える。
+    /// Replaces every route of one project at once.
     ///
-    /// 個々の増減を追うより、状態を取り直して丸ごと入れ替える方が
-    /// 取りこぼしがない。runtime のラベルを状態の正とする方針と揃う。
+    /// Re-reading the state and swapping wholesale misses nothing, unlike
+    /// tracking individual additions and removals. It also matches the
+    /// rule that the runtime's labels are the source of truth.
     pub fn replace_project(&self, project: &str, entries: Vec<(String, Route)>) {
         let mut guard = self
             .inner
             .write()
-            .expect("ルーティングテーブルのロックが壊れている");
+            .expect("the routing table lock is poisoned");
 
         guard.retain(|_, route| route.project != project);
 
@@ -124,12 +126,12 @@ impl Routes {
         }
     }
 
-    /// 登録されているホスト名と転送先の一覧。診断用。
+    /// Every registered host and target. For diagnostics.
     pub fn snapshot(&self) -> Vec<(String, Route)> {
         let guard = self
             .inner
             .read()
-            .expect("ルーティングテーブルのロックが壊れている");
+            .expect("the routing table lock is poisoned");
 
         let mut entries: Vec<(String, Route)> = guard
             .iter()
@@ -143,7 +145,7 @@ impl Routes {
     pub fn len(&self) -> usize {
         self.inner
             .read()
-            .expect("ルーティングテーブルのロックが壊れている")
+            .expect("the routing table lock is poisoned")
             .len()
     }
 
@@ -152,17 +154,17 @@ impl Routes {
     }
 }
 
-/// `Host` ヘッダや SNI をテーブルのキーに揃える。
+/// Normalises a `Host` header or SNI name into a table key.
 ///
-/// ブラウザは `web.feat-1.myapp.localhost:8080` のようにポート付きで送り、
-/// DNS 由来の名前は末尾にドットが付くことがある。大文字小文字も区別しない。
+/// Browsers send the port along (`web.feat-1.myapp.localhost:8080`) and
+/// names from DNS can carry a trailing dot. Case is not significant.
 pub fn normalize_host(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
 
-    // IPv6 リテラル（`[::1]:8080`）はブラケットの中を取り出す。
+    // For an IPv6 literal (`[::1]:8080`), take what is inside the brackets.
     let without_port = if let Some(rest) = trimmed.strip_prefix('[') {
         let end = rest.find(']')?;
         &rest[..end]
@@ -173,7 +175,7 @@ pub fn normalize_host(raw: &str) -> Option<String> {
         }
     };
 
-    // 完全修飾名の末尾のドットを落とす。
+    // Drop the trailing dot of a fully-qualified name.
     let without_dot = without_port.trim_end_matches('.');
     if without_dot.is_empty() {
         return None;
@@ -197,7 +199,7 @@ mod tests {
 
     #[test]
     fn strips_port_from_host_header() {
-        // ブラウザは非標準ポートだと Host にポートを付けて送る。
+        // On a non-standard port the browser includes it in Host.
         assert_eq!(
             normalize_host("web.feat-1.myapp.localhost:8443").as_deref(),
             Some("web.feat-1.myapp.localhost")
@@ -231,7 +233,7 @@ mod tests {
         let routes = Routes::new();
         routes.insert("web.feat-1.myapp.localhost", route(3000));
 
-        // 登録も参照も正規化されるので、どの表記でも引ける。
+        // Both sides are normalised, so any spelling resolves.
         assert!(routes.get("web.feat-1.myapp.localhost").is_some());
         assert!(routes.get("WEB.feat-1.myapp.localhost:443").is_some());
         assert!(routes.get("web.feat-1.myapp.localhost.").is_some());
@@ -276,12 +278,12 @@ mod tests {
 
         assert!(
             routes.get("web.feat-1.myapp.localhost").is_none(),
-            "古いルートは消える"
+            "the old routes are gone"
         );
         assert!(routes.get("api.feat-2.myapp.localhost").is_some());
         assert!(
             routes.get("web.other.localhost").is_some(),
-            "他プロジェクトには触れない"
+            "other projects are untouched"
         );
     }
 
@@ -291,13 +293,13 @@ mod tests {
         routes.insert("web.feat-1.myapp.localhost", route(3000));
 
         routes.replace_project("myapp", vec![]);
-        assert!(routes.is_empty(), "全サービス停止でルートが残らない");
+        assert!(routes.is_empty(), "stopping everything leaves no routes");
     }
 
     #[test]
     fn stopped_routes_are_registered_without_an_endpoint() {
-        // 「止まっている」と「存在しない」を区別できないと、
-        // 停止中のサービスを起こせず 404 になってしまう。
+        // Without telling "stopped" from "does not exist", a stopped
+        // service can never be woken and just 404s.
         let routes = Routes::new();
         routes.insert(
             "web.feat-1.myapp.localhost",
@@ -306,13 +308,13 @@ mod tests {
 
         let route = routes
             .get("web.feat-1.myapp.localhost")
-            .expect("登録されている");
+            .expect("registered");
         assert!(!route.is_running());
         assert_eq!(route.endpoint, None);
 
         assert!(
             routes.get("never-created.myapp.localhost").is_none(),
-            "存在しないホストは別物"
+            "an unknown host is a different matter"
         );
     }
 
