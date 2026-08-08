@@ -140,29 +140,32 @@ impl GatewaySettings {
         settings
     }
 
-    /// The port to try after `port`, if there is one worth trying.
+    /// The port to try after `port`, if there is one worth naming.
     ///
-    /// `None` in the two cases where moving is wrong rather than merely
-    /// unnecessary: the port was named, or launchd is holding the
-    /// privileged one for a job that is simply not running. Listening
-    /// elsewhere in that second case would leave the machine looking
-    /// healthy while socket activation stays broken.
-    ///
-    /// `launchd_installed` is passed in rather than read here, so the rule
-    /// can be checked without a plist on the machine running the tests.
-    fn fallback(
-        &self,
-        named: bool,
-        port: u16,
-        fallback: u16,
-        launchd_installed: bool,
-    ) -> Option<u16> {
-        if named || port == fallback || launchd_installed {
-            return None;
-        }
-
-        Some(fallback)
+    /// `None` when the port was asked for by name, or when it already *is*
+    /// the fallback. Whether moving is right also depends on why the bind
+    /// failed, which is not known yet here — see [`may_move`].
+    fn fallback(&self, named: bool, port: u16, fallback: u16) -> Option<u16> {
+        (!named && port != fallback).then_some(fallback)
     }
+}
+
+/// Whether a refused port is worth moving away from.
+///
+/// **Not when launchd is the one holding it.** A LaunchDaemon keeps 80
+/// whether or not its job is running, so `InUse` there means the job needs
+/// waking; listening elsewhere would leave the machine looking healthy
+/// while socket activation stays broken.
+///
+/// A port that merely needs privileges is a different matter even with a
+/// plist installed — nothing is holding it, so there is nothing to wake.
+/// That is the state a `launchctl bootstrap` that never ran leaves behind,
+/// and refusing to move there would issue no URLs at all.
+///
+/// `launchd_installed` is passed in rather than read here, so the rule can
+/// be checked without a plist on the machine running the tests.
+fn may_move(failure: Option<BindFailure>, launchd_installed: bool) -> bool {
+    !(launchd_installed && failure == Some(BindFailure::InUse))
 }
 
 fn port_from_env(key: &str) -> Option<u16> {
@@ -196,6 +199,13 @@ pub struct Gateway {
     http_failure: Option<BindFailure>,
     https_failure: Option<BindFailure>,
     dns_failure: Option<BindFailure>,
+    /// Whether the proxy had to settle for the fallback port.
+    ///
+    /// Not the same as "the port is not 80": someone who names a port with
+    /// `MINATO_HTTP_PORT` got what they asked for, and telling them that is
+    /// unexpected would be wrong.
+    http_fell_back: bool,
+    https_fell_back: bool,
 }
 
 impl Gateway {
@@ -213,7 +223,7 @@ impl Gateway {
         // worth moving away from, and both listeners have to agree.
         let launchd_installed = minato_core::launchd::is_installed();
 
-        let (http_addrs, http_failure) = Self::start_http(
+        let (http_addrs, http_failure, http_fell_back) = Self::start_http(
             &routes,
             settings,
             launchd_installed,
@@ -221,7 +231,7 @@ impl Gateway {
             shutdown.clone(),
         )
         .await;
-        let (https_addrs, ca_path, https_failure) = Self::start_https(
+        let (https_addrs, ca_path, https_failure, https_fell_back) = Self::start_https(
             paths,
             &routes,
             settings,
@@ -242,6 +252,8 @@ impl Gateway {
             http_failure,
             https_failure,
             dns_failure,
+            http_fell_back,
+            https_fell_back,
         }
     }
 
@@ -251,7 +263,7 @@ impl Gateway {
         launchd_installed: bool,
         activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
-    ) -> (Vec<SocketAddr>, Option<BindFailure>) {
+    ) -> (Vec<SocketAddr>, Option<BindFailure>, bool) {
         // Use launchd's already-bound socket when there is one. 80 is
         // privileged, so unprivileged there is no other way to hold it.
         let activated = adopt_listeners(activation::HTTP_SOCKET);
@@ -273,10 +285,10 @@ impl Gateway {
             }
 
             tracing::info!("HTTP proxy: inherited from launchd ({addrs:?})");
-            return (addrs, None);
+            return (addrs, None, false);
         }
 
-        let (listeners, failure) = bind_with_fallback(
+        let listening = bind_with_fallback(
             settings,
             "the HTTP proxy",
             settings.http_port,
@@ -284,14 +296,14 @@ impl Gateway {
                 settings.http_port_named,
                 settings.http_port,
                 FALLBACK_HTTP_PORT,
-                launchd_installed,
             ),
+            launchd_installed,
         )
         .await;
 
-        let mut bound = Vec::with_capacity(listeners.len());
+        let mut bound = Vec::with_capacity(listening.listeners.len());
 
-        for listener in listeners {
+        for listener in listening.listeners {
             bound.extend(listener.local_addr().ok());
 
             let routes = routes.clone();
@@ -305,7 +317,7 @@ impl Gateway {
             });
         }
 
-        (bound, failure)
+        (bound, listening.failure, listening.fell_back)
     }
 
     async fn start_https(
@@ -315,12 +327,12 @@ impl Gateway {
         launchd_installed: bool,
         activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
-    ) -> (Vec<SocketAddr>, Option<PathBuf>, Option<BindFailure>) {
+    ) -> (Vec<SocketAddr>, Option<PathBuf>, Option<BindFailure>, bool) {
         let ca = match LocalCa::load_or_create(&paths.ca_dir()) {
             Ok(ca) => Arc::new(ca),
             Err(err) => {
                 tracing::warn!("no CA available, so HTTPS stays off: {err}");
-                return (Vec::new(), None, Some(BindFailure::Other));
+                return (Vec::new(), None, Some(BindFailure::Other), false);
             }
         };
 
@@ -348,10 +360,10 @@ impl Gateway {
             }
 
             tracing::info!("HTTPS proxy: inherited from launchd ({addrs:?})");
-            return (addrs, Some(ca_path), None);
+            return (addrs, Some(ca_path), None, false);
         }
 
-        let (listeners, failure) = bind_with_fallback(
+        let listening = bind_with_fallback(
             settings,
             "the HTTPS proxy",
             settings.https_port,
@@ -359,14 +371,14 @@ impl Gateway {
                 settings.https_port_named,
                 settings.https_port,
                 FALLBACK_HTTPS_PORT,
-                launchd_installed,
             ),
+            launchd_installed,
         )
         .await;
 
-        let mut bound = Vec::with_capacity(listeners.len());
+        let mut bound = Vec::with_capacity(listening.listeners.len());
 
-        for listener in listeners {
+        for listener in listening.listeners {
             bound.extend(listener.local_addr().ok());
 
             let routes = routes.clone();
@@ -381,7 +393,7 @@ impl Gateway {
             });
         }
 
-        (bound, Some(ca_path), failure)
+        (bound, Some(ca_path), listening.failure, listening.fell_back)
     }
 
     async fn start_dns(
@@ -421,7 +433,9 @@ impl Gateway {
         match tokio::net::UdpSocket::bind(addr).await {
             Ok(socket) => drop(socket),
             Err(err) => {
-                return (None, Some(report_bind_failure("DNS", addr, &err)));
+                let failure = BindFailure::classify(&err, addr);
+                report_bind_failure("DNS", addr.port(), Some(failure));
+                return (None, Some(failure));
             }
         }
 
@@ -449,6 +463,8 @@ impl Gateway {
             http_failure: Some(BindFailure::Other),
             https_failure: Some(BindFailure::Other),
             dns_failure: Some(BindFailure::Other),
+            http_fell_back: false,
+            https_fell_back: false,
         }
     }
 
@@ -475,6 +491,8 @@ impl Gateway {
             http_failure: None,
             https_failure: None,
             dns_failure: None,
+            http_fell_back: false,
+            https_fell_back: false,
         }
     }
 
@@ -527,6 +545,14 @@ impl Gateway {
 
     pub fn dns_failure(&self) -> Option<BindFailure> {
         self.dns_failure
+    }
+
+    pub fn http_fell_back(&self) -> bool {
+        self.http_fell_back
+    }
+
+    pub fn https_fell_back(&self) -> bool {
+        self.https_fell_back
     }
 
     pub fn ca_path(&self) -> Option<&std::path::Path> {
@@ -593,12 +619,8 @@ fn adopt_udp(name: &str) -> Vec<tokio::net::UdpSocket> {
 /// Partial success is kept rather than discarded: one family listening
 /// still serves the clients that reach it, and [`Gateway::missing_families`]
 /// is what says the other one is unattended.
-async fn bind_port(
-    bind: &[IpAddr],
-    port: u16,
-    what: &str,
-) -> (Vec<TcpListener>, Option<BindFailure>) {
-    let mut bound = Vec::new();
+async fn bind_port(bind: &[IpAddr], port: u16, what: &str) -> Attempt {
+    let mut listeners = Vec::new();
     let mut failure = None;
 
     for ip in bind {
@@ -606,66 +628,128 @@ async fn bind_port(
 
         match TcpListener::bind(addr).await {
             Ok(listener) => {
-                tracing::info!("{what}: {addr}");
-                bound.push(listener);
+                tracing::debug!("{what}: bound {addr}");
+                listeners.push(listener);
             }
-            Err(err) => failure = Some(report_bind_failure(what, addr, &err)),
+            Err(err) => {
+                tracing::debug!("{what}: cannot hold {addr}: {err}");
+
+                // The first refusal is kept rather than the last: it is the
+                // reason the port could not be had, and a second family
+                // failing differently does not change that.
+                failure.get_or_insert_with(|| BindFailure::classify(&err, addr));
+            }
         }
     }
 
-    (bound, failure)
+    Attempt {
+        port,
+        listeners,
+        failure,
+    }
 }
 
-/// Binds the wanted port, or the fallback when nothing at all came up.
+/// One port's worth of binding.
+struct Attempt {
+    port: u16,
+    listeners: Vec<TcpListener>,
+    failure: Option<BindFailure>,
+}
+
+impl Attempt {
+    /// Whether every wanted address came up.
+    fn is_complete(&self, wanted: usize) -> bool {
+        self.listeners.len() == wanted
+    }
+}
+
+/// What a listener ended up with.
+pub struct Listening {
+    pub listeners: Vec<TcpListener>,
+    pub failure: Option<BindFailure>,
+    /// Whether these are on the fallback rather than the wanted port.
+    pub fell_back: bool,
+}
+
+/// Binds the wanted port, moving to the fallback when that does better.
 ///
-/// **Only when nothing came up.** Moving after a partial bind would drop a
-/// listener that is already serving, and the two families would end up on
-/// different ports — one URL could not name both.
+/// **A complete bind on an awkward port beats a partial one on the right
+/// port.** `*.localhost` resolves to `::1` and `127.0.0.1` alike, so a port
+/// where only one family came up hands the other half of the traffic to
+/// whatever else is listening — a URL that points at a stranger. Moving is
+/// therefore weighed on how many addresses each port yields, not on whether
+/// the first attempt got nothing.
+///
+/// The first attempt is held while the second is made, so nothing already
+/// serving is given up before a replacement is in hand.
 async fn bind_with_fallback(
     settings: &GatewaySettings,
     what: &str,
     port: u16,
     fallback: Option<u16>,
-) -> (Vec<TcpListener>, Option<BindFailure>) {
-    let (bound, failure) = bind_port(&settings.bind, port, what).await;
+    launchd_installed: bool,
+) -> Listening {
+    let wanted = settings.bind.len();
+    let attempt = bind_port(&settings.bind, port, what).await;
 
-    if !bound.is_empty() {
-        return (bound, failure);
+    if attempt.is_complete(wanted) {
+        tracing::info!("{what}: :{port}");
+        return Listening {
+            listeners: attempt.listeners,
+            failure: None,
+            fell_back: false,
+        };
     }
 
-    let Some(fallback) = fallback else {
-        return (bound, failure);
+    let moved = match fallback.filter(|_| may_move(attempt.failure, launchd_installed)) {
+        Some(fallback) => {
+            tracing::info!("{what}: :{port} is not fully available, trying :{fallback}");
+            bind_port(&settings.bind, fallback, what).await
+        }
+        None => return settled(what, attempt, false),
     };
 
-    tracing::info!("{what}: {port} is out of reach, trying {fallback}");
-    let (bound, fallback_failure) = bind_port(&settings.bind, fallback, what).await;
-
-    // The first failure is the one worth reporting: it says why the port
-    // anyone expects could not be had. Whatever went wrong on the fallback
-    // only matters when that did not work either.
-    if bound.is_empty() {
-        return (bound, fallback_failure.or(failure));
+    if moved.listeners.len() > attempt.listeners.len() {
+        drop(attempt);
+        return settled(what, moved, true);
     }
 
-    (bound, None)
+    // The fallback was no better, so keep what the wanted port gave and
+    // report why that port fell short. Reporting the fallback's failure
+    // instead would name a port nobody asked about.
+    drop(moved);
+    settled(what, attempt, false)
 }
 
-fn report_bind_failure(what: &str, addr: SocketAddr, err: &std::io::Error) -> BindFailure {
-    let failure = BindFailure::classify(err, addr);
+/// Reports the outcome once, at the level it deserves.
+fn settled(what: &str, attempt: Attempt, fell_back: bool) -> Listening {
+    let port = attempt.port;
 
-    match failure {
-        BindFailure::Privileged => tracing::warn!(
-            "{what} cannot hold {addr} (a port below 1024 needs privileges). \
-             `minato doctor` says what to do about it"
-        ),
-        BindFailure::InUse => tracing::warn!(
-            "{what} cannot hold {addr} (another process has it). \
-             Check `minato doctor`"
-        ),
-        BindFailure::Other => tracing::warn!("{what} cannot hold {addr}: {err}"),
+    if attempt.listeners.is_empty() {
+        report_bind_failure(what, port, attempt.failure);
+    } else {
+        tracing::info!("{what}: :{port} (some addresses could not be held)");
     }
 
-    failure
+    Listening {
+        listeners: attempt.listeners,
+        failure: attempt.failure,
+        fell_back,
+    }
+}
+
+fn report_bind_failure(what: &str, port: u16, failure: Option<BindFailure>) {
+    match failure {
+        Some(BindFailure::Privileged) => tracing::warn!(
+            "{what} cannot hold :{port} (a port below 1024 needs privileges). \
+             `minato doctor` says what to do about it"
+        ),
+        Some(BindFailure::InUse) => tracing::warn!(
+            "{what} cannot hold :{port} (another process has it). \
+             Check `minato doctor`"
+        ),
+        _ => tracing::warn!("{what} cannot hold :{port}. Check `minato doctor`"),
+    }
 }
 
 #[cfg(test)]
@@ -719,7 +803,7 @@ mod tests {
         let settings = GatewaySettings::default();
 
         assert_eq!(
-            settings.fallback(false, settings.http_port, FALLBACK_HTTP_PORT, false),
+            settings.fallback(false, settings.http_port, FALLBACK_HTTP_PORT),
             Some(FALLBACK_HTTP_PORT)
         );
     }
@@ -729,10 +813,7 @@ mod tests {
         // Setting MINATO_HTTP_PORT is how you decide this yourself.
         let settings = GatewaySettings::default();
 
-        assert_eq!(
-            settings.fallback(true, 8080, FALLBACK_HTTP_PORT, false),
-            None
-        );
+        assert_eq!(settings.fallback(true, 8080, FALLBACK_HTTP_PORT), None);
     }
 
     #[test]
@@ -740,7 +821,7 @@ mod tests {
         let settings = GatewaySettings::default();
 
         assert_eq!(
-            settings.fallback(false, FALLBACK_HTTP_PORT, FALLBACK_HTTP_PORT, false),
+            settings.fallback(false, FALLBACK_HTTP_PORT, FALLBACK_HTTP_PORT),
             None
         );
     }
@@ -750,12 +831,27 @@ mod tests {
         // launchd keeps 80 whether or not its job is running. Listening
         // elsewhere would leave the machine looking healthy while socket
         // activation stays broken, which is the bug #17 fixed.
-        let settings = GatewaySettings::default();
+        assert!(!may_move(Some(BindFailure::InUse), true));
+    }
 
-        assert_eq!(
-            settings.fallback(false, settings.http_port, FALLBACK_HTTP_PORT, true),
-            None
-        );
+    #[test]
+    fn a_plist_that_was_never_bootstrapped_still_moves() {
+        // `launchctl bootstrap` failing leaves the plist on disk with
+        // nothing holding 80. Refusing to move there would issue no URLs
+        // at all — the very state this fallback exists to prevent.
+        assert!(may_move(Some(BindFailure::Privileged), true));
+    }
+
+    #[test]
+    fn without_launchd_every_refusal_is_worth_moving_from() {
+        for failure in [
+            Some(BindFailure::InUse),
+            Some(BindFailure::Privileged),
+            Some(BindFailure::Other),
+            None,
+        ] {
+            assert!(may_move(failure, false), "{failure:?}");
+        }
     }
 
     #[test]
@@ -781,15 +877,94 @@ mod tests {
             .expect("binds");
         let port = taken.local_addr().expect("has an address").port();
 
-        let (bound, failure) = bind_with_fallback(&settings, "test", port, Some(0)).await;
+        let listening = bind_with_fallback(&settings, "test", port, Some(0), false).await;
 
-        assert_eq!(bound.len(), 1, "the fallback has to come up");
-        assert!(failure.is_none(), "a fallback that worked is not a failure");
+        assert_eq!(listening.listeners.len(), 1, "the fallback has to come up");
+        assert!(
+            listening.failure.is_none(),
+            "a fallback that worked is not a failure"
+        );
+        assert!(listening.fell_back, "and it has to say that it moved");
         assert_ne!(
-            bound[0].local_addr().expect("bound").port(),
+            listening.listeners[0].local_addr().expect("bound").port(),
             port,
             "it must not be the port that was taken"
         );
+    }
+
+    #[tokio::test]
+    async fn a_port_that_worked_is_not_reported_as_a_fallback() {
+        let settings = GatewaySettings {
+            bind: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            ..GatewaySettings::default()
+        };
+
+        let listening = bind_with_fallback(&settings, "test", 0, Some(0), false).await;
+
+        assert_eq!(listening.listeners.len(), 1);
+        assert!(!listening.fell_back);
+    }
+
+    #[tokio::test]
+    async fn both_ports_failing_reports_why_the_wanted_one_did() {
+        // Naming the fallback's problem would send someone to look at a
+        // port they never asked about and bury the actionable cause. The
+        // two have to fail *differently* for this to prove anything, so
+        // the wanted port is taken (InUse) and the fallback is privileged.
+        let settings = GatewaySettings {
+            bind: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            ..GatewaySettings::default()
+        };
+
+        let wanted = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .expect("binds");
+        let wanted_port = wanted.local_addr().expect("bound").port();
+
+        // Port 1 needs privileges. Running as root it would simply bind,
+        // which proves nothing either way.
+        const PRIVILEGED: u16 = 1;
+        if TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), PRIVILEGED))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+
+        let listening =
+            bind_with_fallback(&settings, "test", wanted_port, Some(PRIVILEGED), false).await;
+
+        assert!(listening.listeners.is_empty());
+        assert_eq!(
+            listening.failure,
+            Some(BindFailure::InUse),
+            "the wanted port was taken; the fallback needing privileges is \
+             not what anyone can act on"
+        );
+        assert!(!listening.fell_back, "nothing was fallen back to");
+    }
+
+    #[tokio::test]
+    async fn a_complete_bind_beats_a_partial_one_on_the_wanted_port() {
+        // *.localhost resolves to both families, so a port where only one
+        // came up hands the other half of the traffic to a stranger.
+        let settings = GatewaySettings::default();
+
+        // Hold one family of the wanted port, leaving the other free.
+        let half = TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0))
+            .await
+            .expect("binds");
+        let wanted_port = half.local_addr().expect("bound").port();
+
+        let listening = bind_with_fallback(&settings, "test", wanted_port, Some(0), false).await;
+
+        assert_eq!(
+            listening.listeners.len(),
+            2,
+            "it has to move to a port where both families come up"
+        );
+        assert!(listening.fell_back);
+        assert!(listening.failure.is_none());
     }
 
     #[tokio::test]
@@ -804,10 +979,15 @@ mod tests {
             .expect("binds");
         let port = taken.local_addr().expect("has an address").port();
 
-        let (bound, failure) = bind_with_fallback(&settings, "test", port, None).await;
+        let listening = bind_with_fallback(&settings, "test", port, None, false).await;
 
-        assert!(bound.is_empty());
-        assert_eq!(failure, Some(BindFailure::InUse), "say why 80 was refused");
+        assert!(listening.listeners.is_empty());
+        assert_eq!(
+            listening.failure,
+            Some(BindFailure::InUse),
+            "say why 80 was refused"
+        );
+        assert!(!listening.fell_back);
     }
 
     #[test]
@@ -842,6 +1022,8 @@ mod tests {
             http_failure: None,
             https_failure: None,
             dns_failure: None,
+            http_fell_back: false,
+            https_fell_back: false,
         };
 
         assert_eq!(

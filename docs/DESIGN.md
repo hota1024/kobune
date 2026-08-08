@@ -289,8 +289,13 @@ IPv6.
 have launchd start the daemon again the moment `minato daemon stop` finished.
 
 Started outside launchd — by hand during development, say — everything falls
-back to an ordinary bind, and `MINATO_HTTP_PORT` and friends name unprivileged
-ports.
+back to an ordinary bind, and when 80 and 443 are refused the proxy takes
+18080 and 18443 rather than binding nothing. `MINATO_HTTP_PORT` and friends
+choose the ports instead, and a port named that way is used as given.
+
+With the plist installed the proxy does **not** move: launchd holds 80 whether
+or not its job is running, so a refusal there means the job needs waking, and
+listening elsewhere would hide that.
 
 On Linux this would be `CAP_NET_BIND_SERVICE` or systemd socket activation,
 which is not implemented.
