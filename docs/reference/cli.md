@@ -48,10 +48,30 @@ whether a name actually resolves to 127.0.0.1.
 
 ### `minato setup`
 
-Prints the commands for the parts that need root: the LaunchDaemon, the
-resolver entry, and trusting the CA. **It never runs them.** The steps are
-generated for the state *after* setup — installing launchd moves DNS to :53, so
-that is the port the resolver gets.
+Walks through the parts that need root: the LaunchDaemon, the resolver entry,
+and trusting the CA. Each step's commands are printed and then offered, one at
+a time, and only what you say yes to is run — **nothing runs unasked.** With no
+terminal to answer at — an agent, a pipe, `--json` — the commands are printed
+for you to run yourself and none of them are run.
+
+```console
+$ minato setup
+$ minato setup --yes       # every step, without asking
+$ minato setup --dry-run   # print the commands, run none of them
+```
+
+| Flag | |
+| --- | --- |
+| `-y`, `--yes` | Run every step without asking |
+| `--dry-run` | Print the commands and run none of them |
+
+The steps are generated for the state *after* setup — installing launchd moves
+DNS to :53, so that is the port the resolver gets. Say no to launchd and the
+resolver step is rewritten for the port DNS is actually on, so declining one
+step cannot break the next.
+
+Anything declined, or anything whose command failed, is printed at the end to
+run by hand. A failed step is also a non-zero exit code; a declined one is not.
 
 ## Workspaces
 

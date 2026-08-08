@@ -199,7 +199,20 @@ pub struct SetupStep {
     pub commands: Vec<String>,
 }
 
-/// `minato setup`. **It never runs any of this** — it says what to run.
+/// What became of one step of `minato setup`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupOutcome {
+    /// Every command in it ran, and none of them failed.
+    Ran,
+    /// Answered with no. Still printed at the end, to run by hand.
+    Skipped,
+    /// A command was run and came back non-zero.
+    Failed,
+}
+
+/// `minato setup` with nowhere to ask: it says what to run, and runs none
+/// of it.
 pub fn setup(steps: &[SetupStep], undo: &[String], decor: Decor) -> Panel {
     if steps.is_empty() {
         return Panel::new(decor, "setup")
@@ -248,6 +261,176 @@ pub fn setup(steps: &[SetupStep], undo: &[String], decor: Decor) -> Panel {
     );
 
     panel.lines(lines)
+}
+
+/// What an interactive `minato setup` is about to walk through.
+///
+/// **The commands are not in here.** Each step prints its own the moment
+/// before it is offered, so what is being agreed to is on the screen rather
+/// than several questions further up.
+pub fn setup_plan(steps: &[SetupStep], decor: Decor) -> Panel {
+    let panel = Panel::new(decor, "setup").lines(vec![
+        Line::styled(
+            format!(
+                "the URLs need {}, and {} root.",
+                count(steps.len(), "step"),
+                if steps.len() == 1 {
+                    "it needs"
+                } else {
+                    "they need"
+                }
+            ),
+            theme::muted(),
+        ),
+        Line::styled(
+            "each one is shown before it is run, and nothing runs until you say so.",
+            theme::muted(),
+        ),
+    ]);
+
+    let lines = steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            Line::from(vec![
+                Span::styled(format!("{}. ", index + 1), theme::heading()),
+                Span::styled(step.description.clone(), theme::subject()),
+            ])
+        })
+        .collect();
+
+    panel.lines(lines)
+}
+
+/// One step, printed just before it is offered.
+pub fn setup_step_lines(number: usize, total: usize, step: &SetupStep) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{number}/{total} "), theme::heading()),
+        Span::styled(step.description.clone(), theme::subject()),
+    ])];
+
+    if let Some(note) = &step.note {
+        lines.push(Line::styled(format!("  {note}"), theme::muted()));
+    }
+
+    lines.extend(
+        step.commands
+            .iter()
+            .map(|command| Line::styled(format!("  {command}"), theme::command())),
+    );
+
+    lines
+}
+
+/// What that step came to, on the line under it.
+pub fn setup_outcome_line(outcome: SetupOutcome) -> Line<'static> {
+    let (symbol, text, style) = match outcome {
+        SetupOutcome::Ran => ("✓", "done", theme::good()),
+        SetupOutcome::Skipped => ("–", "skipped", theme::muted()),
+        SetupOutcome::Failed => ("✗", "failed", theme::bad()),
+    };
+
+    Line::from(vec![
+        Span::styled(format!("  {symbol} "), style),
+        Span::styled(text, style),
+    ])
+}
+
+/// Where an interactive `minato setup` left the machine.
+pub fn setup_done(
+    steps: &[SetupStep],
+    outcomes: &[SetupOutcome],
+    undo: &[String],
+    decor: Decor,
+) -> Panel {
+    let ran = outcomes
+        .iter()
+        .filter(|outcome| **outcome == SetupOutcome::Ran)
+        .count();
+
+    let mut panel = Panel::new(decor, "setup");
+
+    panel = if ran == outcomes.len() {
+        panel.line(Line::from(vec![
+            Span::styled("✓ ", theme::good()),
+            Span::raw("every step is done"),
+        ]))
+    } else {
+        panel.line(Span::styled(
+            format!("{ran} of {} done", count(outcomes.len(), "step")),
+            theme::muted(),
+        ))
+    };
+
+    // Whatever was declined, or failed, gets the answer `minato setup` has
+    // always given: the commands, to run by hand. Nothing is left to guess
+    // at from a "skipped".
+    let left: Vec<(&SetupStep, SetupOutcome)> = steps
+        .iter()
+        .zip(outcomes)
+        .filter(|(_, outcome)| **outcome != SetupOutcome::Ran)
+        .map(|(step, outcome)| (step, *outcome))
+        .collect();
+
+    if !left.is_empty() {
+        let mut lines = vec![Line::styled("still to run, as root:", theme::heading())];
+
+        for (step, outcome) in left {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    match outcome {
+                        SetupOutcome::Failed => "  ✗ ",
+                        _ => "  – ",
+                    },
+                    match outcome {
+                        SetupOutcome::Failed => theme::bad(),
+                        _ => theme::muted(),
+                    },
+                ),
+                Span::styled(step.description.clone(), theme::subject()),
+            ]));
+            lines.extend(
+                step.commands
+                    .iter()
+                    .map(|command| Line::styled(format!("    {command}"), theme::command())),
+            );
+        }
+
+        panel = panel.lines(lines);
+    }
+
+    // Only worth saying when something landed: the daemon has nothing new
+    // to pick up otherwise.
+    if ran > 0 {
+        panel = panel.lines(vec![
+            hint("afterwards run", "minato daemon stop"),
+            Line::styled(
+                "  launchd starts it again, with the new settings",
+                theme::muted(),
+            ),
+        ]);
+    }
+
+    if undo.is_empty() {
+        return panel;
+    }
+
+    let mut lines = vec![Line::styled("to undo:", theme::heading())];
+    lines.extend(
+        undo.iter()
+            .map(|command| Line::styled(format!("  {command}"), theme::command())),
+    );
+
+    panel.lines(lines)
+}
+
+/// `1 step` / `3 steps`.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
 }
 
 /// `minato env ls`.
@@ -845,6 +1028,126 @@ mod tests {
     fn nothing_left_to_set_up_is_not_an_empty_screen() {
         let text = render(&setup(&[], &[], Decor::PLAIN));
         assert!(text.contains("everything is set up"), "got:\n{text}");
+    }
+
+    /// Two steps, the first with a note, as `minato setup` builds them.
+    fn setup_steps() -> Vec<SetupStep> {
+        vec![
+            SetupStep {
+                description: "let launchd hold the ports".into(),
+                note: Some("generated plist: /tmp/x.plist".into()),
+                commands: vec!["sudo cp /tmp/x.plist /Library/LaunchDaemons/".into()],
+            },
+            SetupStep {
+                description: "point *.localhost at Minato".into(),
+                note: None,
+                commands: vec!["sudo tee /etc/resolver/localhost".into()],
+            },
+        ]
+    }
+
+    fn text_of(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_plan_names_the_steps_without_their_commands() {
+        // Each command is shown again the moment before it is offered.
+        // Here it would only be something to scroll past.
+        let text = render(&setup_plan(&setup_steps(), Decor::PLAIN));
+
+        assert!(text.contains("1. let launchd"), "got:\n{text}");
+        assert!(text.contains("2. point"), "got:\n{text}");
+        assert!(!text.contains("sudo cp"), "got:\n{text}");
+        assert!(
+            text.contains("nothing runs until you say so"),
+            "got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_step_shows_its_command_before_it_is_offered() {
+        // Agreeing to a description is not agreeing to what it runs as
+        // root, so the command is on the screen when the question is.
+        let steps = setup_steps();
+        let text = text_of(&setup_step_lines(1, 2, &steps[0]));
+
+        assert!(text.contains("1/2"), "got:\n{text}");
+        assert!(text.contains("sudo cp /tmp/x.plist"), "got:\n{text}");
+        assert!(text.contains("/tmp/x.plist"), "got:\n{text}");
+    }
+
+    #[test]
+    fn what_was_declined_is_still_printed_to_run_by_hand() {
+        let steps = setup_steps();
+        let text = render(&setup_done(
+            &steps,
+            &[SetupOutcome::Ran, SetupOutcome::Skipped],
+            &["sudo rm /Library/x".into()],
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("1 of 2 steps done"), "got:\n{text}");
+        assert!(text.contains("still to run, as root:"), "got:\n{text}");
+        assert!(text.contains("sudo tee /etc/resolver"), "got:\n{text}");
+        // The one that ran needs nothing done to it.
+        assert!(!text.contains("sudo cp /tmp/x.plist"), "got:\n{text}");
+        // Something landed, so the daemon has to be restarted to see it.
+        assert!(text.contains("minato daemon stop"), "got:\n{text}");
+        assert!(text.contains("to undo:"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_failed_step_is_not_reported_as_done() {
+        let steps = setup_steps();
+        let text = render(&setup_done(
+            &steps,
+            &[SetupOutcome::Failed, SetupOutcome::Failed],
+            &[],
+            Decor::PLAIN,
+        ));
+
+        assert!(!text.contains("every step is done"), "got:\n{text}");
+        assert!(text.contains("0 of 2 steps done"), "got:\n{text}");
+        assert!(text.contains("still to run, as root:"), "got:\n{text}");
+        // Nothing landed, so there is nothing for the daemon to pick up.
+        assert!(!text.contains("minato daemon stop"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_finished_walk_says_so_and_leaves_nothing_to_run() {
+        let steps = setup_steps();
+        let text = render(&setup_done(
+            &steps,
+            &[SetupOutcome::Ran, SetupOutcome::Ran],
+            &[],
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("every step is done"), "got:\n{text}");
+        assert!(!text.contains("still to run"), "got:\n{text}");
+        assert!(text.contains("minato daemon stop"), "got:\n{text}");
+    }
+
+    #[test]
+    fn an_outcome_line_names_what_happened() {
+        for (outcome, expected) in [
+            (SetupOutcome::Ran, "done"),
+            (SetupOutcome::Skipped, "skipped"),
+            (SetupOutcome::Failed, "failed"),
+        ] {
+            let text = text_of(&[setup_outcome_line(outcome)]);
+            assert!(text.contains(expected), "got:\n{text}");
+        }
     }
 
     #[test]

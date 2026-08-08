@@ -97,7 +97,7 @@ $ minato doctor
 ```
 
 Without the LaunchDaemon installed, the daemon does not come back on its own.
-`minato setup` prints how to install it.
+`minato setup` offers to install it.
 
 ### "the Unix socket path is too long"
 

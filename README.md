@@ -59,16 +59,23 @@ $ minato new feature/user-auth
 ╰─────────────────────────────────────────────────────────────╯
 ```
 
-The standard ports (80 and 443) need a one-off privileged setup.
-`minato doctor` says where things stand and `minato setup` prints the commands
-(**it never runs sudo for you** — read them, then run them yourself).
+The standard ports (80 and 443) need a one-off privileged setup. `minato doctor`
+says where things stand and `minato setup` walks through it, one step at a time
+(**nothing runs unasked** — each command is printed, then offered).
 
 ```console
 $ minato setup
 1. let launchd hold 80/443/53 (the daemon itself stays non-root)
 2. point *.localhost at Minato's DNS
 3. trust the local CA, so HTTPS stops warning
+
+1/3 let launchd hold 80/443/53 (the daemon itself stays non-root)
+  sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…
+run this? [y/N]
 ```
+
+With no terminal to answer at — an agent, a pipe, `--json` — it prints the
+commands and runs none of them.
 
 To skip all of that, name unprivileged ports and no permissions are needed:
 

@@ -99,7 +99,7 @@ $ minato doctor
 ```
 
 LaunchDaemon を設定していない場合、daemon は自動的には復帰しません。
-`minato setup` が設定方法を表示します。
+`minato setup` が、その設定を実行するか確認します。
 
 ### 「the Unix socket path is too long」と表示される
 

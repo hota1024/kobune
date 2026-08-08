@@ -200,7 +200,7 @@ impl Section {
 /// result will be is behind an unstable feature — and the height has to be
 /// known before the area is allocated. Doing it here keeps the count and
 /// the drawing from ever disagreeing.
-fn wrap(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
+pub fn wrap(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
     let limit = usize::from(width);
     if limit == 0 {
         return Vec::new();
