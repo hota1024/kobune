@@ -305,23 +305,39 @@ root, once:
 
 ```console
 $ minato setup
-The URLs need the following setup.
-It requires root, so read each command before running it.
+╭ setup ─────────────────────────────────────────────────────────────────╮
+│ the URLs need 3 steps, and they need root.                             │
+│ each one is shown before it is run, and nothing runs until you say so. │
+│                                                                        │
+│ 1. let launchd hold 80/443/53 (the daemon itself stays non-root)       │
+│ 2. point *.localhost at Minato's DNS                                   │
+│ 3. trust the local CA, so HTTPS stops warning                          │
+╰────────────────────────────────────────────────────────────────────────╯
 
-1. let launchd hold 80/443/53 (the daemon itself stays non-root)
-   sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…
-   …
+1/3 let launchd hold 80/443/53 (the daemon itself stays non-root)
+  generated plist: ~/.minato/dev.minato.daemon.plist
+  sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…
+  …
+run this? [y/N] y
+  ✓ done
 
-2. point *.localhost at Minato's DNS
-   sudo mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\n' | sudo tee …
-
-3. trust the local CA, so HTTPS stops warning
-   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/… 
+2/3 point *.localhost at Minato's DNS
+  sudo mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\n' | sudo tee …
+run this? [y/N] n
+  – skipped
+…
 ```
 
-**`minato setup` prints these; it never runs them.** An unattended `sudo` hangs
-an agent at the password prompt, and from your side it would look like a silent
-privilege escalation. Read them, then run them yourself.
+**Nothing runs unasked.** Every command is on the screen before the question
+about it is, so what you agree to is what you have just read, and anything you
+decline is printed again at the end to run by hand.
+
+Say yes to all of it with `minato setup --yes`, or read the commands without
+being asked about any of them with `minato setup --dry-run`.
+
+**With no terminal to answer at — an agent, a pipe, `--json` — the commands are
+printed and none of them are run.** An unattended `sudo` hangs at the password
+prompt, and from your side it would look like a silent privilege escalation.
 
 Afterwards:
 

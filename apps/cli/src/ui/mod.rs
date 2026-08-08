@@ -29,7 +29,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 pub use progress::Progress;
-pub use views::SetupStep;
+pub use views::{SetupOutcome, SetupStep};
 
 use surface::Surface;
 
@@ -65,9 +65,35 @@ pub fn diagnostics(report: &Diagnostics) {
     Surface::stdout().print(|decor| views::diagnostics(report, decor));
 }
 
-/// `setup`.
+/// `setup` with nowhere to ask: the commands, to run by hand.
 pub fn setup(steps: &[SetupStep], undo: &[String]) {
     Surface::stdout().print(|decor| views::setup(steps, undo, decor));
+}
+
+/// What an interactive `setup` is about to offer, before it offers any of
+/// it.
+pub fn setup_plan(steps: &[SetupStep]) {
+    Surface::stdout().print(|decor| views::setup_plan(steps, decor));
+}
+
+/// One step, on the way to being asked about.
+pub fn setup_step(number: usize, total: usize, step: &SetupStep) {
+    // A blank line first: each of these is a question of its own, and one
+    // run of text is the wrong shape for that.
+    let mut lines = vec![Line::raw("")];
+    lines.extend(views::setup_step_lines(number, total, step));
+
+    Surface::stdout().print(move |_| Loose(lines));
+}
+
+/// What that step came to.
+pub fn setup_outcome(outcome: SetupOutcome) {
+    Surface::stdout().print(|_| Loose(vec![views::setup_outcome_line(outcome)]));
+}
+
+/// Where the whole walk left the machine.
+pub fn setup_done(steps: &[SetupStep], outcomes: &[SetupOutcome], undo: &[String]) {
+    Surface::stdout().print(|decor| views::setup_done(steps, outcomes, undo, decor));
 }
 
 /// `env ls`, and what `env set` / `env unset` leave behind.
@@ -182,20 +208,22 @@ impl View for Loose {
             .unwrap_or(0)
     }
 
-    fn height(&self, _width: u16) -> u16 {
-        u16::try_from(self.0.len()).unwrap_or(u16::MAX)
+    // Wrapped, on the same reasoning a panel wraps: what comes through
+    // here is a `sudo …` line someone is about to agree to, and cutting it
+    // off at the window's edge hides the half being agreed to.
+    fn height(&self, width: u16) -> u16 {
+        u16::try_from(panel::wrap(&self.0, width).len()).unwrap_or(u16::MAX)
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        for (index, line) in self.0.iter().enumerate() {
+        for (index, line) in panel::wrap(&self.0, area.width).into_iter().enumerate() {
             let Some(y) = area.y.checked_add(u16::try_from(index).unwrap_or(u16::MAX)) else {
                 return;
             };
             if y >= area.bottom() {
                 return;
             }
-            line.clone()
-                .render(Rect::new(area.x, y, area.width, 1), buf);
+            line.render(Rect::new(area.x, y, area.width, 1), buf);
         }
     }
 }

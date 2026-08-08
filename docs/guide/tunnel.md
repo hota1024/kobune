@@ -24,8 +24,8 @@ $ cloudflared tunnel login
 ```
 
 That opens a browser and waits, which is why Minato does not run it for you —
-the same reason `minato setup` prints its `sudo` commands instead of running
-them. An unattended interactive prompt hangs an agent.
+the same reason `minato setup` runs nothing where there is no terminal to
+answer at. An unattended interactive prompt hangs an agent.
 
 Everything after login, Minato does:
 

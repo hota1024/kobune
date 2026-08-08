@@ -70,7 +70,20 @@ enum Command {
     Doctor,
 
     /// Walk through the privileged setup the URLs need
-    Setup,
+    ///
+    /// On a terminal each step is shown and then offered, one at a time,
+    /// and only what you say yes to is run. With no terminal to ask at —
+    /// an agent, a pipe, `--json` — the commands are printed for you to
+    /// run yourself, which is what this command has always done.
+    Setup {
+        /// Run every step without asking
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        /// Print the commands and run none of them
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     /// List workspaces
     Ls {
@@ -612,7 +625,7 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
         result?
     };
 
-    present(cli, &response)?;
+    let code = present(cli, &response)?;
 
     // exec passes the command's exit code straight through: an agent has
     // to be able to judge `minato exec web -- pnpm test` by exit status
@@ -621,7 +634,7 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
         return Ok(ExitCode::from(clamp_exit_code(*exit_code)));
     }
 
-    Ok(ExitCode::SUCCESS)
+    Ok(code)
 }
 
 fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
@@ -685,7 +698,7 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             TunnelCommand::Disable => Request::TunnelDisable { target },
             TunnelCommand::Status => Request::TunnelStatus { target },
         },
-        Command::Doctor | Command::Setup => Request::Doctor { target },
+        Command::Doctor | Command::Setup { .. } => Request::Doctor { target },
         Command::Init { .. }
         | Command::Daemon { .. }
         | Command::Skill { .. }
@@ -1085,9 +1098,9 @@ async fn handle_uninstall(
 /// Runs the steps that need root, and returns whatever is left to do.
 ///
 /// sudo only where there is a terminal to type a password into. Under an
-/// agent or a pipe it would hang at the prompt with nothing to say —
-/// exactly the failure `minato setup` exists to avoid — so there the
-/// commands are handed back to be run by hand.
+/// agent or a pipe it would hang at the prompt with nothing to say — the
+/// same reason `minato setup` only walks through its steps on a terminal —
+/// so there the commands are handed back to be run by hand.
 fn run_privileged(plan: &uninstall::Plan, yes: bool, json: bool) -> Vec<uninstall::Privileged> {
     use std::io::IsTerminal;
 
@@ -1268,7 +1281,12 @@ fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, Cl
     })
 }
 
-fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
+/// Shows a response, and says what the command should leave with.
+///
+/// Almost everything here is a success by the time it is being printed.
+/// `setup` is the exception: it runs commands, and one of them coming back
+/// non-zero is a failure however well it is presented.
+fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
     // `url` prints differently: one line, ready to pipe.
     if let Command::Url { service } = &cli.command {
         return present_url(cli, response, service.as_deref());
@@ -1283,13 +1301,13 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
     }
 
     // `doctor` and `setup` add the host-side checks to the daemon's.
-    if matches!(cli.command, Command::Doctor | Command::Setup) {
+    if matches!(cli.command, Command::Doctor | Command::Setup { .. }) {
         return present_diagnostics(cli, response);
     }
 
     if cli.json {
         output::print_json(response);
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     match response {
@@ -1324,10 +1342,14 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
         Response::Empty => ui::confirm("done"),
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<(), CliError> {
+fn present_url(
+    cli: &Cli,
+    response: &Response,
+    service: Option<&str>,
+) -> Result<ExitCode, CliError> {
     let Response::Workspace { workspace } = response else {
         return Err(CliError::Local("cannot read the workspace".to_string()));
     };
@@ -1368,11 +1390,11 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
         ui::value(&access);
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 /// What `minato env get` prints: the value, on one line.
-fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), CliError> {
+fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCode, CliError> {
     let Response::Env { entries } = response else {
         return Err(CliError::Local("cannot read the environment".to_string()));
     };
@@ -1392,14 +1414,14 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), Cl
         ui::value(&entry.value);
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Shows the daemon's diagnostics with the host-side ones added.
 ///
 /// The daemon cannot see `/etc/resolver` or whether the CA is trusted. The
 /// CLI checks those itself and presents one combined result.
-fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
+fn present_diagnostics(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
     let Response::Diagnostics(diagnostics) = response else {
         return Err(CliError::Local("cannot read the diagnostics".to_string()));
     };
@@ -1416,8 +1438,8 @@ fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
 
     let combined = minato_api::Diagnostics::new(all);
 
-    if matches!(cli.command, Command::Setup) {
-        return present_setup(cli, &combined, dns_port, ca_path.as_deref());
+    if let Command::Setup { yes, dry_run } = &cli.command {
+        return present_setup(cli, &combined, dns_port, ca_path.as_deref(), *yes, *dry_run);
     }
 
     if cli.json {
@@ -1426,19 +1448,24 @@ fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
         ui::diagnostics(&combined);
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-/// Walks through the privileged steps. **It never runs them.**
+/// Walks through the privileged steps, asking before each one.
 ///
-/// Running sudo on its own would hang an agent at the password prompt, and
-/// from the user's side it would look like a silent privilege escalation.
+/// **Nothing runs unasked.** sudo started on its own would hang an agent at
+/// the password prompt, and from the user's side it would look like a
+/// silent privilege escalation — so the walk happens only where there is a
+/// terminal to answer at, each command is on the screen before it is
+/// offered, and anywhere else the commands are printed to be run by hand.
 fn present_setup(
     cli: &Cli,
     diagnostics: &minato_api::Diagnostics,
     dns_port: Option<u16>,
     ca_path: Option<&std::path::Path>,
-) -> Result<(), CliError> {
+    yes: bool,
+    dry_run: bool,
+) -> Result<ExitCode, CliError> {
     let pending = |id: &str| {
         diagnostics
             .checks
@@ -1448,15 +1475,19 @@ fn present_setup(
 
     let mut steps: Vec<ui::SetupStep> = Vec::new();
     let launchd_pending = pending("launchd");
+    let mut launchd_step = None;
 
     if launchd_pending {
         match prepare_launchd() {
-            Ok((source, commands)) => steps.push(ui::SetupStep {
-                description: "let launchd hold 80/443/53 (the daemon itself stays non-root)"
-                    .to_string(),
-                note: Some(format!("generated plist: {}", source.display())),
-                commands,
-            }),
+            Ok((source, commands)) => {
+                launchd_step = Some(steps.len());
+                steps.push(ui::SetupStep {
+                    description: "let launchd hold 80/443/53 (the daemon itself stays non-root)"
+                        .to_string(),
+                    note: Some(format!("generated plist: {}", source.display())),
+                    commands,
+                });
+            }
             Err(err) => ui::error(&format!("cannot write the plist: {err}"), None),
         }
     }
@@ -1469,7 +1500,10 @@ fn present_setup(
         dns_port.unwrap_or(53)
     };
 
+    let mut resolver_step = None;
+
     if pending("resolver") || launchd_pending {
+        resolver_step = Some(steps.len());
         steps.push(ui::SetupStep {
             description: format!("point *.{DEFAULT_DOMAIN_SUFFIX} at Minato's DNS"),
             note: None,
@@ -1490,21 +1524,107 @@ fn present_setup(
         });
     }
 
+    // `--json` is what an agent reads, and it is a plan rather than a
+    // report: nothing is run behind it, for the same reason nothing is run
+    // without a terminal.
     if cli.json {
         output::print_json(&serde_json::json!({ "steps": steps }));
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
-    // Only the LaunchDaemon leaves anything behind to take back out.
-    let undo = if launchd_pending {
+    // Only the LaunchDaemon leaves anything behind to take back out, and
+    // only if there is a step to install it: the plist is generated first,
+    // and a failure there leaves nothing to undo.
+    let undo = if launchd_step.is_some() {
         launchd::uninstall_commands()
     } else {
         Vec::new()
     };
 
-    ui::setup(&steps, &undo);
+    if steps.is_empty() {
+        ui::setup(&steps, &undo);
+        return Ok(ExitCode::SUCCESS);
+    }
 
-    Ok(())
+    if dry_run || !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        ui::setup(&steps, &undo);
+
+        // Without this, being handed a list of commands after asking for
+        // `--yes` reads as the flag having been ignored.
+        if !dry_run {
+            ui::notice(vec![ui::note(
+                "there is no terminal to ask at, so nothing was run",
+            )]);
+        }
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    ui::setup_plan(&steps);
+
+    let mut outcomes: Vec<ui::SetupOutcome> = Vec::new();
+    let total = steps.len();
+
+    // Printing the steps, every one was going to be run; walking through
+    // them, the answer to the first decides what the second should say. The
+    // resolver step names the port DNS will be on *after* launchd lands, so
+    // if launchd does not land it has to name the port DNS is on now —
+    // otherwise saying no to one step quietly breaks resolution through the
+    // next.
+    let mut launchd_installed = false;
+
+    for (index, step) in steps.iter_mut().enumerate() {
+        if Some(index) == resolver_step && launchd_pending && !launchd_installed {
+            let port = dns_port.unwrap_or(53);
+            step.commands = vec![system::resolver_command(DEFAULT_DOMAIN_SUFFIX, port)];
+            step.note = Some(format!(
+                "launchd was not installed, so DNS stays on :{port}"
+            ));
+        }
+
+        // The commands go on the screen first, every time. Agreeing to a
+        // description is not agreeing to what it runs as root.
+        ui::setup_step(index + 1, total, step);
+
+        if !yes && !confirm("run this?")? {
+            outcomes.push(ui::SetupOutcome::Skipped);
+            ui::setup_outcome(ui::SetupOutcome::Skipped);
+            continue;
+        }
+
+        // `all` stops at the first failure: these are pipelines whose later
+        // halves assume the earlier ones landed.
+        let ran = step
+            .commands
+            .iter()
+            .all(|command| run_shell(command, cli.json));
+
+        let outcome = if ran {
+            ui::SetupOutcome::Ran
+        } else {
+            ui::SetupOutcome::Failed
+        };
+
+        if Some(index) == launchd_step && outcome == ui::SetupOutcome::Ran {
+            launchd_installed = true;
+        }
+
+        outcomes.push(outcome);
+        ui::setup_outcome(outcome);
+    }
+
+    // The undo is worth printing only if the LaunchDaemon actually went in.
+    let undo = if launchd_installed { undo } else { Vec::new() };
+
+    ui::setup_done(&steps, &outcomes, &undo);
+
+    // A step that was declined is an answer. One that failed is not: sudo
+    // said no, or a command did, and the machine is not set up.
+    Ok(if outcomes.contains(&ui::SetupOutcome::Failed) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// Picks the port out of a check's detail (`127.0.0.1:15353`).
@@ -1627,6 +1747,35 @@ mod tests {
             let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert!(cli.json, "{args:?}");
         }
+    }
+
+    #[test]
+    fn setup_takes_an_answer_up_front_and_a_way_to_run_nothing() {
+        // Plain `minato setup` asks. The flags are for the two cases that
+        // cannot: something that will not be there to answer, and someone
+        // who only wants to read the commands.
+        let cli = Cli::try_parse_from(["minato", "setup"]).expect("parses");
+        assert!(matches!(
+            cli.command,
+            Command::Setup {
+                yes: false,
+                dry_run: false
+            }
+        ));
+
+        for args in [
+            vec!["minato", "setup", "--yes"],
+            vec!["minato", "setup", "-y"],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert!(
+                matches!(cli.command, Command::Setup { yes: true, .. }),
+                "{args:?}"
+            );
+        }
+
+        let cli = Cli::try_parse_from(["minato", "setup", "--dry-run"]).expect("parses");
+        assert!(matches!(cli.command, Command::Setup { dry_run: true, .. }));
     }
 
     #[test]

@@ -154,8 +154,8 @@ pub struct TunnelInfo {
     ///
     /// Empty once setup is done. `cloudflared tunnel login` opens a
     /// browser and waits, so it is reported rather than run — the same
-    /// reason `minato setup` prints its sudo commands instead of running
-    /// them.
+    /// reason `minato setup` runs nothing where there is no terminal to
+    /// answer at.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
 

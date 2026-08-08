@@ -24,7 +24,7 @@ $ cloudflared tunnel login
 
 That opens a browser. Minato does not run it for you: an interactive prompt in
 a daemon hangs an agent at a step it cannot answer, the same reason
-`minato setup` prints its `sudo` commands rather than running them.
+`minato setup` runs nothing where there is no terminal to answer at.
 
 ## Turn it on
 

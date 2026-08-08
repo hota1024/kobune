@@ -214,7 +214,7 @@ check connectivity with curl**, so this is fatal.
 
 The answer is a DNS server inside the daemon, plus `nameserver 127.0.0.1` in
 `/etc/resolver/localhost`. `minato setup` walks through it — installing it needs
-sudo, so running it is left to the user.
+sudo, so it is shown and offered rather than simply run.
 
 ```
 /etc/resolver/localhost:
@@ -1031,10 +1031,17 @@ is what Linux uses.
 
 ### Handling the privileged setup
 
-**sudo is never run automatically.** An agent doing so hangs at the password
+**sudo is never run unasked.** An agent starting one hangs at the password
 prompt, and from the user's side it looks like a silent privilege escalation.
-`minato doctor` says where things stand and `minato setup` prints the commands.
-Running them is the user's call.
+So `minato setup` walks through its steps only where there is a terminal to
+answer at: each step's commands are printed, then it asks, and only what is
+agreed to is run. With no terminal — an agent, a pipe, `--json` — it prints the
+commands and runs none of them, which is what it has always done. `--yes` runs
+every step; `--dry-run` runs none.
+
+The question comes *after* the commands, every time. Agreeing to "trust the
+local CA" is not agreeing to whatever that turns out to run as root, and the
+two have to be on the screen together for the answer to mean anything.
 
 Three things need privileges, and `minato setup` covers all of them.
 
@@ -1048,6 +1055,11 @@ only the install commands are printed. They can be read before they are run.
 **The steps are generated for the state after setup.** Installing launchd moves
 DNS to :53, so that is the port the resolver gets. Writing the current port
 would leave nothing resolving once it lands.
+
+Which is only true if launchd *does* land, and being able to say no to one step
+means it might not. So the resolver step is rewritten mid-walk for the port DNS
+is actually on when the launchd step was declined or failed. Otherwise saying no
+to the first question would quietly break resolution through the second.
 
 ### Deferred at M0
 

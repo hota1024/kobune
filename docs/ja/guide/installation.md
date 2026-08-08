@@ -306,31 +306,39 @@ $ minato daemon start
 
 ```console
 $ minato setup
-╭ setup ─────────────────────────────────────────────────────────────────────────╮
-│ the URLs need the following. It requires root, so read each command first.     │
-│                                                                                │
-│ 1. let launchd hold 80/443/53 (the daemon itself stays non-root)               │
-│    generated plist: ~/.minato/dev.minato.daemon.plist                          │
-│    sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…          │
-│                                                                                │
-│ 2. point *.localhost at Minato's DNS                                           │
-│    sudo mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\n' | sudo tee … │
-│                                                                                │
-│ 3. trust the local CA, so HTTPS stops warning                                  │
-│    sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/…      │
-│                                                                                │
-│ › afterwards run minato daemon stop                                            │
-│   launchd starts it again, with the new settings                               │
-│                                                                                │
-│ to undo:                                                                       │
-│   sudo launchctl bootout system/dev.minato.daemon                              │
-╰────────────────────────────────────────────────────────────────────────────────╯
+╭ setup ─────────────────────────────────────────────────────────────────╮
+│ the URLs need 3 steps, and they need root.                             │
+│ each one is shown before it is run, and nothing runs until you say so. │
+│                                                                        │
+│ 1. let launchd hold 80/443/53 (the daemon itself stays non-root)       │
+│ 2. point *.localhost at Minato's DNS                                   │
+│ 3. trust the local CA, so HTTPS stops warning                          │
+╰────────────────────────────────────────────────────────────────────────╯
+
+1/3 let launchd hold 80/443/53 (the daemon itself stays non-root)
+  generated plist: ~/.minato/dev.minato.daemon.plist
+  sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…
+  …
+run this? [y/N] y
+  ✓ done
+
+2/3 point *.localhost at Minato's DNS
+  sudo mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\n' | sudo tee …
+run this? [y/N] n
+  – skipped
+…
 ```
 
-**`minato setup` はコマンドを表示するだけで、実行はしません。** 自動で `sudo`
-を実行すると、エージェントはパスワード入力待ちで停止し、利用者から見れば
-黙って権限昇格が行われたことになります。内容を確認したうえで、手動で実行して
-ください。
+**確認なしに実行されるものはありません。** 実行するコマンドは必ず質問より先に
+表示されるため、同意する対象は直前に読んだものそのものです。実行しなかった手順
+は、最後にまとめて再表示されます。
+
+すべてに同意する場合は `minato setup --yes`、コマンドの確認だけを行う場合は
+`minato setup --dry-run` を使用します。
+
+**応答できる端末がない場合——エージェント、パイプ、`--json`——はコマンドを表示
+するだけで、何も実行しません。** 自動で `sudo` を実行すると、パスワード入力待ち
+で停止し、利用者から見れば黙って権限昇格が行われたことになります。
 
 実行後は次のようにします。
 
