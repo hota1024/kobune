@@ -12,6 +12,11 @@
 //!
 //! Anywhere else — a pipe, a CI log, `TERM=dumb` — there is no line to
 //! hold still. Steps are printed as they finish and that is all.
+//!
+//! Most of what is shown here comes from the daemon, but not all of it:
+//! `update` downloads a build itself, and drives the same display through
+//! [`Progress::begin`] and friends so that a step of the CLI's own reads
+//! exactly like a step of the daemon's.
 
 use std::io::{IsTerminal, Stdout, Write};
 use std::sync::{Arc, Mutex};
@@ -35,6 +40,12 @@ const VIEWPORT_HEIGHT: u16 = 1;
 const TICK: Duration = Duration::from_millis(120);
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// How many cells the bar occupies.
+///
+/// Fixed rather than proportional to the window: the label in front of it
+/// changes length, and a bar that resized with it would appear to move.
+const BAR_WIDTH: u16 = 20;
 
 /// The live display. Cheap to clone: the Ctrl-C handler holds one too.
 #[derive(Clone)]
@@ -138,6 +149,46 @@ impl Progress {
         }
     }
 
+    /// Starts a step the CLI is doing itself.
+    ///
+    /// The daemon's steps arrive as events; `update` does its work in this
+    /// process and has none to send, so it says the same three things by
+    /// hand: this began, it got this far, it finished.
+    pub fn begin(&self, id: &str, label: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            state.begin(id, label);
+        }
+    }
+
+    /// How far a step has got, in bytes.
+    ///
+    /// `total` is missing when the server did not say how big the download
+    /// is, and then there is no bar to draw — only the amount so far.
+    ///
+    /// Deliberately does not redraw. This is called once per chunk off the
+    /// socket, thousands of times for one archive, and painting the screen
+    /// that often would cost more than the download. The ticker is already
+    /// repainting at [`TICK`], which is as fast as an eye can read it.
+    pub fn advance(&self, id: &str, done: u64, total: Option<u64>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.advance(id, done, total);
+        }
+    }
+
+    /// Ends a step, leaving it in the history the way a daemon step ends.
+    pub fn settle(&self, id: &str) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+
+        let Some(label) = state.label_of(id) else {
+            return;
+        };
+
+        state.end(id);
+        state.emit(step_line("✓", theme::good(), &label, None));
+    }
+
     /// Says something of the CLI's own, in the same place as the rest.
     pub fn say(&self, line: Line<'static>) {
         if let Ok(mut state) = self.state.lock() {
@@ -183,6 +234,14 @@ struct Step {
     id: String,
     label: String,
     detail: Option<String>,
+    /// Bytes so far, and how many there are when that is known.
+    transfer: Option<Transfer>,
+}
+
+#[derive(Clone, Copy)]
+struct Transfer {
+    done: u64,
+    total: Option<u64>,
 }
 
 impl<B: Backend> State<B> {
@@ -191,6 +250,7 @@ impl<B: Backend> State<B> {
             id: id.to_string(),
             label: label.to_string(),
             detail: None,
+            transfer: None,
         });
         self.redraw();
     }
@@ -200,6 +260,19 @@ impl<B: Backend> State<B> {
             step.detail = Some(message.to_string());
         }
         self.redraw();
+    }
+
+    fn advance(&mut self, id: &str, done: u64, total: Option<u64>) {
+        if let Some(step) = self.running.iter_mut().find(|step| step.id == id) {
+            step.transfer = Some(Transfer { done, total });
+        }
+    }
+
+    fn label_of(&self, id: &str) -> Option<String> {
+        self.running
+            .iter()
+            .find(|step| step.id == id)
+            .map(|step| step.label.clone())
     }
 
     fn end(&mut self, id: &str) {
@@ -246,6 +319,10 @@ impl<B: Backend> State<B> {
                     Span::styled(step.label.clone(), theme::subject()),
                 ];
 
+                if let Some(transfer) = &step.transfer {
+                    spans.extend(transfer_spans(transfer));
+                }
+
                 if let Some(detail) = &step.detail {
                     spans.push(Span::styled(format!(" · {detail}"), theme::muted()));
                 }
@@ -282,6 +359,53 @@ impl super::View for Loose {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.0.clone().render(area, buf);
+    }
+}
+
+/// The bar, the percentage and the two sizes — or, when the server never
+/// said how big the file is, just how much has arrived.
+///
+/// A bar without a total would have to guess where the end is, and a bar
+/// that creeps towards a made-up finish is worse than no bar at all.
+fn transfer_spans(transfer: &Transfer) -> Vec<Span<'static>> {
+    let Some(total) = transfer.total.filter(|total| *total > 0) else {
+        return vec![Span::styled(
+            format!("  {}", bytes(transfer.done)),
+            theme::muted(),
+        )];
+    };
+
+    // Clamped: a server whose Content-Length undersells the body would
+    // otherwise overrun the bar and wrap the line.
+    let done = transfer.done.min(total);
+    let filled = u16::try_from(u64::from(BAR_WIDTH) * done / total).unwrap_or(BAR_WIDTH);
+    let percent = 100 * done / total;
+
+    vec![
+        Span::raw("  "),
+        Span::styled("█".repeat(filled as usize), theme::good()),
+        Span::styled(
+            "░".repeat(BAR_WIDTH.saturating_sub(filled) as usize),
+            theme::muted(),
+        ),
+        Span::styled(
+            format!(" {percent:>3}%  {}/{}", bytes(done), bytes(total)),
+            theme::muted(),
+        ),
+    ]
+}
+
+/// A size a person can read at a glance, rather than to the byte.
+fn bytes(count: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+
+    if count >= MB {
+        // One decimal: the digit after it changes faster than the screen
+        // is repainted, and reads as noise.
+        format!("{}.{} MB", count / MB, (count % MB) * 10 / MB)
+    } else {
+        format!("{} kB", count / KB)
     }
 }
 
@@ -501,6 +625,73 @@ mod tests {
         )));
 
         assert_eq!(text, "  - pulling node:22 (already present)\n");
+    }
+
+    #[test]
+    fn a_download_shows_a_bar_and_what_is_left() {
+        let mut state = watched(72, 6);
+        state.begin("download", "downloading");
+        state.advance("download", 3 * 1024 * 1024, Some(6 * 1024 * 1024));
+        state.redraw();
+
+        let text = screen(&mut state);
+        assert!(text.contains("downloading"), "got:\n{text}");
+        assert!(text.contains("50%"), "got:\n{text}");
+        assert!(text.contains("3.0 MB/6.0 MB"), "got:\n{text}");
+        assert_eq!(text.matches('█').count(), 10, "half the bar:\n{text}");
+    }
+
+    #[test]
+    fn a_download_of_unknown_size_gets_no_bar() {
+        // The server did not say how big it is. A bar would have to invent
+        // an end and then crawl towards it.
+        let mut state = watched(72, 6);
+        state.begin("download", "downloading");
+        state.advance("download", 2 * 1024 * 1024, None);
+        state.redraw();
+
+        let text = screen(&mut state);
+        assert!(text.contains("2.0 MB"), "got:\n{text}");
+        assert!(!text.contains('█'), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_body_longer_than_it_claimed_does_not_overrun_the_bar() {
+        // Content-Length is what a server says, not what it sends.
+        let transfer = Transfer {
+            done: 900,
+            total: Some(600),
+        };
+        let width: usize = transfer_spans(&transfer)
+            .iter()
+            .map(|span| span.content.chars().filter(|c| *c == '█').count())
+            .sum();
+
+        assert_eq!(width, BAR_WIDTH as usize);
+    }
+
+    #[test]
+    fn a_settled_step_leaves_its_own_label_behind() {
+        // The caller says which step finished, not what to print — one
+        // label, given once, so the two lines cannot drift apart.
+        let mut state = watched(60, 6);
+        state.begin("verify", "verifying the checksum");
+
+        let label = state.label_of("verify").expect("running");
+        state.end("verify");
+        state.emit(step_line("✓", theme::good(), &label, None));
+
+        let text = screen(&mut state);
+        assert!(text.contains("✓ verifying the checksum"), "got:\n{text}");
+        assert!(state.label_of("verify").is_none());
+    }
+
+    #[test]
+    fn sizes_read_as_sizes() {
+        assert_eq!(bytes(0), "0 kB");
+        assert_eq!(bytes(4096), "4 kB");
+        assert_eq!(bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(bytes(7_654_321), "7.2 MB");
     }
 
     #[test]

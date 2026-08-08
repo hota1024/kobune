@@ -172,12 +172,36 @@ fn client(timeout: Duration) -> Result<reqwest::Client> {
         .map_err(|err| UpdateError::Other(err.to_string()))
 }
 
+/// What [`install`] is busy with.
+///
+/// An update replaces the binary someone is running, over a network, and
+/// none of the four steps says anything on its own. This is what lets the
+/// caller show which one is in hand — and how far the long one has got.
+///
+/// It says *what is happening*, not what to print: the wording and the
+/// bar belong to [`crate::ui`], and `--json` shows none of it at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// Pulling the archive down. `total` is `None` when the server did not
+    /// say how big it is.
+    Downloading {
+        done: u64,
+        total: Option<u64>,
+    },
+    Verifying,
+    Unpacking,
+    Installing,
+}
+
 /// Replaces this installation with the published build.
 ///
 /// Returns the commit installed. Both binaries are replaced together: the
 /// CLI starts the daemon by looking next to itself, so a pair from
 /// different builds would speak whatever protocol each happened to have.
-pub async fn install() -> Result<String> {
+///
+/// `report` is called as the work moves along, often during the download.
+/// It must be cheap: it runs once per chunk off the socket.
+pub async fn install(report: impl Fn(Stage)) -> Result<String> {
     let release = fetch_release().await?;
 
     let archive_name = format!("minato-{}.tar.gz", minato_core::BUILD_TARGET);
@@ -188,19 +212,37 @@ pub async fn install() -> Result<String> {
         .asset(&format!("{archive_name}.sha256"))
         .ok_or_else(|| UpdateError::NoArchive(minato_core::BUILD_TARGET.to_string()))?;
 
-    let bytes = download(&archive.browser_download_url).await?;
+    let bytes = download_watched(&archive.browser_download_url, |done, total| {
+        report(Stage::Downloading { done, total })
+    })
+    .await?;
+
+    // The checksum file is one line, so it is not worth a stage of its own.
     let expected = download(&checksum.browser_download_url).await?;
 
+    report(Stage::Verifying);
     verify(&bytes, &expected)?;
 
+    report(Stage::Unpacking);
     let binaries = unpack(&bytes)?;
+
+    report(Stage::Installing);
     replace(&binaries)?;
 
     Ok(release.target_commitish)
 }
 
 async fn download(url: &str) -> Result<Vec<u8>> {
-    let response = client(DOWNLOAD_TIMEOUT)?
+    download_watched(url, |_, _| {}).await
+}
+
+/// Reads the body as it arrives, saying how much of it there is so far.
+///
+/// `Response::bytes` would be shorter and would also hand back nothing at
+/// all until the last byte lands — which for a release archive is the
+/// thirty seconds someone spends wondering whether it has hung.
+async fn download_watched(url: &str, report: impl Fn(u64, Option<u64>)) -> Result<Vec<u8>> {
+    let mut response = client(DOWNLOAD_TIMEOUT)?
         .get(url)
         .send()
         .await
@@ -213,12 +255,30 @@ async fn download(url: &str) -> Result<Vec<u8>> {
         )));
     }
 
-    response
-        .bytes()
+    let total = response.content_length();
+
+    // Reserved from what the server claims, but only up to a point: the
+    // length is not a fact until the bytes turn up, and a header saying
+    // 40 GB should not be an allocation.
+    let mut bytes = Vec::with_capacity(total.unwrap_or(0).min(RESERVE_LIMIT) as usize);
+
+    // So the bar appears with the step rather than at the first chunk.
+    report(0, total);
+
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map(|bytes| bytes.to_vec())
-        .map_err(|err| UpdateError::Unreachable(err.to_string()))
+        .map_err(|err| UpdateError::Unreachable(err.to_string()))?
+    {
+        bytes.extend_from_slice(&chunk);
+        report(bytes.len() as u64, total);
+    }
+
+    Ok(bytes)
 }
+
+/// The most a claimed Content-Length may reserve up front.
+const RESERVE_LIMIT: u64 = 128 * 1024 * 1024;
 
 /// Checks the archive against the published `.sha256`.
 ///

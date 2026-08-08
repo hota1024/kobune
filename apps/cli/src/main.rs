@@ -618,14 +618,36 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
     Ok(request)
 }
 
-/// Checks for a newer build, and installs it unless only asked to check.
-async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError> {
-    let status = update::check()
-        .await
-        .map_err(|err| CliError::Local(err.to_string()))?;
+/// What an update run came to.
+enum Updated {
+    /// Running the build that is published.
+    Current,
+    /// Nothing to compare against.
+    Unknown,
+    /// A newer build exists and was only reported, not fetched.
+    Available(String),
+    Installed(String),
+}
 
-    let available = match &status {
-        update::Status::Current => {
+/// Checks for a newer build, and installs it unless only asked to check.
+///
+/// The work is done in [`run_update`], which draws the live display, and
+/// the answer is printed here — after the display has given the screen
+/// back. A panel written into a viewport that is still holding a line
+/// would be drawn over by the next repaint.
+async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError> {
+    // Nothing is drawn under `--json`: exactly one JSON document comes out
+    // of this command, and a spinner in it would be a bug.
+    let progress = (!cli.json).then(ui::Progress::start);
+
+    let outcome = run_update(check_only, progress.as_ref()).await;
+
+    if let Some(progress) = &progress {
+        progress.finish();
+    }
+
+    match outcome? {
+        Updated::Current => {
             if cli.json {
                 output::print_json(&serde_json::json!({
                     "status": "current",
@@ -638,12 +660,11 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
                     vec![],
                 );
             }
-            return Ok(ExitCode::SUCCESS);
         }
         // Nothing to compare against, so nothing is claimed either way.
         // Saying "up to date" would be a guess, and saying "out of date"
         // would push someone off a build they made on purpose.
-        update::Status::Unknown => {
+        Updated::Unknown => {
             if cli.json {
                 output::print_json(&serde_json::json!({
                     "status": "unknown",
@@ -656,63 +677,137 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
                     vec![ui::note("cannot tell: this build does not record a commit")],
                 );
             }
-            return Ok(ExitCode::SUCCESS);
         }
-        update::Status::Available { commit } => commit.clone(),
-    };
-
-    let short: String = available.chars().take(7).collect();
-
-    if check_only {
-        if cli.json {
-            output::print_json(&serde_json::json!({
-                "status": "available",
-                "commit": available,
-                "running": minato_core::BUILD_COMMIT,
-            }));
-        } else {
-            ui::done(
-                "update",
-                &[
-                    ("available", short),
-                    ("running", minato_core::BUILD_COMMIT_SHORT.to_string()),
-                ],
-                vec![ui::hint("install it with", "minato update")],
-            );
+        Updated::Available(commit) => {
+            if cli.json {
+                output::print_json(&serde_json::json!({
+                    "status": "available",
+                    "commit": commit,
+                    "running": minato_core::BUILD_COMMIT,
+                }));
+            } else {
+                ui::done(
+                    "update",
+                    &[
+                        ("available", short_commit(&commit)),
+                        ("running", minato_core::BUILD_COMMIT_SHORT.to_string()),
+                    ],
+                    vec![ui::hint("install it with", "minato update")],
+                );
+            }
         }
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    if !cli.json {
-        ui::notice(vec![ui::note(&format!("installing {short}…"))]);
-    }
-
-    let installed = update::install()
-        .await
-        .map_err(|err| CliError::Local(err.to_string()))?;
-
-    let installed_short: String = installed.chars().take(7).collect();
-
-    if cli.json {
-        output::print_json(&serde_json::json!({
-            "status": "installed",
-            "commit": installed,
-        }));
-    } else {
-        // The running daemon is still the old binary. It is not restarted
-        // here because that is launchd's job where launchd is installed,
-        // and stopping it is what makes launchd pick the new one up.
-        ui::done(
-            "update",
-            &[("installed", installed_short)],
-            vec![
-                ui::note("the running daemon is still the previous build"),
-                ui::hint("replace it with", "minato daemon stop"),
-            ],
-        );
+        Updated::Installed(commit) => {
+            if cli.json {
+                output::print_json(&serde_json::json!({
+                    "status": "installed",
+                    "commit": commit,
+                }));
+            } else {
+                // The running daemon is still the old binary. It is not
+                // restarted here because that is launchd's job where
+                // launchd is installed, and stopping it is what makes
+                // launchd pick the new one up.
+                ui::done(
+                    "update",
+                    &[("installed", short_commit(&commit))],
+                    vec![
+                        ui::note("the running daemon is still the previous build"),
+                        ui::hint("replace it with", "minato daemon stop"),
+                    ],
+                );
+            }
+        }
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// The steps of an update, named for the display.
+///
+/// Only the download reports a size; the rest are quick enough that the
+/// spinner is the whole of what there is to show.
+const CHECKING: &str = "checking";
+const DOWNLOADING: &str = "downloading";
+const VERIFYING: &str = "verifying";
+const UNPACKING: &str = "unpacking";
+const INSTALLING: &str = "installing";
+
+/// Asks GitHub, and fetches when there is something to fetch.
+///
+/// Every step is announced before it is attempted, because each one can
+/// take long enough on a slow network to look like a hang, and "checking
+/// for a newer build" is the difference between waiting and wondering.
+async fn run_update(
+    check_only: bool,
+    progress: Option<&ui::Progress>,
+) -> Result<Updated, CliError> {
+    if let Some(progress) = progress {
+        progress.begin(CHECKING, "checking for a newer build");
+    }
+
+    let status = update::check()
+        .await
+        .map_err(|err| CliError::Local(err.to_string()))?;
+
+    if let Some(progress) = progress {
+        progress.settle(CHECKING);
+    }
+
+    let available = match status {
+        update::Status::Current => return Ok(Updated::Current),
+        update::Status::Unknown => return Ok(Updated::Unknown),
+        update::Status::Available { commit } => commit,
+    };
+
+    if check_only {
+        return Ok(Updated::Available(available));
+    }
+
+    if let Some(progress) = progress {
+        progress.begin(
+            DOWNLOADING,
+            &format!("downloading {}", short_commit(&available)),
+        );
+    }
+
+    let installed = update::install(|stage| {
+        let Some(progress) = progress else {
+            return;
+        };
+
+        // Each step but the first ends the one before it, so the history
+        // fills in as the update goes rather than all at the end.
+        match stage {
+            update::Stage::Downloading { done, total } => {
+                progress.advance(DOWNLOADING, done, total)
+            }
+            update::Stage::Verifying => {
+                progress.settle(DOWNLOADING);
+                progress.begin(VERIFYING, "verifying the checksum");
+            }
+            update::Stage::Unpacking => {
+                progress.settle(VERIFYING);
+                progress.begin(UNPACKING, "unpacking the archive");
+            }
+            update::Stage::Installing => {
+                progress.settle(UNPACKING);
+                progress.begin(INSTALLING, "installing minato and minatod");
+            }
+        }
+    })
+    .await
+    .map_err(|err| CliError::Local(err.to_string()))?;
+
+    if let Some(progress) = progress {
+        progress.settle(INSTALLING);
+    }
+
+    Ok(Updated::Installed(installed))
+}
+
+/// A commit at the length that tells a reader something.
+fn short_commit(commit: &str) -> String {
+    commit.chars().take(7).collect()
 }
 
 /// Takes Minato off the machine.
