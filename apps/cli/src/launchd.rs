@@ -11,14 +11,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The launchd job name.
-pub const LABEL: &str = "dev.minato.daemon";
-
-/// Where system-wide LaunchDaemons live.
-///
-/// It has to be `LaunchDaemons`, not per-user `LaunchAgents`: only a
-/// launchd running as root can bind a privileged port.
-pub const INSTALL_DIR: &str = "/Library/LaunchDaemons";
+// The daemon and the client have to agree on where the plist lives and what
+// the job is called, so those live in `minato-core`. Generating the plist is
+// this side's job alone.
+pub use minato_core::launchd::{INSTALL_DIR, LABEL};
 
 pub struct LaunchdPlan {
     /// Where the generated plist went. No privileges needed.

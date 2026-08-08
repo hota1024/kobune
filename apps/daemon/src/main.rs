@@ -75,7 +75,20 @@ async fn main() -> anyhow::Result<()> {
 
     let shutdown = Arc::new(Notify::new());
 
-    // The proxy and DNS come up first. A failed bind does not stop the
+    // The Unix socket is claimed before anything else. launchd
+    // demand-launches this job whenever something reaches port 80, so a
+    // second daemon can appear at any moment; it has to find out that it
+    // lost *before* it adopts launchd's listeners, or it takes 80 and 443
+    // away from the daemon that is actually serving.
+    let Some(server) = Server::bind(paths.socket(), shutdown.clone())? else {
+        tracing::info!(
+            "another daemon already owns {}, so this one is standing down",
+            paths.socket().display()
+        );
+        return Ok(());
+    };
+
+    // The proxy and DNS come next. A failed bind does not stop the
     // daemon; it just means no URLs are issued and only the direct
     // endpoints work.
     let settings = GatewaySettings::from_env();
@@ -121,18 +134,16 @@ async fn main() -> anyhow::Result<()> {
     supervisor.restore_routes().await;
 
     spawn_idle_sweeper(supervisor.clone(), shutdown.clone());
-    let server = Server::new(paths.socket(), supervisor, shutdown.clone());
 
     // A signal and a Request::Shutdown stop it the same way.
     spawn_signal_handler(shutdown.clone());
 
-    let result = server.run().await;
+    let result = server.run(supervisor).await;
 
     // The tunnel does not outlive the daemon. Left running it would keep
     // publishing an environment nothing is managing any more.
     tunnel.stop().await;
 
-    let _ = std::fs::remove_file(paths.pid_file());
     tracing::info!("minatod is shutting down");
 
     result

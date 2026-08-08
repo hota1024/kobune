@@ -15,22 +15,33 @@ use crate::supervisor::Supervisor;
 
 pub struct Server {
     socket: PathBuf,
-    supervisor: Arc<Supervisor>,
+    listener: UnixListener,
     shutdown: Arc<Notify>,
 }
 
 impl Server {
-    pub fn new(socket: PathBuf, supervisor: Arc<Supervisor>, shutdown: Arc<Notify>) -> Self {
-        Self {
+    /// Claims the socket, or reports that another daemon holds it.
+    ///
+    /// **Called before anything else starts.** launchd demand-launches this
+    /// job whenever something reaches port 80, and if that happens while a
+    /// second daemon is already resident, the loser has to stand down before
+    /// it adopts launchd's listeners — otherwise it takes 80 and 443 away
+    /// from the daemon that is actually serving.
+    pub fn bind(socket: PathBuf, shutdown: Arc<Notify>) -> anyhow::Result<Option<Self>> {
+        let Some(listener) = bind(&socket)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(Self {
             socket,
-            supervisor,
+            listener,
             shutdown,
-        }
+        }))
     }
 
-    /// Starts listening, accepting connections until told to stop.
-    pub async fn run(&self) -> anyhow::Result<()> {
-        let listener = bind(&self.socket)?;
+    /// Accepts connections until told to stop.
+    pub async fn run(self, supervisor: Arc<Supervisor>) -> anyhow::Result<()> {
+        let listener = self.listener;
         tracing::info!("listening on {}", self.socket.display());
 
         loop {
@@ -38,7 +49,7 @@ impl Server {
                 accepted = listener.accept() => {
                     match accepted {
                         Ok((stream, _)) => {
-                            let supervisor = self.supervisor.clone();
+                            let supervisor = supervisor.clone();
                             tokio::spawn(async move {
                                 if let Err(err) = handle_connection(stream, supervisor).await {
                                     tracing::debug!("finished handling the connection: {err}");
@@ -64,12 +75,15 @@ impl Server {
 }
 
 /// Creates the socket, clearing away anything the last run left behind.
-fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
+///
+/// `None` means a live daemon already owns it. **Not an error**: launchd
+/// restarts this job on a non-zero exit (`KeepAlive { SuccessfulExit:
+/// false }`), so bailing here would relaunch, lose the race again, and bail
+/// again — a crash loop bounded only by launchd's throttle.
+fn bind(socket: &Path) -> anyhow::Result<Option<UnixListener>> {
     if socket.exists() {
-        // A live daemon answers. That means a second instance, so stand
-        // down.
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
-            anyhow::bail!("a daemon is already running on {}", socket.display());
+            return Ok(None);
         }
         std::fs::remove_file(socket)?;
     }
@@ -78,7 +92,7 @@ fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
         std::fs::create_dir_all(parent)?;
     }
 
-    Ok(UnixListener::bind(socket)?)
+    Ok(Some(UnixListener::bind(socket)?))
 }
 
 /// Handles one connection.
@@ -185,14 +199,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refuses_to_bind_over_a_live_daemon() {
+    fn stands_down_rather_than_failing_over_a_live_daemon() {
+        // An error here exits non-zero, and launchd restarts a job that
+        // exits non-zero. Losing the race has to look like success.
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("minatod.sock");
 
         let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
 
-        let err = bind(&socket).unwrap_err();
-        assert!(err.to_string().contains("already running"), "got: {err}");
+        assert!(bind(&socket).expect("not an error").is_none());
     }
 
     #[tokio::test]
@@ -204,7 +219,7 @@ mod tests {
         std::fs::write(&socket, b"").expect("creates it");
 
         let listener = bind(&socket).expect("clears the leftovers and binds");
-        drop(listener);
+        assert!(listener.is_some());
     }
 
     #[tokio::test]

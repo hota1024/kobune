@@ -9,6 +9,7 @@ pub mod config;
 pub mod env;
 pub mod error;
 pub mod git;
+pub mod launchd;
 pub mod naming;
 pub mod paths;
 pub mod service;

@@ -17,6 +17,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use minato_api::{Request, Response, Target};
+use minato_client::{Client, ClientError, DaemonStart};
 
 /// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
 /// is what tells one build from another.
@@ -30,7 +31,6 @@ fn version() -> &'static str {
 /// The suffix used when `[project] domain` is left out. It is also what
 /// the resolver gets installed for.
 const DEFAULT_DOMAIN_SUFFIX: &str = "localhost";
-use minato_client::{Client, ClientError};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -453,6 +453,27 @@ fn restore_sigpipe() {
     }
 }
 
+/// Says so when the daemon that just started cannot hold 80 or 443.
+///
+/// **Only when a LaunchDaemon is installed.** Without one, listening
+/// elsewhere is the normal arrangement and saying so every time would be
+/// noise. With one, it means launchd was meant to hand the ports over and
+/// did not — the state that leaves every URL dead while `minato up` still
+/// reports success.
+fn warn_if_unprivileged(cli: &Cli, start: DaemonStart) {
+    if cli.json || start != DaemonStart::Direct || !minato_core::launchd::is_installed() {
+        return;
+    }
+
+    ui::notice(vec![
+        ui::note("started a daemon outside launchd, so 80 and 443 are out and no URL will answer"),
+        ui::hint(
+            "bring socket activation back with",
+            &minato_core::launchd::kickstart_command(),
+        ),
+    ]);
+}
+
 /// Whether a command should carry the update notice.
 ///
 /// `update` says everything there is to say about updates itself, and
@@ -572,7 +593,8 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     let target = Target::new(cwd).workspace(cli.workspace.clone());
     let request = build_request(cli, target)?;
 
-    let mut connection = client.connect_or_spawn().await?;
+    let (mut connection, start) = client.connect_or_spawn().await?;
+    warn_if_unprivileged(cli, start);
 
     // JSON output carries no progress — exactly one JSON document comes
     // back. For logs and exec the output *is* the result, so no progress
@@ -1673,7 +1695,8 @@ async fn handle_daemon(
 ) -> Result<ExitCode, CliError> {
     match command {
         DaemonCommand::Start => {
-            let mut connection = client.connect_or_spawn().await?;
+            let (mut connection, start) = client.connect_or_spawn().await?;
+            warn_if_unprivileged(cli, start);
             let pong = connection.handshake().await?;
 
             if cli.json {

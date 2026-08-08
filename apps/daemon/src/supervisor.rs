@@ -26,7 +26,7 @@ type ServiceKeyRef = (String, String);
 use tokio::sync::Mutex;
 
 use crate::env;
-use crate::gateway::Gateway;
+use crate::gateway::{BindFailure, Gateway};
 use crate::idle::IdleTracker;
 use crate::resolve::{self, ProjectContext, Resolved};
 use crate::secrets;
@@ -186,6 +186,10 @@ impl Supervisor {
     async fn doctor(&self, target: Target) -> Result<Response, ApiError> {
         let mut checks = Vec::new();
 
+        // Read once: it decides both what the proxy checks advise and what
+        // the launchd check says, and those two have to agree.
+        let launchd_installed = minato_core::launchd::is_installed();
+
         // Which runtime this project runs on. Diagnosing a machine with no
         // project is still worth doing — that is often *why* someone runs
         // doctor — so failing to resolve falls back to the default.
@@ -199,15 +203,14 @@ impl Supervisor {
 
         checks.push(match self.gateway.http_port() {
             Some(port) => Check::ok("proxy-http", "HTTP proxy", format!("127.0.0.1:{port}")),
-            None => Check::fail(
-                "proxy-http",
-                "HTTP proxy",
-                "not listening (the port could not be held)".to_string(),
-            )
-            .with_fix(
-                "a port below 1024 needs privileges. Follow `minato setup`, \
-                 or name another port with MINATO_HTTP_PORT",
-            ),
+            None => {
+                let failure = self.gateway.http_failure();
+                Check::fail("proxy-http", "HTTP proxy", detail_for(failure)).with_fix(bind_fix(
+                    failure,
+                    crate::gateway::HTTP_PORT_ENV,
+                    launchd_installed,
+                ))
+            }
         });
 
         // With only one address family bound, requests to the other reach
@@ -235,32 +238,62 @@ impl Supervisor {
 
         checks.push(match self.gateway.https_port() {
             Some(port) => Check::ok("proxy-https", "HTTPS proxy", format!("127.0.0.1:{port}")),
-            None => Check::warn(
-                "proxy-https",
-                "HTTPS proxy",
-                "not listening; HTTP only".to_string(),
-            )
-            .with_fix("name another port with MINATO_HTTPS_PORT"),
+            None => {
+                let failure = self.gateway.https_failure();
+                Check::warn(
+                    "proxy-https",
+                    "HTTPS proxy",
+                    format!("{}; HTTP only", detail_for(failure)),
+                )
+                .with_fix(bind_fix(
+                    failure,
+                    crate::gateway::HTTPS_PORT_ENV,
+                    launchd_installed,
+                ))
+            }
         });
 
         checks.push(match self.gateway.dns_port() {
             Some(port) => Check::ok("dns", "DNS server", format!("127.0.0.1:{port}")),
-            None => Check::fail(
-                "dns",
-                "DNS server",
-                "not listening; *.localhost will not resolve".to_string(),
-            )
-            .with_fix("name a port of 1024 or above with MINATO_DNS_PORT"),
+            None => {
+                let failure = self.gateway.dns_failure();
+                Check::fail(
+                    "dns",
+                    "DNS server",
+                    format!("{}; *.localhost will not resolve", detail_for(failure)),
+                )
+                .with_fix(bind_fix(
+                    failure,
+                    crate::gateway::DNS_PORT_ENV,
+                    launchd_installed,
+                ))
+            }
         });
 
         // Whether privileged ports work comes down to whether launchd
         // handed over any descriptors.
+        //
+        // **An installed plist and an inactive job is its own state**, and
+        // the one `minato daemon stop` leaves behind. Telling that apart
+        // from "never set up" is the difference between a fix that works
+        // and being sent back to a `minato setup` that is already done.
         checks.push(if crate::activation::is_active() {
             Check::ok(
                 "launchd",
                 "launchd socket activation",
                 "active (privileged ports are available)".to_string(),
             )
+        } else if launchd_installed {
+            Check::warn(
+                "launchd",
+                "launchd socket activation",
+                "inactive, though the LaunchDaemon is installed".to_string(),
+            )
+            .with_fix(format!(
+                "`minato daemon start` wakes the job through launchd. If it \
+                 stays inactive, run `{}`",
+                minato_core::launchd::kickstart_command()
+            ))
         } else {
             Check::warn(
                 "launchd",
@@ -1765,6 +1798,19 @@ impl Supervisor {
     ) -> Result<(), ApiError> {
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
 
+        // **Said out loud, before anything starts.** With no proxy there is
+        // no URL to hand out, so `MINATO_URL_<SERVICE>` is left unset — and
+        // inside the container that surfaces as `parameter not set` from a
+        // start-up script, which names nothing that leads back to here.
+        if !self.gateway.is_serving() {
+            events.warn(
+                "the proxy is not listening, so no MINATO_URL_<SERVICE> is \
+                 injected and the URLs will not answer. `minato doctor` says \
+                 what to do about it"
+                    .to_string(),
+            );
+        }
+
         let envs = self
             .workspace_envs(
                 &resolved.config,
@@ -1880,6 +1926,42 @@ impl Supervisor {
                 &statuses,
             ),
         })
+    }
+}
+
+/// How a missing listener is described.
+fn detail_for(failure: Option<BindFailure>) -> String {
+    failure.unwrap_or(BindFailure::Other).detail().to_string()
+}
+
+/// What to do about a listener that could not be held.
+///
+/// **The launchd case comes first.** After `minato daemon stop` the job is
+/// idle while launchd keeps holding 80, so the bind fails with the port in
+/// use — and the old advice, "a port below 1024 needs privileges, follow
+/// `minato setup`", names neither the cause nor a step that helps.
+///
+/// `launchd_installed` is passed in rather than read here, so the advice can
+/// be checked without a plist on the machine running the tests.
+fn bind_fix(failure: Option<BindFailure>, port_env: &str, launchd_installed: bool) -> String {
+    if failure == Some(BindFailure::InUse) && launchd_installed {
+        return format!(
+            "launchd may be holding this port for a job it is not running. \
+             `minato daemon start` wakes it; failing that, run `{}`. If \
+             something unrelated has the port, name another with {port_env}",
+            minato_core::launchd::kickstart_command()
+        );
+    }
+
+    match failure.unwrap_or(BindFailure::Other) {
+        BindFailure::Privileged => format!(
+            "a port below 1024 needs privileges. Follow `minato setup`, \
+             or name another port with {port_env}"
+        ),
+        BindFailure::InUse => {
+            format!("stop whatever else holds the port, or name another with {port_env}")
+        }
+        BindFailure::Other => format!("name another port with {port_env}"),
     }
 }
 
@@ -2189,6 +2271,44 @@ mod tests {
         scope = "project"
         expose = false
     "#;
+
+    #[test]
+    fn a_port_in_use_under_launchd_points_at_launchd() {
+        // The state `minato daemon stop` leaves behind: the job is idle,
+        // launchd still holds 80. Advising `minato setup` here sends
+        // someone to re-run what they have already done.
+        let fix = bind_fix(Some(BindFailure::InUse), "MINATO_HTTP_PORT", true);
+
+        assert!(fix.contains("launchd"), "name the cause: {fix}");
+        assert!(fix.contains("minato daemon start"), "{fix}");
+        assert!(
+            !fix.contains("minato setup"),
+            "setup is already done in this state: {fix}"
+        );
+    }
+
+    #[test]
+    fn a_privileged_port_still_points_at_setup() {
+        let fix = bind_fix(Some(BindFailure::Privileged), "MINATO_HTTP_PORT", false);
+
+        assert!(fix.contains("minato setup"), "{fix}");
+        assert!(fix.contains("MINATO_HTTP_PORT"), "{fix}");
+    }
+
+    #[test]
+    fn a_port_in_use_without_launchd_blames_the_other_process() {
+        let fix = bind_fix(Some(BindFailure::InUse), "MINATO_DNS_PORT", false);
+
+        assert!(!fix.contains("launchd"), "{fix}");
+        assert!(fix.contains("MINATO_DNS_PORT"), "{fix}");
+    }
+
+    #[test]
+    fn the_detail_says_which_kind_of_failure_it_was() {
+        // "could not be held" was all it ever said, whatever happened.
+        assert!(detail_for(Some(BindFailure::Privileged)).contains("privileges"));
+        assert!(detail_for(Some(BindFailure::InUse)).contains("another process"));
+    }
 
     #[test]
     fn selecting_a_service_pulls_in_its_dependencies() {
