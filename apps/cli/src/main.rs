@@ -1,7 +1,7 @@
-//! minato — daemon の薄いクライアント。
+//! minato — a thin client for the daemon.
 //!
-//! ここにロジックを置かない。判断はすべて daemon 側で行い、CLI は
-//! リクエストの組み立てと表示だけを担当する（`docs/DESIGN.md` §3）。
+//! No logic lives here. Every decision is the daemon's; the CLI builds
+//! requests and prints results (`docs/DESIGN.md` §3).
 
 mod init;
 mod launchd;
@@ -15,8 +15,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use minato_api::{Request, Response, Target};
 
-/// `[project] domain` を省略したときに使われる接尾辞。
-/// resolver の設置対象もこれになる。
+/// The suffix used when `[project] domain` is left out. It is also what
+/// the resolver gets installed for.
 const DEFAULT_DOMAIN_SUFFIX: &str = "localhost";
 use minato_client::{Client, ClientError};
 
@@ -24,16 +24,17 @@ use minato_client::{Client, ClientError};
 #[command(
     name = "minato",
     version,
-    about = "AI エージェント向けの開発環境管理ツール",
-    long_about = "git worktree ごとにプレビュー環境を管理する。\n\
-                  すべてのコマンドが --json に対応しており、終了コードで失敗の種類を判別できる。"
+    about = "A development environment manager for AI agents",
+    long_about = "Manages a preview environment per git worktree.\n\
+                  Every command supports --json, and the exit code says what kind of failure it was."
 )]
 struct Cli {
-    /// 応答を JSON で出力する。エージェントはこれを使う。
+    /// Print the response as JSON. This is what agents use.
     #[arg(long, global = true)]
     json: bool,
 
-    /// 対象の workspace。省略時は現在のディレクトリから判定する。
+    /// The workspace to act on. Inferred from the current directory when
+    /// left out.
     #[arg(long, short = 'w', global = true)]
     workspace: Option<String>,
 
@@ -43,118 +44,118 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// minato.toml のひな形を作る
+    /// Write a starter minato.toml
     Init {
-        /// 既存の minato.toml を上書きする
+        /// Overwrite an existing minato.toml
         #[arg(long)]
         force: bool,
     },
 
-    /// daemon への疎通を確認する
+    /// Check that the daemon answers
     Ping,
 
-    /// 環境を診断し、直し方を示す
+    /// Diagnose the environment and say how to fix it
     Doctor,
 
-    /// URL を使うために必要な、権限の要る設定を案内する
+    /// Walk through the privileged setup the URLs need
     Setup,
 
-    /// workspace を一覧する
+    /// List workspaces
     Ls {
-        /// すべてのプロジェクトを対象にする
+        /// Cover every project
         #[arg(long)]
         all_projects: bool,
     },
 
-    /// worktree を作り、環境を起動する
+    /// Create a worktree and bring its environment up
     New {
-        /// チェックアウトするブランチ。存在しなければ作成する
+        /// The branch to check out, created if it does not exist
         branch: String,
 
-        /// 新規ブランチの分岐元
+        /// What to branch a new branch from
         #[arg(long)]
         base: Option<String>,
 
-        /// worktree を作るパス
+        /// Where to put the worktree
         #[arg(long)]
         path: Option<PathBuf>,
 
-        /// 作成するだけで起動しない
+        /// Create it without starting anything
         #[arg(long)]
         no_start: bool,
     },
 
-    /// worktree と環境を破棄する
+    /// Destroy a worktree and its environment
     Rm {
-        /// 未コミットの変更があっても削除する
+        /// Delete it even with uncommitted changes
         #[arg(long, short)]
         force: bool,
     },
 
-    /// サービスを起動する
+    /// Start services
     Up {
-        /// 対象サービス。省略時はすべて
+        /// Which services. All of them when left out
         services: Vec<String>,
     },
 
-    /// サービスを停止する
+    /// Stop services
     Down {
-        /// 対象サービス。省略時はこの workspace のすべて
+        /// Which services. All of this workspace's when left out
         services: Vec<String>,
 
-        /// プロジェクト内のすべての workspace を停止する
+        /// Stop every workspace in the project
         #[arg(long)]
         all: bool,
     },
 
-    /// 現在の状態を表示する
+    /// Show the current state
     Status,
 
-    /// サービスのアクセス先を 1 行で出力する
+    /// Print where a service can be reached, one line
     Url {
-        /// サービス名。省略時は公開されている最初のサービス
+        /// The service name. The first reachable one when left out
         service: Option<String>,
     },
 
-    /// ログを表示する
+    /// Show logs
     Logs {
-        /// 対象サービス。省略時は全サービス
+        /// Which services. All of them when left out
         services: Vec<String>,
 
-        /// 新しい行を待ち続ける
+        /// Keep waiting for new lines
         #[arg(long, short)]
         follow: bool,
 
-        /// 末尾から表示する行数
+        /// How many lines to show from the end
         #[arg(long, short = 'n')]
         tail: Option<usize>,
     },
 
-    /// コンテナ内でコマンドを実行する
+    /// Run a command inside a container
     ///
-    /// 終了コードはコマンドのものをそのまま返す。
+    /// The command's exit code is passed straight through.
     Exec {
-        /// 対象サービス
+        /// Which service
         service: String,
 
-        /// 実行するコマンド（`--` の後ろに書く）
+        /// The command to run, written after `--`
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
 
-    /// 環境変数を操作する
+    /// Work with environment variables
     Env {
         #[command(subcommand)]
         command: EnvCommand,
     },
 
-    /// エージェント向けの Skill を配置する
+    /// Install the Skill for agents
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
     },
 
-    /// daemon を操作する
+    /// Control the daemon
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
@@ -163,27 +164,27 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum EnvCommand {
-    /// 環境変数を一覧する
+    /// List environment variables
     Ls {
-        /// 値を伏せずに表示する
+        /// Show the values instead of masking them
         #[arg(long)]
         reveal: bool,
     },
 
-    /// 1 つの値を出力する（パイプで使える）
+    /// Print one value, ready to pipe
     Get { key: String },
 
-    /// 環境変数を設定する
+    /// Set an environment variable
     Set {
-        /// KEY=VALUE の形式
+        /// In KEY=VALUE form
         assignment: String,
 
-        /// 書き込む層
+        /// Which layer to write to
         #[arg(long, default_value = "workspace")]
         scope: String,
     },
 
-    /// 環境変数を削除する
+    /// Remove an environment variable
     Unset {
         key: String,
 
@@ -194,24 +195,24 @@ enum EnvCommand {
 
 #[derive(Subcommand, Debug)]
 enum SkillCommand {
-    /// .claude/skills/minato/SKILL.md に配置する
+    /// Install it at .claude/skills/minato/SKILL.md
     Install {
-        /// 内容が異なる既存ファイルを上書きする
+        /// Overwrite an existing file whose contents differ
         #[arg(long)]
         force: bool,
     },
 
-    /// 配置される内容を出力する
+    /// Print what would be installed
     Show,
 }
 
 #[derive(Subcommand, Debug)]
 enum DaemonCommand {
-    /// daemon を起動する
+    /// Start the daemon
     Start,
-    /// daemon を停止する
+    /// Stop the daemon
     Stop,
-    /// daemon の状態を表示する
+    /// Show the daemon's state
     Status,
 }
 
@@ -237,7 +238,8 @@ async fn main() -> ExitCode {
     }
 }
 
-/// CLI が扱うエラー。daemon 由来のものは終了コードを引き継ぐ。
+/// The errors the CLI deals with. Ones from the daemon keep its exit
+/// code.
 #[derive(Debug, thiserror::Error)]
 enum CliError {
     #[error(transparent)]
@@ -270,9 +272,9 @@ fn exit_code_for(err: &CliError) -> i32 {
 
 async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     let cwd = std::env::current_dir()
-        .map_err(|err| CliError::Local(format!("作業ディレクトリを取得できません: {err}")))?;
+        .map_err(|err| CliError::Local(format!("cannot read the working directory: {err}")))?;
 
-    // init は daemon を必要としない。
+    // `init` needs no daemon.
     if let Command::Init { force } = &cli.command {
         let outcome = init::run(&cwd, *force).map_err(|err| CliError::Local(err.to_string()))?;
 
@@ -282,22 +284,22 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
                 "project": outcome.project,
             }));
         } else {
-            println!("{} を作成しました", outcome.path.display());
-            println!("プロジェクト名: {}", outcome.project);
+            println!("created {}", outcome.path.display());
+            println!("project: {}", outcome.project);
             println!();
-            println!("次は `minato up` で環境を起動できます");
+            println!("next, bring the environment up with `minato up`");
         }
 
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Skill の配置に daemon は要らない。
+    // Installing the Skill needs no daemon either.
     if let Command::Skill { command } = &cli.command {
         return handle_skill(cli, command, &cwd);
     }
 
     let client = Client::from_env()
-        .map_err(|err| CliError::Local(format!("設定ディレクトリを解決できません: {err}")))?;
+        .map_err(|err| CliError::Local(format!("cannot resolve the configuration directory: {err}")))?;
 
     if let Command::Daemon { command } = &cli.command {
         return handle_daemon(cli, &client, command).await;
@@ -308,8 +310,9 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
 
     let mut connection = client.connect_or_spawn().await?;
 
-    // JSON 出力では途中経過を出さない。1 本の JSON だけを返す。
-    // logs と exec は出力そのものが結果。進捗の飾りは付けない。
+    // JSON output carries no progress — exactly one JSON document comes
+    // back. For logs and exec the output *is* the result, so no progress
+    // decoration either.
     let raw_output = matches!(cli.command, Command::Logs { .. } | Command::Exec { .. });
     let show_progress = !cli.json && request.is_long_running() && !raw_output;
 
@@ -325,9 +328,9 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
 
     present(cli, &response)?;
 
-    // exec は実行したコマンドの終了コードをそのまま返す。
-    // エージェントが `minato exec web -- pnpm test` の成否を
-    // 終了コードだけで判定できる必要がある。
+    // exec passes the command's exit code straight through: an agent has
+    // to be able to judge `minato exec web -- pnpm test` by exit status
+    // alone.
     if let Response::Exec { exit_code } = &response {
         return Ok(ExitCode::from(clamp_exit_code(*exit_code)));
     }
@@ -386,14 +389,14 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
         Command::Env { command } => build_env_request(command, target)?,
         Command::Doctor | Command::Setup => Request::Doctor,
         Command::Init { .. } | Command::Daemon { .. } | Command::Skill { .. } => {
-            unreachable!("daemon を使わないコマンドは呼び出し前に処理済み")
+            unreachable!("the commands that need no daemon are handled before this")
         }
     };
 
     Ok(request)
 }
 
-/// Skill の配置。daemon を必要としない。
+/// Installing the Skill. Needs no daemon.
 fn handle_skill(
     cli: &Cli,
     command: &SkillCommand,
@@ -405,7 +408,8 @@ fn handle_skill(
             Ok(ExitCode::SUCCESS)
         }
         SkillCommand::Install { force } => {
-            // worktree の中で実行されても、リポジトリのルートに置く。
+            // Run from inside a worktree, it still goes at the repository
+            // root.
             let root = minato_core::Repository::discover(cwd)
                 .map(|repo| repo.main_root)
                 .unwrap_or_else(|_| cwd.to_path_buf());
@@ -419,9 +423,9 @@ fn handle_skill(
                     "overwritten": installed.overwritten,
                 }));
             } else if installed.overwritten {
-                println!("{} を更新しました", installed.path.display());
+                println!("updated {}", installed.path.display());
             } else {
-                println!("{} を配置しました", installed.path.display());
+                println!("installed {}", installed.path.display());
             }
 
             Ok(ExitCode::SUCCESS)
@@ -429,10 +433,10 @@ fn handle_skill(
     }
 }
 
-/// 終了コードをプロセスの終了コードに収める。
+/// Squeezes an exit code into a process exit code.
 ///
-/// シグナルで死んだ場合などに負の値が来る。0 に丸めると成功に
-/// 見えてしまうので、失敗として残す。
+/// A death by signal comes through negative. Rounding that to 0 would read
+/// as success, so it stays a failure.
 fn clamp_exit_code(code: i32) -> u8 {
     u8::try_from(code).unwrap_or(1)
 }
@@ -447,7 +451,8 @@ fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, Cl
             target,
             reveal: *reveal,
         },
-        // get は一覧から取り出す。値そのものが要るので伏せない。
+        // `get` pulls from the listing, and the value itself is the
+        // point, so nothing is masked.
         EnvCommand::Get { .. } => Request::EnvList {
             target,
             reveal: true,
@@ -455,7 +460,7 @@ fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, Cl
         EnvCommand::Set { assignment, scope } => {
             let Some((key, value)) = assignment.split_once('=') else {
                 return Err(CliError::Local(format!(
-                    "`{assignment}` は KEY=VALUE の形式ではありません"
+                    "`{assignment}` is not in KEY=VALUE form"
                 )));
             };
 
@@ -475,12 +480,12 @@ fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, Cl
 }
 
 fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
-    // url だけは表示が特殊。パイプで繋げるよう 1 行だけ出す。
+    // `url` prints differently: one line, ready to pipe.
     if let Command::Url { service } = &cli.command {
         return present_url(cli, response, service.as_deref());
     }
 
-    // env get はパイプで使えるよう 1 行だけ出す。
+    // `env get` prints one line too, for the same reason.
     if let Command::Env {
         command: EnvCommand::Get { key },
     } = &cli.command
@@ -488,7 +493,7 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
         return present_env_value(cli, response, key);
     }
 
-    // doctor と setup は daemon の診断にホスト側の診断を足して見せる。
+    // `doctor` and `setup` add the host-side checks to the daemon's.
     if matches!(cli.command, Command::Doctor | Command::Setup) {
         return present_diagnostics(cli, response);
     }
@@ -502,15 +507,16 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
         Response::Pong(pong) => {
             println!("minatod {} (protocol {})", pong.version, pong.protocol);
             println!("runtime: {}", pong.runtime);
-            println!("uptime: {}秒", pong.uptime_secs);
+            println!("uptime: {}s", pong.uptime_secs);
         }
         Response::Workspaces { workspaces } => output::print_workspaces(workspaces),
         Response::Diagnostics(diagnostics) => output::print_diagnostics(diagnostics),
         Response::Env { entries } => {
             output::print_env(entries);
 
-            // 変更しても既存のコンテナには反映されない。黙っていると
-            // 「設定したのに効かない」と受け取られる。
+            // A change does not reach containers that are already
+            // running. Left unsaid, that reads as "I set it and nothing
+            // happened".
             if matches!(
                 cli.command,
                 Command::Env {
@@ -518,14 +524,15 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
                 }
             ) {
                 println!();
-                println!("反映するには `minato down` してから `minato up` してください");
+                println!("run `minato down` then `minato up` to pick this up");
             }
         }
         Response::Workspace { workspace } => output::print_workspace(workspace),
-        // logs は行そのものが出力済み。exec は終了コードで伝える。
+        // logs has already printed its lines; exec speaks through its
+        // exit code.
         Response::Exec { .. } => {}
         Response::Empty if matches!(cli.command, Command::Logs { .. }) => {}
-        Response::Empty => println!("完了しました"),
+        Response::Empty => println!("done"),
     }
 
     Ok(())
@@ -534,7 +541,7 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
 fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<(), CliError> {
     let Response::Workspace { workspace } = response else {
         return Err(CliError::Local(
-            "workspace の情報を取得できませんでした".to_string(),
+            "cannot read the workspace".to_string(),
         ));
     };
 
@@ -542,7 +549,7 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
         Some(name) => workspace.service(name).ok_or_else(|| {
             let available: Vec<&str> = workspace.services.iter().map(|s| s.name.as_str()).collect();
             CliError::Local(format!(
-                "サービス `{name}` は定義されていません。利用できるサービス: {}",
+                "no service named `{name}`. Available: {}",
                 available.join(", ")
             ))
         })?,
@@ -552,7 +559,7 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
             .find(|s| s.access().is_some())
             .ok_or_else(|| {
                 CliError::Local(
-                    "アクセスできるサービスがありません。`minato up` で起動してください"
+                    "no service is reachable. Start one with `minato up`"
                         .to_string(),
                 )
             })?,
@@ -560,7 +567,7 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
 
     let access = target.access().ok_or_else(|| {
         CliError::Local(format!(
-            "サービス `{}` はまだアクセスできません（状態: {}）",
+            "service `{}` is not reachable yet (state: {})",
             target.name,
             target.state.label()
         ))
@@ -573,18 +580,18 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
             "state": target.state,
         }));
     } else {
-        // パイプで使えるよう、装飾なしで 1 行だけ出す。
+        // One undecorated line, ready to pipe.
         println!("{access}");
     }
 
     Ok(())
 }
 
-/// `minato env get` の出力。値だけを 1 行で出す。
+/// What `minato env get` prints: the value, on one line.
 fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), CliError> {
     let Response::Env { entries } = response else {
         return Err(CliError::Local(
-            "環境変数を取得できませんでした".to_string(),
+            "cannot read the environment".to_string(),
         ));
     };
 
@@ -593,7 +600,7 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), Cl
         .find(|entry| entry.key == key)
         .ok_or_else(|| {
             CliError::Local(format!(
-                "`{key}` は定義されていません。`minato env ls` で確認してください"
+                "`{key}` is not defined. Run `minato env ls` to see what is"
             ))
         })?;
 
@@ -606,14 +613,14 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), Cl
     Ok(())
 }
 
-/// daemon の診断にホスト側の診断を足して表示する。
+/// Shows the daemon's diagnostics with the host-side ones added.
 ///
-/// `/etc/resolver` や CA の信頼は daemon からは分からない。CLI が
-/// 自分の目で確かめたものを合わせて、1 つの結果として見せる。
+/// The daemon cannot see `/etc/resolver` or whether the CA is trusted. The
+/// CLI checks those itself and presents one combined result.
 fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
     let Response::Diagnostics(diagnostics) = response else {
         return Err(CliError::Local(
-            "診断結果を取得できませんでした".to_string(),
+            "cannot read the diagnostics".to_string(),
         ));
     };
 
@@ -642,10 +649,10 @@ fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
     Ok(())
 }
 
-/// 権限の要る手順を案内する。**実行はしない。**
+/// Walks through the privileged steps. **It never runs them.**
 ///
-/// sudo を自動で走らせると、エージェントは password 待ちで固まり、
-/// 利用者から見れば黙って権限昇格したことになる。
+/// Running sudo on its own would hang an agent at the password prompt, and
+/// from the user's side it would look like a silent privilege escalation.
 fn present_setup(
     cli: &Cli,
     diagnostics: &minato_api::Diagnostics,
@@ -659,24 +666,24 @@ fn present_setup(
             .any(|check| check.id == id && check.status != minato_api::CheckStatus::Ok)
     };
 
-    // (説明, 補足, コマンド)
+    // (description, note, commands)
     let mut steps: Vec<(String, Option<String>, Vec<String>)> = Vec::new();
     let launchd_pending = pending("launchd");
 
     if launchd_pending {
         match prepare_launchd() {
             Ok((source, commands)) => steps.push((
-                "launchd に 80/443/53 を確保させる（daemon 自体は非 root のまま動きます）"
+                "let launchd hold 80/443/53 (the daemon itself stays non-root)"
                     .to_string(),
-                Some(format!("生成した plist: {}", source.display())),
+                Some(format!("generated plist: {}", source.display())),
                 commands,
             )),
-            Err(err) => eprintln!("警告: plist を書き出せませんでした: {err}"),
+            Err(err) => eprintln!("warning: cannot write the plist: {err}"),
         }
     }
 
-    // launchd を設置すると DNS は :53 に移る。設置前のポートを書いた
-    // resolver を残すと、設置後に名前が引けなくなる。
+    // Installing launchd moves DNS to :53. A resolver still naming the
+    // old port would stop resolving the moment it lands.
     let effective_dns_port = if launchd_pending {
         launchd::Ports::default().dns
     } else {
@@ -685,7 +692,7 @@ fn present_setup(
 
     if pending("resolver") || launchd_pending {
         steps.push((
-            format!("*.{DEFAULT_DOMAIN_SUFFIX} を Minato の DNS に向ける"),
+            format!("point *.{DEFAULT_DOMAIN_SUFFIX} at Minato's DNS"),
             None,
             vec![system::resolver_command(
                 DEFAULT_DOMAIN_SUFFIX,
@@ -697,7 +704,7 @@ fn present_setup(
     if pending("ca-trust") {
         if let Some(path) = ca_path {
             steps.push((
-                "ローカル CA を信頼する（HTTPS の警告を消す）".to_string(),
+                "trust the local CA, so HTTPS stops warning".to_string(),
                 None,
                 vec![system::trust_command(path)],
             ));
@@ -719,12 +726,12 @@ fn present_setup(
     }
 
     if steps.is_empty() {
-        println!("設定は完了しています。`minato doctor` で確認できます");
+        println!("everything is set up. Confirm with `minato doctor`");
         return Ok(());
     }
 
-    println!("URL を使うには以下の設定が必要です。");
-    println!("root 権限が要るため、内容を確認してから実行してください。");
+    println!("The URLs need the following setup.");
+    println!("It requires root, so read each command before running it.");
 
     for (index, (description, note, commands)) in steps.iter().enumerate() {
         println!();
@@ -738,11 +745,11 @@ fn present_setup(
     }
 
     println!();
-    println!("実行後に `minato daemon stop` してください（launchd が起動し直します）。");
+    println!("Afterwards run `minato daemon stop`; launchd will start it again.");
 
     if launchd_pending {
         println!();
-        println!("取り消すには:");
+        println!("To undo:");
         for command in launchd::uninstall_commands() {
             println!("   {command}");
         }
@@ -751,7 +758,7 @@ fn present_setup(
     Ok(())
 }
 
-/// 診断結果の detail からポート番号を拾う（`127.0.0.1:15353` 形式）。
+/// Picks the port out of a check's detail (`127.0.0.1:15353`).
 fn find_port(diagnostics: &minato_api::Diagnostics, id: &str) -> Option<u16> {
     diagnostics
         .checks
@@ -773,11 +780,11 @@ fn find_detail<'a>(diagnostics: &'a minato_api::Diagnostics, id: &str) -> Option
     }
 }
 
-/// launchd の plist を書き出し、設置コマンドを返す。
+/// Writes the launchd plist and returns the commands to install it.
 fn prepare_launchd() -> anyhow::Result<(PathBuf, Vec<String>)> {
     let paths = minato_core::Paths::resolve()?;
 
-    // CLI と daemon は一緒に配布されるので隣にいる。
+    // The CLI and the daemon ship together, so it is next door.
     let program = std::env::current_exe()?
         .parent()
         .map(|dir| dir.join("minatod"))
@@ -803,7 +810,7 @@ async fn handle_daemon(
             if cli.json {
                 output::print_json(&pong);
             } else {
-                println!("minatod {} が動いています", pong.version);
+                println!("minatod {} is running", pong.version);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -812,7 +819,7 @@ async fn handle_daemon(
                 Ok(connection) => connection,
                 Err(_) => {
                     if !cli.json {
-                        println!("daemon は動いていません");
+                        println!("the daemon is not running");
                     }
                     return Ok(ExitCode::SUCCESS);
                 }
@@ -820,7 +827,7 @@ async fn handle_daemon(
 
             connection.request(Request::Shutdown).await?;
             if !cli.json {
-                println!("daemon を停止しました");
+                println!("stopped the daemon");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -834,7 +841,7 @@ async fn handle_daemon(
                     println!("  version:  {}", pong.version);
                     println!("  protocol: {}", pong.protocol);
                     println!("  runtime:  {}", pong.runtime);
-                    println!("  uptime:   {}秒", pong.uptime_secs);
+                    println!("  uptime:   {}s", pong.uptime_secs);
                     println!("  socket:   {}", client.socket_path().display());
                 }
                 Ok(ExitCode::SUCCESS)
@@ -845,7 +852,7 @@ async fn handle_daemon(
                 } else {
                     println!("stopped");
                 }
-                // 停止していることは異常ではないので成功で返す。
+                // Being stopped is not an error, so this succeeds.
                 Ok(ExitCode::SUCCESS)
             }
         },
@@ -864,7 +871,7 @@ mod tests {
 
     #[test]
     fn json_flag_is_available_on_every_subcommand() {
-        // エージェントはどのコマンドでも --json を使える必要がある。
+        // An agent has to be able to reach for --json anywhere.
         for args in [
             vec!["minato", "ls", "--json"],
             vec!["minato", "status", "--json"],
@@ -885,10 +892,10 @@ mod tests {
 
         match request {
             Request::New { start, branch, .. } => {
-                assert!(start, "`minato new` は環境まで立ち上げるのが既定");
+                assert!(start, "`minato new` brings the environment up by default");
                 assert_eq!(branch, "feature/x");
             }
-            other => panic!("想定外: {other:?}"),
+            other => panic!("unexpected: {other:?}"),
         }
     }
 
@@ -900,7 +907,7 @@ mod tests {
 
         match request {
             Request::New { start, .. } => assert!(!start),
-            other => panic!("想定外: {other:?}"),
+            other => panic!("unexpected: {other:?}"),
         }
     }
 
@@ -914,13 +921,13 @@ mod tests {
             Request::Up { target, .. } => {
                 assert_eq!(target.workspace.as_deref(), Some("feat-1"));
             }
-            other => panic!("想定外: {other:?}"),
+            other => panic!("unexpected: {other:?}"),
         }
     }
 
     #[test]
     fn url_asks_for_status() {
-        // url は専用のリクエストを持たず、status の結果から取り出す。
+        // `url` has no request of its own; it reads the status result.
         let cli = Cli::try_parse_from(["minato", "url", "web"]).expect("parses");
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
@@ -934,13 +941,13 @@ mod tests {
 
         match request {
             Request::Up { services, .. } => assert_eq!(services, vec!["web", "api"]),
-            other => panic!("想定外: {other:?}"),
+            other => panic!("unexpected: {other:?}"),
         }
     }
 
     #[test]
     fn long_running_commands_show_progress() {
-        // 進捗を出すかどうかはリクエストの種類で決まる。
+        // Whether progress is shown follows from the kind of request.
         assert!(
             Request::Up {
                 target: Target::new(PathBuf::from("/repo")),

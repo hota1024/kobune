@@ -1,150 +1,155 @@
 ---
 name: minato
-description: git worktree ごとのプレビュー環境を操作する。ブランチを切って動作確認する、サービスのログを見る、コンテナ内でテストを走らせる、環境変数を設定するときに使う。minato.toml があるリポジトリで有効。
+description: Work with the preview environment behind a git worktree. Use it to branch off and check something works, read a service's logs, run tests inside a container, or set environment variables. Active in any repository with a minato.toml.
 ---
 
 # Minato
 
-worktree 1 つにつき環境 1 つが対応している。worktree が生まれれば環境が生まれ、
-消えれば消える。この対応さえ押さえておけば、自分がどの環境を見ているのかを
-見失わない。
+One worktree, one environment. A worktree appears and its environment appears
+with it; the worktree goes and so does the environment. Hold on to that
+correspondence and you never lose track of which environment you are looking
+at.
 
-## 原則
+## Principles
 
-**`docker` を直接使わない。** `docker ps` や `docker logs` で見えるものは
-Minato 経由でも見える。直接触ると、Minato が把握している状態と食い違う。
+**Never reach for `docker`.** Anything `docker ps` or `docker logs` shows is
+visible through Minato too. Touching it directly puts the real state at odds
+with the state Minato knows about.
 
-**ポート番号を推測しない。** `minato url` で取る。ポートは起動のたびに
-変わることがあり、URL は変わらない。
+**Never guess a port.** Ask `minato url`. Ports change from one start to the
+next; the URL does not.
 
-**確認は必ず実際のアクセスで行う。** 「起動したはず」で終わらせない。
+**Confirm by actually reaching it.** "It should be up" is not a check.
 
-## 最初にすること
+## Start here
 
 ```bash
 minato status --json
 ```
 
-これで現在の workspace、各サービスの状態、URL が分かる。
-`minato.toml` が無ければ `minato init` で雛形を作る。
+That gives the current workspace, the state of each service, and the URLs.
+With no `minato.toml`, `minato init` writes a starter one.
 
-## よく使う操作
+## Everyday work
 
-### 新しいブランチで作業を始める
+### Start on a new branch
 
 ```bash
 minato new feature/user-auth
 ```
 
-worktree の作成と環境の起動をまとめて行い、URL まで出す。
-`git worktree add` を自分で叩く必要はない（叩いた場合も Minato は認識する）。
+Creates the worktree, brings the environment up, and prints the URLs. There is
+no need to run `git worktree add` yourself — though Minato recognises the
+worktree if you do.
 
-作った worktree に移動してから作業する。パスは `minato status --json` の
-`path` に出る。
+Move into the new worktree before working. Its path is the `path` field of
+`minato status --json`.
 
-### 変更を確認する
+### Check a change
 
 ```bash
 URL=$(minato url web)
 curl -sS --fail-with-body "$URL/api/health"
 ```
 
-**`curl -s` だけで済ませない。** エラーが握り潰されて「空の応答が返った」
-ようにしか見えなくなる。`-sS --fail-with-body` を付けるか、終了コードを見る。
+**`curl -s` on its own is not enough.** It swallows errors, leaving nothing
+that looks like anything but an empty response. Use `-sS --fail-with-body`, or
+check the exit code.
 
-`minato url` は `https://web.feature-user-auth.myapp.localhost` のような
-URL を 1 行で返す。**この URL は停止中でも有効**で、アクセスすると環境が
-起き上がる。数秒待たされることがあるが、`curl` は準備ができるまで待つので
-そのまま使ってよい。
+`minato url` returns one line, something like
+`https://web.feature-user-auth.myapp.localhost`. **That URL works while the
+service is stopped** — a request wakes the environment up. It can take a few
+seconds, but `curl` waits for readiness, so use it as-is.
 
-### ログを見る
+### Read the logs
 
 ```bash
-minato logs                 # 全サービス
-minato logs web -n 50       # web の直近 50 行
-minato logs web -f          # 流し続ける（自分で止めること）
+minato logs                 # every service
+minato logs web -n 50       # the last 50 lines of web
+minato logs web -f          # keep streaming (stop it yourself)
 ```
 
-### コンテナ内でコマンドを実行する
+### Run a command in a container
 
 ```bash
 minato exec web -- pnpm test
 ```
 
-**終了コードはコマンドのものがそのまま返る。** テストの成否は終了コードで
-判定できる。出力は stdout / stderr に分かれて届く。
+**The command's exit code comes straight back**, so tests can be judged by exit
+status alone. Output arrives split across stdout and stderr.
 
-### 環境変数
+### Environment variables
 
 ```bash
-minato env ls               # どの層の値が効いているかも分かる
-minato env set API_KEY=xxx  # 既定では workspace 層（この worktree だけ）
-minato env set DEBUG=1 --scope project   # リポジトリ全体
+minato env ls               # shows which layer each value comes from
+minato env set API_KEY=xxx  # the workspace layer by default: this worktree only
+minato env set DEBUG=1 --scope project   # the whole repository
 ```
 
-`.env` を直接書かない。層が 3 つあり、どれが効いているか分からなくなる。
+Do not write `.env` directly. There are three layers, and editing one by hand
+leaves it unclear which is winning.
 
-**設定を変えたら `minato down && minato up` が要る。** 起動中のコンテナには
-反映されない。
+**A change needs `minato down && minato up`.** Containers that are already
+running do not pick it up.
 
-各サービスには他サービスの URL が `MINATO_URL_<SERVICE>` として渡っている
-（`api` サービスなら `MINATO_URL_API`）。フロントから API を呼ぶときは
-これを使う。ハードコードすると worktree ごとに壊れる。
+Every service receives the other services' URLs as `MINATO_URL_<SERVICE>`
+(`MINATO_URL_API` for a service named `api`). Use those when the frontend calls
+the API — hardcoding breaks from one worktree to the next.
 
-### 片付ける
+### Clean up
 
 ```bash
 minato rm -w feature-user-auth
 ```
 
-worktree と環境を消す。ブランチは残る。
+Removes the worktree and its environment. The branch stays.
 
-## うまくいかないとき
+## When something is wrong
 
-**手順は必ずこの順で。** 推測で `docker` に戻らない。
+**Work through these in order.** Do not fall back to `docker` on a hunch.
 
-1. `minato status --json` — サービスの `state` を見る
-   - `stopped` → アクセスするか `minato up` で起動する
-   - `starting` → 待つ
-   - `failed` → `reason` に理由がある
-2. `minato logs <service>` — アプリ側のエラーを見る
-3. `minato doctor` — 環境側の問題を見る。**直し方が `fix` に出る**
+1. `minato status --json` — look at each service's `state`
+   - `stopped` → reach for it, or run `minato up`
+   - `starting` → wait
+   - `failed` → `reason` says why
+2. `minato logs <service>` — errors from the app itself
+3. `minato doctor` — problems with the environment. **The fix is in `fix`**
 
-### よくある症状
+### Common symptoms
 
-| 症状 | 見るところ |
+| Symptom | Where to look |
 | --- | --- |
-| `curl` が終了コード 60 | 証明書が信頼されていない。`minato doctor` → CA を信頼させる手順が出る（sudo が要るので人に頼む） |
-| URL に繋がらない | `minato doctor`。DNS や プロキシの設定が未完のことが多い |
-| 404 が返る | ホスト名が違う。`minato url` で取り直す |
-| 502 が返る | サービスは登録されているが応答していない。`minato logs` |
-| 起動が終わらない | `minato logs -f` で進行を見る |
-| 設定を変えたのに効かない | `minato down && minato up` |
+| `curl` exits 60 | The certificate is not trusted. `minato doctor` prints the steps to trust the CA (they need sudo, so ask a person) |
+| The URL does not connect | `minato doctor`. Usually DNS or the proxy is not set up yet |
+| A 404 comes back | Wrong hostname. Get it again from `minato url` |
+| A 502 comes back | The service is registered but not answering. `minato logs` |
+| Startup never finishes | Watch it with `minato logs -f` |
+| A config change does nothing | `minato down && minato up` |
 
-## 出力の扱い
+## Reading the output
 
-すべてのコマンドが `--json` に対応している。解析するときは付ける。
+Every command supports `--json`. Use it whenever you are parsing.
 
-失敗時は終了コードで種類が分かる。
+On failure, the exit code says what kind of failure it was.
 
-| コード | 意味 |
+| Code | Meaning |
 | --- | --- |
-| 4 | 見つからない（workspace / サービス） |
-| 5 | 既に存在する |
-| 6 / 7 | 設定が無い / 不正 |
-| 8 | git リポジトリの外 |
-| 9 | コンテナランタイムに繋がらない |
-| 10 | ランタイムの操作が失敗した |
-| 11 | 未対応の機能 |
+| 4 | Not found (workspace or service) |
+| 5 | Already exists |
+| 6 / 7 | No configuration / invalid configuration |
+| 8 | Outside a git repository |
+| 9 | Cannot reach the container runtime |
+| 10 | A runtime operation failed |
+| 11 | Unsupported |
 
-`--json` のエラーには `hint` が入っていることがある。**次に何をすべきかが
-書かれているので読む。**
+A `--json` error may carry a `hint`. **Read it — it says what to do next.**
 
-## してはいけないこと
+## Do not
 
-- `docker` / `container` コマンドを直接叩く
-- ポート番号を URL に埋め込む（`localhost:3000` など）
-- `.env` を直接編集する
-- `minato logs -f` を止めずに放置する
-- 動作確認をせずに「起動した」と報告する
-- `curl -s` の空の出力を「応答が空」と解釈する（証明書エラーの可能性がある）
+- Run `docker` or `container` directly
+- Put a port in a URL (`localhost:3000` and friends)
+- Edit `.env` by hand
+- Leave `minato logs -f` running
+- Report "it's up" without checking
+- Read empty `curl -s` output as an empty response (it may be a certificate
+  error)

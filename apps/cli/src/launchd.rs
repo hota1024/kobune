@@ -1,37 +1,38 @@
-//! launchd の plist 生成。
+//! Generating the launchd plist.
 //!
-//! 80 / 443 / 53 は非 root では bind できない。launchd（root）に bind させて
-//! ファイルディスクリプタだけ渡してもらえば、**daemon 本体は非 root のまま**
-//! でよい。`UserName` を指定することで、launchd が root で socket を開き、
-//! プロセス自体は利用者の権限で動く。
+//! Ports 80, 443 and 53 cannot be bound without root. Letting launchd bind
+//! them as root and hand over nothing but the file descriptors keeps **the
+//! daemon itself unprivileged**. `UserName` is what makes that work:
+//! launchd opens the sockets as root, and the process runs as the user.
 //!
-//! plist の書き出しまでは権限が要らないのでここで行い、`/Library/LaunchDaemons`
-//! への設置は sudo が要るのでコマンドを提示するに留める。
+//! Writing the plist needs no privileges, so that happens here. Installing
+//! it into `/Library/LaunchDaemons` needs sudo, so all that comes back is
+//! the commands to run.
 
 use std::path::{Path, PathBuf};
 
-/// launchd のジョブ名。
+/// The launchd job name.
 pub const LABEL: &str = "dev.minato.daemon";
 
-/// システム全体の LaunchDaemon の置き場。
+/// Where system-wide LaunchDaemons live.
 ///
-/// ユーザ単位の `LaunchAgents` ではなく `LaunchDaemons` に置く必要がある。
-/// 特権ポートを bind できるのは root で動く launchd だけのため。
+/// It has to be `LaunchDaemons`, not per-user `LaunchAgents`: only a
+/// launchd running as root can bind a privileged port.
 pub const INSTALL_DIR: &str = "/Library/LaunchDaemons";
 
 pub struct LaunchdPlan {
-    /// 生成した plist の場所（権限不要）。
+    /// Where the generated plist went. No privileges needed.
     pub source: PathBuf,
-    /// 設置先。設置コマンドにも現れる。
+    /// Where it gets installed. Also appears in the commands.
     #[allow(
         dead_code,
-        reason = "設置先はコマンド文字列にも埋め込まれるが、テストと将来の表示で参照する"
+        reason = "the destination is baked into the command strings, but tests and future output read it"
     )]
     pub destination: PathBuf,
     pub commands: Vec<String>,
 }
 
-/// plist を `minato_home` に書き出し、設置手順を返す。
+/// Writes the plist into `minato_home` and returns the install steps.
 pub fn prepare(
     program: &Path,
     minato_home: &Path,
@@ -58,7 +59,7 @@ pub fn prepare(
     })
 }
 
-/// 設置を取り消す手順。
+/// The steps that undo the installation.
 pub fn uninstall_commands() -> Vec<String> {
     let destination = Path::new(INSTALL_DIR).join(format!("{LABEL}.plist"));
 
@@ -86,9 +87,9 @@ impl Default for Ports {
 }
 
 fn plist(program: &Path, minato_home: &Path, user: &str, ports: Ports) -> String {
-    // `localhost` は ::1 と 127.0.0.1 の両方に解決されるため、
-    // launchd はソケットを 2 つ開いて両方の fd を渡してくる。
-    // これで IPv6 を優先するクライアントも取りこぼさない。
+    // `localhost` resolves to both ::1 and 127.0.0.1, so launchd opens two
+    // sockets and hands over both descriptors. Clients that prefer IPv6
+    // are covered too.
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -102,7 +103,7 @@ fn plist(program: &Path, minato_home: &Path, user: &str, ports: Ports) -> String
     <string>{program}</string>
   </array>
 
-  <!-- launchd は root で socket を開くが、プロセスはこの利用者で動かす。 -->
+  <!-- launchd opens the sockets as root; the process runs as this user. -->
   <key>UserName</key>
   <string>{user}</string>
 
@@ -115,7 +116,7 @@ fn plist(program: &Path, minato_home: &Path, user: &str, ports: Ports) -> String
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- `minato daemon stop` で正常終了したときは再起動しない。 -->
+  <!-- A clean exit via `minato daemon stop` is not restarted. -->
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key>
@@ -179,7 +180,7 @@ fn plist(program: &Path, minato_home: &Path, user: &str, ports: Ports) -> String
     )
 }
 
-/// パスに `&` や `<` が含まれても plist を壊さない。
+/// Keeps an `&` or a `<` in a path from breaking the plist.
 fn escape_xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -204,7 +205,7 @@ mod tests {
     fn declares_every_socket_the_daemon_expects() {
         let xml = sample();
 
-        // 名前が一致していないと launch_activate_socket が fd を返さない。
+        // launch_activate_socket returns nothing unless the names match.
         for key in ["http", "https", "dns-udp", "dns-tcp"] {
             assert!(xml.contains(&format!("<key>{key}</key>")), "missing: {key}");
         }
@@ -216,7 +217,7 @@ mod tests {
 
         assert!(
             xml.contains("<key>UserName</key>"),
-            "root のまま動かすと、作るコンテナやファイルの所有者がずれる"
+            "running as root would leave containers and files owned by the wrong user"
         );
         assert!(xml.contains("<string>someone</string>"));
     }
@@ -232,7 +233,8 @@ mod tests {
     #[test]
     fn uses_localhost_so_both_families_are_bound() {
         let xml = sample();
-        // localhost は ::1 と 127.0.0.1 の両方に解決され、fd が 2 つ渡る。
+        // localhost resolves to both ::1 and 127.0.0.1, so two
+        // descriptors come through.
         assert!(xml.contains("<string>localhost</string>"));
     }
 
@@ -240,7 +242,8 @@ mod tests {
     fn does_not_restart_after_a_clean_stop() {
         let xml = sample();
 
-        // KeepAlive を無条件 true にすると `minato daemon stop` が効かなくなる。
+        // An unconditional KeepAlive would make `minato daemon stop`
+        // useless.
         assert!(xml.contains("<key>SuccessfulExit</key>"));
         assert!(xml.contains("<false/>"));
     }
@@ -264,7 +267,7 @@ mod tests {
         assert!(xml.contains("/tmp/a&amp;b/minatod"));
         assert!(xml.contains("/tmp/&lt;home&gt;"));
         assert!(xml.contains("some&amp;one"));
-        assert!(!xml.contains("a&b"), "生の & は plist を壊す");
+        assert!(!xml.contains("a&b"), "a bare & breaks the plist");
     }
 
     #[test]
@@ -294,17 +297,17 @@ mod tests {
             "someone",
             Ports::default(),
         )
-        .expect("書き出せる");
+        .expect("writes it");
 
-        assert!(plan.source.is_file(), "plist の書き出しに権限は要らない");
+        assert!(plan.source.is_file(), "writing the plist needs no privileges");
         assert!(plan.destination.starts_with(INSTALL_DIR));
 
-        // 設置は root が要る。手順としてのみ提示する。
+        // Installing needs root, so it only ever comes back as steps.
         assert!(plan.commands.iter().all(|c| c.starts_with("sudo")));
         assert!(plan.commands.iter().any(|c| c.contains("bootstrap")));
         assert!(
             plan.commands.iter().any(|c| c.contains("chown root:wheel")),
-            "LaunchDaemon は root 所有でないと読み込まれない"
+            "a LaunchDaemon is ignored unless root owns it"
         );
     }
 

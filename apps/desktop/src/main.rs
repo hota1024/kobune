@@ -1,11 +1,12 @@
-//! minato-desktop — Minato の GUI。
+//! minato-desktop — Minato's GUI.
 //!
-//! 常時開くものではなく、「今どの環境が動いているか」を確認して開く
-//! 用途を想定している。メニューバーに常駐し、ウィンドウは要求された
-//! ときだけ出す。
+//! Not something to keep open. It is for glancing at which environments
+//! are running and opening one. It lives in the menu bar, and the window
+//! appears only when asked for.
 //!
-//! **daemon を起動しない。** daemon の面倒を見るのは launchd の仕事で、
-//! GUI が二重に管理すると責務が重なる（`docs/DESIGN.md` §15）。
+//! **It never starts the daemon.** Looking after the daemon is launchd's
+//! job, and a GUI managing it too would split that responsibility
+//! (`docs/DESIGN.md` §15).
 
 mod app;
 mod bridge;
@@ -40,7 +41,7 @@ fn main() {
         let (notifier, notifications) = Notifier::channel();
         let commands = bridge::spawn(state.clone(), cwd, notifier);
 
-        // tray は作れなくても GUI は動く。
+        // The GUI works fine without a tray.
         let tray = tray::Tray::new();
 
         let bounds = Bounds::centered(None, size(px(880.0), px(660.0)), cx);

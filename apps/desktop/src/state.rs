@@ -1,30 +1,31 @@
-//! 描画スレッドが読む状態。
+//! The state the render thread reads.
 //!
-//! egui の描画ループは同期で、`async` を直接扱えない。tokio 側が書き、
-//! 描画側が読む。**ロックは短く持つ**（描画のたびに取るため）。
+//! The render loop is synchronous and cannot handle `async` directly, so
+//! tokio writes and the renderer reads. **Hold the lock briefly** — it is
+//! taken on every frame.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, RwLock};
 
 use minato_api::{Pong, WorkspaceInfo};
 
-/// ログビューアが保持する行数の上限。
+/// How many lines the log viewer keeps.
 ///
-/// 無制限にすると流し続けたときにメモリを食い潰す。開発中に遡りたい
-/// 範囲としてはこれで足りる。
+/// Unbounded, a busy stream would eat all the memory. This is as far back
+/// as anyone scrolls during development.
 const MAX_LOG_LINES: usize = 2000;
 
-/// daemon との接続状態。
+/// The state of the connection to the daemon.
 #[derive(Debug, Clone)]
 pub enum Connection {
-    /// まだ繋いでいない。
+    /// Not connected yet.
     Connecting,
     Connected(Box<Pong>),
-    /// 繋がらない。理由を添える。
+    /// Cannot connect, and why.
     Failed(String),
 }
 
-/// ログ 1 行。
+/// One line of log output.
 #[derive(Debug, Clone)]
 pub struct LogLine {
     pub service: String,
@@ -36,13 +37,14 @@ pub struct LogLine {
 pub struct AppState {
     pub connection: Option<Connection>,
     pub workspaces: Vec<WorkspaceInfo>,
-    /// 一覧の取得に失敗したときの理由。
+    /// Why the listing failed, if it did.
     pub error: Option<String>,
-    /// ログビューアが選んでいる workspace。
+    /// The workspace the log viewer is showing.
     pub log_target: Option<String>,
-    /// 起動・停止の処理中の workspace。
+    /// Workspaces currently starting or stopping.
     ///
-    /// 押した直後に反応が無いと壊れて見えるので、状態として持つ。
+    /// Tracked as state because a button that does nothing when pressed
+    /// looks broken.
     pub busy: BTreeSet<String>,
     logs: VecDeque<LogLine>,
 }
@@ -71,7 +73,7 @@ impl AppState {
         self.logs.clear();
     }
 
-    /// 起動しているサービスを持つ workspace の数。
+    /// How many workspaces have a service running.
     pub fn running_count(&self) -> usize {
         self.workspaces
             .iter()
@@ -84,14 +86,14 @@ impl AppState {
             .count()
     }
 
-    /// ラベルから workspace を引く。
+    /// Looks up a workspace by its label.
     pub fn workspace(&self, label: &str) -> Option<&WorkspaceInfo> {
         self.workspaces
             .iter()
             .find(|workspace| workspace.workspace.as_deref().unwrap_or("main") == label)
     }
 
-    /// 選択の初期値。main worktree より、作業中の worktree を優先する。
+    /// What to select on startup. A working worktree beats the main one.
     pub fn default_selection(&self) -> Option<String> {
         self.workspaces
             .iter()
@@ -105,7 +107,7 @@ impl AppState {
             })
     }
 
-    /// tray のメニューに出す (表示名, URL) の一覧。
+    /// The (display name, URL) pairs for the tray menu.
     pub fn menu_entries(&self) -> Vec<(String, String)> {
         let mut entries = Vec::new();
 
@@ -126,7 +128,7 @@ impl AppState {
     }
 }
 
-/// 描画スレッドと tokio スレッドで共有する。
+/// Shared between the render thread and the tokio threads.
 #[derive(Clone, Default)]
 pub struct SharedState(Arc<RwLock<AppState>>);
 
@@ -135,7 +137,7 @@ impl SharedState {
         Self::default()
     }
 
-    /// 読む。ロックが壊れていても描画は続ける。
+    /// Reads. Rendering carries on even with a poisoned lock.
     pub fn read<T>(&self, f: impl FnOnce(&AppState) -> T) -> Option<T> {
         self.0.read().ok().map(|state| f(&state))
     }
@@ -180,7 +182,7 @@ mod tests {
 
     #[test]
     fn log_buffer_is_bounded() {
-        // 流し続けてもメモリを食い潰さない。
+        // A busy stream must not eat all the memory.
         let mut state = AppState::default();
 
         for n in 0..(MAX_LOG_LINES + 500) {
@@ -193,8 +195,8 @@ mod tests {
 
         assert_eq!(state.log_count(), MAX_LOG_LINES);
 
-        // 古い行から捨てる。直近が残っていないと意味がない。
-        let last = state.logs().last().expect("ある");
+        // Drop the oldest first — the recent lines are the point.
+        let last = state.logs().last().expect("is there");
         assert_eq!(last.line, format!("line {}", MAX_LOG_LINES + 499));
     }
 
@@ -228,7 +230,7 @@ mod tests {
                         ServiceState::Ready,
                         Some("https://web.feat-1.myapp.localhost"),
                     ),
-                    // URL が無いものは開きようがない。
+                    // Nothing to open without a URL.
                     service("db", ServiceState::Ready, None),
                 ],
             )],
@@ -260,7 +262,8 @@ mod tests {
 
     #[test]
     fn default_selection_prefers_a_worktree_over_main() {
-        // main を最初に選ぶと、作業中の環境を見るのに毎回クリックが要る。
+        // Selecting main first would cost a click every time someone
+        // wants the environment they are working in.
         let state = AppState {
             workspaces: vec![workspace(None, vec![]), workspace(Some("feat-1"), vec![])],
             ..Default::default()
@@ -292,7 +295,7 @@ mod tests {
         };
 
         assert!(state.workspace("feat-1").is_some());
-        // main worktree は "main" というラベルで引ける。
+        // The main worktree answers to the label "main".
         assert!(state.workspace("main").is_some());
         assert!(state.workspace("nope").is_none());
     }
@@ -309,13 +312,14 @@ mod tests {
             });
         });
 
-        let count = shared.read(|state| state.log_count()).expect("読める");
+        let count = shared.read(|state| state.log_count()).expect("reads");
         assert_eq!(count, 1);
     }
 
     #[test]
     fn connection_defaults_to_connecting() {
-        // 接続前に「未接続」と赤字で出すと、起動直後に毎回警告が出る。
+        // Showing a red "not connected" before the first attempt would
+        // warn on every single launch.
         let state = AppState::default();
         assert!(matches!(state.connection(), Connection::Connecting));
     }

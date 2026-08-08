@@ -1,21 +1,23 @@
-//! ホスト側の設定の診断と、その直し方。
+//! Diagnosing the host-side setup, and how to fix it.
 //!
-//! `/etc/resolver` の設置とローカル CA の信頼登録には root が要る。
-//! **勝手に sudo を走らせない。** エージェントが実行すると password 待ちで
-//! 固まり、人間から見れば黙って権限昇格したことになる。
-//! ここでは診断とコマンドの提示に徹し、実行は利用者に委ねる。
+//! Installing `/etc/resolver` and trusting the local CA both need root.
+//! **Never run sudo unasked.** An agent doing so hangs at the password
+//! prompt, and from a person's side it looks like a silent privilege
+//! escalation. This module diagnoses and prints commands; running them is
+//! the user's call.
 
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 
 use minato_api::Check;
 
-/// macOS が参照する resolver 設定の置き場。
+/// Where macOS looks for resolver configuration.
 pub const RESOLVER_DIR: &str = "/etc/resolver";
 
-/// システム側の設定を診断する。
+/// Diagnoses the system-side setup.
 ///
-/// `dns_port` と `ca_path` は daemon から得た実際の値を渡す。
+/// `dns_port` and `ca_path` are the real values, as reported by the
+/// daemon.
 pub fn check_system(suffix: &str, dns_port: Option<u16>, ca_path: Option<&Path>) -> Vec<Check> {
     let mut checks = vec![check_resolver(suffix, dns_port)];
 
@@ -23,62 +25,63 @@ pub fn check_system(suffix: &str, dns_port: Option<u16>, ca_path: Option<&Path>)
         checks.push(check_ca_trust(path));
     }
 
-    // 実際に引けるかどうかが最終的な答え。設定ファイルがあっても
-    // 反映されていないことがある。
+    // Whether a name actually resolves is the final word. A configuration
+    // file can be there without having taken effect.
     checks.push(check_resolution(suffix));
 
     checks
 }
 
-/// `/etc/resolver/{suffix}` が Minato の DNS を指しているか。
+/// Whether `/etc/resolver/{suffix}` points at Minato's DNS.
 fn check_resolver(suffix: &str, dns_port: Option<u16>) -> Check {
     let path = resolver_path(suffix);
     let title = format!("DNS resolver ({})", path.display());
 
     let Ok(contents) = std::fs::read_to_string(&path) else {
-        return Check::fail("resolver", title, "設置されていません".to_string())
+        return Check::fail("resolver", title, "not installed".to_string())
             .with_fix(resolver_fix(suffix, dns_port));
     };
 
     if !contents.contains("127.0.0.1") {
-        return Check::fail("resolver", title, "127.0.0.1 を指していません".to_string())
+        return Check::fail("resolver", title, "does not point at 127.0.0.1".to_string())
             .with_fix(resolver_fix(suffix, dns_port));
     }
 
-    // 非特権ポートで動かしている場合、port 行が無いと 53 に問い合わせてしまう。
+    // On an unprivileged port, a missing `port` line sends the query to
+    // 53 instead.
     if let Some(port) = dns_port {
         if port != 53 && !contents.contains(&format!("port {port}")) {
             return Check::fail(
                 "resolver",
                 title,
-                format!("DNS は :{port} で待ち受けていますが、設定に port 行がありません"),
+                format!("DNS listens on :{port}, but there is no port line"),
             )
             .with_fix(resolver_fix(suffix, dns_port));
         }
     }
 
-    Check::ok("resolver", title, "設置済み".to_string())
+    Check::ok("resolver", title, "installed".to_string())
 }
 
-/// CA がシステムに信頼されているか。
+/// Whether the system trusts the CA.
 fn check_ca_trust(ca_path: &Path) -> Check {
-    let title = "ローカル CA の信頼".to_string();
+    let title = "local CA trust".to_string();
 
     if !ca_path.is_file() {
-        return Check::warn("ca-trust", title, "CA がまだ生成されていません".to_string());
+        return Check::warn("ca-trust", title, "the CA has not been generated yet".to_string());
     }
 
     if !cfg!(target_os = "macos") {
         return Check::warn(
             "ca-trust",
             title,
-            "この OS では自動判定できません。手動で確認してください".to_string(),
+            "cannot be checked automatically on this OS; check by hand".to_string(),
         )
         .with_fix(trust_fix(ca_path));
     }
 
-    // 信頼済みかどうかは verify-cert が最も確実。
-    // 自己署名 CA は、信頼されていれば検証が通る。
+    // verify-cert is the surest answer. A self-signed CA verifies exactly
+    // when it is trusted.
     let verified = std::process::Command::new("security")
         .args(["verify-cert", "-c"])
         .arg(ca_path)
@@ -87,45 +90,45 @@ fn check_ca_trust(ca_path: &Path) -> Check {
         .unwrap_or(false);
 
     if verified {
-        Check::ok("ca-trust", title, "信頼されています".to_string())
+        Check::ok("ca-trust", title, "trusted".to_string())
     } else {
         Check::warn(
             "ca-trust",
             title,
-            "信頼されていません。HTTPS でブラウザや curl が警告します".to_string(),
+            "not trusted; browsers and curl will warn over HTTPS".to_string(),
         )
         .with_fix(trust_fix(ca_path))
     }
 }
 
-/// 実際に名前が引けるか。ここが通れば curl も通る。
+/// Whether a name really resolves. Pass this and curl passes too.
 ///
-/// **127.0.0.1 に解決されることまで確かめる。** macOS は resolver が
-/// 未設置でも `*.localhost` を `::1` に解決することがあるが、プロキシは
-/// IPv4 でしか待ち受けないため接続できない。「引けた」だけで OK にすると、
-/// 実際には繋がらないのに診断が通ってしまう。
+/// **It insists on 127.0.0.1.** macOS resolves `*.localhost` to `::1` even
+/// with no resolver installed, and the proxy only listens on IPv4, so that
+/// does not connect. Accepting "it resolved" would let the check pass on
+/// a setup that cannot actually reach anything.
 fn check_resolution(suffix: &str) -> Check {
     let probe = format!("minato-doctor-probe.{suffix}");
-    let title = format!("{probe} の名前解決");
+    let title = format!("resolving {probe}");
 
     let addresses: Vec<std::net::IpAddr> = match (probe.as_str(), 80u16).to_socket_addrs() {
         Ok(addrs) => addrs.map(|addr| addr.ip()).collect(),
         Err(err) => {
             return Check::fail("resolution", title, err.to_string()).with_fix(format!(
-                "`minato setup` の手順で /etc/resolver/{suffix} を設置してください"
+                "follow `minato setup` to install /etc/resolver/{suffix}"
             ));
         }
     };
 
     if addresses.is_empty() {
-        return Check::fail("resolution", title, "解決結果が空です".to_string()).with_fix(format!(
-            "`minato setup` の手順で /etc/resolver/{suffix} を設置してください"
+        return Check::fail("resolution", title, "resolved to nothing".to_string()).with_fix(format!(
+            "follow `minato setup` to install /etc/resolver/{suffix}"
         ));
     }
 
     let loopback_v4 = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
     if addresses.contains(&loopback_v4) {
-        return Check::ok("resolution", title, "127.0.0.1 に解決".to_string());
+        return Check::ok("resolution", title, "resolves to 127.0.0.1".to_string());
     }
 
     let rendered: Vec<String> = addresses.iter().map(|addr| addr.to_string()).collect();
@@ -133,12 +136,12 @@ fn check_resolution(suffix: &str) -> Check {
         "resolution",
         title,
         format!(
-            "{} に解決されました。プロキシは 127.0.0.1 で待ち受けているため接続できません",
+            "resolved to {}. The proxy listens on 127.0.0.1, so nothing connects",
             rendered.join(", ")
         ),
     )
     .with_fix(format!(
-        "`minato setup` の手順で /etc/resolver/{suffix} を設置してください"
+        "follow `minato setup` to install /etc/resolver/{suffix}"
     ))
 }
 
@@ -146,20 +149,20 @@ pub fn resolver_path(suffix: &str) -> PathBuf {
     Path::new(RESOLVER_DIR).join(suffix)
 }
 
-/// resolver ファイルの中身。
+/// What goes in the resolver file.
 pub fn resolver_contents(dns_port: Option<u16>) -> String {
     let port = dns_port.unwrap_or(53);
 
     if port == 53 {
         "nameserver 127.0.0.1\n".to_string()
     } else {
-        // 非特権ポートで動かす場合はポートを明示する。
-        // これがあるおかげで DNS に root が要らない。
+        // On an unprivileged port, say so explicitly. This line is what
+        // keeps DNS out of root's hands.
         format!("nameserver 127.0.0.1\nport {port}\n")
     }
 }
 
-/// resolver ファイルを設置するコマンド。
+/// The command that installs the resolver file.
 pub fn resolver_command(suffix: &str, dns_port: u16) -> String {
     resolver_fix(suffix, Some(dns_port))
 }
@@ -175,7 +178,7 @@ fn resolver_fix(suffix: &str, dns_port: Option<u16>) -> String {
     )
 }
 
-/// CA を信頼させるコマンド。
+/// The command that trusts the CA.
 pub fn trust_command(ca_path: &Path) -> String {
     trust_fix(ca_path)
 }
@@ -203,7 +206,7 @@ mod tests {
 
     #[test]
     fn resolver_contents_include_port_when_non_standard() {
-        // port 行があるおかげで DNS を非特権ポートで動かせる。
+        // The port line is what lets DNS run unprivileged.
         assert_eq!(resolver_contents(Some(53)), "nameserver 127.0.0.1\n");
         assert_eq!(
             resolver_contents(Some(15353)),
@@ -224,7 +227,7 @@ mod tests {
         let check = check_resolver("definitely-not-a-real-suffix", Some(15353));
 
         assert_eq!(check.status, CheckStatus::Fail);
-        let fix = check.fix.expect("直し方が要る");
+        let fix = check.fix.expect("needs a fix");
         assert!(fix.contains("sudo"), "got: {fix}");
         assert!(
             fix.contains("port 15353") || fix.contains("port\\n"),
@@ -234,29 +237,31 @@ mod tests {
 
     #[test]
     fn resolution_to_ipv6_only_is_a_failure() {
-        // macOS は resolver 未設置でも *.localhost を ::1 に返すことがある。
-        // それを OK にすると、繋がらないのに診断が通ってしまう。
+        // macOS answers *.localhost with ::1 even with no resolver
+        // installed. Accepting that would pass a setup that cannot
+        // connect.
         let check = check_resolution("localhost");
 
         if check.status == CheckStatus::Ok {
             assert!(
                 check.detail.contains("127.0.0.1"),
-                "OK にするのは IPv4 ループバックに解決したときだけ: {}",
+                "only an IPv4 loopback answer counts as OK: {}",
                 check.detail
             );
         } else {
-            assert!(check.fix.is_some(), "直し方を添える");
+            assert!(check.fix.is_some(), "a fix comes with it");
         }
     }
 
     #[test]
     fn resolver_command_targets_the_effective_port() {
-        // launchd 設置後は :53 になる。設置前のポートを書くと繋がらない。
+        // After launchd it is :53. Writing the earlier port stops it
+        // resolving.
         let command = resolver_command("localhost", 53);
         assert!(command.contains("nameserver 127.0.0.1"));
         assert!(
             !command.contains("port "),
-            "53 なら port 行は不要: {command}"
+            "no port line needed for 53: {command}"
         );
 
         let command = resolver_command("localhost", 15353);

@@ -1,18 +1,18 @@
-//! `minato skill install` — エージェント向けの Skill を配置する。
+//! `minato skill install` — installs the Skill for agents.
 //!
-//! 内容は CLI のリファレンスではなく**判断基準**。「何ができるか」は
-//! `--help` を読めば分かるが、「`docker` を直接使わない」「ポートを
-//! 推測しない」といった約束は書いておかないと伝わらない。
+//! What it contains is **judgement**, not a CLI reference. `--help` covers
+//! what the commands do; promises like "never reach for `docker`" and
+//! "never guess a port" only land if they are written down.
 
 use std::path::{Path, PathBuf};
 
-/// バイナリに埋め込む Skill 本体。
+/// The Skill itself, baked into the binary.
 ///
-/// ファイルを配布物に含めなくて済むよう埋め込む。`minato` 単体で
-/// 完結する方が、インストール手段を選ばない。
+/// Embedded so no file has to ship alongside. A self-contained `minato`
+/// works however it was installed.
 const SKILL: &str = include_str!("../../../skills/minato/SKILL.md");
 
-/// Claude Code が Skill を探す場所。
+/// Where Claude Code looks for Skills.
 const SKILL_DIR: &str = ".claude/skills/minato";
 
 const SKILL_FILE: &str = "SKILL.md";
@@ -23,7 +23,7 @@ pub struct Installed {
     pub overwritten: bool,
 }
 
-/// リポジトリに Skill を書き出す。
+/// Writes the Skill into a repository.
 pub fn install(root: &Path, force: bool) -> anyhow::Result<Installed> {
     let dir = root.join(SKILL_DIR);
     let path = dir.join(SKILL_FILE);
@@ -32,7 +32,7 @@ pub fn install(root: &Path, force: bool) -> anyhow::Result<Installed> {
 
     if let Some(existing) = &existing {
         if existing == SKILL {
-            // 同じ内容なら書き直さない。git の差分を汚さない。
+            // Identical content is left alone, so git stays clean.
             return Ok(Installed {
                 path,
                 overwritten: false,
@@ -41,7 +41,7 @@ pub fn install(root: &Path, force: bool) -> anyhow::Result<Installed> {
 
         if !force {
             anyhow::bail!(
-                "{} は既に存在し、内容が異なります。上書きするには --force を付けてください",
+                "{} already exists with different content. Pass --force to overwrite it",
                 path.display()
             );
         }
@@ -56,7 +56,7 @@ pub fn install(root: &Path, force: bool) -> anyhow::Result<Installed> {
     })
 }
 
-/// 埋め込んだ Skill の内容。
+/// The embedded Skill.
 pub fn contents() -> &'static str {
     SKILL
 }
@@ -67,48 +67,48 @@ mod tests {
 
     #[test]
     fn skill_has_the_frontmatter_claude_code_needs() {
-        // name と description が無いと Skill として認識されない。
-        assert!(SKILL.starts_with("---\n"), "frontmatter で始まる必要がある");
+        // Without name and description it is not recognised as a Skill.
+        assert!(SKILL.starts_with("---\n"), "it has to open with frontmatter");
         assert!(SKILL.contains("\nname: minato\n"));
         assert!(SKILL.contains("\ndescription: "));
 
         let end = SKILL[4..]
             .find("\n---\n")
-            .expect("frontmatter が閉じている");
+            .expect("the frontmatter closes");
         let frontmatter = &SKILL[4..4 + end];
         assert!(
             frontmatter.lines().count() <= 5,
-            "frontmatter は短く保つ: {frontmatter}"
+            "keep the frontmatter short: {frontmatter}"
         );
     }
 
     #[test]
     fn description_says_when_to_use_it() {
-        // description だけを見て呼ぶかどうかを判断される。
+        // The description alone decides whether it gets reached for.
         let description = SKILL
             .lines()
             .find(|line| line.starts_with("description: "))
-            .expect("ある");
+            .expect("is there");
 
         assert!(description.contains("worktree"), "got: {description}");
         assert!(
             description.len() > 60,
-            "いつ使うかが分かる長さが要る: {description}"
+            "it has to be long enough to say when to use it: {description}"
         );
     }
 
     #[test]
     fn states_the_rules_that_matter() {
-        // これらが抜けると、エージェントは docker に戻ってしまう。
+        // Leave these out and an agent falls back to docker.
         for rule in ["docker", "minato url", "minato logs", "minato doctor"] {
-            assert!(SKILL.contains(rule), "`{rule}` に触れていない");
+            assert!(SKILL.contains(rule), "`{rule}` goes unmentioned");
         }
     }
 
     #[test]
     fn documents_the_exit_codes() {
-        // 終了コードで分岐できることが、エージェント向けの肝。
-        assert!(SKILL.contains("終了コード"));
+        // Branching on the exit code is the whole point for an agent.
+        assert!(SKILL.contains("exit code"));
         assert!(SKILL.contains("--json"));
     }
 
@@ -116,7 +116,7 @@ mod tests {
     fn installs_into_the_conventional_location() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let installed = install(dir.path(), false).expect("配置できる");
+        let installed = install(dir.path(), false).expect("installs");
 
         assert_eq!(
             installed.path,
@@ -124,18 +124,18 @@ mod tests {
         );
         assert!(!installed.overwritten);
         assert_eq!(
-            std::fs::read_to_string(&installed.path).expect("読める"),
+            std::fs::read_to_string(&installed.path).expect("reads"),
             SKILL
         );
     }
 
     #[test]
     fn reinstalling_the_same_content_is_a_no_op() {
-        // 差分が出ないようにする。毎回書き換えると git が汚れる。
+        // No diff. Rewriting every time would dirty the repository.
         let dir = tempfile::tempdir().expect("tempdir");
 
-        install(dir.path(), false).expect("1 回目");
-        let second = install(dir.path(), false).expect("2 回目も通る");
+        install(dir.path(), false).expect("first time");
+        let second = install(dir.path(), false).expect("second time too");
 
         assert!(!second.overwritten);
     }
@@ -143,15 +143,15 @@ mod tests {
     #[test]
     fn refuses_to_clobber_local_edits() {
         let dir = tempfile::tempdir().expect("tempdir");
-        install(dir.path(), false).expect("配置できる");
+        install(dir.path(), false).expect("installs");
 
         let path = dir.path().join(".claude/skills/minato/SKILL.md");
-        std::fs::write(&path, "手で書き換えた内容").expect("書ける");
+        std::fs::write(&path, "edited by hand").expect("writes");
 
         let err = install(dir.path(), false).unwrap_err();
         assert!(err.to_string().contains("--force"), "got: {err}");
 
-        let forced = install(dir.path(), true).expect("force なら上書きできる");
+        let forced = install(dir.path(), true).expect("--force overwrites");
         assert!(forced.overwritten);
     }
 }

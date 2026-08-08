@@ -1,11 +1,11 @@
-//! メニューバー常駐。
+//! Living in the menu bar.
 //!
-//! Minato の GUI は常時開くものではなく、「今どの環境が動いているか」を
-//! 確認して開く用途が主。egui 単体では tray を扱えないため
-//! `tray-icon` を併用する。
+//! Minato's GUI is not something to keep open; it is mostly for glancing
+//! at which environments are running and opening one. GPUI cannot do a
+//! tray on its own, so `tray-icon` handles that part.
 //!
-//! イベントループは GPUI が持っているので、tray のイベントは
-//! GPUI の executor から定期的にポーリングして拾う。
+//! GPUI owns the event loop, so tray events are polled from GPUI's
+//! executor instead.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -13,28 +13,28 @@ use std::sync::Mutex;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
-/// tray から要求された操作。
+/// Something the tray was asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// ウィンドウを出す。
+    /// Show the window.
     Show,
-    /// URL をブラウザで開く。
+    /// Open a URL in the browser.
     Open(String),
     Quit,
 }
 
 pub struct Tray {
-    /// 保持しないと tray が消える。
+    /// Dropped, the tray disappears.
     _icon: TrayIcon,
     menu: Menu,
-    /// メニュー項目 id → 操作。
+    /// Menu item id to action.
     actions: Mutex<HashMap<tray_icon::menu::MenuId, Action>>,
-    /// 今メニューに出している内容。変化したときだけ作り直す。
+    /// What the menu currently shows. Rebuilt only when this changes.
     shown: Mutex<Vec<(String, String)>>,
 }
 
 impl Tray {
-    /// tray を作る。作れなくても GUI は動くので `Option` を返す。
+    /// Builds the tray. The GUI works without one, hence `Option`.
     pub fn new() -> Option<Self> {
         let menu = Menu::new();
 
@@ -57,10 +57,10 @@ impl Tray {
         Some(tray)
     }
 
-    /// メニューの内容を状態に合わせる。
+    /// Brings the menu in line with the state.
     ///
-    /// 毎フレーム呼ばれるので、**変化していなければ何もしない**。
-    /// 作り直すとメニューが開いている最中に閉じてしまう。
+    /// Called every frame, so it **does nothing when nothing changed** —
+    /// a rebuild closes the menu out from under whoever has it open.
     pub fn sync(&self, entries: &[(String, String)]) {
         let changed = self
             .shown
@@ -76,8 +76,8 @@ impl Tray {
     }
 
     fn rebuild(&self, entries: &[(String, String)]) {
-        // 既存の項目を外してから積み直す。
-        // 位置指定で先頭から抜くのが、種別に依らず確実。
+        // Take the existing items out before putting new ones in.
+        // Removing by position from the front works for every item kind.
         while self.menu.remove_at(0).is_some() {}
 
         let mut actions = HashMap::new();
@@ -113,7 +113,7 @@ impl Tray {
         }
     }
 
-    /// たまっている操作を取り出す。
+    /// Takes whatever actions have piled up.
     pub fn poll(&self) -> Vec<Action> {
         let mut actions = Vec::new();
 
@@ -133,9 +133,9 @@ impl Tray {
     }
 }
 
-/// tray に出すアイコン。
+/// The tray icon.
 ///
-/// 画像ファイルを配布物に含めなくて済むよう、その場で描く。
+/// Drawn on the spot, so no image file has to ship with the binary.
 fn icon() -> tray_icon::Icon {
     const SIZE: u32 = 32;
 
@@ -149,22 +149,22 @@ fn icon() -> tray_icon::Icon {
             let dy = y as f32 - center;
             let distance = (dx * dx + dy * dy).sqrt();
 
-            // 縁を少しぼかす。等倍だとギザギザが目立つ。
+            // Soften the edge a little; at 1× the jaggies show.
             let alpha = ((radius - distance).clamp(0.0, 1.0) * 255.0) as u8;
 
-            // テンプレート画像として扱われるよう黒で描く。
-            // macOS はダークモードで自動的に反転してくれる。
+            // Black, so it is treated as a template image. macOS inverts
+            // it for dark mode by itself.
             rgba.extend_from_slice(&[0, 0, 0, alpha]);
         }
     }
 
-    tray_icon::Icon::from_rgba(rgba, SIZE, SIZE).expect("生成したビットマップは常に妥当")
+    tray_icon::Icon::from_rgba(rgba, SIZE, SIZE).expect("a bitmap we generated is always valid")
 }
 
-/// tray のイベントを定期的に拾い、メニューを状態に追従させる。
+/// Polls tray events and keeps the menu in step with the state.
 ///
-/// GPUI のイベントループに割り込めないので、短い間隔で見に行く。
-/// メニュー操作は人間の速度なので、この程度で取りこぼさない。
+/// There is no way into GPUI's event loop, so this looks in at a short
+/// interval. Menus are operated at human speed; nothing gets missed.
 pub fn spawn_poller(tray: Tray, state: crate::state::SharedState, cx: &mut gpui::App) {
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn icon_has_the_expected_dimensions() {
-        // from_rgba は寸法とバッファ長が合わないと失敗する。
+        // from_rgba fails when the dimensions and the buffer disagree.
         let _ = icon();
     }
 

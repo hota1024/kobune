@@ -1,17 +1,19 @@
-//! 表示。daemon から届いた構造化データを人間向けに変換する。
+//! Presentation: turning the daemon's structured data into something a
+//! person reads.
 //!
-//! daemon 側には整形済みの文字列を一切持たせない。同じイベント列から
-//! GUI も進捗表示を作れる必要があるため（`docs/DESIGN.md` §3）。
+//! The daemon holds no pre-formatted strings at all — the GUI has to be
+//! able to build its own progress display from the same events
+//! (`docs/DESIGN.md` §3).
 
 use minato_api::{
     ApiError, Diagnostics, EnvInfo, Event, LogLevel, ServiceInfo, StepStatus, WorkspaceInfo,
 };
 use minato_core::ServiceState;
 
-/// 進行中のステップを表示する。
+/// Prints progress.
 ///
-/// 開始時点では何も出さず、決着したときだけ 1 行出す。開始と終了を
-/// 両方出すと、サービスが増えたときに画面が流れて読めなくなる。
+/// Nothing at the start; one line when a step settles. Printing both ends
+/// would scroll the screen away as soon as there were a few services.
 pub fn print_event(event: &Event) {
     match event {
         Event::Step { label, status, .. } => match status {
@@ -23,19 +25,19 @@ pub fn print_event(event: &Event) {
         Event::Log { level, message } => match level {
             LogLevel::Debug => {}
             LogLevel::Info => println!("  {message}"),
-            LogLevel::Warn => eprintln!("  警告: {message}"),
-            LogLevel::Error => eprintln!("  エラー: {message}"),
+            LogLevel::Warn => eprintln!("  warning: {message}"),
+            LogLevel::Error => eprintln!("  error: {message}"),
         },
-        // 状態遷移はサマリで見せるので、途中では出さない。
+        // State changes show up in the summary, not on the way there.
         Event::ServiceState { .. } => {}
         Event::Output { line, .. } => println!("  │ {line}"),
     }
 }
 
-/// `logs` と `exec` の出力。
+/// What `logs` and `exec` print.
 ///
-/// 装飾を付けない。パイプで grep したり、エージェントがそのまま
-/// 読んだりするため。stderr は stderr に出す。
+/// Undecorated, so it can be grepped through a pipe or read as-is by an
+/// agent. stderr goes to stderr.
 pub fn print_output_event(event: &Event) {
     match event {
         Event::Output { line, stream, .. } => match stream {
@@ -45,16 +47,16 @@ pub fn print_output_event(event: &Event) {
         Event::Log {
             level: LogLevel::Warn,
             message,
-        } => eprintln!("警告: {message}"),
+        } => eprintln!("warning: {message}"),
         Event::Log {
             level: LogLevel::Error,
             message,
-        } => eprintln!("エラー: {message}"),
+        } => eprintln!("error: {message}"),
         _ => {}
     }
 }
 
-/// workspace 1 つの状態を表示する。
+/// Prints the state of one workspace.
 pub fn print_workspace(workspace: &WorkspaceInfo) {
     println!();
     println!(
@@ -67,7 +69,7 @@ pub fn print_workspace(workspace: &WorkspaceInfo) {
     println!();
 
     if workspace.services.is_empty() {
-        println!("  サービスが定義されていません");
+        println!("  no services are defined");
         return;
     }
 
@@ -90,10 +92,10 @@ pub fn print_workspace(workspace: &WorkspaceInfo) {
     }
 }
 
-/// 複数 workspace を一覧表示する。
+/// Prints a listing of workspaces.
 pub fn print_workspaces(workspaces: &[WorkspaceInfo]) {
     if workspaces.is_empty() {
-        println!("workspace がありません。`minato new <branch>` で作成してください");
+        println!("no workspaces. Create one with `minato new <branch>`");
         return;
     }
 
@@ -128,27 +130,29 @@ pub fn print_workspaces(workspaces: &[WorkspaceInfo]) {
     }
 }
 
-/// 表示用の状態ラベル。
+/// The state label to display.
 fn state_label(state: &ServiceState) -> &'static str {
     state.label()
 }
 
-/// アクセス先。まだ URL が発行されていなければ待ち受けアドレスを出す。
+/// Where to reach it. Falls back to the listening address when no URL
+/// has been issued yet.
 fn access_label(service: &ServiceInfo) -> String {
     match service.access() {
         Some(access) => access,
-        None if service.state.is_running() => "(内部のみ)".to_string(),
+        None if service.state.is_running() => "(internal only)".to_string(),
         None => "-".to_string(),
     }
 }
 
-/// 環境変数を一覧する。
+/// Prints the environment.
 ///
-/// **どの層で定義された値かを併記する。** 3 層あるので、意図しない層の
-/// 値が効いていることに気づけないと原因が掴めない。
+/// **Each value says which layer defined it.** With three layers, not
+/// seeing that an unintended one is winning makes the cause impossible to
+/// find.
 pub fn print_env(entries: &[EnvInfo]) {
     if entries.is_empty() {
-        println!("環境変数は定義されていません");
+        println!("no environment variables are defined");
         return;
     }
 
@@ -183,7 +187,7 @@ pub fn print_env(entries: &[EnvInfo]) {
     }
 }
 
-/// 診断結果を表示する。直し方は必ず添える。
+/// Prints the diagnostics, always with the fix alongside.
 pub fn print_diagnostics(diagnostics: &Diagnostics) {
     println!();
     for check in &diagnostics.checks {
@@ -199,36 +203,36 @@ pub fn print_diagnostics(diagnostics: &Diagnostics) {
     if fixes.is_empty() {
         println!();
         if diagnostics.has_failures() {
-            println!("問題がありますが、直し方が判明していません");
+            println!("something is wrong, but there is no known fix");
         } else {
-            println!("問題は見つかりませんでした");
+            println!("nothing wrong found");
         }
         return;
     }
 
     println!();
-    println!("直すには:");
+    println!("To fix:");
     for check in fixes {
         println!();
         println!("  {} {}", check.status.symbol(), check.title);
         println!("    {}", check.fix.as_deref().unwrap_or_default());
     }
     println!();
-    println!("`minato setup` でまとめて確認できます");
+    println!("`minato setup` walks through all of it");
 }
 
-/// エラーを表示する。`hint` があれば必ず添える。
+/// Prints an error, always with its `hint` when there is one.
 pub fn print_error(message: &str, hint: Option<&str>) {
-    eprintln!("エラー: {message}");
+    eprintln!("error: {message}");
     if let Some(hint) = hint {
-        eprintln!("ヒント: {hint}");
+        eprintln!("hint: {hint}");
     }
 }
 
-/// `--json` 指定時のエラー出力。
+/// How errors print under `--json`.
 ///
-/// 標準出力に出すことで、エージェントが終了コードと 1 本の
-/// JSON ストリームだけを見ればよい形にする。
+/// On stdout, so an agent has nothing to watch but the exit code and one
+/// JSON stream.
 pub fn print_error_json(error: &ApiError) {
     let payload = serde_json::json!({ "error": error });
     println!(
@@ -240,7 +244,7 @@ pub fn print_error_json(error: &ApiError) {
 pub fn print_json<T: serde::Serialize>(value: &T) {
     match serde_json::to_string_pretty(value) {
         Ok(json) => println!("{json}"),
-        Err(err) => eprintln!("エラー: 応答を JSON にできません: {err}"),
+        Err(err) => eprintln!("error: cannot render the response as JSON: {err}"),
     }
 }
 
@@ -274,8 +278,8 @@ mod tests {
         let svc = service("db", ServiceState::Ready, None);
         assert_eq!(
             access_label(&svc),
-            "(内部のみ)",
-            "起動しているのに空欄だと壊れて見える"
+            "(internal only)",
+            "a blank against a running service looks broken"
         );
     }
 

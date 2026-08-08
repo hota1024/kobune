@@ -1,7 +1,7 @@
-//! `minato init` — `minato.toml` のひな形を作る。
+//! `minato init` — writes a starter `minato.toml`.
 //!
-//! 対話プロンプトは出さない。エージェントが実行できなくなるため、
-//! 推定できるものは推定し、残りはコメント付きのひな形にする。
+//! It never prompts; that would put it out of an agent's reach. Whatever
+//! can be inferred is inferred, and the rest is a commented template.
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,8 @@ pub struct InitOutcome {
 }
 
 pub fn run(cwd: &Path, force: bool) -> anyhow::Result<InitOutcome> {
-    // リポジトリのルートに置く。worktree の中で実行されても main worktree に作る。
+    // It goes at the repository root. Run from inside a worktree, it
+    // still lands in the main one.
     let root = match Repository::discover(cwd) {
         Ok(repo) => repo.main_root,
         Err(_) => cwd.to_path_buf(),
@@ -24,7 +25,7 @@ pub fn run(cwd: &Path, force: bool) -> anyhow::Result<InitOutcome> {
     let path = root.join(CONFIG_FILE);
     if path.exists() && !force {
         anyhow::bail!(
-            "{} は既に存在します。上書きするには --force を付けてください",
+            "{} already exists. Pass --force to overwrite it",
             path.display()
         );
     }
@@ -35,7 +36,7 @@ pub fn run(cwd: &Path, force: bool) -> anyhow::Result<InitOutcome> {
     Ok(InitOutcome { path, project })
 }
 
-/// ディレクトリ名からプロジェクト名を導く。
+/// Derives the project name from the directory name.
 fn project_name_from(root: &Path) -> String {
     let raw = root
         .file_name()
@@ -50,31 +51,31 @@ fn template(project: &str) -> String {
         r#"[project]
 name = "{project}"
 
-# URL の接尾辞。省略すると {project}.localhost になる。
+# The URL suffix. Defaults to {project}.localhost.
 # domain = "{project}.localhost"
 
 [runtime]
-# docker または apple（Apple Container）
+# Either docker or apple (Apple Container)
 default = "docker"
 
-# サービスを 1 つ以上定義する。
-# worktree のソースは各コンテナの /workspace にマウントされる。
+# Define at least one service.
+# The worktree source is mounted at /workspace in every container.
 [services.app]
 image = "node:22"
 port = 3000
 command = "sh -c 'echo minato ready; sleep infinity'"
 
-# 起動完了の判定。scale-to-zero（M2）で使う。
+# How readiness is decided. Used by scale-to-zero (M2).
 # health = "http://localhost:3000/healthz"
 
-# 無アクセスでの自動停止までの時間。
+# How long without a request before it stops itself.
 # idle_timeout = "30m"
 
 # [services.db]
 # image = "postgres:16"
 # port = 5432
-# scope = "project"    # worktree 間で 1 つのインスタンスを共有する
-# expose = false       # URL を生やさない
+# scope = "project"    # one instance, shared across worktrees
+# expose = false       # no URL for this one
 # volumes = ["pgdata:/var/lib/postgresql/data"]
 # env = {{ POSTGRES_PASSWORD = "postgres" }}
 "#
@@ -88,10 +89,11 @@ mod tests {
 
     #[test]
     fn generated_template_is_valid() {
-        // ひな形が設定として通らないと、init 直後に up が失敗する。
+        // A template that does not parse means `up` fails right after
+        // `init`.
         let text = template("myapp");
-        let config: MinatoConfig = toml::from_str(&text).expect("構文が正しい");
-        config.validate().expect("意味も正しい");
+        let config: MinatoConfig = toml::from_str(&text).expect("is syntactically valid");
+        config.validate().expect("is semantically valid");
 
         assert_eq!(config.project.name, "myapp");
         assert_eq!(config.runtime.default, "docker");
@@ -108,12 +110,12 @@ mod tests {
     fn writes_config_and_refuses_to_clobber() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let outcome = run(dir.path(), false).expect("作れる");
+        let outcome = run(dir.path(), false).expect("writes it");
         assert!(outcome.path.is_file());
 
         let err = run(dir.path(), false).unwrap_err();
         assert!(err.to_string().contains("--force"), "got: {err}");
 
-        run(dir.path(), true).expect("force なら上書きできる");
+        run(dir.path(), true).expect("--force overwrites");
     }
 }

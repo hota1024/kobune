@@ -1,11 +1,11 @@
-//! tokio スレッドと UI の橋渡し。
+//! The bridge between the tokio thread and the UI.
 //!
-//! `minato-client` は tokio の上でしか動かないが、GPUI は独自の
-//! executor を持つ。両者を混ぜず、tokio は専用スレッドで回して
-//! 結果だけを渡す。
+//! `minato-client` only runs on tokio, and GPUI has an executor of its
+//! own. Rather than mix them, tokio gets its own thread and hands over
+//! nothing but results.
 //!
-//! **UI フレームワークに依存しない。** 通知は [`Notifier`] という
-//! 単なるチャネルで行い、それを描画に繋ぐのは UI 側の仕事にする。
+//! **Nothing here depends on the UI framework.** Notification is a plain
+//! channel, [`Notifier`]; wiring that to rendering is the UI's job.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -15,10 +15,10 @@ use minato_client::Client;
 
 use crate::state::{Connection, LogLine, SharedState};
 
-/// 状態が変わったことを UI に伝える。
+/// Tells the UI that the state changed.
 ///
-/// 何が変わったかは伝えない。UI は [`SharedState`] を読み直せばよく、
-/// 差分を運ぶ設計にすると両者が密になる。
+/// Not *what* changed — the UI re-reads [`SharedState`]. Carrying diffs
+/// would couple the two together.
 #[derive(Clone)]
 pub struct Notifier(tokio::sync::mpsc::UnboundedSender<()>);
 
@@ -28,37 +28,37 @@ impl Notifier {
         (Self(sender), receiver)
     }
 
-    /// 通知する。受け手が居なくても失敗にしない。
+    /// Notifies. No receiver is not a failure.
     pub fn notify(&self) {
         let _ = self.0.send(());
     }
 }
 
-/// 一覧を取り直す間隔。
+/// How often the listing is re-fetched.
 ///
-/// scale-to-zero でサービスが止まるのを画面に反映するため、
-/// 触っていなくても定期的に見に行く。
+/// Scale-to-zero stops services on its own, and the screen has to show
+/// that, so this polls even when nobody touches anything.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
-/// 接続に失敗したあと、次に試すまでの間隔。
+/// How long to wait after a failed connection before trying again.
 const RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
-/// 描画側から tokio 側への依頼。
+/// What the renderer asks tokio to do.
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// 一覧を今すぐ取り直す。
+    /// Re-fetch the listing now.
     Refresh,
-    /// この workspace のログを追う。
+    /// Follow this workspace's logs.
     FollowLogs { workspace: String },
-    /// ログの購読をやめる。
+    /// Stop following logs.
     StopLogs,
-    /// サービスを起動する。
+    /// Start the services.
     Up { workspace: String },
-    /// サービスを停止する。
+    /// Stop the services.
     Down { workspace: String },
 }
 
-/// tokio 側を起動し、依頼を送るためのハンドルを返す。
+/// Starts the tokio side and returns the handle to send it work.
 pub fn spawn(
     state: SharedState,
     cwd: PathBuf,
@@ -87,7 +87,7 @@ pub fn spawn(
 
             runtime.block_on(run(state, cwd, notifier, receiver));
         })
-        .expect("スレッドを作れる");
+        .expect("spawns the thread");
 
     sender
 }
@@ -110,8 +110,8 @@ async fn run(
                 match command {
                     Some(Command::Refresh) => refresh(&state, &cwd, &notifier).await,
                     Some(Command::FollowLogs { workspace }) => {
-                        // 前の購読を止めてから始める。放置すると
-                        // 複数の workspace のログが混ざる。
+                        // Stop the previous subscription first, or
+                        // several workspaces' logs end up interleaved.
                         if let Some(task) = log_task.take() {
                             task.abort();
                         }
@@ -141,7 +141,7 @@ async fn run(
                         state.write(|state| state.log_target = None);
                         notifier.notify();
                     }
-                    // 描画側が終了した。
+                    // The renderer is gone.
                     None => {
                         if let Some(task) = log_task.take() {
                             task.abort();
@@ -154,7 +154,7 @@ async fn run(
     }
 }
 
-/// workspace の一覧を取り直す。
+/// Re-fetches the workspace listing.
 async fn refresh(state: &SharedState, cwd: &Path, notifier: &Notifier) {
     let client = match Client::from_env() {
         Ok(client) => client,
@@ -168,8 +168,9 @@ async fn refresh(state: &SharedState, cwd: &Path, notifier: &Notifier) {
         }
     };
 
-    // GUI から daemon を起動しない。daemon の面倒を見るのは launchd の
-    // 仕事で、GUI が二重に管理すると責務が重なる（`docs/DESIGN.md` §15）。
+    // The GUI never starts the daemon. Looking after it is launchd's job,
+    // and a GUI managing it too would split that responsibility
+    // (`docs/DESIGN.md` §15).
     let mut connection = match client.connect().await {
         Ok(connection) => connection,
         Err(err) => {
@@ -206,8 +207,8 @@ async fn refresh(state: &SharedState, cwd: &Path, notifier: &Notifier) {
             state.error = Some("unexpected response from the daemon".to_string());
         }),
         Err(err) => state.write(|state| {
-            // 接続はできているので、これは一覧固有の失敗。
-            // minato.toml が無いディレクトリで起動した場合など。
+            // The connection is fine, so this is the listing's own
+            // failure — started in a directory with no minato.toml, say.
             state.error = Some(err.to_string());
             state.workspaces.clear();
         }),
@@ -216,10 +217,10 @@ async fn refresh(state: &SharedState, cwd: &Path, notifier: &Notifier) {
     notifier.notify();
 }
 
-/// サービスを起動／停止する。
+/// Starts or stops a workspace's services.
 ///
-/// 完了まで待ってから一覧を取り直す。押した直後に見た目が変わらないと
-/// 壊れて見えるので、処理中であることを状態に残す。
+/// Waits for it to finish, then re-fetches. A button that changes nothing
+/// when pressed looks broken, so being in progress is kept as state.
 async fn operate(
     state: &SharedState,
     cwd: &Path,
@@ -270,7 +271,7 @@ async fn run_operation(cwd: &Path, workspace: &str, start: bool) -> Result<(), S
         .map_err(|err| err.to_string())
 }
 
-/// ログを追い続け、届いた行を状態に積む。
+/// Follows the logs, pushing each line that arrives into the state.
 async fn follow_logs(state: SharedState, cwd: PathBuf, notifier: Notifier, workspace: String) {
     let Ok(client) = Client::from_env() else {
         return;
@@ -329,7 +330,8 @@ async fn follow_logs(state: SharedState, cwd: PathBuf, notifier: Notifier, works
 }
 
 fn set_failed(state: &SharedState, notifier: &Notifier, reason: String) {
-    // 画面に出すだけだと、GUI が繋がらないときログに何も残らない。
+    // Shown on screen only, a connection failure would leave no trace in
+    // the logs.
     tracing::warn!("cannot connect to the daemon: {reason}");
 
     state.write(|state| {
@@ -345,14 +347,14 @@ mod tests {
 
     #[test]
     fn refresh_interval_follows_scale_to_zero() {
-        // アイドル停止が画面に反映されないと、止まっているのに
-        // 動いているように見える。
+        // An idle stop that never reaches the screen leaves a stopped
+        // service looking like a running one.
         assert!(REFRESH_INTERVAL <= Duration::from_secs(5));
     }
 
     #[test]
     fn retry_is_slower_than_refresh() {
-        // 繋がらない相手に同じ頻度で試し続けない。
+        // Do not hammer something that is not answering.
         assert!(RETRY_INTERVAL > REFRESH_INTERVAL);
     }
 }

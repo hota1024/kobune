@@ -1,10 +1,12 @@
-//! 画面。GPUI + gpui-component。
+//! The screen. GPUI plus gpui-component.
 //!
-//! 左に workspace の一覧、右に選んだものの詳細とログ。worktree が
-//! 増えても崩れず、「今どれを見ているか」がはっきりする形にしている。
+//! Workspaces on the left; the selected one's details and logs on the
+//! right. It holds up as worktrees pile up, and it stays obvious which one
+//! is being looked at.
 //!
-//! 状態は [`SharedState`] にあり、tokio 側が書く。ここは読んで描くだけ。
-//! 変更の通知を受けたら `cx.notify()` して描き直す。
+//! The state lives in [`SharedState`] and is written by the tokio side.
+//! This module only reads and draws it, calling `cx.notify()` to redraw
+//! whenever it hears the state changed.
 
 use gpui::prelude::*;
 use gpui::{AnyElement, App, ClipboardItem, Entity, Hsla, SharedString, Window, div, px};
@@ -17,18 +19,19 @@ use minato_api::{ServiceInfo, ServiceState, WorkspaceInfo};
 use crate::bridge::Command;
 use crate::state::{Connection, SharedState};
 
-/// サイドバーの幅。workspace 名が読める最小限。
+/// The sidebar width — the least that leaves workspace names readable.
 const SIDEBAR_WIDTH: f32 = 232.0;
 
-/// ログ欄の高さ。
+/// The height of the log pane.
 const LOG_HEIGHT: f32 = 220.0;
 
 pub struct MinatoApp {
     state: SharedState,
     commands: tokio::sync::mpsc::UnboundedSender<Command>,
-    /// 詳細に出している workspace。
+    /// The workspace shown in the detail pane.
     selected: Option<String>,
-    /// 外観の追従を解除するための購読。手放すと止まる。
+    /// The subscription that follows the system appearance. Dropping it
+    /// stops the following.
     _appearance: Option<gpui::Subscription>,
 }
 
@@ -42,10 +45,10 @@ impl MinatoApp {
         }
     }
 
-    /// システムの外観に追従させる。
+    /// Follows the system appearance.
     ///
-    /// 起動時に合わせるだけでは足りない。macOS は時刻でライト／ダークが
-    /// 切り替わるので、動いている間の変化も拾う。
+    /// Matching it once at startup is not enough: macOS switches between
+    /// light and dark by time of day, so changes while running count too.
     pub fn follow_system_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         Theme::sync_system_appearance(Some(window), cx);
 
@@ -54,7 +57,7 @@ impl MinatoApp {
         }));
     }
 
-    /// tokio 側からの通知を受けて描き直す。
+    /// Redraws when the tokio side says something changed.
     pub fn listen(
         entity: &Entity<Self>,
         mut notifications: tokio::sync::mpsc::UnboundedReceiver<()>,
@@ -64,7 +67,7 @@ impl MinatoApp {
 
         cx.spawn(async move |cx| {
             while notifications.recv().await.is_some() {
-                // 参照が切れていれば購読を終える。
+                // A dead reference means it is time to stop listening.
                 if entity.update(cx, |_, cx| cx.notify()).is_err() {
                     return;
                 }
@@ -74,23 +77,25 @@ impl MinatoApp {
     }
 
     fn send(&self, command: Command) {
-        // 送れなくても描画は続ける。橋渡しが落ちているだけ。
+        // Rendering carries on when this cannot be sent — it only means
+        // the bridge is gone.
         let _ = self.commands.send(command);
     }
 
-    /// workspace を選び、そのログを追い始める。
+    /// Selects a workspace and starts following its logs.
     ///
-    /// 選択とログを別操作にすると、見ている環境と流れているログが
-    /// ずれる。それは原因の取り違えに直結する。
+    /// Separating the two would let the environment on screen drift away
+    /// from the logs scrolling past, which is how people misdiagnose
+    /// things.
     fn select(&mut self, label: String) {
         self.selected = Some(label.clone());
         self.send(Command::FollowLogs { workspace: label });
     }
 
-    /// 今選ばれている workspace。未選択なら既定を選ぶ。
+    /// The selected workspace, falling back to the default.
     fn current(&mut self) -> Option<String> {
         if let Some(selected) = &self.selected {
-            // 消えた workspace を掴んだままにしない。
+            // Do not keep hold of a workspace that is gone.
             let exists = self
                 .state
                 .read(|state| state.workspace(selected).is_some())
@@ -153,7 +158,7 @@ impl MinatoApp {
             .into_any_element()
     }
 
-    /// サイドバーの頭。接続状態と稼働数だけを出す。
+    /// The top of the sidebar: connection state and how many are running.
     fn brand(&self, cx: &mut Context<Self>) -> AnyElement {
         let connection = self
             .state
@@ -199,8 +204,8 @@ impl MinatoApp {
                                 IconName::Moon
                             })
                             .on_click(|_, window, cx| {
-                                // 手で切り替えたら、その選択を尊重して
-                                // システム追従は上書きしない。
+                                // A manual switch is respected; following
+                                // the system does not override it.
                                 let next = if cx.theme().mode.is_dark() {
                                     ThemeMode::Light
                                 } else {
@@ -263,8 +268,9 @@ impl MinatoApp {
             cx.theme().muted_foreground
         };
 
-        // accent だけだと明るい地で選択が分かりにくい。選択には
-        // 左端の帯を足して、色に頼らず位置でも分かるようにする。
+        // The accent alone is hard to spot on a light background, so the
+        // selection also gets a bar down its left edge — position, not
+        // just colour.
         let accent = cx.theme().accent;
         let primary = cx.theme().primary;
         let for_click = label.clone();
@@ -281,7 +287,7 @@ impl MinatoApp {
                 this.bg(accent).border_l_2().border_color(primary)
             })
             .when(!is_selected, |this| {
-                // 選択時と幅を揃え、切り替えで行がずれないようにする。
+                // Same width as when selected, so rows do not shift.
                 this.border_l_2()
                     .border_color(gpui::transparent_black())
                     .hover(move |this| this.bg(accent.opacity(0.6)))
@@ -313,7 +319,8 @@ impl MinatoApp {
                 .flatten()
         });
 
-        // 接続の失敗と一覧の失敗は原因が別。両方出す。
+        // A failed connection and a failed listing have different causes.
+        // Show both.
         let error = self
             .state
             .read(|state| match state.connection() {
@@ -410,8 +417,9 @@ impl MinatoApp {
                                 )),
                             )
                             .child(div().flex_1())
-                            // 処理中は両方とも押せなくする。連打で起動と
-                            // 停止が交錯すると、今どちらなのか読めなくなる。
+                            // Both go dead while work is in flight. Rapid
+                            // clicks interleaving starts and stops leave
+                            // nobody able to tell which state it is in.
                             .child(
                                 Button::new("up")
                                     .primary()
@@ -630,10 +638,10 @@ impl MinatoApp {
     }
 }
 
-/// 状態を示す丸。
+/// The dot that shows a state.
 ///
-/// 小さすぎると背景に埋もれる。色の違いだけに頼らず、外側に薄い輪を
-/// 付けて明暗どちらの地でも輪郭が出るようにする。
+/// Too small and it sinks into the background. Rather than lean on colour
+/// alone, a faint ring keeps its outline on light and dark alike.
 fn dot(color: Hsla) -> impl IntoElement {
     div()
         .size(px(10.0))
@@ -644,10 +652,10 @@ fn dot(color: Hsla) -> impl IntoElement {
         .border_color(color.opacity(0.25))
 }
 
-/// 状態を示す札。
+/// The badge that shows a state.
 ///
-/// 色だけで区別させない。文字を添えることで、色覚特性や暗い画面でも
-/// 読み取れるようにする。
+/// Never colour alone. The text alongside keeps it readable with colour
+/// vision differences, and on a dim screen.
 fn state_badge(state: &ServiceState, cx: &App) -> AnyElement {
     let color = state_color(state, cx);
 
@@ -673,7 +681,7 @@ fn state_color(state: &ServiceState, cx: &App) -> Hsla {
     }
 }
 
-/// ブラウザで開く。
+/// Opens a URL in the browser.
 pub fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let program = "open";
