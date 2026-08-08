@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    # Documentation has its own workflow and cannot change a binary. Every
+    # merge that only touches docs/ would otherwise rebuild and republish
+    # the same artefacts.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/workflows/docs.yml'
+
+  # For rebuilding without an empty commit, after a runner-side failure.
+  workflow_dispatch:
+
+# One at a time. Two of these racing would have them overwrite each other's
+# assets under the same tag, and which won would come down to timing.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # The rolling pre-release every merge to main replaces. Versioned releases
+  # are a separate thing, cut by tagging, and do not exist yet.
+  CHANNEL: nightly
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux only for now. macOS is the primary platform to develop on,
+          # but its runners bill at ten times the rate on a private
+          # repository, and nothing here needs a Mac to build. Adding it is
+          # one more entry in this matrix.
+          - target: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # The desktop app is excluded: it pulls GPUI from the Zed repository,
+      # and an unsigned .app is stopped by Gatekeeper on the machine it
+      # reaches, so shipping one would promise more than it delivers.
+      # Signing and notarisation are open in docs/DESIGN.md §15.
+      - name: Build
+        run: >-
+          cargo build --release --locked
+          --target ${{ matrix.target }}
+          -p minato -p minatod
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          name="minato-${{ matrix.target }}"
+          staging="$(mktemp -d)/$name"
+          mkdir -p "$staging"
+
+          cp "target/${{ matrix.target }}/release/minato" "$staging/"
+          cp "target/${{ matrix.target }}/release/minatod" "$staging/"
+          cp LICENSE README.md "$staging/"
+
+          # The CLI looks next to itself for the daemon, so the two have to
+          # stay in one directory. The archive keeps them together.
+          tar -C "$(dirname "$staging")" -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+          echo "archive=$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          retention-days: 7
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish the rolling pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Move the tag rather than deleting the release: deleting it drops
+          # the download counts and leaves the URL 404 for as long as the
+          # next upload takes.
+          git tag --force "$CHANNEL"
+          git push --force origin "refs/tags/$CHANNEL"
+
+          notes=$(printf '%s\n' \
+            "Built from \`${GITHUB_SHA}\` on $(date -u '+%Y-%m-%d %H:%M UTC')." \
+            "" \
+            "The latest build of \`main\`, replaced on every merge. Not a" \
+            "release: nothing here carries a version, and what it contains" \
+            "changes without notice." \
+            "" \
+            "\`\`\`console" \
+            "\$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz" \
+            "\$ cd minato-x86_64-unknown-linux-gnu && ./minato doctor" \
+            "\`\`\`" \
+            "" \
+            "\`minato\` and \`minatod\` have to stay in the same directory:" \
+            "the CLI starts the daemon by looking next to itself.")
+
+          if gh release view "$CHANNEL" >/dev/null 2>&1; then
+            gh release edit "$CHANNEL" \
+              --target "$GITHUB_SHA" \
+              --notes "$notes" \
+              --prerelease
+          else
+            gh release create "$CHANNEL" \
+              --target "$GITHUB_SHA" \
+              --title "main (rolling)" \
+              --notes "$notes" \
+              --prerelease
+          fi
+
+          # --clobber so a rerun replaces assets instead of failing on them.
+          gh release upload "$CHANNEL" artifacts/* --clobber
