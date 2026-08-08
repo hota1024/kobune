@@ -71,6 +71,10 @@ A `-` in a service name becomes `_`: `api-server` gives
 The variable is left unset rather than empty when the proxy is not listening.
 An empty string would leave it "set, but broken", which is much harder to
 diagnose than a missing variable.
+
+Inside the container this surfaces as `MINATO_URL_WEB: parameter not set`,
+which names nothing that leads back here. `minato up` warns when it starts
+services with no proxy, and `minato doctor` says how to get one.
 :::
 
 On Apple Container there is also `MINATO_HOST_<SERVICE>`, carrying a peer's IP

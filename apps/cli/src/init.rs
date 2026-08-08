@@ -48,7 +48,9 @@ fn project_name_from(root: &Path) -> String {
 
 fn template(project: &str) -> String {
     format!(
-        r#"[project]
+        r#"# Every key: https://minato.1024.works/reference/minato-toml
+
+[project]
 name = "{project}"
 
 # The URL suffix. Defaults to {project}.localhost.
@@ -60,23 +62,28 @@ default = "docker"
 
 # Define at least one service.
 # The worktree source is mounted at /workspace in every container.
+# `command` is split shell-style, so quotes group arguments.
 [services.app]
 image = "node:22"
 port = 3000
 command = "sh -c 'echo minato ready; sleep infinity'"
 
-# How readiness is decided. Used by scale-to-zero (M2).
+# How readiness is decided. Waited for on start, and again when
+# scale-to-zero wakes it. A TCP connect when left out.
 # health = "http://localhost:3000/healthz"
 
 # How long without a request before it stops itself.
 # idle_timeout = "30m"
 
+# A second service. `depends_on` starts db first and waits for it to be
+# ready. Each one gets its own URL, and every service is told the others'
+# as MINATO_URL_<SERVICE> — MINATO_URL_DB here.
 # [services.db]
 # image = "postgres:16"
 # port = 5432
 # scope = "project"    # one instance, shared across worktrees
 # expose = false       # no URL for this one
-# volumes = ["pgdata:/var/lib/postgresql/data"]
+# volumes = ["pgdata:/var/lib/postgresql/data"]   # shared across worktrees
 # env = {{ POSTGRES_PASSWORD = "postgres" }}
 "#
     )
