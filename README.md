@@ -18,11 +18,11 @@ $ minato new feature/user-auth
 - **Scale-to-zero** — an untouched environment stops itself and wakes on the next request, so create as many worktrees as you like
 - **Reachable remotely** — share with a phone or an outside reviewer over Cloudflare Tunnel
 - **Usable by agents** — every command speaks `--json`, and `minato skill install` drops in the Skill
-- **Your choice of virtualisation** — Docker, Apple Container and Firecracker behind one Runtime abstraction
+- **Your choice of virtualisation** — Docker and Apple Container behind one Runtime abstraction, switched with `[runtime] default`
 
 ## Status
 
-**Every milestone through M6 is done.** Creating a worktree starts its containers and
+**Every milestone is done except Firecracker, which needs a Linux host.** Creating a worktree starts its containers and
 they answer on `*.localhost`. An untouched environment stops itself and comes
 back on the next request. Every service receives the others' URLs as
 `MINATO_URL_<SERVICE>`.
@@ -80,6 +80,26 @@ policy in front of the hostname yourself.
 Scale-to-zero works through the tunnel too: a reviewer's first request wakes a
 stopped environment, same as a local one.
 
+## Runtimes
+
+`[runtime] default` in `minato.toml` picks the backend; `minato doctor` reports
+the one your project uses and any others that are reachable.
+
+```toml
+[runtime]
+default = "apple"   # or "docker"
+```
+
+Apple Container needs macOS 26 or later and `container system start`. Two
+differences to know about, both forced by the platform: services reach each
+other through `MINATO_HOST_<SERVICE>`, which carries the peer's IP because
+Apple Container has no container-to-container DNS, so a service must declare
+`depends_on` to be sure its peer is up first; and every container shares the
+default network, since a container can only join one and a per-workspace
+network would cut off `scope = "project"` services.
+
+Firecracker is not implemented. It needs KVM and cannot run on macOS.
+
 - Design notes: [docs/DESIGN.md](docs/DESIGN.md)
 
 ## Roadmap
@@ -93,7 +113,7 @@ stopped environment, same as a local one.
 | M4 ✅ | Cloudflare Tunnel: one named tunnel, scale-to-zero through it |
 | M5 ✅ | Skills, `logs` / `exec` |
 | M6 ✅ | GUI: GPUI, living in the menu bar |
-| M7 | More runtimes: Apple Container, Firecracker |
+| M7 ✅ | Apple Container verified on real hardware; Firecracker needs a Linux host |
 
 ## GUI
 

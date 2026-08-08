@@ -11,9 +11,10 @@
 //! 3. **Networks need macOS 26 or later.** Where they are unavailable,
 //!    everything shares the default network.
 //!
-//! On top of that there are no network aliases, so a service name resolves
-//! to nothing. `{container name}.test` does resolve, so it is injected as
-//! `MINATO_HOST_<SERVICE>`.
+//! On top of that **there is no container-to-container name resolution at
+//! all** — no aliases, and no DNS either. A container's nameserver is its
+//! network gateway, which answers NXDOMAIN for every container name. So a
+//! peer's IP address is injected as `MINATO_HOST_<SERVICE>` instead.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -41,9 +42,6 @@ const RUNTIME_ID: &str = "apple";
 
 /// The CLI to invoke.
 const PROGRAM: &str = "container";
-
-/// The DNS suffix Apple Container gives each container.
-const DNS_SUFFIX: &str = "test";
 
 pub struct AppleContainerRuntime {
     program: String,
@@ -176,29 +174,53 @@ impl AppleContainerRuntime {
 
     async fn ensure_network(
         &self,
-        key: &WorkspaceKey,
+        _key: &WorkspaceKey,
         events: &EventSink,
     ) -> Result<Option<String>> {
-        if !self.supports_networks().await {
+        // Everything shares the default network, even where macOS 26 would
+        // let a per-workspace one be created.
+        //
+        // A container can only be on one network here — `--network` takes a
+        // single value and there is no `network connect` — and containers
+        // on different networks cannot reach each other. A shared service
+        // (`scope = "project"`) attaches to whichever workspace started it
+        // and is then unreachable from every other one, which was verified
+        // and is exactly what `scope = "project"` exists to avoid.
+        //
+        // Per-workspace networks would buy isolation and nothing else:
+        // there is no container DNS to scope, so names are not involved.
+        // Correctness for shared services is worth more than isolation
+        // between worktrees the same person owns. Revisit if Apple
+        // Container gains multi-network attachment.
+        if self.supports_networks().await {
             events.debug(
-                "custom networks cannot be created here, so the default \
-                 network is used (Apple Container needs macOS 26 or later \
-                 for networks)",
+                "using the default network: Apple Container attaches a \
+                 container to one network only, and a shared service on a \
+                 per-workspace network is unreachable from the others",
             );
-            return Ok(None);
         }
 
+        Ok(None)
+    }
+
+    /// Creates a per-workspace network.
+    ///
+    /// Unused while [`Self::ensure_network`] puts everything on the default
+    /// network, and kept for when a container can hold more than one
+    /// attachment.
+    #[allow(dead_code, reason = "waiting on multi-network attachment")]
+    async fn create_network(&self, key: &WorkspaceKey) -> Result<String> {
         let name = names::network(key);
         let existing = self.run(&["network", "list", "--format", "json"]).await?;
 
         if parse_network_names(&existing)?.iter().any(|n| n == &name) {
-            return Ok(Some(name));
+            return Ok(name);
         }
 
         // A race that comes back as "already exists" counts as success.
         match self.run(&["network", "create", &name]).await {
-            Ok(_) => Ok(Some(name)),
-            Err(err) if err.to_string().contains("exists") => Ok(Some(name)),
+            Ok(_) => Ok(name),
+            Err(err) if err.to_string().contains("exists") => Ok(name),
             Err(err) => Err(err),
         }
     }
@@ -215,31 +237,83 @@ impl AppleContainerRuntime {
         Ok(path)
     }
 
-    /// The environment for this service, with its peers' hostnames added.
-    fn env_with_peers(&self, spec: &ServiceSpec) -> BTreeMap<String, String> {
+    /// The environment for this service, with its peers' addresses added.
+    ///
+    /// **Addresses, not hostnames.** Apple Container 1.2.1 has no
+    /// container-to-container name resolution: a container's nameserver is
+    /// the network gateway, which answers NXDOMAIN for every container
+    /// name, on the default network as much as a custom one. The `.test`
+    /// domain M0 injected is a *host* resolver — it needs
+    /// `sudo container system dns create` and, once created, lets the host
+    /// reach containers, not containers reach each other. So a name was
+    /// injected that nothing inside the container could ever resolve.
+    ///
+    /// A peer that is not running yet contributes nothing. Leaving the
+    /// variable unset makes the app fail on a missing variable, which
+    /// points at the ordering; a name that never resolves would send
+    /// someone hunting for a DNS problem that does not exist. Declare
+    /// `depends_on` and the peer will be up first.
+    fn env_with_peers(
+        &self,
+        spec: &ServiceSpec,
+        peer_addresses: &BTreeMap<String, Ipv4Addr>,
+    ) -> BTreeMap<String, String> {
         let mut env = spec.env.clone();
 
         for peer in &spec.peers {
-            let peer_key = spec.attached_to.service(peer);
-            let hostname = format!("{}.{DNS_SUFFIX}", names::container(&peer_key));
+            let Some(address) = peer_addresses.get(peer) else {
+                continue;
+            };
+
             let var = format!("MINATO_HOST_{}", peer.to_uppercase().replace('-', "_"));
 
             // Never overwrite what the user set explicitly.
-            env.entry(var).or_insert(hostname);
+            env.entry(var).or_insert_with(|| address.to_string());
         }
 
         env
     }
 
+    /// The addresses of this service's peers that are already running.
+    async fn peer_addresses(&self, spec: &ServiceSpec) -> Result<BTreeMap<String, Ipv4Addr>> {
+        if spec.peers.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let records = self.managed_containers().await?;
+        let mut addresses = BTreeMap::new();
+
+        for peer in &spec.peers {
+            // A shared service lives under the shared workspace, so match
+            // on the labels rather than reconstructing the container name.
+            let found = records.iter().find(|record| {
+                record.label(labels::PROJECT) == Some(spec.key.workspace.project.as_str())
+                    && record.label(labels::SERVICE) == Some(peer.as_str())
+                    && record.is_running()
+            });
+
+            if let Some(address) = found.and_then(|record| record.ip()) {
+                addresses.insert(peer.clone(), address);
+            }
+        }
+
+        Ok(addresses)
+    }
+
     /// Builds the arguments for `container create`.
-    fn create_args(&self, spec: &ServiceSpec, network: Option<&str>) -> Result<Vec<String>> {
+    fn create_args(
+        &self,
+        spec: &ServiceSpec,
+        network: Option<&str>,
+        peer_addresses: &BTreeMap<String, Ipv4Addr>,
+    ) -> Result<Vec<String>> {
         let name = names::container(&spec.key);
         let mut args: Vec<String> = vec!["create".into(), "--name".into(), name];
 
         args.push("--workdir".into());
         args.push(spec.workdir.clone());
 
-        for (key, value) in self.env_with_peers(spec) {
+        for (key, value) in self.env_with_peers(spec, peer_addresses) {
             args.push("--env".into());
             args.push(format!("{key}={value}"));
         }
@@ -407,7 +481,10 @@ impl Runtime for AppleContainerRuntime {
         events.service_state(spec.name(), ServiceState::Starting);
 
         let network = self.ensure_network(&spec.attached_to, events).await?;
-        let args = self.create_args(spec, network.as_deref())?;
+        // Read after the dependencies have started, so their addresses
+        // exist to inject.
+        let peer_addresses = self.peer_addresses(spec).await?;
+        let args = self.create_args(spec, network.as_deref(), &peer_addresses)?;
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
         if let Err(err) = self.run(&arg_refs).await {
@@ -665,28 +742,52 @@ impl Runtime for AppleContainerRuntime {
 // ---------------------------------------------------------------------------
 // Parsing the CLI output
 //
-// `container` returns JSON shaped like this (from docs/how-to.md):
+// Shaped after what `container ls --all --format json` really prints, as of
+// Apple Container 1.2.1:
 //
-// [{ "status": "running",
-//    "networks": [{"address": "192.168.64.3/24", "gateway": "192.168.64.1",
-//                  "hostname": "my-web-server.test.", "network": "default"}],
-//    "configuration": {"id": "my-web-server", "labels": {...}, ...} }]
+// [{ "id": "minato-myapp-feat-1-web",
+//    "status": { "state": "running",
+//                "networks": [{"ipv4Address": "192.168.64.3/24",
+//                              "hostname": "...", "network": "default"}] },
+//    "configuration": {"id": "...", "labels": {...}, "image": {...}} }]
+//
+// The fixture in the tests is captured from a real container rather than
+// written by hand. M0 built this against a shape from the CLI's own
+// documentation — `status` a bare string, `networks` alongside it — which
+// the CLI does not emit, and every call failed to deserialise. A fixture
+// nobody has seen the CLI produce is worth nothing.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppleContainerRecord {
+    /// The container name. Also in `configuration.id`.
     #[serde(default)]
-    pub status: Option<String>,
+    pub id: Option<String>,
+    /// Runtime state. **An object, not a string.**
+    #[serde(default)]
+    pub status: AppleStatus,
+    pub configuration: AppleConfiguration,
+}
+
+/// The `status` object: what the container is doing right now.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AppleStatus {
+    /// `running`, `stopped`, and so on.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// The networks it is attached to, with the addresses assigned.
+    ///
+    /// Under `status` rather than beside it, because an address only
+    /// exists while the container is up.
     #[serde(default)]
     pub networks: Vec<AppleNetworkAttachment>,
-    pub configuration: AppleConfiguration,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppleNetworkAttachment {
     /// Comes back with the CIDR attached (`192.168.64.3/24`).
-    #[serde(default)]
-    pub address: Option<String>,
+    #[serde(default, rename = "ipv4Address")]
+    pub ipv4_address: Option<String>,
     #[serde(default)]
     pub hostname: Option<String>,
     #[serde(default)]
@@ -711,7 +812,7 @@ pub struct AppleImage {
 
 impl AppleContainerRecord {
     pub fn is_running(&self) -> bool {
-        self.status.as_deref() == Some("running")
+        self.status.state.as_deref() == Some("running")
     }
 
     pub fn label(&self, key: &str) -> Option<&str> {
@@ -720,9 +821,10 @@ impl AppleContainerRecord {
 
     /// The IPv4 address assigned on the first network.
     pub fn ip(&self) -> Option<Ipv4Addr> {
-        self.networks
+        self.status
+            .networks
             .iter()
-            .find_map(|net| net.address.as_deref())
+            .find_map(|net| net.ipv4_address.as_deref())
             .and_then(parse_cidr_address)
     }
 
@@ -743,7 +845,7 @@ impl AppleContainerRecord {
     }
 
     pub fn state(&self) -> ServiceState {
-        match self.status.as_deref() {
+        match self.status.state.as_deref() {
             Some("running") => ServiceState::Ready,
             Some("stopping") | Some("starting") => ServiceState::Starting,
             Some("stopped") | Some("exited") => ServiceState::Stopped,
@@ -801,10 +903,18 @@ fn parse_network_names(json: &str) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
+    // The name is in `configuration.name`; `id` at the top level mirrors
+    // it. Reading both means a rename of either does not break lookups.
     #[derive(Deserialize)]
     struct NetworkRecord {
         #[serde(default)]
         id: Option<String>,
+        #[serde(default)]
+        configuration: NetworkConfiguration,
+    }
+
+    #[derive(Default, Deserialize)]
+    struct NetworkConfiguration {
         #[serde(default)]
         name: Option<String>,
     }
@@ -817,7 +927,7 @@ fn parse_network_names(json: &str) -> Result<Vec<String>> {
 
     Ok(records
         .into_iter()
-        .filter_map(|record| record.name.or(record.id))
+        .filter_map(|record| record.configuration.name.or(record.id))
         .collect())
 }
 
@@ -842,32 +952,42 @@ fn parse_version(output: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Modelled on the real output in docs/how-to.md.
+    /// Captured from a real container on Apple Container 1.2.1.
+    ///
+    /// Not written by hand and not taken from the CLI's documentation:
+    /// M0's fixture came from the docs, described a shape the CLI does not
+    /// emit, and every call against a real machine failed to deserialise
+    /// while the tests stayed green.
     const SAMPLE: &str = r#"[
       {
-        "status": "running",
-        "networks": [
-          {
-            "address": "192.168.64.3/24",
-            "gateway": "192.168.64.1",
-            "hostname": "minato-myapp-feat-1-web.test.",
-            "network": "default"
-          }
-        ],
+        "id": "minato-myapp-feat-1-web",
+        "status": {
+          "networks": [
+            {
+              "hostname": "minato-myapp-feat-1-web",
+              "ipv4Address": "192.168.64.3/24",
+              "ipv4Gateway": "192.168.64.1",
+              "ipv6Address": "fd8f:b27a:cf00:5842:f08f:d2ff:fe1b:efa2/64",
+              "macAddress": "f2:8f:d2:1b:ef:a2",
+              "mtu": 1280,
+              "network": "default",
+              "variant": "reserved"
+            }
+          ],
+          "startedDate": "2026-08-08T03:45:19Z",
+          "state": "running"
+        },
         "configuration": {
           "id": "minato-myapp-feat-1-web",
-          "hostname": "minato-myapp-feat-1-web",
-          "mounts": [],
           "labels": {
             "dev.minato.managed": "1",
+            "dev.minato.port": "5678",
             "dev.minato.project": "myapp",
-            "dev.minato.workspace": "feat-1",
-            "dev.minato.service": "web",
             "dev.minato.scope": "workspace",
-            "dev.minato.port": "3000"
+            "dev.minato.service": "web",
+            "dev.minato.workspace": "feat-1"
           },
-          "image": { "reference": "node:22" },
-          "resources": { "cpus": 4, "memoryInBytes": 1073741824 }
+          "image": { "reference": "docker.io/hashicorp/http-echo:latest" }
         }
       }
     ]"#;
@@ -892,10 +1012,10 @@ mod tests {
         let record = &parse_container_list(SAMPLE).expect("parses")[0];
 
         assert_eq!(
-            record.endpoint(Some(3000)),
+            record.endpoint(Some(5678)),
             Some(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::new(192, 168, 64, 3)),
-                3000
+                5678
             ))
         );
     }
@@ -907,19 +1027,19 @@ mod tests {
         // to hand.
         assert_eq!(
             record.endpoint(None).map(|addr| addr.port()),
-            Some(3000),
+            Some(5678),
             "the port must survive a daemon restart"
         );
     }
 
     #[test]
     fn stopped_container_has_no_endpoint() {
-        let json = SAMPLE.replace(r#""status": "running""#, r#""status": "stopped""#);
+        let json = SAMPLE.replace(r#""state": "running""#, r#""state": "stopped""#);
         let record = &parse_container_list(&json).expect("parses")[0];
 
         assert_eq!(record.state(), ServiceState::Stopped);
         assert_eq!(
-            record.endpoint(Some(3000)),
+            record.endpoint(Some(5678)),
             None,
             "a stopped container has no usable IP"
         );
@@ -934,9 +1054,23 @@ mod tests {
         assert_eq!(status.key.workspace.workspace, "feat-1");
         assert_eq!(status.key.service, "web");
         assert_eq!(status.state, ServiceState::Ready);
-        assert_eq!(status.port, Some(3000));
-        assert_eq!(status.image.as_deref(), Some("node:22"));
+        assert_eq!(status.port, Some(5678));
+        assert_eq!(
+            status.image.as_deref(),
+            Some("docker.io/hashicorp/http-echo:latest")
+        );
         assert_eq!(status.scope, ServiceScope::Workspace);
+    }
+
+    #[test]
+    fn a_running_container_reports_the_state_under_status() {
+        // M0 read `status` as a bare string. The CLI emits an object, so
+        // every record failed to deserialise and the runtime was unusable
+        // while these tests passed against a fixture from the docs.
+        let record = &parse_container_list(SAMPLE).expect("parses")[0];
+
+        assert!(record.is_running());
+        assert_eq!(record.state(), ServiceState::Ready);
     }
 
     #[test]
@@ -992,9 +1126,18 @@ mod tests {
 
     #[test]
     fn parses_network_list() {
-        let json = r#"[{"name": "minato-myapp-feat-1"}, {"id": "default"}]"#;
+        // The shape `container network list --format json` really prints:
+        // the name lives under `configuration`, mirrored by a top-level id.
+        let json = r#"[
+          {"id": "default",
+           "configuration": {"name": "default", "mode": "nat"},
+           "status": {"ipv4Subnet": "192.168.64.0/24"}},
+          {"id": "minato-myapp-feat-1",
+           "configuration": {"name": "minato-myapp-feat-1"}}
+        ]"#;
+
         let names = parse_network_names(json).expect("parses");
-        assert_eq!(names, vec!["minato-myapp-feat-1", "default"]);
+        assert_eq!(names, vec!["default", "minato-myapp-feat-1"]);
     }
 
     fn spec_with_peers(peers: Vec<String>) -> ServiceSpec {
@@ -1022,17 +1165,39 @@ mod tests {
             PROGRAM.into(),
             PathBuf::from("/tmp/minato-test-volumes"),
         );
-        let env = runtime.env_with_peers(&spec_with_peers(vec!["db".into(), "cache-store".into()]));
+        let addresses = BTreeMap::from([
+            ("db".to_string(), Ipv4Addr::new(192, 168, 64, 3)),
+            ("cache-store".to_string(), Ipv4Addr::new(192, 168, 64, 4)),
+        ]);
+        let env = runtime.env_with_peers(
+            &spec_with_peers(vec!["db".into(), "cache-store".into()]),
+            &addresses,
+        );
 
         assert_eq!(
             env.get("MINATO_HOST_DB").map(String::as_str),
-            Some("minato-myapp-feat-1-db.test")
+            Some("192.168.64.3")
         );
         assert_eq!(
             env.get("MINATO_HOST_CACHE_STORE").map(String::as_str),
-            Some("minato-myapp-feat-1-cache-store.test"),
+            Some("192.168.64.4"),
             "a hyphen is not valid in an environment variable name"
         );
+    }
+
+    #[test]
+    fn a_peer_that_is_not_running_gets_no_variable() {
+        // An unset variable fails on the missing variable, which points at
+        // the ordering. A name that never resolves sends someone hunting
+        // for a DNS problem that does not exist.
+        let runtime = AppleContainerRuntime::with_settings(
+            PROGRAM.into(),
+            PathBuf::from("/tmp/minato-test-volumes"),
+        );
+
+        let env = runtime.env_with_peers(&spec_with_peers(vec!["db".into()]), &BTreeMap::new());
+
+        assert!(!env.contains_key("MINATO_HOST_DB"), "got: {env:?}");
     }
 
     #[test]
@@ -1046,7 +1211,9 @@ mod tests {
         spec.env
             .insert("MINATO_HOST_DB".into(), "custom-host".into());
 
-        let env = runtime.env_with_peers(&spec);
+        let addresses = BTreeMap::from([("db".to_string(), Ipv4Addr::new(192, 168, 64, 3))]);
+        let env = runtime.env_with_peers(&spec, &addresses);
+
         assert_eq!(
             env.get("MINATO_HOST_DB").map(String::as_str),
             Some("custom-host")
@@ -1068,7 +1235,7 @@ mod tests {
         });
 
         let args = runtime
-            .create_args(&spec, Some("minato-myapp-feat-1"))
+            .create_args(&spec, Some("minato-myapp-feat-1"), &BTreeMap::new())
             .expect("builds");
 
         assert_eq!(args[0], "create");
@@ -1113,7 +1280,9 @@ mod tests {
             read_only: false,
         }];
 
-        let args = runtime.create_args(&spec, None).expect("builds");
+        let args = runtime
+            .create_args(&spec, None, &BTreeMap::new())
+            .expect("builds");
         let expected = dir.path().join("myapp").join("pgdata");
 
         assert!(

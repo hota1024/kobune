@@ -100,7 +100,7 @@ impl Supervisor {
                 all,
             } => self.down(target, services, all, events).await,
             Request::Status { target } => self.status(target).await,
-            Request::Doctor => self.doctor().await,
+            Request::Doctor { target } => self.doctor(target).await,
             Request::Logs {
                 target,
                 services,
@@ -131,22 +131,35 @@ impl Supervisor {
     }
 
     async fn ping(&self) -> Result<Response, ApiError> {
-        // Check the default runtime is reachable, and report its version
-        // if it is.
-        let (runtime_id, version) = match self.runtime("docker").await {
-            Ok(runtime) => match runtime.probe().await {
-                Ok(info) => (info.id, info.version),
-                Err(_) => ("docker".to_string(), "unreachable".to_string()),
-            },
-            Err(_) => ("docker".to_string(), "unavailable".to_string()),
-        };
+        // Every reachable runtime, not just Docker. Which one a project
+        // uses is its own business, and a handshake that named Docker on a
+        // machine running Apple Container was simply wrong.
+        let mut reachable = Vec::new();
+        for id in minato_runtime::AVAILABLE_RUNTIMES {
+            if let Some(info) = self.probe_runtime(id).await {
+                reachable.push(format!("{} {}", info.id, info.version));
+            }
+        }
 
         Ok(Response::Pong(Pong {
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol: minato_api::PROTOCOL_VERSION,
-            runtime: format!("{runtime_id} {version}"),
+            runtime: if reachable.is_empty() {
+                "none reachable".to_string()
+            } else {
+                reachable.join(", ")
+            },
             uptime_secs: self.started_at.elapsed().as_secs(),
         }))
+    }
+
+    /// Probes a runtime, treating any failure as "not reachable".
+    ///
+    /// Both a runtime that cannot be constructed and one that cannot be
+    /// reached mean the same thing to a caller, and neither is worth an
+    /// error of its own.
+    async fn probe_runtime(&self, id: &str) -> Option<minato_runtime::RuntimeInfo> {
+        self.runtime(id).await.ok()?.probe().await.ok()
     }
 
     /// Diagnoses what the daemon can see.
@@ -154,24 +167,19 @@ impl Supervisor {
     /// System-side settings — `/etc/resolver`, whether the CA is trusted —
     /// are hard to judge from here, so the CLI covers those. This looks at
     /// the listeners and the runtime.
-    async fn doctor(&self) -> Result<Response, ApiError> {
+    async fn doctor(&self, target: Target) -> Result<Response, ApiError> {
         let mut checks = Vec::new();
 
-        // Is the runtime reachable? Nothing starts without it.
-        match self.runtime("docker").await {
-            Ok(runtime) => match runtime.probe().await {
-                Ok(info) => checks.push(Check::ok(
-                    "runtime",
-                    "container runtime",
-                    format!("{} {}", info.id, info.version),
-                )),
-                Err(err) => checks.push(
-                    Check::fail("runtime", "container runtime", err.to_string())
-                        .with_fix("start one of Docker Desktop, OrbStack or colima"),
-                ),
-            },
-            Err(err) => checks.push(Check::fail("runtime", "container runtime", err.to_string())),
-        }
+        // Which runtime this project runs on. Diagnosing a machine with no
+        // project is still worth doing — that is often *why* someone runs
+        // doctor — so failing to resolve falls back to the default.
+        let configured = self
+            .resolve_project_only(&target)
+            .await
+            .map(|context| context.config.runtime.default.clone())
+            .unwrap_or_else(|_| "docker".to_string());
+
+        checks.extend(self.runtime_checks(&configured).await);
 
         checks.push(match self.gateway.http_port() {
             Some(port) => Check::ok("proxy-http", "HTTP proxy", format!("127.0.0.1:{port}")),
@@ -847,6 +855,48 @@ impl Supervisor {
         })?;
 
         Ok(tunnel::settings_for(record, self.paths.tunnel_dir(), port))
+    }
+
+    /// Checks the configured runtime, and mentions the alternatives.
+    ///
+    /// The configured one is the only one that can fail: an unreachable
+    /// Docker on a machine that runs Apple Container is not a problem, and
+    /// reporting it as one trains people to skim past the output. The
+    /// others appear only when reachable, so `[runtime] default` can be
+    /// switched to something known to work.
+    async fn runtime_checks(&self, configured: &str) -> Vec<Check> {
+        let title = "container runtime";
+        let mut checks = Vec::new();
+
+        checks.push(match self.runtime(configured).await {
+            Ok(runtime) => match runtime.probe().await {
+                Ok(info) => Check::ok("runtime", title, format!("{} {}", info.id, info.version)),
+                Err(err) => Check::fail("runtime", title, err.to_string())
+                    .with_fix(minato_runtime::start_hint(configured)),
+            },
+            // An unknown identifier in `[runtime] default` is a
+            // configuration mistake, not an unreachable runtime.
+            Err(err) => Check::fail("runtime", title, err.to_string()).with_fix(format!(
+                "set [runtime] default to one of: {}",
+                minato_runtime::AVAILABLE_RUNTIMES.join(", ")
+            )),
+        });
+
+        for id in minato_runtime::AVAILABLE_RUNTIMES {
+            if *id == configured {
+                continue;
+            }
+
+            if let Some(info) = self.probe_runtime(id).await {
+                checks.push(Check::ok(
+                    "runtime-available",
+                    format!("{} (available)", minato_runtime::display_name(id)),
+                    format!("{} {}", info.id, info.version),
+                ));
+            }
+        }
+
+        checks
     }
 
     /// Diagnoses the tunnel, or nothing when there is none to diagnose.

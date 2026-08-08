@@ -427,7 +427,7 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             TunnelCommand::Disable => Request::TunnelDisable { target },
             TunnelCommand::Status => Request::TunnelStatus { target },
         },
-        Command::Doctor | Command::Setup => Request::Doctor,
+        Command::Doctor | Command::Setup => Request::Doctor { target },
         Command::Init { .. } | Command::Daemon { .. } | Command::Skill { .. } => {
             unreachable!("the commands that need no daemon are handled before this")
         }

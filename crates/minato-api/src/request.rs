@@ -43,7 +43,11 @@ pub enum Request {
     Shutdown,
 
     /// Diagnoses the environment, reporting what the daemon can see.
-    Doctor,
+    ///
+    /// Carries a target so the project's `[runtime] default` can be the
+    /// one that is checked. Diagnosing a machine that has no project is
+    /// still useful, so a target that resolves to nothing is not an error.
+    Doctor { target: Target },
 
     /// Lists workspaces.
     Ls {

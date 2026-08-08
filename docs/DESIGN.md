@@ -308,7 +308,7 @@ runtime it is talking to.
 | Runtime | OS | Role |
 | --- | --- | --- |
 | Docker | macOS, Linux | The v0 default. Talks to the Docker API through `bollard`, never the compose CLI. Implemented in M0 |
-| Apple Container | macOS 15+ | Drives the `container` CLI. Implemented in M0, untested on real hardware |
+| Apple Container | macOS 26+ | Drives the `container` CLI. Written in M0, made to work in M7 against 1.2.1 |
 | Firecracker | **Linux only** | For density and stronger isolation. Does not run on macOS |
 
 ### The structural gap between Docker and Apple Container (found in M0)
@@ -321,8 +321,9 @@ Implementing both made concrete what the Runtime abstraction has to absorb.
 | Ports | Forwarded dynamically to the host (`127.0.0.1:49312`) | **Each container gets its own IP** (`192.168.64.3:3000`); nothing is published |
 | Filtering | Label filters, server-side | No filters. Fetch everything and narrow it here |
 | Networks | Created freely | **macOS 26 and later only.** Before that, everything shares the default |
-| Service names | Network aliases give `db:5432` | No aliases. Only `{container name}.test` resolves |
+| Service names | Network aliases give `db:5432` | **No name resolution at all.** A peer's IP is injected instead |
 | Named volumes | Native | No such concept. Mapped onto bind mounts under `~/.minato/volumes/` |
+| Network membership | A container joins several | One only, and no `network connect` |
 
 **This is where returning `RunningService::endpoint: SocketAddr` paid off.**
 Docker returns a forwarded host port and Apple Container the container's own
@@ -331,8 +332,57 @@ around port forwarding (`host_port: u16`) would have had to be rebuilt for
 Apple Container.
 
 Only service-name resolution resisted abstraction, hence `ServiceSpec::peers`.
-Apple Container uses it to inject `MINATO_HOST_<SERVICE>` and tell the app what
-to call its neighbours. Docker ignores it.
+Apple Container uses it to inject `MINATO_HOST_<SERVICE>` and tell the app how
+to reach its neighbours. Docker ignores it.
+
+### What running Apple Container turned up (M7)
+
+M0 wrote this backend from the CLI's documentation and never ran it. Every
+assumption that documentation supported turned out to be wrong, and the unit
+tests passed throughout because they were written against the same source.
+
+**The output shape was wrong, so nothing worked at all.** `container ls
+--format json` returns `status` as an *object* — `{"state": "running",
+"networks": [...]}` — not the bare string the docs showed, and addresses come
+back as `ipv4Address` under it. Every record failed to deserialise, which means
+every operation failed. The fixture in the tests is now captured from a real
+container; a fixture nobody has seen the CLI produce is worth nothing.
+
+**There is no container-to-container name resolution.** Not by alias, and not
+by DNS: a container's nameserver is its network gateway, which answers NXDOMAIN
+for every container name, on the default network as much as a custom one. The
+`.test` domain M0 injected is a *host* resolver — it needs
+`sudo container system dns create` and, once created, lets the host reach
+containers rather than containers reach each other. So `MINATO_HOST_<SERVICE>`
+carried a name that nothing inside the container could resolve. It now carries
+the peer's IP address, read after the peer has started.
+
+A peer that is not running yet contributes no variable at all. Failing on a
+missing variable points at the ordering; a name that never resolves sends
+someone hunting for a DNS problem that does not exist. `depends_on` is what
+guarantees the peer is up first.
+
+**Everything shares the default network**, even though macOS 26 can create one
+per workspace. A container attaches to exactly one network — `--network` takes
+a single value and there is no `network connect` — and containers on different
+networks cannot reach each other. A shared service (`scope = "project"`) would
+attach to whichever workspace started it and be unreachable from all the
+others, which is precisely what that scope exists to prevent. Per-workspace
+networks would buy isolation and nothing else, since there is no container DNS
+to scope. Correctness for shared services is worth more than isolation between
+worktrees the same person owns. Revisit if multi-network attachment arrives.
+
+What does hold up is the part the abstraction was built for: `endpoint` comes
+back as the container's own `192.168.64.x:port`, the proxy forwards to it
+without knowing which runtime produced it, and scale-to-zero wakes an Apple
+Container service in about two seconds.
+
+### Firecracker
+
+Still unimplemented, and not for lack of interest: it needs KVM and cannot run
+on macOS at all. Writing it here would mean several hundred lines that have
+never executed a single instruction — which is the mistake M0 made with Apple
+Container, at greater cost. It waits for a Linux host to develop against.
 
 **Note**: Firecracker depends on KVM and does not run on macOS. Since
 development happens on macOS, Firecracker support assumes either Minato running
@@ -819,7 +869,7 @@ published.
 | **M4** ✅ | Cloudflare Tunnel | `https://web-feat-1.myapp.example.com` works from a phone |
 | **M5** ✅ | Skills, `logs` / `exec` | An agent finishes the work without touching `docker` |
 | **M6** ✅ | The GUI: GPUI plus a tray | The menu bar shows the running workspaces and their URLs, and logs are readable |
-| **M7** | More runtimes: Apple Container, Firecracker | Switching `[runtime] default` is all it takes |
+| **M7** ✅ | Apple Container made to work on real hardware; `doctor` and `ping` follow `[runtime] default`. Firecracker deferred — it needs a Linux host | Switching `[runtime] default` is all it takes |
 
 M1 is the minimum line worth shipping. M2 is where it becomes usable daily.
 
@@ -869,6 +919,12 @@ would leave nothing resolving once it lands.
 
 ## 15. Open questions
 
+- **Firecracker**: needs KVM, so it cannot be developed or run on macOS. It
+  waits for a Linux host rather than being written blind
+- **Isolation on Apple Container**: everything shares the default network, so
+  one worktree's containers can reach another's. Acceptable for local
+  development by one person, and the alternative breaks shared services
+  outright, but multi-network attachment would let both hold
 - **Cloudflare Access**: applying the policy needs the API rather than the
   CLI, which means an API token to obtain, scope and store. Until then
   `--public` is an acknowledgement rather than an alternative to a policy

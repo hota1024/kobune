@@ -41,6 +41,30 @@ pub fn create(id: &str) -> Result<Box<dyn Runtime>> {
 /// The runtime identifiers that are supported.
 pub const AVAILABLE_RUNTIMES: &[&str] = &["docker", "apple"];
 
+/// What to do about a runtime that cannot be reached.
+///
+/// Runtime-specific, because the answers have nothing in common: one is a
+/// desktop application to launch, the other a service to register. Being
+/// told to start Docker Desktop when the project runs on Apple Container
+/// is worse than being told nothing.
+pub fn start_hint(id: &str) -> &'static str {
+    match id {
+        "apple" | "apple-container" | "container" => {
+            "start the Apple Container service with `container system start`"
+        }
+        _ => "start one of Docker Desktop, OrbStack or colima",
+    }
+}
+
+/// A human-readable name for a runtime identifier.
+pub fn display_name(id: &str) -> &'static str {
+    match id {
+        "apple" | "apple-container" | "container" => "Apple Container",
+        "docker" => "Docker",
+        _ => "container runtime",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +79,25 @@ mod tests {
 
         assert!(message.contains("podman"), "what went wrong: {message}");
         assert!(message.contains("docker"), "what to use instead: {message}");
+    }
+
+    #[test]
+    fn every_available_runtime_can_be_created() {
+        // `AVAILABLE_RUNTIMES` is what `doctor` iterates and what the
+        // "unknown runtime" message lists. An entry `create` rejects would
+        // be advertised and then refused.
+        for id in AVAILABLE_RUNTIMES {
+            create(id).unwrap_or_else(|err| panic!("{id}: {err}"));
+        }
+    }
+
+    #[test]
+    fn each_runtime_suggests_its_own_way_back() {
+        // Telling an Apple Container user to start Docker Desktop sends
+        // them somewhere that cannot help.
+        assert!(start_hint("apple").contains("container system start"));
+        assert!(start_hint("docker").contains("Docker Desktop"));
+        assert_ne!(start_hint("apple"), start_hint("docker"));
     }
 
     #[test]
