@@ -6,9 +6,14 @@ on:
     # Documentation has its own workflow and cannot change a binary. Every
     # merge that only touches docs/ would otherwise rebuild and republish
     # the same artefacts.
+    #
+    # `**/*.md` is deliberately not here. The only markdown outside docs/ is
+    # `README.md`, which is packaged into the archive, and
+    # `skills/minato/SKILL.md`, which `include_str!` puts inside the binary
+    # — so both change what is released, and ignoring them would leave
+    # `minato skill install` writing last month's text.
     paths-ignore:
       - 'docs/**'
-      - '**/*.md'
       - '.github/workflows/docs.yml'
 
   # For rebuilding without an empty commit, after a runner-side failure.
