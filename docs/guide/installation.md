@@ -13,23 +13,36 @@ Minato is not published to crates.io yet, so it is built from source.
 The desktop app is optional and needs a little more; see
 [The desktop app](./gui).
 
-## A prebuilt Linux binary
+## A prebuilt binary
 
-If you are on Linux x86_64, skip the build:
+Skip the build if there is an archive for your machine:
+
+| | |
+| --- | --- |
+| Apple Silicon | `minato-aarch64-apple-darwin.tar.gz` |
+| Intel Mac | `minato-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `minato-x86_64-unknown-linux-gnu.tar.gz` |
 
 ```console
-$ gh release download nightly --repo hota1024/minato
-$ sha256sum -c minato-x86_64-unknown-linux-gnu.tar.gz.sha256
-$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz
-$ cd minato-x86_64-unknown-linux-gnu
+$ gh release download nightly --repo hota1024/minato \
+    --pattern 'minato-aarch64-apple-darwin.tar.gz*'
+$ shasum -a 256 -c minato-aarch64-apple-darwin.tar.gz.sha256
+$ tar xzf minato-aarch64-apple-darwin.tar.gz
+$ cd minato-aarch64-apple-darwin
 ```
 
 `nightly` is replaced on every merge to `main`. It is the latest build rather
 than a release: nothing in it carries a version, and what it contains changes
 without notice.
 
-There is no macOS binary. Signing an `.app` is unresolved, and building on
-macOS is quick, so build from source there.
+::: warning macOS quarantines unsigned binaries
+```console
+$ xattr -d com.apple.quarantine minato minatod
+```
+Signing is unresolved, so the alternative is to build from source. The
+desktop app is not shipped at all for the same reason: Gatekeeper stops an
+unsigned `.app` outright rather than warning about it.
+:::
 
 ## Build it
 

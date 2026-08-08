@@ -27,66 +27,74 @@ env:
   CHANNEL: nightly
 
 jobs:
+  # Targets are grouped by runner rather than one per entry. A macOS runner
+  # bills at ten times the rate on a private repository, so both Apple
+  # targets are built on one — the second is a cross-compile and costs a
+  # minute, where a second matrix entry would pay for a whole runner again:
+  # checkout, toolchain, cache.
   build:
-    name: Build (${{ matrix.target }})
+    name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux only for now. macOS is the primary platform to develop on,
-          # but its runners bill at ten times the rate on a private
-          # repository, and nothing here needs a Mac to build. Adding it is
-          # one more entry in this matrix.
-          - target: x86_64-unknown-linux-gnu
+          - name: macOS
+            runs-on: macos-latest
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+          - name: Linux
             runs-on: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu
 
     steps:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-${{ matrix.name }}
 
       # The desktop app is excluded: it pulls GPUI from the Zed repository,
       # and an unsigned .app is stopped by Gatekeeper on the machine it
       # reaches, so shipping one would promise more than it delivers.
       # Signing and notarisation are open in docs/DESIGN.md §15.
-      - name: Build
-        run: >-
-          cargo build --release --locked
-          --target ${{ matrix.target }}
-          -p minato -p minatod
-
-      - name: Package
-        id: package
+      - name: Build and package
         run: |
           set -euo pipefail
-          name="minato-${{ matrix.target }}"
-          staging="$(mktemp -d)/$name"
-          mkdir -p "$staging"
+          mkdir -p dist
 
-          cp "target/${{ matrix.target }}/release/minato" "$staging/"
-          cp "target/${{ matrix.target }}/release/minatod" "$staging/"
-          cp LICENSE README.md "$staging/"
+          for target in ${{ matrix.targets }}; do
+            cargo build --release --locked \
+              --target "$target" -p minato -p minatod
 
-          # The CLI looks next to itself for the daemon, so the two have to
-          # stay in one directory. The archive keeps them together.
-          tar -C "$(dirname "$staging")" -czf "$name.tar.gz" "$name"
-          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+            name="minato-$target"
+            staging="$(mktemp -d)/$name"
+            mkdir -p "$staging"
 
-          echo "archive=$name.tar.gz" >> "$GITHUB_OUTPUT"
+            cp "target/$target/release/minato" "$staging/"
+            cp "target/$target/release/minatod" "$staging/"
+            cp LICENSE README.md "$staging/"
+
+            # The CLI looks next to itself for the daemon, so the two have
+            # to stay in one directory. The archive keeps them together.
+            tar -C "$(dirname "$staging")" -czf "dist/$name.tar.gz" "$name"
+
+            # macOS has shasum, Linux has sha256sum. Both produce the format
+            # `shasum -c` and `sha256sum -c` accept.
+            ( cd dist && \
+              { sha256sum "$name.tar.gz" 2>/dev/null \
+                || shasum -a 256 "$name.tar.gz"; } > "$name.tar.gz.sha256" )
+          done
+
+          ls -l dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
-          path: |
-            ${{ steps.package.outputs.archive }}
-            ${{ steps.package.outputs.archive }}.sha256
+          name: ${{ matrix.name }}
+          path: dist/*
           retention-days: 7
 
   publish:

@@ -13,22 +13,35 @@ Minato はまだ crates.io に公開していないため、ソースからビ�
 デスクトップアプリは任意です。追加の条件については
 [デスクトップアプリ](./gui) を参照してください。
 
-## ビルド済みバイナリ（Linux）
+## ビルド済みバイナリ
 
-Linux x86_64 であれば、ビルドを省略できます。
+お使いの環境向けのアーカイブがあれば、ビルドを省略できます。
+
+| | |
+| --- | --- |
+| Apple Silicon | `minato-aarch64-apple-darwin.tar.gz` |
+| Intel Mac | `minato-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `minato-x86_64-unknown-linux-gnu.tar.gz` |
 
 ```console
-$ gh release download nightly --repo hota1024/minato
-$ sha256sum -c minato-x86_64-unknown-linux-gnu.tar.gz.sha256
-$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz
-$ cd minato-x86_64-unknown-linux-gnu
+$ gh release download nightly --repo hota1024/minato \
+    --pattern 'minato-aarch64-apple-darwin.tar.gz*'
+$ shasum -a 256 -c minato-aarch64-apple-darwin.tar.gz.sha256
+$ tar xzf minato-aarch64-apple-darwin.tar.gz
+$ cd minato-aarch64-apple-darwin
 ```
 
 `nightly` は `main` へのマージごとに差し替えられます。リリースではなく最新の
 ビルドであり、バージョンは付かず、内容は予告なく変わります。
 
-macOS 向けのバイナリはありません。`.app` の署名が未解決であり、また macOS では
-ビルド自体が短時間で済むためです。
+::: warning macOS は未署名バイナリを隔離します
+```console
+$ xattr -d com.apple.quarantine minato minatod
+```
+署名は未解決のため、これを実行するかソースからビルドしてください。同じ理由で
+デスクトップアプリは配布していません。未署名の `.app` は警告ではなく
+Gatekeeper に実行そのものを止められます。
+:::
 
 ## ビルド
 
