@@ -81,29 +81,3 @@ jobs:
 
       - name: Tests
         run: cargo test -p minato-desktop
-
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: pnpm/action-setup@v5
-        with:
-          version: 11
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: docs/pnpm-lock.yaml
-
-      - name: Install
-        run: pnpm install --frozen-lockfile
-        working-directory: docs
-
-      # VitePress fails the build on a dead internal link, so this checks
-      # the cross-references between pages as well as that it compiles.
-      - name: Build
-        run: pnpm build
-        working-directory: docs

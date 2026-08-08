@@ -51,6 +51,39 @@ Then bump `CURRENT` in `config.ts` to whatever you are now writing for. The
 root always holds the unreleased docs; snapshots are history and are not
 edited.
 
+## Deployment
+
+Cloudflare Pages, at <https://minato.1024.works>. Pushing to `main` deploys;
+a pull request gets its own preview URL, which is the reason the docs are
+hosted here — prose is reviewed by reading it, not by reading its diff.
+
+`.github/workflows/docs.yml` builds on every pull request, including ones
+from forks, and deploys only when the secrets are present. A fork cannot see
+them, so its pull requests get the build check and no preview.
+
+### One-time setup
+
+Already done, and recorded here for whoever has to do it again.
+
+1. Create a Pages project named `minato-docs`. It has to exist before the
+   first deploy: `wrangler pages deploy` creates one interactively and fails
+   in CI.
+2. Issue an API token with **Account → Cloudflare Pages → Edit**, and nothing
+   else. No zone permissions are needed even though the custom domain is on
+   Cloudflare.
+3. Add it to the repository as `CLOUDFLARE_API_TOKEN`, alongside
+   `CLOUDFLARE_ACCOUNT_ID`.
+4. Point the Pages project's custom domain at `minato.1024.works`. The zone
+   is on Cloudflare, so the DNS record and the certificate are handled for
+   you.
+
+### The hostname is in two places
+
+`sitemap.hostname` in `config.ts` and the custom domain in Cloudflare. A
+sitemap has to carry absolute URLs, so it cannot be derived. Preview
+deployments therefore serve a sitemap pointing at production, which is
+harmless: nothing crawls a preview.
+
 ## Conventions
 
 - **Say what a thing is for before saying how to use it.** Someone reading a

@@ -234,10 +234,18 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
 
+  // Absolute, because a sitemap has to be. Preview deployments get their
+  // own hostname and therefore a sitemap pointing at production; nothing
+  // crawls a preview, so that is the harmless direction to be wrong in.
+  sitemap: { hostname: 'https://minato.1024.works' },
+
   // DESIGN.md predates this site and is an internal record — the decisions
   // and the ones that were reversed — not a page for readers. It stays in
   // the repository and is linked to on GitHub.
-  srcExclude: ['DESIGN.md'],
+  // Neither is a page for readers. DESIGN.md is the internal record —
+  // including the decisions that were reversed — and README.md is how to
+  // work on this site. Both stay in the repository and are read on GitHub.
+  srcExclude: ['DESIGN.md', 'README.md'],
 
   head: [
     ['meta', { name: 'theme-color', content: '#3451b2' }],

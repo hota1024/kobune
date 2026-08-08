@@ -1,0 +1,78 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+
+    # At job level so the deploy step's `if` can see it. A step's own `env`
+    # is in scope for its `if` on paper; keeping it here removes the doubt.
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+    # Needed to leave the preview URL as a comment on the pull request.
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # VitePress reads git history for each page's last-updated date.
+          # A shallow clone leaves every page dated to the checkout.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        working-directory: docs
+
+      # VitePress fails the build on a dead internal link, so this checks
+      # the cross-references between pages as well as that it compiles.
+      # It runs for every pull request, including ones from forks that
+      # cannot deploy.
+      - name: Build
+        run: pnpm build
+        working-directory: docs
+
+      # A fork's pull request has no access to secrets, so there is nothing
+      # to deploy with. The build above is still the useful half.
+      - name: Deploy
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # A branch other than main becomes a preview deployment with its
+          # own URL, which is the point of hosting the docs here: prose is
+          # reviewed by reading it, not by reading its diff.
+          command: >-
+            pages deploy .vitepress/dist
+            --project-name=minato-docs
+            --branch=${{ github.head_ref || github.ref_name }}
+          workingDirectory: docs

@@ -105,9 +105,9 @@ Firecracker is not implemented. It needs KVM and cannot run on macOS.
 
 ## Documentation
 
-Full documentation, in English and Japanese, lives in [`docs/`](docs/) — a
-VitePress site covering installation, configuration, everyday use, the runtimes,
-tunnels, tutorials, and a CLI and `minato.toml` reference.
+<https://minato.1024.works> — in English and Japanese, covering installation,
+configuration, everyday use, the runtimes, tunnels, tutorials, and a CLI and
+`minato.toml` reference. The source is in [`docs/`](docs/).
 
 ```console
 $ cd docs && pnpm install && pnpm dev
