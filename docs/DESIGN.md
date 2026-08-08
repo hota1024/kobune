@@ -507,32 +507,87 @@ round, Minato's conveniences would erase the user's settings.
 
 ### Approach
 
-**One named tunnel per machine.** The ingress rule sends everything to
-`http://127.0.0.1:80` and leaves routing on Host to the local proxy.
+**One named tunnel per machine.** The ingress rule sends everything to the
+local proxy and leaves routing on Host to it.
 
-On the DNS side that is a single wildcard CNAME for `*.{project}.example.com`,
-so workspaces can come and go without touching any records. It is the simplest
-arrangement and costs nothing at startup.
+On the DNS side that is one wildcard CNAME per project,
+`*.{project}.example.com`, so workspaces come and go without touching any
+records. It is the simplest arrangement and costs nothing at startup.
 
 ```yaml
 # the generated cloudflared configuration
-tunnel: <tunnel-id>
+tunnel: minato
+
 ingress:
-  - hostname: "*.myapp.example.com"
+  - hostname: "*.example.com"
     service: http://127.0.0.1:80
-    originRequest:
-      httpHostHeader: <rewrite the request's Host to the localhost name>
   - service: http_status:404
 ```
 
 Tunnel hostnames sometimes allow only one level of subdomain, so the form is
 `{service}-{workspace}.{project}.example.com`.
 
+#### The proxy resolves the tunnel hostname (settled in M4)
+
+The original plan had `originRequest.httpHostHeader` rewrite the Host back to
+the `.localhost` name. That does not work: `httpHostHeader` is a fixed string,
+so one rule cannot rewrite per request, and a rule per service would mean
+regenerating the file and reloading cloudflared every time a worktree appeared
+— exactly the churn the wildcard exists to avoid.
+
+Instead **the daemon registers the tunnel hostname in the proxy's routing table
+alongside the `.localhost` one**, pointing at the same service. The Host header
+arrives untouched and resolves on the other side. The consequences are worth
+naming:
+
+- The cloudflared configuration is written once and never changes. Not per
+  project either — the rule covers the whole zone, and DNS is what gates which
+  hostnames actually arrive
+- Scale-to-zero works for a reviewer following a shared link, because the
+  tunnel hostname is a route like any other and a request wakes it
+- A service with `expose = false` gets no tunnel hostname, so a database cannot
+  be reached from outside even by guessing the name
+
+The hop from cloudflared to the proxy is plain HTTP over loopback. Going to the
+HTTPS port would mean cloudflared verifying the local CA, which it has no
+reason to trust, and TLS is terminated at Cloudflare's edge regardless.
+
+#### Routes are rebuilt at daemon start (found in M4)
+
+The routing table lives in memory, so a daemon restart left it empty until some
+command happened to call `refresh`. Locally that self-corrects the first time
+anyone runs `status`. A reviewer holding a tunnel link has no such move, and
+scale-to-zero cannot rescue them because the route is not registered for a
+request to wake. The daemon now rebuilds every registered project's routes at
+start. The bug predates the tunnel; the tunnel is what made it unrecoverable.
+
 ### Access control
 
-A Cloudflare Access policy is applied by default. A development environment
-open to the internet without authentication is an accident, so it is
-**opt-out (`--public`)**.
+A development environment open to the internet without authentication is an
+accident, so the design called for a Cloudflare Access policy by default, with
+`--public` to opt out.
+
+**Minato cannot apply that policy.** Access is configured through Cloudflare's
+API, and everything here goes through the `cloudflared` CLI so there is no API
+token to obtain, scope or store. Since it cannot promise the policy is in
+place, it does the next most honest thing: `tunnel enable` refuses without
+`--public`, and the flag reads as "I know this is going on the internet". Every
+`tunnel status` on a running tunnel repeats that it cannot see whether Access
+is in front.
+
+Applying the policy — and so restoring the opt-out the design wanted — needs
+the API-token path, which is open.
+
+### Setup is reported, not run
+
+`cloudflared tunnel login` opens a browser and waits. Running it from the
+daemon would hang an agent exactly the way an unattended `sudo` does, so it is
+reported as a step for the user to take, the same as §14's privileged setup.
+
+Everything after login is not interactive and the daemon does it itself:
+`tunnel create` and `tunnel route dns` run on every enable and on every daemon
+start, with "it already exists" read as success. The alternative is a flag in
+the state file that can disagree with what Cloudflare actually has.
 
 ## 10. The CLI
 
@@ -761,7 +816,7 @@ published.
 | **M1** ✅ | DNS, the proxy, TLS, `doctor` / `setup`, launchd socket activation | `https://web.feat-1.myapp.localhost` answers curl |
 | **M2** ✅ | Scale-to-zero, health checks, idle stop, on-demand start | Ten worktrees, and the only running containers are the ones in use |
 | **M3** ✅ | Environment variables: three layers, secret references, injection | The frontend can read `MINATO_URL_API` |
-| **M4** | Cloudflare Tunnel | `https://web-feat-1.myapp.example.com` works from a phone |
+| **M4** ✅ | Cloudflare Tunnel | `https://web-feat-1.myapp.example.com` works from a phone |
 | **M5** ✅ | Skills, `logs` / `exec` | An agent finishes the work without touching `docker` |
 | **M6** ✅ | The GUI: GPUI plus a tray | The menu bar shows the running workspaces and their URLs, and logs are readable |
 | **M7** | More runtimes: Apple Container, Firecracker | Switching `[runtime] default` is all it takes |
@@ -814,6 +869,13 @@ would leave nothing resolving once it lands.
 
 ## 15. Open questions
 
+- **Cloudflare Access**: applying the policy needs the API rather than the
+  CLI, which means an API token to obtain, scope and store. Until then
+  `--public` is an acknowledgement rather than an alternative to a policy
+- **Verifying the tunnel end to end**: everything up to and including the
+  hostname routing is exercised, the last against a stub `cloudflared`. What
+  has not run is a real named tunnel against a real zone, which needs a
+  Cloudflare account and a domain
 - **Migration conflicts on a shared database**: several worktrees applying
   different migrations to a `scope = "project"` database will break it. A
   database per worktree — separate database names inside one instance — is the

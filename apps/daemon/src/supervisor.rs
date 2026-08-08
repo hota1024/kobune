@@ -13,9 +13,11 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use minato_api::{
     ApiError, Check, Diagnostics, EnvInfo, ErrorCode, Pong, Request, Response, ServiceInfo, Target,
-    WorkspaceInfo,
+    TunnelState, WorkspaceInfo,
 };
-use minato_core::{MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, WorkspaceRecord};
+use minato_core::{
+    MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, TunnelRecord, WorkspaceRecord,
+};
 use minato_proxy::{Activation, Route};
 use minato_runtime::{EventSink, Runtime, ServiceStatus, WorkspaceKey};
 
@@ -29,6 +31,7 @@ use crate::idle::IdleTracker;
 use crate::resolve::{self, ProjectContext, Resolved};
 use crate::secrets;
 use crate::spec;
+use crate::tunnel::{self, TunnelHandle};
 
 pub struct Supervisor {
     paths: Paths,
@@ -42,12 +45,19 @@ pub struct Supervisor {
     gateway: Arc<Gateway>,
     /// Last-access times, which is what scale-to-zero decides on.
     idle: IdleTracker,
+    /// The Cloudflare Tunnel, when one is running.
+    tunnel: Arc<TunnelHandle>,
     started_at: Instant,
     shutdown: Arc<tokio::sync::Notify>,
 }
 
 impl Supervisor {
-    pub fn new(paths: &Paths, gateway: Arc<Gateway>, shutdown: Arc<tokio::sync::Notify>) -> Self {
+    pub fn new(
+        paths: &Paths,
+        gateway: Arc<Gateway>,
+        tunnel: Arc<TunnelHandle>,
+        shutdown: Arc<tokio::sync::Notify>,
+    ) -> Self {
         Self {
             paths: paths.clone(),
             store: StateStore::new(paths.state_file()),
@@ -55,6 +65,7 @@ impl Supervisor {
             state_lock: Mutex::new(()),
             gateway,
             idle: IdleTracker::new(),
+            tunnel,
             started_at: Instant::now(),
             shutdown,
         }
@@ -109,6 +120,13 @@ impl Supervisor {
                 value,
             } => self.env_set(target, scope, key, value).await,
             Request::EnvUnset { target, scope, key } => self.env_unset(target, scope, key).await,
+            Request::TunnelEnable {
+                target,
+                domain,
+                public,
+            } => self.tunnel_enable(target, domain, public, events).await,
+            Request::TunnelDisable { target } => self.tunnel_disable(target).await,
+            Request::TunnelStatus { target } => self.tunnel_status(target).await,
         }
     }
 
@@ -233,6 +251,13 @@ impl Supervisor {
             None => Check::warn("ca", "local CA", "not generated".to_string()),
         });
 
+        // Only worth reporting once a tunnel has been set up. An unused
+        // feature showing up as a warning on every `doctor` run trains
+        // people to skim past the output.
+        if let Some(check) = self.tunnel_check().await {
+            checks.push(check);
+        }
+
         Ok(Response::Diagnostics(Diagnostics::new(checks)))
     }
 
@@ -285,7 +310,13 @@ impl Supervisor {
         let statuses = runtime.list_project(project).await?;
 
         let records = self.workspace_records(project).await?;
-        let entries = route_entries(config, project, &records, &statuses);
+        let entries = route_entries(
+            config,
+            project,
+            &records,
+            &statuses,
+            self.tunnel.domain().as_deref(),
+        );
 
         // Give a baseline to hosts that are running with no record — after
         // a daemon restart, say. Without one they never look idle and
@@ -606,6 +637,323 @@ impl Supervisor {
         }
 
         Ok(envs)
+    }
+
+    /// Sets up the Cloudflare Tunnel and starts it.
+    ///
+    /// Idempotent: creating the tunnel and routing DNS both treat "it
+    /// already exists" as success, so this is the same call whether the
+    /// machine has been set up before or not.
+    async fn tunnel_enable(
+        &self,
+        target: Target,
+        domain: Option<String>,
+        public: bool,
+        events: &EventSink,
+    ) -> Result<Response, ApiError> {
+        let context = self.resolve_project_only(&target).await?;
+        let existing = self.tunnel_record().await?;
+
+        // A domain given once is remembered, so re-enabling does not mean
+        // naming it again.
+        let domain = domain
+            .or_else(|| existing.as_ref().map(|record| record.domain.clone()))
+            .ok_or_else(|| {
+                ApiError::new(
+                    ErrorCode::InvalidConfig,
+                    "no domain for the tunnel".to_string(),
+                )
+                .with_hint("name the Cloudflare zone with --domain example.com")
+            })?;
+
+        // Minato cannot apply a Cloudflare Access policy: that needs the
+        // API, and everything here goes through the CLI so there is no
+        // token to obtain or store. Since it cannot promise the policy is
+        // there, it will not put an environment on the public internet
+        // without being asked (`docs/DESIGN.md` §9).
+        if !public {
+            return Err(ApiError::new(
+                ErrorCode::Unsupported,
+                "a tunnel exposes this environment to the internet".to_string(),
+            )
+            .with_hint(
+                "put a Cloudflare Access policy in front of the hostname, then \
+                 re-run with --public to confirm. Minato cannot apply the policy \
+                 itself — that needs the Cloudflare API, not cloudflared",
+            ));
+        }
+
+        let record = TunnelRecord {
+            name: existing
+                .as_ref()
+                .map(|record| record.name.clone())
+                .unwrap_or_else(|| minato_tunnel::DEFAULT_TUNNEL_NAME.to_string()),
+            domain,
+            enabled: true,
+            routed: existing.map(|record| record.routed).unwrap_or_default(),
+        };
+
+        let settings = self.tunnel_settings(&record)?;
+
+        // Nothing to run before cloudflared is installed and logged in,
+        // and login opens a browser. Report the step instead of failing:
+        // the state is legitimate and the answer is a command to run.
+        let readiness = minato_tunnel::readiness(&settings);
+        if !readiness.is_ready() {
+            return Ok(Response::Tunnel(
+                tunnel::info(
+                    Some(&record),
+                    &self.tunnel,
+                    Some(&settings),
+                    &context.project,
+                )
+                .await,
+            ));
+        }
+
+        // Every known project gets a DNS route, not just this one. The
+        // tunnel is machine-wide, and a project left unrouted is silently
+        // unreachable.
+        let projects = self.known_projects().await?;
+
+        events.step_started("tunnel", "starting the tunnel");
+        match self.tunnel.start(settings.clone(), projects.clone()).await {
+            Ok(()) => events.step_done("tunnel", "starting the tunnel"),
+            Err(err) => {
+                events.step_failed("tunnel", "starting the tunnel", err.to_string());
+                return Err(tunnel_error(err));
+            }
+        }
+
+        let mut record = record;
+        record.routed.extend(projects);
+        self.save_tunnel_record(Some(record.clone())).await?;
+
+        // The routing table is rebuilt so the tunnel hostnames resolve.
+        // Without this the tunnel is up and every request through it 404s
+        // until something else happens to refresh.
+        self.refresh(&context.project, &context.config).await?;
+
+        Ok(Response::Tunnel(
+            tunnel::info(
+                Some(&record),
+                &self.tunnel,
+                Some(&settings),
+                &context.project,
+            )
+            .await,
+        ))
+    }
+
+    /// Stops the tunnel, keeping the record.
+    ///
+    /// The named tunnel and its DNS records stay in Cloudflare: they cost
+    /// nothing idle, and deleting them would put `cloudflared tunnel
+    /// login` back in the path of re-enabling.
+    async fn tunnel_disable(&self, target: Target) -> Result<Response, ApiError> {
+        let context = self.resolve_project_only(&target).await?;
+
+        self.tunnel.stop().await;
+
+        let record = match self.tunnel_record().await? {
+            Some(mut record) => {
+                record.enabled = false;
+                self.save_tunnel_record(Some(record.clone())).await?;
+                Some(record)
+            }
+            None => None,
+        };
+
+        // Drops the tunnel hostnames from the routing table.
+        self.refresh(&context.project, &context.config).await?;
+
+        let settings = record
+            .as_ref()
+            .and_then(|record| self.tunnel_settings(record).ok());
+
+        Ok(Response::Tunnel(
+            tunnel::info(
+                record.as_ref(),
+                &self.tunnel,
+                settings.as_ref(),
+                &context.project,
+            )
+            .await,
+        ))
+    }
+
+    /// Reports where the tunnel stands. Runs nothing.
+    async fn tunnel_status(&self, target: Target) -> Result<Response, ApiError> {
+        let context = self.resolve_project_only(&target).await?;
+        let record = self.tunnel_record().await?;
+
+        let settings = record
+            .as_ref()
+            .and_then(|record| self.tunnel_settings(record).ok());
+
+        Ok(Response::Tunnel(
+            tunnel::info(
+                record.as_ref(),
+                &self.tunnel,
+                settings.as_ref(),
+                &context.project,
+            )
+            .await,
+        ))
+    }
+
+    /// The tunnel as the state store has it.
+    pub async fn tunnel_record(&self) -> Result<Option<TunnelRecord>, ApiError> {
+        let _guard = self.state_lock.lock().await;
+        let state = self.store.load().map_err(ApiError::from)?;
+        Ok(state.tunnel)
+    }
+
+    async fn save_tunnel_record(&self, record: Option<TunnelRecord>) -> Result<(), ApiError> {
+        let _guard = self.state_lock.lock().await;
+
+        self.store
+            .update(|state| {
+                state.tunnel = record;
+                Ok(())
+            })
+            .map_err(ApiError::from)
+    }
+
+    /// Every project the state store knows about.
+    pub async fn known_projects(&self) -> Result<Vec<String>, ApiError> {
+        let _guard = self.state_lock.lock().await;
+        let state = self.store.load().map_err(ApiError::from)?;
+        Ok(state.projects.keys().cloned().collect())
+    }
+
+    /// Builds the settings for a record.
+    ///
+    /// Fails when the proxy has no plain-HTTP port: the tunnel would have
+    /// nowhere to send traffic, and starting it would publish hostnames
+    /// that only ever 502.
+    pub fn tunnel_settings(
+        &self,
+        record: &TunnelRecord,
+    ) -> Result<minato_tunnel::TunnelSettings, ApiError> {
+        let port = self.gateway.http_port().ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::RuntimeUnavailable,
+                "the HTTP proxy is not listening, so the tunnel has nowhere to \
+                 forward to"
+                    .to_string(),
+            )
+            .with_hint("check `minato doctor`")
+        })?;
+
+        Ok(tunnel::settings_for(record, self.paths.tunnel_dir(), port))
+    }
+
+    /// Diagnoses the tunnel, or nothing when there is none to diagnose.
+    async fn tunnel_check(&self) -> Option<Check> {
+        let record = self.tunnel_record().await.ok().flatten()?;
+
+        let settings = self.tunnel_settings(&record).ok();
+        let info = tunnel::info(Some(&record), &self.tunnel, settings.as_ref(), "").await;
+        let title = "Cloudflare Tunnel";
+        let domain = record.domain.clone();
+
+        Some(match info.state {
+            TunnelState::Running => Check::ok("tunnel", title, format!("running for *.{domain}")),
+            TunnelState::Disabled => Check::ok("tunnel", title, "disabled".to_string()),
+            TunnelState::NotInstalled => {
+                Check::fail("tunnel", title, "cloudflared is not installed".to_string())
+                    .with_fix("brew install cloudflared")
+            }
+            TunnelState::NeedsLogin => {
+                Check::fail("tunnel", title, "cloudflared is not logged in".to_string())
+                    .with_fix("cloudflared tunnel login")
+            }
+            // Enabled but not up. Everything published through it is
+            // unreachable, and nothing local would show that.
+            TunnelState::Stopped => Check::fail(
+                "tunnel",
+                title,
+                format!("enabled for *.{domain}, but not running"),
+            )
+            .with_fix("run `minato tunnel enable --public`, or `minato tunnel status` for why"),
+        })
+    }
+
+    /// Rebuilds every project's routing table at daemon start.
+    ///
+    /// The table lives in memory, so a restart leaves it empty and every
+    /// URL 404s until some command happens to call [`Self::refresh`].
+    /// Locally that self-corrects the first time anyone runs `status`; a
+    /// reviewer following a tunnel link has no such move, and scale-to-
+    /// zero cannot rescue them because the route is not registered for a
+    /// request to wake.
+    ///
+    /// A project that cannot be refreshed is skipped rather than fatal:
+    /// its `minato.toml` may have moved, or the runtime may be down, and
+    /// neither is a reason to take the daemon with it.
+    pub async fn restore_routes(&self) {
+        let projects = match self.known_projects().await {
+            Ok(projects) => projects,
+            Err(err) => {
+                tracing::warn!("cannot read the registered projects: {err}");
+                return;
+            }
+        };
+
+        for project in projects {
+            let config = match self.project_config(&project).await {
+                Ok(config) => config,
+                Err(err) => {
+                    tracing::debug!("not restoring routes for {project}: {err}");
+                    continue;
+                }
+            };
+
+            match self.refresh(&project, &config).await {
+                Ok(_) => tracing::debug!("restored routes for {project}"),
+                Err(err) => tracing::warn!("cannot restore routes for {project}: {err}"),
+            }
+        }
+    }
+
+    /// Brings the tunnel up at daemon start, when the state says it was on.
+    ///
+    /// Failing here does not stop the daemon. The local URLs work either
+    /// way, and taking everything down because Cloudflare is unreachable
+    /// would be the wrong trade.
+    pub async fn restore_tunnel(&self) {
+        let record = match self.tunnel_record().await {
+            Ok(Some(record)) if record.enabled => record,
+            Ok(_) => return,
+            Err(err) => {
+                tracing::warn!("cannot read the tunnel state: {err}");
+                return;
+            }
+        };
+
+        let settings = match self.tunnel_settings(&record) {
+            Ok(settings) => settings,
+            Err(err) => {
+                tracing::warn!("not starting the tunnel: {err}");
+                return;
+            }
+        };
+
+        if !minato_tunnel::readiness(&settings).is_ready() {
+            tracing::warn!(
+                "the tunnel is enabled but cloudflared is not ready. \
+                 Run `minato tunnel status` for the remaining steps"
+            );
+            return;
+        }
+
+        let projects = self.known_projects().await.unwrap_or_default();
+
+        match self.tunnel.start(settings, projects).await {
+            Ok(()) => tracing::info!("tunnel restored for *.{}", record.domain),
+            Err(err) => tracing::warn!("cannot start the tunnel: {err}"),
+        }
     }
 
     /// Records an access. The proxy calls this on every request.
@@ -1282,6 +1630,21 @@ fn default_worktree_path(main_root: &std::path::Path, branch: &str) -> PathBuf {
     parent.join(format!("{repo_name}.wt")).join(label)
 }
 
+/// Maps a tunnel failure onto the API's vocabulary.
+fn tunnel_error(err: minato_tunnel::TunnelError) -> ApiError {
+    use minato_tunnel::TunnelError;
+
+    let message = err.to_string();
+    match err {
+        TunnelError::NotInstalled(_) => ApiError::new(ErrorCode::Unsupported, message)
+            .with_hint("install cloudflared (brew install cloudflared)"),
+        TunnelError::NotLoggedIn => ApiError::new(ErrorCode::RuntimeUnavailable, message)
+            .with_hint("run `cloudflared tunnel login`"),
+        TunnelError::Write { .. } => ApiError::internal(message),
+        TunnelError::Failed { .. } => ApiError::new(ErrorCode::RuntimeFailed, message),
+    }
+}
+
 /// Reads a file, or an empty string when there is none.
 fn read_or_empty(path: &std::path::Path) -> Result<String, ApiError> {
     match std::fs::read_to_string(path) {
@@ -1304,6 +1667,7 @@ fn route_entries(
     project: &str,
     records: &[WorkspaceRecord],
     statuses: &[ServiceStatus],
+    tunnel_domain: Option<&str>,
 ) -> Vec<(String, Route)> {
     let domain = config.domain();
     let shared_key = WorkspaceKey::shared(project);
@@ -1333,6 +1697,23 @@ fn route_entries(
                 None => Route::stopped(project, &record.label, name.clone()),
             };
 
+            // The tunnel hostname resolves to the same service.
+            //
+            // This is what lets cloudflared run one wildcard ingress rule
+            // that never changes: the Host header arrives untouched and
+            // the proxy already knows what it means. Rewriting Host at the
+            // tunnel instead would need a rule per service, regenerated
+            // and reloaded every time a worktree appeared.
+            if let Some(tunnel_domain) = tunnel_domain {
+                let tunnel = minato_core::naming::tunnel_host(
+                    name,
+                    record.url_label(),
+                    project,
+                    tunnel_domain,
+                );
+                entries.push((tunnel, route.clone()));
+            }
+
             entries.push((host, route));
         }
     }
@@ -1353,6 +1734,7 @@ impl Supervisor {
         let workspace_key = WorkspaceKey::new(project, &record.label);
         let shared_key = WorkspaceKey::shared(project);
         let domain = config.domain();
+        let tunnel_domain = self.tunnel.domain();
 
         let services = config
             .services
@@ -1380,12 +1762,28 @@ impl Supervisor {
                     None
                 };
 
+                // Only while the tunnel is actually up. A URL for a
+                // tunnel that is down points at a 502, and unlike the
+                // local URL there is nothing a request can do to wake it.
+                let tunnel_url = tunnel_domain
+                    .as_deref()
+                    .filter(|_| service_config.exposed())
+                    .map(|tunnel_domain| {
+                        let host = minato_core::naming::tunnel_host(
+                            name,
+                            record.url_label(),
+                            project,
+                            tunnel_domain,
+                        );
+                        format!("https://{host}")
+                    });
+
                 ServiceInfo {
                     name: name.clone(),
                     state,
                     scope: service_config.scope,
                     url,
-                    tunnel_url: None,
+                    tunnel_url,
                     endpoint: status
                         .and_then(|s| s.endpoint)
                         .filter(|_| service_config.exposed())
@@ -1424,6 +1822,7 @@ mod tests {
         Supervisor::new(
             &Paths::with_root(PathBuf::from("/tmp/minato-supervisor-test")),
             Arc::new(gateway),
+            TunnelHandle::new(),
             Arc::new(tokio::sync::Notify::new()),
         )
     }
@@ -1723,7 +2122,7 @@ mod tests {
             },
         ];
 
-        let entries = route_entries(&config(SAMPLE), "myapp", &records, &statuses);
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &statuses, None);
 
         let running: Vec<&str> = entries
             .iter()
@@ -1767,7 +2166,7 @@ mod tests {
             ),
         ];
 
-        let entries = route_entries(&config(SAMPLE), "myapp", &records, &statuses);
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &statuses, None);
         let mut hosts: Vec<&str> = entries
             .iter()
             .filter(|(_, route)| route.is_running())
@@ -1779,5 +2178,106 @@ mod tests {
             hosts,
             vec!["web.feat-1.myapp.localhost", "web.myapp.localhost"]
         );
+    }
+
+    #[test]
+    fn a_tunnel_hostname_reaches_the_same_service() {
+        // This is what lets cloudflared run one wildcard ingress rule that
+        // never changes. Without the second key, every request through the
+        // tunnel arrives with a Host the proxy has never heard of and 404s.
+        let records = vec![record("feat-1", false)];
+        let statuses = vec![ready(
+            WorkspaceKey::new("myapp", "feat-1").service("web"),
+            49312,
+            ServiceScope::Workspace,
+        )];
+
+        let entries = route_entries(
+            &config(SAMPLE),
+            "myapp",
+            &records,
+            &statuses,
+            Some("example.com"),
+        );
+
+        let local = entries
+            .iter()
+            .find(|(host, _)| host == "web.feat-1.myapp.localhost")
+            .expect("the local hostname is registered");
+        let tunnel = entries
+            .iter()
+            .find(|(host, _)| host == "web-feat-1.myapp.example.com")
+            .expect("the tunnel hostname is registered");
+
+        assert_eq!(local.1.endpoint, tunnel.1.endpoint, "the same service");
+    }
+
+    #[test]
+    fn a_stopped_service_is_wakeable_through_the_tunnel_too() {
+        // Scale-to-zero has to work for a reviewer following a shared
+        // link, not just for someone on the machine.
+        let records = vec![record("feat-1", false)];
+
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
+
+        let tunnel = entries
+            .iter()
+            .find(|(host, _)| host == "web-feat-1.myapp.example.com")
+            .expect("registered while stopped");
+
+        assert!(!tunnel.1.is_running(), "stopped, but known to exist");
+    }
+
+    #[test]
+    fn no_tunnel_hostnames_without_a_tunnel() {
+        let records = vec![record("feat-1", false)];
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], None);
+
+        assert!(
+            entries.iter().all(|(host, _)| host.ends_with(".localhost")),
+            "got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn the_main_worktree_keeps_its_shorter_tunnel_hostname() {
+        // Matching the local URL, where main omits the workspace label.
+        let records = vec![record("main", true)];
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
+
+        assert!(
+            entries
+                .iter()
+                .any(|(host, _)| host == "web.myapp.example.com"),
+            "got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn unexposed_services_get_no_tunnel_hostname() {
+        // A database on the public internet is the accident this exists to
+        // avoid.
+        let records = vec![record("feat-1", false)];
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
+
+        assert!(
+            !entries.iter().any(|(host, _)| host.starts_with("db")),
+            "got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn tunnel_urls_are_absent_while_the_tunnel_is_down() {
+        // A local URL is worth showing while stopped, because a request
+        // starts the service. A tunnel URL with no tunnel behind it has no
+        // such recovery — it is simply broken.
+        let info = supervisor(Gateway::with_ports(Some(80), Some(443))).build_workspace_info(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            &[],
+        );
+
+        assert!(info.service("web").expect("exists").tunnel_url.is_none());
     }
 }

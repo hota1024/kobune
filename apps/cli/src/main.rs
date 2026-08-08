@@ -160,6 +160,36 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+
+    /// Reach this environment from outside, over Cloudflare Tunnel
+    Tunnel {
+        #[command(subcommand)]
+        command: TunnelCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TunnelCommand {
+    /// Set the tunnel up and start it
+    Enable {
+        /// The Cloudflare zone the hostnames live under
+        #[arg(long)]
+        domain: Option<String>,
+
+        /// Confirm that this goes on the public internet
+        ///
+        /// Minato cannot apply a Cloudflare Access policy — that needs the
+        /// API, not cloudflared — so it will not expose an environment
+        /// without being asked.
+        #[arg(long)]
+        public: bool,
+    },
+
+    /// Stop the tunnel
+    Disable,
+
+    /// Show where the tunnel stands
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -388,6 +418,15 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             command: command.clone(),
         },
         Command::Env { command } => build_env_request(command, target)?,
+        Command::Tunnel { command } => match command {
+            TunnelCommand::Enable { domain, public } => Request::TunnelEnable {
+                target,
+                domain: domain.clone(),
+                public: *public,
+            },
+            TunnelCommand::Disable => Request::TunnelDisable { target },
+            TunnelCommand::Status => Request::TunnelStatus { target },
+        },
         Command::Doctor | Command::Setup => Request::Doctor,
         Command::Init { .. } | Command::Daemon { .. } | Command::Skill { .. } => {
             unreachable!("the commands that need no daemon are handled before this")
@@ -529,6 +568,7 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
             }
         }
         Response::Workspace { workspace } => output::print_workspace(workspace),
+        Response::Tunnel(tunnel) => output::print_tunnel(tunnel),
         // logs has already printed its lines; exec speaks through its
         // exit code.
         Response::Exec { .. } => {}
@@ -934,6 +974,46 @@ mod tests {
             Request::Up { services, .. } => assert_eq!(services, vec!["web", "api"]),
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn enabling_a_tunnel_requires_saying_public_out_loud() {
+        // Minato cannot apply a Cloudflare Access policy, so it cannot
+        // promise one is there. The flag is the acknowledgement, and it
+        // defaults off.
+        let cli = Cli::try_parse_from(["minato", "tunnel", "enable", "--domain", "example.com"])
+            .expect("parses");
+        let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
+
+        match request {
+            Request::TunnelEnable { public, domain, .. } => {
+                assert!(!public, "public is opt-in");
+                assert_eq!(domain.as_deref(), Some("example.com"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_domain_can_be_left_out_once_it_is_known() {
+        let cli = Cli::try_parse_from(["minato", "tunnel", "enable", "--public"]).expect("parses");
+        let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
+
+        match request {
+            Request::TunnelEnable { domain, public, .. } => {
+                assert!(domain.is_none(), "the daemon reuses the configured one");
+                assert!(public);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tunnel_status_asks_for_nothing_else() {
+        let cli = Cli::try_parse_from(["minato", "tunnel", "status"]).expect("parses");
+        let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
+
+        assert!(matches!(request, Request::TunnelStatus { .. }));
     }
 
     #[test]

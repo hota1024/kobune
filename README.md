@@ -22,7 +22,7 @@ $ minato new feature/user-auth
 
 ## Status
 
-**Everything but M4 is done.** Creating a worktree starts its containers and
+**Every milestone through M6 is done.** Creating a worktree starts its containers and
 they answer on `*.localhost`. An untouched environment stops itself and comes
 back on the next request. Every service receives the others' URLs as
 `MINATO_URL_<SERVICE>`.
@@ -59,6 +59,27 @@ To skip all of that, name unprivileged ports and no permissions are needed:
 $ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daemon start
 ```
 
+To share an environment with a phone or an outside reviewer, put it behind a
+Cloudflare Tunnel:
+
+```console
+$ cloudflared tunnel login              # opens a browser; Minato will not run it for you
+$ minato tunnel enable --domain example.com --public
+$ minato status
+  web   ready     https://web.feature-demo.myapp.localhost
+
+  shared over the tunnel:
+  web   https://web-feature-demo.myapp.example.com
+```
+
+`--public` is required and means what it says. Minato cannot apply a Cloudflare
+Access policy — that needs the API rather than the `cloudflared` CLI — so it
+will not put an environment on the internet without being asked. Put an Access
+policy in front of the hostname yourself.
+
+Scale-to-zero works through the tunnel too: a reviewer's first request wakes a
+stopped environment, same as a local one.
+
 - Design notes: [docs/DESIGN.md](docs/DESIGN.md)
 
 ## Roadmap
@@ -69,7 +90,7 @@ $ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daem
 | M1 ✅ | DNS, reverse proxy, TLS, `doctor` / `setup`, launchd socket activation |
 | M2 ✅ | Scale-to-zero: health checks, idle stop, on-demand start |
 | M3 ✅ | Environment variables: three-layer merge, secret references, injected URLs |
-| M4 | Cloudflare Tunnel |
+| M4 ✅ | Cloudflare Tunnel: one named tunnel, scale-to-zero through it |
 | M5 ✅ | Skills, `logs` / `exec` |
 | M6 ✅ | GUI: GPUI, living in the menu bar |
 | M7 | More runtimes: Apple Container, Firecracker |

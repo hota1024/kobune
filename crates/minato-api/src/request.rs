@@ -140,6 +140,31 @@ pub enum Request {
         scope: minato_core::EnvScope,
         key: String,
     },
+
+    /// Sets up the Cloudflare Tunnel and starts it.
+    TunnelEnable {
+        target: Target,
+        /// The zone the hostnames live under. Reuses the configured one
+        /// when omitted, so re-enabling does not mean naming it again.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        domain: Option<String>,
+        /// Acknowledges that the environment goes on the public internet
+        /// with no Cloudflare Access policy in front of it.
+        ///
+        /// Not a convenience flag. Minato cannot apply an Access policy —
+        /// that needs the Cloudflare API, not the CLI — so it cannot
+        /// promise one is there. Exposing a development environment
+        /// unauthenticated is an accident unless it was asked for
+        /// (`docs/DESIGN.md` §9).
+        #[serde(default)]
+        public: bool,
+    },
+
+    /// Stops the tunnel. The named tunnel itself is left in place.
+    TunnelDisable { target: Target },
+
+    /// Reports where the tunnel setup stands.
+    TunnelStatus { target: Target },
 }
 
 fn yes() -> bool {
@@ -159,6 +184,7 @@ impl Request {
                 | Self::Rm { .. }
                 | Self::Logs { .. }
                 | Self::Exec { .. }
+                | Self::TunnelEnable { .. }
         )
     }
 }

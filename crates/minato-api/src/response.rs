@@ -36,8 +36,85 @@ pub enum Response {
         /// judge `minato exec web -- pnpm test` by exit status alone.
         exit_code: i32,
     },
+    /// The state of the Cloudflare Tunnel.
+    Tunnel(TunnelInfo),
+
     /// Operations with nothing to return (`rm` / `shutdown`).
     Empty,
+}
+
+/// Where the tunnel stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelInfo {
+    pub state: TunnelState,
+
+    /// The zone the hostnames live under. `None` before setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+
+    /// The wildcard record routed for this project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
+
+    /// What the user has to run before the daemon can continue.
+    ///
+    /// Empty once setup is done. `cloudflared tunnel login` opens a
+    /// browser and waits, so it is reported rather than run — the same
+    /// reason `minato setup` prints its sudo commands instead of running
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+
+    /// Whether the tunnel is unauthenticated.
+    ///
+    /// True means the environment is on the public internet with no
+    /// Cloudflare Access policy that Minato knows of.
+    #[serde(default)]
+    pub public: bool,
+}
+
+impl TunnelInfo {
+    pub fn disabled() -> Self {
+        Self {
+            state: TunnelState::Disabled,
+            domain: None,
+            record: None,
+            setup: Vec::new(),
+            public: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelState {
+    /// Never set up, or turned off.
+    Disabled,
+    /// `cloudflared` is not installed.
+    NotInstalled,
+    /// Installed, but `cloudflared tunnel login` has not been run.
+    NeedsLogin,
+    /// Configured but not currently up.
+    Stopped,
+    /// Carrying traffic.
+    Running,
+}
+
+impl TunnelState {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::NotInstalled => "not installed",
+            Self::NeedsLogin => "needs login",
+            Self::Stopped => "stopped",
+            Self::Running => "running",
+        }
+    }
+
+    /// Whether tunnel URLs are worth showing.
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running)
+    }
 }
 
 /// A single environment variable.

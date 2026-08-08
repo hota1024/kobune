@@ -96,6 +96,18 @@ Every service receives the other services' URLs as `MINATO_URL_<SERVICE>`
 (`MINATO_URL_API` for a service named `api`). Use those when the frontend calls
 the API — hardcoding breaks from one worktree to the next.
 
+### Share it with someone
+
+```bash
+minato tunnel status
+```
+
+An environment can be published over Cloudflare Tunnel, and `minato status`
+then shows a second URL per service. **Do not run `minato tunnel enable`
+yourself** — it puts the environment on the public internet, and that is the
+user's call to make, not yours. If they ask for a shareable link, tell them the
+command and let them run it.
+
 ### Clean up
 
 ```bash

@@ -4490,6 +4490,13 @@ dependencies = [
 [[package]]
 name = "minato-tunnel"
 version = "0.1.0"
+dependencies = [
+ "minato-core",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "minatod"
@@ -4508,6 +4515,7 @@ dependencies = [
  "minato-dns",
  "minato-proxy",
  "minato-runtime",
+ "minato-tunnel",
  "serde_json",
  "shell-words",
  "tempfile",

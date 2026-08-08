@@ -90,6 +90,29 @@ pub fn print_workspace(workspace: &WorkspaceInfo) {
             name_width = name_width
         );
     }
+
+    // Only once a tunnel is up. A second column of blanks the rest of the
+    // time costs more than it explains.
+    let shared: Vec<&ServiceInfo> = workspace
+        .services
+        .iter()
+        .filter(|service| service.tunnel_url.is_some())
+        .collect();
+
+    if shared.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("  shared over the tunnel:");
+    for service in shared {
+        println!(
+            "  {:<name_width$}  {}",
+            service.name,
+            service.tunnel_url.as_deref().unwrap_or_default(),
+            name_width = name_width
+        );
+    }
 }
 
 /// Prints a listing of workspaces.
@@ -184,6 +207,37 @@ pub fn print_env(entries: &[EnvInfo]) {
             key_width = key_width,
             scope_width = scope_width
         );
+    }
+}
+
+/// Prints the tunnel's state, and the steps left to take.
+pub fn print_tunnel(tunnel: &minato_api::TunnelInfo) {
+    print!("tunnel: {}", tunnel.state.label());
+    match &tunnel.domain {
+        Some(domain) => println!("  (*.{domain})"),
+        None => println!(),
+    }
+
+    if let Some(record) = &tunnel.record {
+        println!("  DNS:   {record}");
+    }
+
+    // Being on the internet unauthenticated is the kind of thing that has
+    // to be said out loud every time, not buried in the setup output.
+    if tunnel.state.is_running() && tunnel.public {
+        println!();
+        println!("  This environment is reachable from the internet.");
+        println!("  Minato cannot see whether a Cloudflare Access policy is in front of it.");
+    }
+
+    if tunnel.setup.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("Run these first:");
+    for command in &tunnel.setup {
+        println!("   {command}");
     }
 }
 

@@ -8,7 +8,7 @@
 //! Labels are persisted so that changing the rules in [`crate::naming`]
 //! later does not change the URL of an existing workspace.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -32,6 +32,14 @@ pub struct State {
     /// are rejected at registration time.
     #[serde(default)]
     pub projects: BTreeMap<String, ProjectRecord>,
+
+    /// The Cloudflare Tunnel, if one has been set up.
+    ///
+    /// Machine-wide rather than per-project: one named tunnel carries every
+    /// project, and the project name is a label in the hostname
+    /// (`docs/DESIGN.md` §9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<TunnelRecord>,
 }
 
 impl Default for State {
@@ -39,8 +47,30 @@ impl Default for State {
         Self {
             version: CURRENT_VERSION,
             projects: BTreeMap::new(),
+            tunnel: None,
         }
     }
+}
+
+/// A configured Cloudflare Tunnel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelRecord {
+    /// The named tunnel that carries the traffic.
+    pub name: String,
+    /// The zone the hostnames live under (`example.com`).
+    pub domain: String,
+    /// Whether the daemon should be running it.
+    ///
+    /// `disable` clears this but keeps the record, so re-enabling does not
+    /// mean naming the domain again.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Projects a DNS route has been created for.
+    ///
+    /// One wildcard record per project (`*.{project}.{domain}`), so
+    /// workspaces come and go without touching DNS.
+    #[serde(default)]
+    pub routed: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

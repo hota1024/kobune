@@ -20,4 +20,4 @@ pub use error::{Error, Result};
 pub use git::Repository;
 pub use paths::Paths;
 pub use service::ServiceState;
-pub use state::{ProjectRecord, State, StateStore, WorkspaceRecord};
+pub use state::{ProjectRecord, State, StateStore, TunnelRecord, WorkspaceRecord};

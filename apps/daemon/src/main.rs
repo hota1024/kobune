@@ -14,6 +14,7 @@ mod secrets;
 mod server;
 mod spec;
 mod supervisor;
+mod tunnel;
 
 use std::sync::Arc;
 
@@ -26,6 +27,7 @@ use crate::activator::{DeferredActivator, SupervisorActivator};
 use crate::gateway::{Gateway, GatewaySettings};
 use crate::server::Server;
 use crate::supervisor::Supervisor;
+use crate::tunnel::TunnelHandle;
 
 #[derive(Parser, Debug)]
 #[command(name = "minatod", version, about = "Minato's resident process")]
@@ -90,8 +92,24 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let supervisor = Arc::new(Supervisor::new(&paths, gateway, shutdown.clone()));
+    let tunnel = TunnelHandle::new();
+    let supervisor = Arc::new(Supervisor::new(
+        &paths,
+        gateway,
+        tunnel.clone(),
+        shutdown.clone(),
+    ));
     deferred.set(Arc::new(SupervisorActivator::new(supervisor.clone())));
+
+    // A tunnel that was on before the daemon restarted comes back up.
+    // Anything else would leave the URLs handed to a reviewer dead until
+    // somebody noticed and ran `tunnel enable` again.
+    supervisor.restore_tunnel().await;
+
+    // And the routing table with it. It lives in memory, so without this
+    // every URL 404s until some command refreshes it — which a reviewer
+    // holding a link has no way to trigger.
+    supervisor.restore_routes().await;
 
     spawn_idle_sweeper(supervisor.clone(), shutdown.clone());
     let server = Server::new(paths.socket(), supervisor, shutdown.clone());
@@ -100,6 +118,10 @@ async fn main() -> anyhow::Result<()> {
     spawn_signal_handler(shutdown.clone());
 
     let result = server.run().await;
+
+    // The tunnel does not outlive the daemon. Left running it would keep
+    // publishing an environment nothing is managing any more.
+    tunnel.stop().await;
 
     let _ = std::fs::remove_file(paths.pid_file());
     tracing::info!("minatod is shutting down");

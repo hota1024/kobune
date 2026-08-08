@@ -18,7 +18,7 @@ pub use error::{ApiError, ErrorCode};
 pub use event::{Event, LogLevel, OutputStream, StepStatus};
 pub use protocol::{ClientMessage, Outcome, PROTOCOL_VERSION, RequestId, ServerMessage};
 pub use request::{Request, Target};
-pub use response::{EnvInfo, Pong, Response, ServiceInfo, WorkspaceInfo};
+pub use response::{EnvInfo, Pong, Response, ServiceInfo, TunnelInfo, TunnelState, WorkspaceInfo};
 
 /// Re-exported for convenience, so clients need not pull in `minato-core`.
 pub use minato_core::{EnvScope, ServiceScope, ServiceState};

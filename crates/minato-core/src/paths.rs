@@ -91,6 +91,14 @@ impl Paths {
         self.root.join("ca")
     }
 
+    /// The generated cloudflared configuration.
+    ///
+    /// Not `~/.cloudflared`: that belongs to cloudflared itself and holds
+    /// the login certificate, which Minato only ever reads.
+    pub fn tunnel_dir(&self) -> PathBuf {
+        self.root.join("tunnel")
+    }
+
     /// Creates the directories Minato needs.
     pub fn ensure(&self) -> Result<()> {
         std::fs::create_dir_all(&self.root)?;
