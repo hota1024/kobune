@@ -66,6 +66,42 @@ pub struct PurgeReport {
     /// take uncommitted work with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worktrees: Vec<PathBuf>,
+
+    /// The Cloudflare Tunnel, when one was ever set up.
+    ///
+    /// Stopped and forgotten locally. The named tunnel and its DNS records
+    /// live in the user's Cloudflare account, and deleting things from
+    /// someone's account is not something an uninstaller should do behind
+    /// their back — so what is left is reported, with the command that
+    /// removes it, the same way `tunnel enable` reports its setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<TunnelLeftover>,
+
+    /// Projects whose containers could not be taken down, and why.
+    ///
+    /// A runtime that is not running is the usual cause. These keep their
+    /// entry in the state file so a later run can finish the job — which
+    /// is the only reason a caller can be told to try again rather than
+    /// left with containers nothing remembers the name of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stranded: Vec<PurgeFailure>,
+}
+
+/// What stays in the Cloudflare account after an uninstall.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelLeftover {
+    /// The zone the hostnames lived under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// What to run to remove it, if that is wanted.
+    pub commands: Vec<String>,
+}
+
+/// A project that survived the purge, and what stopped it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeFailure {
+    pub project: String,
+    pub reason: String,
 }
 
 impl PurgeReport {
@@ -331,6 +367,7 @@ mod tests {
                 }],
             }],
             worktrees: vec![PathBuf::from("/repo/myapp.wt/feat-1")],
+            ..PurgeReport::default()
         };
 
         let json = serde_json::to_string(&Response::Purge(report.clone())).expect("serializes");
@@ -357,6 +394,7 @@ mod tests {
                 }],
             }],
             worktrees: Vec::new(),
+            ..PurgeReport::default()
         };
 
         assert!(report.is_empty());
@@ -384,6 +422,7 @@ mod tests {
                 },
             ],
             worktrees: Vec::new(),
+            ..PurgeReport::default()
         };
 
         assert!(!report.is_empty());

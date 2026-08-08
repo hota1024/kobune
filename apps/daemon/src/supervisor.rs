@@ -1567,26 +1567,37 @@ impl Supervisor {
         };
 
         for project in self.known_projects().await? {
-            let runtime = match self.purge_runtime(&project).await {
-                Ok(runtime) => runtime,
-                // One unreachable runtime must not strand the others. The
-                // project stays in the state file so a later run can
-                // finish the job, rather than being forgotten with its
-                // containers still up.
+            // Everything that can fail per project is gathered here, so
+            // one unreachable runtime cannot abort the others. A Docker
+            // that is not running usually fails at `list_project` rather
+            // than at resolving the runtime, so catching only the latter
+            // would have caught almost nothing.
+            let found = async {
+                let runtime = self.purge_runtime(&project).await?;
+                let statuses = runtime.list_project(&project).await?;
+                let records = self.workspace_records(&project).await?;
+                Ok::<_, ApiError>((runtime, statuses, records))
+            }
+            .await;
+
+            let (runtime, statuses, records) = match found {
+                Ok(found) => found,
                 Err(err) => {
-                    events.warn(format!("skipping {project}: {err}"));
+                    events.warn(format!("cannot reach {project}: {err}"));
+                    report.stranded.push(minato_api::PurgeFailure {
+                        project,
+                        reason: err.to_string(),
+                    });
                     continue;
                 }
             };
-
-            let statuses = runtime.list_project(&project).await?;
 
             // Every workspace the runtime knows of, and every one the
             // state file does. A workspace can be in one and not the
             // other: a container started before a crash, or a record whose
             // containers are already gone.
             let mut workspaces: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for record in self.workspace_records(&project).await? {
+            for record in records {
                 workspaces.entry(record.label).or_default();
                 report.worktrees.push(record.path);
             }
@@ -1597,6 +1608,8 @@ impl Supervisor {
                     .push(status.key.service.clone());
             }
 
+            let mut left_behind: Option<String> = None;
+
             if !dry_run {
                 for label in workspaces.keys() {
                     let key = WorkspaceKey::new(&project, label);
@@ -1605,8 +1618,16 @@ impl Supervisor {
                         // stopping here would leave the rest running with
                         // nothing left to manage them.
                         events.warn(format!("cannot remove {project}/{label}: {err}"));
+                        left_behind.get_or_insert_with(|| err.to_string());
                     }
                 }
+            }
+
+            if let Some(reason) = left_behind {
+                report.stranded.push(minato_api::PurgeFailure {
+                    project: project.clone(),
+                    reason,
+                });
             }
 
             report.projects.push(PurgeProject {
@@ -1621,22 +1642,79 @@ impl Supervisor {
             });
         }
 
+        // The tunnel is machine-wide rather than per project, so it is
+        // dealt with once, here.
+        report.tunnel = self.purge_tunnel(dry_run, events).await;
+
         if !dry_run {
-            events.step_started("state", "forgetting every project");
+            events.step_started("state", "forgetting the projects that are gone");
+
+            // Anything still standing keeps its entry, so a later run can
+            // finish the job. Clearing the lot would forget the name of
+            // every container that is still up, and there would be nothing
+            // left that knew how to find them.
+            let stranded: std::collections::BTreeSet<&str> = report
+                .stranded
+                .iter()
+                .map(|failure| failure.project.as_str())
+                .collect();
+
             let _guard = self.state_lock.lock().await;
             self.store
                 .update(|state| {
-                    state.projects.clear();
+                    state
+                        .projects
+                        .retain(|name, _| stranded.contains(name.as_str()));
                     Ok(())
                 })
                 .map_err(ApiError::from)?;
-            events.step_done("state", "forgetting every project");
+
+            events.step_done("state", "forgetting the projects that are gone");
         }
 
         report.worktrees.sort();
         report.worktrees.dedup();
 
         Ok(Response::Purge(report))
+    }
+
+    /// Stops the tunnel and says what is left in the Cloudflare account.
+    ///
+    /// The local half — the `cloudflared` process and the record in the
+    /// state file — is Minato's to clean up and it does. The named tunnel
+    /// and its DNS records are in the user's account, and an uninstaller
+    /// that reached in there uninvited would be doing something no other
+    /// command in this project does. So they are reported instead, with
+    /// the command that removes them.
+    async fn purge_tunnel(
+        &self,
+        dry_run: bool,
+        events: &EventSink,
+    ) -> Option<minato_api::TunnelLeftover> {
+        let record = {
+            let _guard = self.state_lock.lock().await;
+            self.store.load().ok()?.tunnel.clone()?
+        };
+
+        if !dry_run {
+            events.step_started("tunnel", "stopping the tunnel");
+            self.tunnel.stop().await;
+            events.step_done("tunnel", "stopping the tunnel");
+
+            let _guard = self.state_lock.lock().await;
+            let _ = self.store.update(|state| {
+                state.tunnel = None;
+                Ok(())
+            });
+        }
+
+        Some(minato_api::TunnelLeftover {
+            domain: Some(record.domain.clone()),
+            commands: vec![format!(
+                "cloudflared tunnel delete --force {}",
+                minato_tunnel::DEFAULT_TUNNEL_NAME
+            )],
+        })
     }
 
     /// The runtime to tear a project down with.

@@ -456,6 +456,25 @@ pub fn uninstall_plan(
         panel = panel.lines(lines);
     }
 
+    // What stays in the Cloudflare account. Silence here would read as
+    // "there is nothing left", and there is.
+    if let Some(tunnel) = daemon.ok().and_then(|report| report.tunnel.as_ref()) {
+        let mut lines = vec![Line::styled(
+            match &tunnel.domain {
+                Some(domain) => format!("left in your Cloudflare account (*.{domain}):"),
+                None => "left in your Cloudflare account:".to_string(),
+            },
+            theme::heading(),
+        )];
+        lines.extend(
+            tunnel
+                .commands
+                .iter()
+                .map(|command| Line::styled(format!("  {command}"), theme::command())),
+        );
+        panel = panel.lines(lines);
+    }
+
     // The point of saying so: someone uninstalling wants to know whether
     // their branches went with it.
     let worktrees = daemon
@@ -483,6 +502,22 @@ pub fn uninstall_plan(
             "nothing of Minato's was found on this machine",
             theme::muted(),
         ));
+    }
+
+    if let Ok(report) = daemon
+        && !report.stranded.is_empty()
+    {
+        let mut lines = vec![Line::styled(
+            "could not be reached, and will be kept for a later run:",
+            theme::bad(),
+        )];
+        for failure in &report.stranded {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {} ", failure.project), theme::subject()),
+                Span::styled(failure.reason.clone(), theme::muted()),
+            ]));
+        }
+        panel = panel.lines(lines);
     }
 
     if dry_run {
@@ -904,6 +939,7 @@ mod tests {
                 }],
             }],
             worktrees: vec![PathBuf::from("/repo/myapp.wt/feat-1")],
+            ..Default::default()
         }
     }
 

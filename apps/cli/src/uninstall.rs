@@ -87,11 +87,7 @@ pub fn plan(suffix: &str, ca_path: Option<&Path>) -> Plan {
         });
     }
 
-    // Only when the certificate is still there to name. `remove-trusted-cert`
-    // takes a file, so a CA already deleted cannot be untrusted by this
-    // route — which is the reason the keychain step comes before the
-    // directory that holds the certificate.
-    if let Some(ca_path) = ca_path.filter(|path| path.exists()) {
+    if let Some(ca_path) = ca_path.filter(|path| trust_is_removable(path)) {
         plan.privileged.push(Privileged {
             label: "stop trusting the local CA".to_string(),
             commands: vec![system::untrust_command(ca_path)],
@@ -100,6 +96,34 @@ pub fn plan(suffix: &str, ca_path: Option<&Path>) -> Plan {
 
     plan
 }
+
+/// Whether untrusting the CA is a step worth offering.
+///
+/// The two platforms need opposite questions asked.
+///
+/// On macOS the certificate is trusted *in place*: `remove-trusted-cert`
+/// names the file, so the step is only possible while the file is there —
+/// which is also why the privileged steps run before anything is deleted.
+///
+/// Everywhere else it was **copied** into the system store on the way in,
+/// and it is that copy which is trusted. Asking whether `~/.minato` still
+/// holds the original would be asking about the wrong file entirely: a
+/// user who moved `MINATO_HOME` or deleted the directory by hand would be
+/// shown a plan with no mention of a certificate their machine still
+/// trusts.
+fn trust_is_removable(ca_path: &Path) -> bool {
+    if cfg!(target_os = "macos") {
+        ca_path.exists()
+    } else {
+        Path::new(SYSTEM_STORE_CA).exists()
+    }
+}
+
+/// Where a non-macOS install put its copy of the certificate.
+///
+/// The same path `system::untrust_command` removes; they are a pair, and
+/// changing one without the other silently stops the step being offered.
+const SYSTEM_STORE_CA: &str = "/usr/local/share/ca-certificates/minato-ca.crt";
 
 /// The two binaries, when they are where this one is.
 ///
@@ -179,8 +203,8 @@ fn completions() -> Vec<Removal> {
 /// Ordering matters in one place: the binaries go last. Everything before
 /// them is driven by this process, and on Unix a running executable
 /// survives being unlinked — but only if nothing still needs to read it.
-pub fn remove_files(plan: &Plan) -> Vec<String> {
-    let mut failures = Vec::new();
+pub fn remove_files(plan: &Plan) -> Removed {
+    let mut removed = Removed::default();
 
     let (binaries, rest): (Vec<&Removal>, Vec<&Removal>) = plan
         .files
@@ -194,15 +218,41 @@ pub fn remove_files(plan: &Plan) -> Vec<String> {
             std::fs::remove_file(&removal.path)
         };
 
-        // Already gone is the outcome that was wanted.
-        if let Err(err) = outcome
-            && err.kind() != std::io::ErrorKind::NotFound
-        {
-            failures.push(format!("{}: {err}", removal.path.display()));
+        let Err(err) = outcome else { continue };
+
+        match err.kind() {
+            // Already gone is the outcome that was wanted.
+            std::io::ErrorKind::NotFound => {}
+
+            // `MINATO_INSTALL_DIR=/usr/local/bin` is documented, and a
+            // directory root owns is not this process's to write to. This
+            // run is already willing to ask for a password for the
+            // LaunchDaemon and the keychain, so the honest answer is to
+            // offer the same for this rather than report a bare
+            // "Permission denied" and stop.
+            std::io::ErrorKind::PermissionDenied => {
+                removed.needs_root.push(Privileged {
+                    label: format!("remove {}", removal.path.display()),
+                    commands: vec![format!("sudo rm -rf {}", removal.path.display())],
+                });
+            }
+
+            _ => removed
+                .failures
+                .push(format!("{}: {err}", removal.path.display())),
         }
     }
 
-    failures
+    removed
+}
+
+/// What removing the files came to.
+#[derive(Debug, Default)]
+pub struct Removed {
+    /// Could not be removed, and there is no obvious next step.
+    pub failures: Vec<String>,
+    /// Could not be removed *by this user*, but root could.
+    pub needs_root: Vec<Privileged>,
 }
 
 #[cfg(test)]
@@ -284,7 +334,58 @@ mod tests {
             privileged: Vec::new(),
         };
 
-        assert!(remove_files(&plan).is_empty());
+        let removed = remove_files(&plan);
+        assert!(removed.failures.is_empty(), "{:?}", removed.failures);
+        assert!(removed.needs_root.is_empty());
+    }
+
+    #[test]
+    fn a_file_this_user_cannot_remove_becomes_a_root_step() {
+        // `MINATO_INSTALL_DIR=/usr/local/bin` is documented, and root owns
+        // it. Reporting "Permission denied" and stopping would be giving
+        // up in a run that is already asking for a password elsewhere.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).expect("creates");
+        let binary = locked.join("minato");
+        std::fs::write(&binary, "#!/bin/sh\n").expect("writes");
+
+        // Read and execute only: the file cannot be unlinked from here.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))
+                .expect("chmod");
+        }
+
+        let plan = Plan {
+            files: vec![Removal {
+                label: "the binary",
+                path: binary.clone(),
+            }],
+            privileged: Vec::new(),
+        };
+
+        let removed = remove_files(&plan);
+
+        // Running as root would succeed anyway, and then there is nothing
+        // to hand back — which is just as correct an outcome.
+        if removed.needs_root.is_empty() {
+            assert!(removed.failures.is_empty(), "{:?}", removed.failures);
+        } else {
+            assert!(
+                removed.needs_root[0].commands[0].starts_with("sudo rm"),
+                "got: {:?}",
+                removed.needs_root
+            );
+            assert!(removed.failures.is_empty(), "{:?}", removed.failures);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
+        }
     }
 
     #[test]
@@ -302,7 +403,9 @@ mod tests {
             privileged: Vec::new(),
         };
 
-        assert!(remove_files(&plan).is_empty());
+        let removed = remove_files(&plan);
+        assert!(removed.failures.is_empty(), "{:?}", removed.failures);
+        assert!(removed.needs_root.is_empty());
         assert!(!root.exists());
     }
 
@@ -331,7 +434,9 @@ mod tests {
             privileged: Vec::new(),
         };
 
-        assert!(remove_files(&plan).is_empty());
+        let removed = remove_files(&plan);
+        assert!(removed.failures.is_empty(), "{:?}", removed.failures);
+        assert!(removed.needs_root.is_empty());
         assert!(!binary.exists());
         assert!(!state.exists());
     }
