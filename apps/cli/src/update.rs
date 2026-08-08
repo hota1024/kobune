@@ -369,7 +369,8 @@ struct Cache {
     published: String,
 }
 
-/// Runs the once-a-day check, and returns a line to show if there is one.
+/// Runs the once-a-day check, and returns the commit worth mentioning if
+/// there is one.
 ///
 /// Every failure is silent. A check that cannot reach GitHub has found
 /// nothing to say, and saying so would interrupt a command that worked.
@@ -380,12 +381,12 @@ pub async fn background_notice(paths: &minato_core::Paths) -> Option<String> {
 
     let cache_path = paths.root().join("update-check.json");
 
-    if let Some(cache) = read_cache(&cache_path) {
-        if !is_stale(&cache) {
-            // Report from the cache rather than going quiet between checks,
-            // otherwise the notice appears once a day and is missed.
-            return notice(compare(&cache.published, minato_core::BUILD_COMMIT));
-        }
+    if let Some(cache) = read_cache(&cache_path)
+        && !is_stale(&cache)
+    {
+        // Report from the cache rather than going quiet between checks,
+        // otherwise the notice appears once a day and is missed.
+        return notice(compare(&cache.published, minato_core::BUILD_COMMIT));
     }
 
     let release = fetch_release().await.ok()?;
@@ -404,11 +405,12 @@ pub async fn background_notice(paths: &minato_core::Paths) -> Option<String> {
     ))
 }
 
+/// The commit to mention, shortened. `None` when there is nothing to say.
+///
+/// The wording is the UI's — this module decides *whether* there is a
+/// notice, not how it reads.
 fn notice(status: Status) -> Option<String> {
-    let commit = status.short()?;
-    Some(format!(
-        "a newer build is available ({commit}). Run `minato update`"
-    ))
+    status.short()
 }
 
 fn is_stale(cache: &Cache) -> bool {
@@ -482,15 +484,14 @@ mod tests {
         assert!(notice(Status::Current).is_none());
         assert!(notice(Status::Unknown).is_none());
 
-        let text = notice(Status::Available {
+        let commit = notice(Status::Available {
             commit: "0123456789abcdef".into(),
         })
         .expect("has a notice");
 
-        // Shortened, and it says what to do about it.
-        assert!(text.contains("0123456"), "got: {text}");
-        assert!(!text.contains("0123456789"), "got: {text}");
-        assert!(text.contains("minato update"), "got: {text}");
+        // Shortened: the full hash tells a reader nothing the first seven
+        // do not.
+        assert_eq!(commit, "0123456");
     }
 
     #[test]

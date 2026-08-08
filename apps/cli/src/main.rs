@@ -8,6 +8,7 @@ mod launchd;
 mod output;
 mod skill;
 mod system;
+mod ui;
 mod update;
 
 use std::path::PathBuf;
@@ -296,10 +297,14 @@ async fn main() -> ExitCode {
     // waiting for. Never under `--json`: that stream is parsed, and a line
     // about a new build landing in it would be a bug rather than a nuisance.
     // stderr regardless, so `$(minato url web)` never picks it up.
-    if !cli.json && wants_update_notice(&cli.command) {
-        if let Some(notice) = update_notice().await {
-            eprintln!("{notice}");
-        }
+    if !cli.json
+        && wants_update_notice(&cli.command)
+        && let Some(commit) = update_notice().await
+    {
+        ui::notice(vec![ui::hint(
+            &format!("a newer build is available ({commit}). Install it with"),
+            "minato update",
+        )]);
     }
 
     match outcome {
@@ -312,7 +317,7 @@ async fn main() -> ExitCode {
                     output::print_error_json(&minato_api::ApiError::internal(err.to_string()));
                 }
             } else {
-                output::print_error(&err.to_string(), hint_for(&err));
+                ui::error(&err.to_string(), hint_for(&err));
             }
 
             ExitCode::from(exit_code_for(&err) as u8)
@@ -404,10 +409,14 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
                 "project": outcome.project,
             }));
         } else {
-            println!("created {}", outcome.path.display());
-            println!("project: {}", outcome.project);
-            println!();
-            println!("next, bring the environment up with `minato up`");
+            ui::done(
+                "init",
+                &[
+                    ("created", outcome.path.display().to_string()),
+                    ("project", outcome.project),
+                ],
+                vec![ui::hint("bring the environment up with", "minato up")],
+            );
         }
 
         return Ok(ExitCode::SUCCESS);
@@ -460,20 +469,39 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
             .call(request, |event| output::print_output_event(&event))
             .await?
     } else {
-        connection
+        let progress = show_progress.then(ui::Progress::start);
+
+        let result = connection
             .call_until(
                 request,
                 |event| {
-                    if show_progress {
-                        output::print_event(&event);
+                    if let Some(progress) = &progress {
+                        progress.handle(&event);
                     }
                 },
-                async {
-                    let _ = tokio::signal::ctrl_c().await;
-                    eprintln!("\nstopping… (the daemon is finishing what it can)");
+                {
+                    let progress = progress.clone();
+                    async move {
+                        let _ = tokio::signal::ctrl_c().await;
+
+                        let line = ui::note("stopping — the daemon is finishing what it can");
+                        match &progress {
+                            Some(progress) => progress.say(line),
+                            None => ui::notice(vec![line]),
+                        }
+                    }
                 },
             )
-            .await?
+            .await;
+
+        // Before the response is presented either way: the live line has
+        // to be given back before anything else is printed, and an error
+        // is printed too.
+        if let Some(progress) = &progress {
+            progress.finish();
+        }
+
+        result?
     };
 
     present(cli, &response)?;
@@ -576,7 +604,11 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
                     "commit": minato_core::BUILD_COMMIT,
                 }));
             } else {
-                println!("up to date ({})", minato_core::BUILD_COMMIT_SHORT);
+                ui::done(
+                    "update",
+                    &[("up to date", minato_core::BUILD_COMMIT_SHORT.to_string())],
+                    vec![],
+                );
             }
             return Ok(ExitCode::SUCCESS);
         }
@@ -590,7 +622,11 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
                     "commit": minato_core::BUILD_COMMIT,
                 }));
             } else {
-                println!("cannot tell: this build does not record a commit");
+                ui::done(
+                    "update",
+                    &[],
+                    vec![ui::note("cannot tell: this build does not record a commit")],
+                );
             }
             return Ok(ExitCode::SUCCESS);
         }
@@ -607,14 +643,20 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
                 "running": minato_core::BUILD_COMMIT,
             }));
         } else {
-            println!("a newer build is available ({short})");
-            println!("run `minato update` to install it");
+            ui::done(
+                "update",
+                &[
+                    ("available", short),
+                    ("running", minato_core::BUILD_COMMIT_SHORT.to_string()),
+                ],
+                vec![ui::hint("install it with", "minato update")],
+            );
         }
         return Ok(ExitCode::SUCCESS);
     }
 
     if !cli.json {
-        println!("installing {short}…");
+        ui::notice(vec![ui::note(&format!("installing {short}…"))]);
     }
 
     let installed = update::install()
@@ -629,13 +671,17 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
             "commit": installed,
         }));
     } else {
-        println!("installed {installed_short}");
-        println!();
         // The running daemon is still the old binary. It is not restarted
         // here because that is launchd's job where launchd is installed,
         // and stopping it is what makes launchd pick the new one up.
-        println!("the running daemon is still the previous build.");
-        println!("`minato daemon stop` to replace it (launchd starts it again).");
+        ui::done(
+            "update",
+            &[("installed", installed_short)],
+            vec![
+                ui::note("the running daemon is still the previous build"),
+                ui::hint("replace it with", "minato daemon stop"),
+            ],
+        );
     }
 
     Ok(ExitCode::SUCCESS)
@@ -667,10 +713,18 @@ fn handle_skill(
                     "path": installed.path,
                     "overwritten": installed.overwritten,
                 }));
-            } else if installed.overwritten {
-                println!("updated {}", installed.path.display());
             } else {
-                println!("installed {}", installed.path.display());
+                let label = if installed.overwritten {
+                    "updated"
+                } else {
+                    "installed"
+                };
+
+                ui::done(
+                    "skill",
+                    &[(label, installed.path.display().to_string())],
+                    vec![],
+                );
             }
 
             Ok(ExitCode::SUCCESS)
@@ -749,15 +803,11 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
     }
 
     match response {
-        Response::Pong(pong) => {
-            println!("minatod {} (protocol {})", pong.version, pong.protocol);
-            println!("runtime: {}", pong.runtime);
-            println!("uptime: {}s", pong.uptime_secs);
-        }
-        Response::Workspaces { workspaces } => output::print_workspaces(workspaces),
-        Response::Diagnostics(diagnostics) => output::print_diagnostics(diagnostics),
+        Response::Pong(pong) => ui::daemon(pong, None),
+        Response::Workspaces { workspaces } => ui::workspaces(workspaces),
+        Response::Diagnostics(diagnostics) => ui::diagnostics(diagnostics),
         Response::Env { entries } => {
-            output::print_env(entries);
+            ui::env(entries);
 
             // A change does not reach containers that are already
             // running. Left unsaid, that reads as "I set it and nothing
@@ -768,17 +818,19 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
                     command: EnvCommand::Set { .. } | EnvCommand::Unset { .. }
                 }
             ) {
-                println!();
-                println!("run `minato down` then `minato up` to pick this up");
+                ui::notice(vec![ui::hint(
+                    "to pick this up, run",
+                    "minato down && minato up",
+                )]);
             }
         }
-        Response::Workspace { workspace } => output::print_workspace(workspace),
-        Response::Tunnel(tunnel) => output::print_tunnel(tunnel),
+        Response::Workspace { workspace } => ui::workspace(workspace),
+        Response::Tunnel(tunnel) => ui::tunnel(tunnel),
         // logs has already printed its lines; exec speaks through its
         // exit code.
         Response::Exec { .. } => {}
         Response::Empty if matches!(cli.command, Command::Logs { .. }) => {}
-        Response::Empty => println!("done"),
+        Response::Empty => ui::confirm("done"),
     }
 
     Ok(())
@@ -822,7 +874,7 @@ fn present_url(cli: &Cli, response: &Response, service: Option<&str>) -> Result<
         }));
     } else {
         // One undecorated line, ready to pipe.
-        println!("{access}");
+        ui::value(&access);
     }
 
     Ok(())
@@ -846,7 +898,7 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<(), Cl
     if cli.json {
         output::print_json(entry);
     } else {
-        println!("{}", entry.value);
+        ui::value(&entry.value);
     }
 
     Ok(())
@@ -880,7 +932,7 @@ fn present_diagnostics(cli: &Cli, response: &Response) -> Result<(), CliError> {
     if cli.json {
         output::print_json(&combined);
     } else {
-        output::print_diagnostics(&combined);
+        ui::diagnostics(&combined);
     }
 
     Ok(())
@@ -903,18 +955,18 @@ fn present_setup(
             .any(|check| check.id == id && check.status != minato_api::CheckStatus::Ok)
     };
 
-    // (description, note, commands)
-    let mut steps: Vec<(String, Option<String>, Vec<String>)> = Vec::new();
+    let mut steps: Vec<ui::SetupStep> = Vec::new();
     let launchd_pending = pending("launchd");
 
     if launchd_pending {
         match prepare_launchd() {
-            Ok((source, commands)) => steps.push((
-                "let launchd hold 80/443/53 (the daemon itself stays non-root)".to_string(),
-                Some(format!("generated plist: {}", source.display())),
+            Ok((source, commands)) => steps.push(ui::SetupStep {
+                description: "let launchd hold 80/443/53 (the daemon itself stays non-root)"
+                    .to_string(),
+                note: Some(format!("generated plist: {}", source.display())),
                 commands,
-            )),
-            Err(err) => eprintln!("warning: cannot write the plist: {err}"),
+            }),
+            Err(err) => ui::error(&format!("cannot write the plist: {err}"), None),
         }
     }
 
@@ -927,69 +979,39 @@ fn present_setup(
     };
 
     if pending("resolver") || launchd_pending {
-        steps.push((
-            format!("point *.{DEFAULT_DOMAIN_SUFFIX} at Minato's DNS"),
-            None,
-            vec![system::resolver_command(
+        steps.push(ui::SetupStep {
+            description: format!("point *.{DEFAULT_DOMAIN_SUFFIX} at Minato's DNS"),
+            note: None,
+            commands: vec![system::resolver_command(
                 DEFAULT_DOMAIN_SUFFIX,
                 effective_dns_port,
             )],
-        ));
+        });
     }
 
-    if pending("ca-trust") {
-        if let Some(path) = ca_path {
-            steps.push((
-                "trust the local CA, so HTTPS stops warning".to_string(),
-                None,
-                vec![system::trust_command(path)],
-            ));
-        }
+    if pending("ca-trust")
+        && let Some(path) = ca_path
+    {
+        steps.push(ui::SetupStep {
+            description: "trust the local CA, so HTTPS stops warning".to_string(),
+            note: None,
+            commands: vec![system::trust_command(path)],
+        });
     }
 
     if cli.json {
-        output::print_json(&serde_json::json!({
-            "steps": steps
-                .iter()
-                .map(|(description, note, commands)| serde_json::json!({
-                    "description": description,
-                    "note": note,
-                    "commands": commands,
-                }))
-                .collect::<Vec<_>>(),
-        }));
+        output::print_json(&serde_json::json!({ "steps": steps }));
         return Ok(());
     }
 
-    if steps.is_empty() {
-        println!("everything is set up. Confirm with `minato doctor`");
-        return Ok(());
-    }
+    // Only the LaunchDaemon leaves anything behind to take back out.
+    let undo = if launchd_pending {
+        launchd::uninstall_commands()
+    } else {
+        Vec::new()
+    };
 
-    println!("The URLs need the following setup.");
-    println!("It requires root, so read each command before running it.");
-
-    for (index, (description, note, commands)) in steps.iter().enumerate() {
-        println!();
-        println!("{}. {description}", index + 1);
-        if let Some(note) = note {
-            println!("   ({note})");
-        }
-        for command in commands {
-            println!("   {command}");
-        }
-    }
-
-    println!();
-    println!("Afterwards run `minato daemon stop`; launchd will start it again.");
-
-    if launchd_pending {
-        println!();
-        println!("To undo:");
-        for command in launchd::uninstall_commands() {
-            println!("   {command}");
-        }
-    }
+    ui::setup(&steps, &undo);
 
     Ok(())
 }
@@ -1046,7 +1068,7 @@ async fn handle_daemon(
             if cli.json {
                 output::print_json(&pong);
             } else {
-                println!("minatod {} is running", pong.version);
+                ui::daemon(&pong, Some(client.socket_path()));
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -1055,7 +1077,7 @@ async fn handle_daemon(
                 Ok(connection) => connection,
                 Err(_) => {
                     if !cli.json {
-                        println!("the daemon is not running");
+                        ui::confirm("the daemon is not running");
                     }
                     return Ok(ExitCode::SUCCESS);
                 }
@@ -1063,7 +1085,7 @@ async fn handle_daemon(
 
             connection.request(Request::Shutdown).await?;
             if !cli.json {
-                println!("stopped the daemon");
+                ui::confirm("stopped the daemon");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -1073,12 +1095,7 @@ async fn handle_daemon(
                 if cli.json {
                     output::print_json(&pong);
                 } else {
-                    println!("running");
-                    println!("  version:  {}", pong.version);
-                    println!("  protocol: {}", pong.protocol);
-                    println!("  runtime:  {}", pong.runtime);
-                    println!("  uptime:   {}s", pong.uptime_secs);
-                    println!("  socket:   {}", client.socket_path().display());
+                    ui::daemon(&pong, Some(client.socket_path()));
                 }
                 Ok(ExitCode::SUCCESS)
             }
@@ -1086,7 +1103,7 @@ async fn handle_daemon(
                 if cli.json {
                     output::print_json(&serde_json::json!({ "running": false }));
                 } else {
-                    println!("stopped");
+                    ui::daemon_stopped();
                 }
                 // Being stopped is not an error, so this succeeds.
                 Ok(ExitCode::SUCCESS)

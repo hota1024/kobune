@@ -86,10 +86,9 @@ impl Repository {
                 "--short",
                 "refs/remotes/origin/HEAD",
             ],
-        ) {
-            if !head.is_empty() {
-                return Ok(head);
-            }
+        ) && !head.is_empty()
+        {
+            return Ok(head);
         }
 
         for candidate in ["main", "master"] {

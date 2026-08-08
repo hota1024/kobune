@@ -253,10 +253,10 @@ async fn forward(
     // friends check Host against an allowlist, and keeping the original
     // means the app sees the same URL the browser opened. A request
     // without a Host does get one.
-    if !request.headers().contains_key(HOST) {
-        if let Ok(value) = HeaderValue::from_str(&upstream.to_string()) {
-            request.headers_mut().insert(HOST, value);
-        }
+    if !request.headers().contains_key(HOST)
+        && let Ok(value) = HeaderValue::from_str(&upstream.to_string())
+    {
+        request.headers_mut().insert(HOST, value);
     }
 
     // For an upgrade, take the handle off the original request first.

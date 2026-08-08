@@ -76,9 +76,11 @@ $ minato up
   ✓ pulling image node:22
   ✓ starting web
   ✓ waiting for web
-
-myapp / (main)  (main)
-  web   ready     https://web.myapp.localhost
+╭ myapp / (main) ───────────────────────────╮
+│ main  /path/to/myapp                      │
+│                                           │
+│ ● web  ready  https://web.myapp.localhost │
+╰───────────────────────────────────────────╯
 ```
 
 ```console
@@ -95,7 +97,11 @@ hello from main
 $ minato new feature/loud-banner
   ✓ creating worktree feature/loud-banner
   ✓ starting web
-  web   ready     https://web.feature-loud-banner.myapp.localhost
+╭ myapp / feature-loud-banner ──────────────────────────────────╮
+│ feature/loud-banner  /path/to/myapp.wt/feature-loud-banner    │
+│                                                               │
+│ ● web  ready  https://web.feature-loud-banner.myapp.localhost │
+╰───────────────────────────────────────────────────────────────╯
 ```
 
 環境が 2 つになりました。既存の環境は停止しておらず、ポート番号の指定も
@@ -121,7 +127,10 @@ hello from main
 
 ```console
 $ minato env ls
-BANNER   workspace   HELLO
+╭ environment ─────────────╮
+│ KEY     SCOPE      VALUE │
+│ BANNER  workspace  HELLO │
+╰──────────────────────────╯
 ```
 
 `down && up` が必要だったのは、稼働中のコンテナが新しい値を読み込まないため
@@ -132,7 +141,11 @@ BANNER   workspace   HELLO
 ```console
 $ minato down
 $ minato status
-  web   stopped   https://web.feature-loud-banner.myapp.localhost
+╭ myapp / feature-loud-banner ────────────────────────────────────╮
+│ feature/loud-banner  /path/to/myapp.wt/feature-loud-banner      │
+│                                                                 │
+│ ○ web  stopped  https://web.feature-loud-banner.myapp.localhost │
+╰─────────────────────────────────────────────────────────────────╯
 ```
 
 停止しても URL は残ります。
@@ -165,8 +178,10 @@ $ minato exec web -- npm test; echo $?
 $ cd ../../myapp
 $ minato rm -w feature-loud-banner
 $ minato ls
-WORKSPACE   SERVICES   BRANCH
-(main)      1/1        main
+╭ workspaces ─────────────────╮
+│ WORKSPACE  SERVICES  BRANCH │
+│ (main)     1/1       main   │
+╰─────────────────────────────╯
 ```
 
 ブランチは残っています。削除されたのは worktree とコンテナのみです。

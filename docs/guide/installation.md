@@ -18,7 +18,7 @@ end — in the syntax of the shell you are actually in, so a fish user is told
 | --- | --- |
 | **A container runtime** | Docker, OrbStack or colima — or Apple Container on macOS 26+ |
 | **macOS** | Fully supported. Linux works for the core, minus launchd socket activation |
-| **Rust 1.85+** | Only to [build from source](#build-it) |
+| **Rust 1.88+** | Only to [build from source](#build-it) |
 
 The desktop app is optional and needs a little more; see
 [The desktop app](./gui).
@@ -181,11 +181,13 @@ generator, but nothing is tested against them.
 
 ```console
 $ minato update
-installing 9f3c1a2…
-installed 9f3c1a2
-
-the running daemon is still the previous build.
-`minato daemon stop` to replace it (launchd starts it again).
+› installing 9f3c1a2…
+╭ update ──────────────────────────────────────────╮
+│ installed  9f3c1a2                               │
+│                                                  │
+│ › the running daemon is still the previous build │
+│ › replace it with minato daemon stop             │
+╰──────────────────────────────────────────────────╯
 ```
 
 `update` replaces the installation it is run from — the directory holding the
@@ -202,8 +204,12 @@ To look without installing:
 
 ```console
 $ minato update --check
-a newer build is available (9f3c1a2)
-run `minato update` to install it
+╭ update ─────────────────────────╮
+│ available  9f3c1a2              │
+│ running    c7282b8              │
+│                                 │
+│ › install it with minato update │
+╰─────────────────────────────────╯
 ```
 
 ### The automatic check
@@ -250,7 +256,9 @@ API has to be reachable. Docker Desktop, OrbStack and colima all work.
 
 ```console
 $ minato doctor
-  ✓ container runtime             docker 29.4.0
+│ …
+│ ✓  container runtime  docker 29.4.0
+│ …
 ```
 
 ### Apple Container
@@ -275,7 +283,15 @@ There are two differences worth knowing before you choose it — see
 
 ```console
 $ minato daemon start
-minatod 0.1.0 is running
+╭ minatod ───────────────────────────────╮
+│ running                                │
+│                                        │
+│ version   0.1.0                        │
+│ protocol  1                            │
+│ runtime   docker 29.4.0                │
+│ uptime    0s                           │
+│ socket    ~/.minato/minatod.sock       │
+╰────────────────────────────────────────╯
 ```
 
 You rarely need to do this by hand; any command starts the daemon if it is not

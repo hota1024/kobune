@@ -8,9 +8,11 @@ $ minato new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ starting web
   ✓ waiting for web
-
-myapp / feature-user-auth  (feature/user-auth)
-  web   ready     https://web.feature-user-auth.myapp.localhost
+╭ myapp / feature-user-auth ──────────────────────────────────╮
+│ feature/user-auth  /path/to/myapp.wt/feature-user-auth      │
+│                                                             │
+│ ● web  ready  https://web.feature-user-auth.myapp.localhost │
+╰─────────────────────────────────────────────────────────────╯
 ```
 
 基本となる考え方は「worktree 1 つにつき環境 1 つ」だけです。worktree を作れば

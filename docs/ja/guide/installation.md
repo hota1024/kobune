@@ -18,7 +18,7 @@ fish が受け付けない `export` 行を渡されることはありません�
 | --- | --- |
 | **コンテナランタイム** | Docker / OrbStack / colima のいずれか。または macOS 26 以降の Apple Container |
 | **macOS** | 全機能に対応しています。Linux でも中核機能は動作しますが、launchd socket activation は利用できません |
-| **Rust 1.85 以降** | [ソースからビルドする](#ビルド)場合のみ |
+| **Rust 1.88 以降** | [ソースからビルドする](#ビルド)場合のみ |
 
 デスクトップアプリは任意です。追加の条件については
 [デスクトップアプリ](./gui) を参照してください。
@@ -181,11 +181,13 @@ fish は追加設定なしで読み込みます。zsh はディレクトリを `
 
 ```console
 $ minato update
-installing 9f3c1a2…
-installed 9f3c1a2
-
-the running daemon is still the previous build.
-`minato daemon stop` to replace it (launchd starts it again).
+› installing 9f3c1a2…
+╭ update ──────────────────────────────────────────╮
+│ installed  9f3c1a2                               │
+│                                                  │
+│ › the running daemon is still the previous build │
+│ › replace it with minato daemon stop             │
+╰──────────────────────────────────────────────────╯
 ```
 
 `update` は、実行した `minato` が置かれているディレクトリを対象に、現在の
@@ -202,8 +204,12 @@ the running daemon is still the previous build.
 
 ```console
 $ minato update --check
-a newer build is available (9f3c1a2)
-run `minato update` to install it
+╭ update ─────────────────────────╮
+│ available  9f3c1a2              │
+│ running    c7282b8              │
+│                                 │
+│ › install it with minato update │
+╰─────────────────────────────────╯
 ```
 
 ### 自動チェック
@@ -251,7 +257,9 @@ minato 0.1.0 (9f3c1a2)
 
 ```console
 $ minato doctor
-  ✓ container runtime             docker 29.4.0
+│ …
+│ ✓  container runtime  docker 29.4.0
+│ …
 ```
 
 ### Apple Container
@@ -276,7 +284,15 @@ default = "apple"
 
 ```console
 $ minato daemon start
-minatod 0.1.0 is running
+╭ minatod ───────────────────────────────╮
+│ running                                │
+│                                        │
+│ version   0.1.0                        │
+│ protocol  1                            │
+│ runtime   docker 29.4.0                │
+│ uptime    0s                           │
+│ socket    ~/.minato/minatod.sock       │
+╰────────────────────────────────────────╯
 ```
 
 通常は手動で実行する必要はありません。いずれのコマンドも、daemon が停止して
@@ -290,18 +306,25 @@ minatod 0.1.0 is running
 
 ```console
 $ minato setup
-The URLs need the following setup.
-It requires root, so read each command before running it.
-
-1. let launchd hold 80/443/53 (the daemon itself stays non-root)
-   sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…
-   …
-
-2. point *.localhost at Minato's DNS
-   sudo mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\n' | sudo tee …
-
-3. trust the local CA, so HTTPS stops warning
-   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/…
+╭ setup ─────────────────────────────────────────────────────────────────────────╮
+│ the URLs need the following. It requires root, so read each command first.     │
+│                                                                                │
+│ 1. let launchd hold 80/443/53 (the daemon itself stays non-root)               │
+│    generated plist: ~/.minato/dev.minato.daemon.plist                          │
+│    sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…          │
+│                                                                                │
+│ 2. point *.localhost at Minato's DNS                                           │
+│    sudo mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\n' | sudo tee … │
+│                                                                                │
+│ 3. trust the local CA, so HTTPS stops warning                                  │
+│    sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/…      │
+│                                                                                │
+│ › afterwards run minato daemon stop                                            │
+│   launchd starts it again, with the new settings                               │
+│                                                                                │
+│ to undo:                                                                       │
+│   sudo launchctl bootout system/dev.minato.daemon                              │
+╰────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 **`minato setup` はコマンドを表示するだけで、実行はしません。** 自動で `sudo`

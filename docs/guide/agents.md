@@ -7,7 +7,9 @@ practice, and how to set it up.
 
 ```console
 $ minato skill install
-installed /path/to/myapp/.claude/skills/minato/SKILL.md
+╭ skill ───────────────────────────────────────────────────╮
+│ installed  /path/to/myapp/.claude/skills/minato/SKILL.md │
+╰──────────────────────────────────────────────────────────╯
 ```
 
 That writes a Skill file Claude Code picks up automatically. Commit it — every
@@ -56,6 +58,13 @@ $ minato status --json
 ```
 
 Nothing has to be parsed out of human-readable text.
+
+Without `--json` there is still nothing to strip. On a terminal the CLI draws
+its results — a frame, aligned columns, colour on the parts that carry meaning
+— but an agent is never on one. Captured output is plain text, with no escape
+sequences, no box-drawing characters, and nothing wrapped or truncated however
+long a URL is. `minato url` and `minato env get` print one bare line either
+way, and `logs` and `exec` pass the container's output through untouched.
 
 ### Exit codes say what went wrong
 

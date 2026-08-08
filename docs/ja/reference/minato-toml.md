@@ -178,7 +178,7 @@ env = { NODE_ENV = "development", PORT = "3000" }
 
 ```console
 $ minato status
-error: invalid configuration: service `web`: depends_on names an unknown service `database`
+✗ error: invalid configuration: service `web`: depends_on names an unknown service `database`
 ```
 
 設定は読み込み時に検証されます。存在しないサービスへの参照、`depends_on` の

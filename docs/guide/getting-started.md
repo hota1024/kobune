@@ -12,10 +12,12 @@ In the root of a git repository:
 
 ```console
 $ minato init
-created /path/to/myapp/minato.toml
-project: myapp
-
-next, bring the environment up with `minato up`
+╭ init ─────────────────────────────────────╮
+│ created  /path/to/myapp/minato.toml       │
+│ project  myapp                            │
+│                                           │
+│ › bring the environment up with minato up │
+╰───────────────────────────────────────────╯
 ```
 
 `minato init` writes a starter file and guesses the project name from the
@@ -54,11 +56,11 @@ $ minato up
   ✓ pulling image node:22
   ✓ starting web
   ✓ waiting for web
-
-myapp / (main)  (main)
-  /path/to/myapp
-
-  web   ready     https://web.myapp.localhost
+╭ myapp / (main) ───────────────────────────╮
+│ main  /path/to/myapp                      │
+│                                           │
+│ ● web  ready  https://web.myapp.localhost │
+╰───────────────────────────────────────────╯
 ```
 
 The main worktree leaves the workspace label out of its URL, so it is
@@ -99,11 +101,11 @@ $ minato new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ starting web
   ✓ waiting for web
-
-myapp / feature-user-auth  (feature/user-auth)
-  /path/to/myapp.wt/feature-user-auth
-
-  web   ready     https://web.feature-user-auth.myapp.localhost
+╭ myapp / feature-user-auth ──────────────────────────────────╮
+│ feature/user-auth  /path/to/myapp.wt/feature-user-auth      │
+│                                                             │
+│ ● web  ready  https://web.feature-user-auth.myapp.localhost │
+╰─────────────────────────────────────────────────────────────╯
 ```
 
 Both environments are now running, on separate URLs, from separate checkouts.
@@ -114,9 +116,11 @@ rather than inside it, so editors and searches do not pick it up twice.
 
 ```console
 $ minato ls
-WORKSPACE            SERVICES    BRANCH
-(main)               1/1         main
-feature-user-auth    1/1         feature/user-auth
+╭ workspaces ────────────────────────────────────╮
+│ WORKSPACE          SERVICES  BRANCH            │
+│ (main)             1/1       main              │
+│ feature-user-auth  1/1       feature/user-auth │
+╰────────────────────────────────────────────────╯
 ```
 
 ## 5. Work in it

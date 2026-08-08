@@ -31,11 +31,14 @@ $ cloudflared tunnel login
 ```console
 $ minato tunnel enable --domain example.com --public
   ✓ starting the tunnel
-tunnel: running  (*.example.com)
-  DNS:   *.myapp.example.com
-
-  This environment is reachable from the internet.
-  Minato cannot see whether a Cloudflare Access policy is in front of it.
+╭ tunnel ─────────────────────────────────────────────────────────────────╮
+│ running  *.example.com                                                  │
+│                                                                         │
+│ DNS  *.myapp.example.com                                                │
+│                                                                         │
+│ this environment is reachable from the internet.                        │
+│ Minato cannot see whether a Cloudflare Access policy is in front of it. │
+╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
 内部では named tunnel の作成、プロジェクト用ワイルドカード DNS レコードの
@@ -46,10 +49,14 @@ tunnel: running  (*.example.com)
 
 ```console
 $ minato status -w feature-checkout
-  web   ready     https://web.feature-checkout.myapp.localhost
-
-  shared over the tunnel:
-  web   https://web-feature-checkout.myapp.example.com
+╭ myapp / feature-checkout ──────────────────────────────────╮
+│ feature/checkout  /path/to/myapp.wt/feature-checkout       │
+│                                                            │
+│ ● web  ready  https://web.feature-checkout.myapp.localhost │
+│                                                            │
+│ shared over the tunnel:                                    │
+│ web  https://web-feature-checkout.myapp.example.com        │
+╰────────────────────────────────────────────────────────────╯
 ```
 
 共有するのは後者の URL です。サービス名と workspace 名が `-` で連結されて
@@ -86,7 +93,9 @@ self-hosted application とポリシーを作成してください。メール�
 
 ```console
 $ minato tunnel disable
-tunnel: disabled  (*.example.com)
+╭ tunnel ─────────────────╮
+│ disabled  *.example.com │
+╰─────────────────────────╯
 ```
 
 トンネル側のホスト名は即座に無効になり、ローカルの URL には影響しません。

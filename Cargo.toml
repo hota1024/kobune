@@ -17,7 +17,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# 1.85 is what edition 2024 needs. It is 1.88 because ratatui asks for it,
+# and the CLI draws everything it prints with ratatui.
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/hota1024/minato"
 
@@ -62,6 +64,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
+
+# Terminal drawing. Everything the CLI shows a person is a ratatui widget,
+# so the same views can be hung in a full-screen TUI later without being
+# written twice (`docs/DESIGN.md` §3).
+#
+# The crossterm backend comes with it; there is no separate dependency to
+# keep in step (ratatui re-exports it as `ratatui::crossterm`).
+ratatui = "0.30"
 
 # Networking
 hyper = { version = "1", features = ["full"] }

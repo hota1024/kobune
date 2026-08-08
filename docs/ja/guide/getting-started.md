@@ -12,10 +12,12 @@ git リポジトリのルートで実行します。
 
 ```console
 $ minato init
-created /path/to/myapp/minato.toml
-project: myapp
-
-next, bring the environment up with `minato up`
+╭ init ─────────────────────────────────────╮
+│ created  /path/to/myapp/minato.toml       │
+│ project  myapp                            │
+│                                           │
+│ › bring the environment up with minato up │
+╰───────────────────────────────────────────╯
 ```
 
 `minato init` はひな形を生成し、ディレクトリ名からプロジェクト名を推測します。
@@ -54,11 +56,11 @@ $ minato up
   ✓ pulling image node:22
   ✓ starting web
   ✓ waiting for web
-
-myapp / (main)  (main)
-  /path/to/myapp
-
-  web   ready     https://web.myapp.localhost
+╭ myapp / (main) ───────────────────────────╮
+│ main  /path/to/myapp                      │
+│                                           │
+│ ● web  ready  https://web.myapp.localhost │
+╰───────────────────────────────────────────╯
 ```
 
 main worktree は URL から workspace 名を省略するため、
@@ -99,11 +101,11 @@ $ minato new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ starting web
   ✓ waiting for web
-
-myapp / feature-user-auth  (feature/user-auth)
-  /path/to/myapp.wt/feature-user-auth
-
-  web   ready     https://web.feature-user-auth.myapp.localhost
+╭ myapp / feature-user-auth ──────────────────────────────────╮
+│ feature/user-auth  /path/to/myapp.wt/feature-user-auth      │
+│                                                             │
+│ ● web  ready  https://web.feature-user-auth.myapp.localhost │
+╰─────────────────────────────────────────────────────────────╯
 ```
 
 2 つの環境が、別々の URL と別々のチェックアウトで動作しています。既存の環境は
@@ -114,9 +116,11 @@ worktree は `../myapp.wt/feature-user-auth` に作成されます。リポジ�
 
 ```console
 $ minato ls
-WORKSPACE            SERVICES    BRANCH
-(main)               1/1         main
-feature-user-auth    1/1         feature/user-auth
+╭ workspaces ────────────────────────────────────╮
+│ WORKSPACE          SERVICES  BRANCH            │
+│ (main)             1/1       main              │
+│ feature-user-auth  1/1       feature/user-auth │
+╰────────────────────────────────────────────────╯
 ```
 
 ## 5. worktree 内で作業する

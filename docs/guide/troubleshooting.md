@@ -19,9 +19,12 @@ The local CA is not trusted.
 
 ```console
 $ minato doctor
-  ! local CA trust    not trusted; browsers and curl will warn over HTTPS
-    sudo security add-trusted-cert -d -r trustRoot \
-      -k /Library/Keychains/System.keychain ~/.minato/ca/minato-ca.crt
+│ …
+│ !  local CA trust  not trusted; browsers and curl will warn over HTTPS
+│
+│ to fix:
+│ ! local CA trust
+│   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/…
 ```
 
 This is the most common first stumble. Beware that plain `curl -s` swallows the
@@ -31,7 +34,9 @@ error and looks like an empty response — use `-sS --fail-with-body`.
 
 ```console
 $ minato doctor
-  ✗ DNS resolver (/etc/resolver/localhost)   not installed
+│ …
+│ ✗  DNS resolver (/etc/resolver/localhost)  not installed
+│ …
 ```
 
 macOS does not resolve `*.localhost` by itself. The fix is in the output; it
@@ -103,9 +108,10 @@ Point it somewhere shorter — the default `~/.minato` is fine.
 
 ```console
 $ minato doctor
-  ✗ listening addresses   [::1] could not be held. *.localhost resolves to
-                          both, so requests to that address reach another
-                          process
+│ …
+│ ✗  listening addresses  [::1] could not be held. *.localhost resolves to both,
+│                         so requests to that address reach another process
+│ …
 ```
 
 Something else holds one of the loopback addresses. Since `*.localhost`

@@ -7,6 +7,25 @@ Every command accepts `--json` and `-w, --workspace`.
 | `--json` | Print the response as JSON. Errors go to stdout too, so an agent watches one stream |
 | `-w, --workspace <name>` | Which workspace to act on. Inferred from the current directory when omitted |
 
+## What the output looks like
+
+On a terminal, results are drawn: a framed panel, columns that line up, and
+colour on the parts that carry meaning — a service's state, a URL, a command
+you are being asked to run. Long-running commands hold the bottom line for
+what is happening now, and let finished steps scroll up above it.
+
+Piped, redirected or captured, the same views print as plain text: no frame,
+no colour, no cursor movement, and nothing wrapped or truncated however long a
+URL is. So `minato status | grep web` reads the same as it always did.
+
+| | |
+| --- | --- |
+| `--json` | Never decorated, whatever it is printing to |
+| `NO_COLOR` | Set to anything: keeps the layout, drops the colour |
+| `TERM=dumb` | Treated as a pipe throughout |
+| `minato url`, `minato env get` | One bare line, always. They exist to be substituted into other commands |
+| `minato logs`, `minato exec` | Passed through verbatim, stdout and stderr kept apart |
+
 ## Setting up
 
 ### `minato init`

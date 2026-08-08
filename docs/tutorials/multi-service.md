@@ -33,9 +33,12 @@ $ minato up
   ✓ waiting for api
   ✓ starting web
   ✓ waiting for web
-
-  web   ready     https://web.myapp.localhost
-  api   ready     https://api.myapp.localhost
+╭ myapp / (main) ───────────────────────────╮
+│ main  /path/to/myapp                      │
+│                                           │
+│ ● web  ready  https://web.myapp.localhost │
+│ ● api  ready  https://api.myapp.localhost │
+╰───────────────────────────────────────────╯
 ```
 
 `depends_on` put `api` first. Both got their own URL.
@@ -97,10 +100,13 @@ $ minato up
   ✓ starting db
   ✓ starting api
   ✓ starting web
-
-  web   ready     https://web.myapp.localhost
-  api   ready     https://api.myapp.localhost
-  db    ready     (internal only)
+╭ myapp / (main) ───────────────────────────╮
+│ main  /path/to/myapp                      │
+│                                           │
+│ ● web  ready  https://web.myapp.localhost │
+│ ● api  ready  https://api.myapp.localhost │
+│ ● db   ready  internal only               │
+╰───────────────────────────────────────────╯
 ```
 
 `(internal only)` is `expose = false` doing its job.
@@ -111,9 +117,13 @@ $ minato up
 $ minato new feature/reports
 $ cd ../myapp.wt/feature-reports
 $ minato status
-  web   ready     https://web.feature-reports.myapp.localhost
-  api   ready     https://api.feature-reports.myapp.localhost
-  db    ready     (internal only)
+╭ myapp / feature-reports ──────────────────────────────────╮
+│ feature/reports  /path/to/myapp.wt/feature-reports        │
+│                                                           │
+│ ● web  ready  https://web.feature-reports.myapp.localhost │
+│ ● api  ready  https://api.feature-reports.myapp.localhost │
+│ ● db   ready  internal only                               │
+╰───────────────────────────────────────────────────────────╯
 ```
 
 New `web` and `api`; the *same* `db`:

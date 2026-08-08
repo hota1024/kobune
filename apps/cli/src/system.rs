@@ -49,15 +49,16 @@ fn check_resolver(suffix: &str, dns_port: Option<u16>) -> Check {
 
     // On an unprivileged port, a missing `port` line sends the query to
     // 53 instead.
-    if let Some(port) = dns_port {
-        if port != 53 && !contents.contains(&format!("port {port}")) {
-            return Check::fail(
-                "resolver",
-                title,
-                format!("DNS listens on :{port}, but there is no port line"),
-            )
-            .with_fix(resolver_fix(suffix, dns_port));
-        }
+    if let Some(port) = dns_port
+        && port != 53
+        && !contents.contains(&format!("port {port}"))
+    {
+        return Check::fail(
+            "resolver",
+            title,
+            format!("DNS listens on :{port}, but there is no port line"),
+        )
+        .with_fix(resolver_fix(suffix, dns_port));
     }
 
     Check::ok("resolver", title, "installed".to_string())

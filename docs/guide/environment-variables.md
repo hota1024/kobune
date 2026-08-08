@@ -15,9 +15,12 @@ Later wins. A workspace value beats a project value beats a global one.
 
 ```console
 $ minato env ls
-DATABASE_URL   project     postgres://db:5432/app
-LOG_LEVEL      workspace   debug
-API_KEY        global      ****
+╭ environment ────────────────────────────────────╮
+│ KEY           SCOPE      VALUE                  │
+│ DATABASE_URL  project    postgres://db:5432/app │
+│ LOG_LEVEL     workspace  debug                  │
+│ API_KEY       global     ****                   │
+╰─────────────────────────────────────────────────╯
 ```
 
 **The layer is always shown**, because with three of them the hardest bug is a

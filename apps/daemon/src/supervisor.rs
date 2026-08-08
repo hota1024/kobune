@@ -1069,11 +1069,11 @@ impl Supervisor {
         let deadline = tokio::time::Instant::now() + wait;
 
         loop {
-            if let Some(route) = self.gateway.routes().get(host) {
-                if let Some(endpoint) = route.endpoint {
-                    self.idle.touch(host);
-                    return Activation::Ready(endpoint);
-                }
+            if let Some(route) = self.gateway.routes().get(host)
+                && let Some(endpoint) = route.endpoint
+            {
+                self.idle.touch(host);
+                return Activation::Ready(endpoint);
             }
 
             if tokio::time::Instant::now() >= deadline {

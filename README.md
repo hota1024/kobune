@@ -12,9 +12,15 @@ $ curl -fsSL https://minato.1024.works/install.sh | sh
 
 ```console
 $ minato new feature/user-auth
-✓ worktree created  ~/ghq/github.com/hota1024/myapp.wt/feature-user-auth
-✓ web   https://web.feature-user-auth.myapp.localhost
-✓ api   https://api.feature-user-auth.myapp.localhost
+  ✓ creating worktree feature/user-auth
+  ✓ starting web
+  ✓ starting api
+╭ myapp / feature-user-auth ──────────────────────────────────╮
+│ feature/user-auth  ~/ghq/github.com/hota1024/myapp.wt/feat… │
+│                                                             │
+│ ● web  ready  https://web.feature-user-auth.myapp.localhost │
+│ ● api  ready  https://api.feature-user-auth.myapp.localhost │
+╰─────────────────────────────────────────────────────────────╯
 ```
 
 ## What it does
@@ -42,11 +48,11 @@ $ minato new feature/user-auth
   ✓ pulling image busybox:latest
   ✓ starting web
   ✓ waiting for web
-
-myapp / feature-user-auth  (feature/user-auth)
-  /path/to/myapp.wt/feature-user-auth
-
-  web   ready     https://web.feature-user-auth.myapp.localhost
+╭ myapp / feature-user-auth ──────────────────────────────────╮
+│ feature/user-auth  /path/to/myapp.wt/feature-user-auth      │
+│                                                             │
+│ ● web  ready  https://web.feature-user-auth.myapp.localhost │
+╰─────────────────────────────────────────────────────────────╯
 ```
 
 The standard ports (80 and 443) need a one-off privileged setup.
@@ -73,10 +79,14 @@ Cloudflare Tunnel:
 $ cloudflared tunnel login              # opens a browser; Minato will not run it for you
 $ minato tunnel enable --domain example.com --public
 $ minato status
-  web   ready     https://web.feature-demo.myapp.localhost
-
-  shared over the tunnel:
-  web   https://web-feature-demo.myapp.example.com
+╭ myapp / feature-demo ──────────────────────────────────╮
+│ feature/demo  /path/to/myapp.wt/feature-demo           │
+│                                                        │
+│ ● web  ready  https://web.feature-demo.myapp.localhost │
+│                                                        │
+│ shared over the tunnel:                                │
+│ web  https://web-feature-demo.myapp.example.com        │
+╰────────────────────────────────────────────────────────╯
 ```
 
 `--public` is required and means what it says. Minato cannot apply a Cloudflare
