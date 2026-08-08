@@ -13,6 +13,23 @@ Minato はまだ crates.io に公開していないため、ソースからビ�
 デスクトップアプリは任意です。追加の条件については
 [デスクトップアプリ](./gui) を参照してください。
 
+## ビルド済みバイナリ（Linux）
+
+Linux x86_64 であれば、ビルドを省略できます。
+
+```console
+$ gh release download nightly --repo hota1024/minato
+$ sha256sum -c minato-x86_64-unknown-linux-gnu.tar.gz.sha256
+$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz
+$ cd minato-x86_64-unknown-linux-gnu
+```
+
+`nightly` は `main` へのマージごとに差し替えられます。リリースではなく最新の
+ビルドであり、バージョンは付かず、内容は予告なく変わります。
+
+macOS 向けのバイナリはありません。`.app` の署名が未解決であり、また macOS では
+ビルド自体が短時間で済むためです。
+
 ## ビルド
 
 ```console

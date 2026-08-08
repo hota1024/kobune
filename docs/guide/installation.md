@@ -13,6 +13,24 @@ Minato is not published to crates.io yet, so it is built from source.
 The desktop app is optional and needs a little more; see
 [The desktop app](./gui).
 
+## A prebuilt Linux binary
+
+If you are on Linux x86_64, skip the build:
+
+```console
+$ gh release download nightly --repo hota1024/minato
+$ sha256sum -c minato-x86_64-unknown-linux-gnu.tar.gz.sha256
+$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz
+$ cd minato-x86_64-unknown-linux-gnu
+```
+
+`nightly` is replaced on every merge to `main`. It is the latest build rather
+than a release: nothing in it carries a version, and what it contains changes
+without notice.
+
+There is no macOS binary. Signing an `.app` is unresolved, and building on
+macOS is quick, so build from source there.
+
 ## Build it
 
 ```console
