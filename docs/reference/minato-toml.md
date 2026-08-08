@@ -180,7 +180,7 @@ This is the *project* layer, and it is committed — keep secrets out of it. See
 
 ```console
 $ minato status
-error: invalid configuration: service `web`: depends_on names an unknown service `database`
+✗ error: invalid configuration: service `web`: depends_on names an unknown service `database`
 ```
 
 The configuration is checked when it is read. Unknown service references,

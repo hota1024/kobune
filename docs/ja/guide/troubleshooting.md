@@ -19,9 +19,12 @@ $ minato doctor      # 環境側の問題を確認する
 
 ```console
 $ minato doctor
-  ! local CA trust    not trusted; browsers and curl will warn over HTTPS
-    sudo security add-trusted-cert -d -r trustRoot \
-      -k /Library/Keychains/System.keychain ~/.minato/ca/minato-ca.crt
+│ …
+│ !  local CA trust  not trusted; browsers and curl will warn over HTTPS
+│
+│ to fix:
+│ ! local CA trust
+│   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/…
 ```
 
 最初に遭遇する問題として最も多いものです。`curl -s` だけではこのエラーが
@@ -32,7 +35,9 @@ $ minato doctor
 
 ```console
 $ minato doctor
-  ✗ DNS resolver (/etc/resolver/localhost)   not installed
+│ …
+│ ✗  DNS resolver (/etc/resolver/localhost)  not installed
+│ …
 ```
 
 macOS は `*.localhost` を標準では解決しません。対処方法は出力に含まれており、
@@ -105,9 +110,10 @@ LaunchDaemon を設定していない場合、daemon は自動的には復帰し
 
 ```console
 $ minato doctor
-  ✗ listening addresses   [::1] could not be held. *.localhost resolves to
-                          both, so requests to that address reach another
-                          process
+│ …
+│ ✗  listening addresses  [::1] could not be held. *.localhost resolves to both,
+│                         so requests to that address reach another process
+│ …
 ```
 
 ループバックアドレスの一方を別のプロセスが使用しています。`*.localhost` は

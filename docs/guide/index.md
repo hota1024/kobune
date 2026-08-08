@@ -8,9 +8,11 @@ $ minato new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ starting web
   ✓ waiting for web
-
-myapp / feature-user-auth  (feature/user-auth)
-  web   ready     https://web.feature-user-auth.myapp.localhost
+╭ myapp / feature-user-auth ──────────────────────────────────╮
+│ feature/user-auth  /path/to/myapp.wt/feature-user-auth      │
+│                                                             │
+│ ● web  ready  https://web.feature-user-auth.myapp.localhost │
+╰─────────────────────────────────────────────────────────────╯
 ```
 
 That is the whole idea. One worktree, one environment. An environment appears

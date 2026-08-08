@@ -12,8 +12,10 @@ default = "docker"   # または "apple"
 
 ```console
 $ minato doctor
-  ✓ container runtime             apple 1.2.1
-  ✓ Docker (available)            docker 29.4.0
+│ …
+│ ✓  container runtime            apple 1.2.1
+│ ✓  Docker (available)           docker 29.4.0
+│ …
 ```
 
 ## Docker

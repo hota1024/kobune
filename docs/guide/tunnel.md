@@ -32,11 +32,14 @@ Everything after login, Minato does:
 ```console
 $ minato tunnel enable --domain example.com --public
   ✓ starting the tunnel
-tunnel: running  (*.example.com)
-  DNS:   *.myapp.example.com
-
-  This environment is reachable from the internet.
-  Minato cannot see whether a Cloudflare Access policy is in front of it.
+╭ tunnel ─────────────────────────────────────────────────────────────────╮
+│ running  *.example.com                                                  │
+│                                                                         │
+│ DNS  *.myapp.example.com                                                │
+│                                                                         │
+│ this environment is reachable from the internet.                        │
+│ Minato cannot see whether a Cloudflare Access policy is in front of it. │
+╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
 It creates the named tunnel, routes a wildcard DNS record for the project, and
@@ -46,10 +49,14 @@ starts `cloudflared`. All of it is idempotent, so running it again is fine.
 
 ```console
 $ minato status
-  web   ready     https://web.feature-auth.myapp.localhost
-
-  shared over the tunnel:
-  web   https://web-feature-auth.myapp.example.com
+╭ myapp / feature-auth ──────────────────────────────────╮
+│ feature/auth  /path/to/myapp.wt/feature-auth           │
+│                                                        │
+│ ● web  ready  https://web.feature-auth.myapp.localhost │
+│                                                        │
+│ shared over the tunnel:                                │
+│ web  https://web-feature-auth.myapp.example.com        │
+╰────────────────────────────────────────────────────────╯
 ```
 
 The tunnel hostname joins service and workspace with a `-`, because tunnel
@@ -71,7 +78,9 @@ service. Both are ordinary routes.
 
 ```console
 $ minato tunnel disable
-tunnel: disabled  (*.example.com)
+╭ tunnel ─────────────────╮
+│ disabled  *.example.com │
+╰─────────────────────────╯
 ```
 
 Stops `cloudflared` and drops the tunnel hostnames. The named tunnel and its

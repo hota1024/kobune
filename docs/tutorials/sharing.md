@@ -31,11 +31,14 @@ a daemon hangs an agent at a step it cannot answer, the same reason
 ```console
 $ minato tunnel enable --domain example.com --public
   ✓ starting the tunnel
-tunnel: running  (*.example.com)
-  DNS:   *.myapp.example.com
-
-  This environment is reachable from the internet.
-  Minato cannot see whether a Cloudflare Access policy is in front of it.
+╭ tunnel ─────────────────────────────────────────────────────────────────╮
+│ running  *.example.com                                                  │
+│                                                                         │
+│ DNS  *.myapp.example.com                                                │
+│                                                                         │
+│ this environment is reachable from the internet.                        │
+│ Minato cannot see whether a Cloudflare Access policy is in front of it. │
+╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
 Behind that: a named tunnel created, a wildcard DNS record routed for the
@@ -45,10 +48,14 @@ project, `cloudflared` started. All idempotent, so running it again is fine.
 
 ```console
 $ minato status -w feature-checkout
-  web   ready     https://web.feature-checkout.myapp.localhost
-
-  shared over the tunnel:
-  web   https://web-feature-checkout.myapp.example.com
+╭ myapp / feature-checkout ──────────────────────────────────╮
+│ feature/checkout  /path/to/myapp.wt/feature-checkout       │
+│                                                            │
+│ ● web  ready  https://web.feature-checkout.myapp.localhost │
+│                                                            │
+│ shared over the tunnel:                                    │
+│ web  https://web-feature-checkout.myapp.example.com        │
+╰────────────────────────────────────────────────────────────╯
 ```
 
 Send the second one. Service and workspace are joined with `-` because tunnel
@@ -82,7 +89,9 @@ Do it before sharing anything you would not put on a public web server.
 
 ```console
 $ minato tunnel disable
-tunnel: disabled  (*.example.com)
+╭ tunnel ─────────────────╮
+│ disabled  *.example.com │
+╰─────────────────────────╯
 ```
 
 The tunnel hostnames stop routing immediately; local URLs are untouched. The

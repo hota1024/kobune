@@ -16,9 +16,12 @@ global より優先されます。
 
 ```console
 $ minato env ls
-DATABASE_URL   project     postgres://db:5432/app
-LOG_LEVEL      workspace   debug
-API_KEY        global      ****
+╭ environment ────────────────────────────────────╮
+│ KEY           SCOPE      VALUE                  │
+│ DATABASE_URL  project    postgres://db:5432/app │
+│ LOG_LEVEL     workspace  debug                  │
+│ API_KEY       global     ****                   │
+╰─────────────────────────────────────────────────╯
 ```
 
 **定義元の層は常に併記されます。** 層が 3 つあるため、意図しない層の値が

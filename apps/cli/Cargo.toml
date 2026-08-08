@@ -17,8 +17,13 @@ minato-client.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process"] }
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete.workspace = true
+ratatui.workspace = true
+# To tell a wide glyph's cells apart when a drawn buffer is written out.
+# ratatui's own backends count columns with it for the same reason.
+unicode-width = "0.2"
 serde_json.workspace = true
 libc = "0.2"
+dirs.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
 chrono.workspace = true

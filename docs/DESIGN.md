@@ -82,6 +82,28 @@ Having the event stream from M0 matters most. Bolted on later, `minato up`
 would have been designed to block until completion, and the GUI could never
 show a start in progress.
 
+### The CLI draws rather than prints
+
+Everything the CLI shows a person is a **ratatui widget** (`apps/cli/src/ui`).
+A view turns one response into a panel of tables and lines; a surface draws it
+into a buffer and writes that buffer out as ordinary scrollback lines.
+
+Two things follow from that split, and they are the reason for it.
+
+- **A pipe is not a terminal.** The same views drop their frame and their
+  colour, and are given whatever width they ask for, so nothing that reaches a
+  log, a `grep` or an agent is wrapped or truncated. `--json` is untouched
+- **`minato` can grow a TUI without rewriting any of it.** The views never
+  reach for the screen and do not know whether they are being printed once or
+  repainted sixty times a second. A full-screen mode hands them a
+  `ratatui::Frame` instead of a one-shot buffer
+
+Long-running commands already use the second half of this: `up` and `new` hold
+the bottom line in an inline viewport for what is happening now, and let
+finished steps scroll into the history above it. That display is built from the
+event stream and nothing else — which is the same requirement the GUI is held
+to.
+
 ### Why a daemon
 
 | Responsibility | Why it has to stay running |

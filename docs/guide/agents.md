@@ -7,7 +7,9 @@ practice, and how to set it up.
 
 ```console
 $ minato skill install
-installed /path/to/myapp/.claude/skills/minato/SKILL.md
+╭ skill ───────────────────────────────────────────────────╮
+│ installed  /path/to/myapp/.claude/skills/minato/SKILL.md │
+╰──────────────────────────────────────────────────────────╯
 ```
 
 That writes a Skill file Claude Code picks up automatically. Commit it — every

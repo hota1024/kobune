@@ -191,12 +191,12 @@ impl Client {
         // The CLI and the daemon ship together, so the daemon is probably
         // next door. Looking here before PATH makes a development build in
         // target/debug win.
-        if let Ok(current) = std::env::current_exe() {
-            if let Some(dir) = current.parent() {
-                let sibling = dir.join(DAEMON_PROGRAM);
-                if sibling.is_file() {
-                    return Ok(sibling);
-                }
+        if let Ok(current) = std::env::current_exe()
+            && let Some(dir) = current.parent()
+        {
+            let sibling = dir.join(DAEMON_PROGRAM);
+            if sibling.is_file() {
+                return Ok(sibling);
             }
         }
 

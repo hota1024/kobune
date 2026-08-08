@@ -74,9 +74,11 @@ $ minato up
   ✓ pulling image node:22
   ✓ starting web
   ✓ waiting for web
-
-myapp / (main)  (main)
-  web   ready     https://web.myapp.localhost
+╭ myapp / (main) ───────────────────────────╮
+│ main  /path/to/myapp                      │
+│                                           │
+│ ● web  ready  https://web.myapp.localhost │
+╰───────────────────────────────────────────╯
 ```
 
 ```console
@@ -92,7 +94,11 @@ hello from main
 $ minato new feature/loud-banner
   ✓ creating worktree feature/loud-banner
   ✓ starting web
-  web   ready     https://web.feature-loud-banner.myapp.localhost
+╭ myapp / feature-loud-banner ──────────────────────────────────╮
+│ feature/loud-banner  /path/to/myapp.wt/feature-loud-banner    │
+│                                                               │
+│ ● web  ready  https://web.feature-loud-banner.myapp.localhost │
+╰───────────────────────────────────────────────────────────────╯
 ```
 
 Two environments now. Nothing was stopped and no port was chosen.
@@ -118,7 +124,10 @@ nothing else:
 
 ```console
 $ minato env ls
-BANNER   workspace   HELLO
+╭ environment ─────────────╮
+│ KEY     SCOPE      VALUE │
+│ BANNER  workspace  HELLO │
+╰──────────────────────────╯
 ```
 
 `down && up` was needed because a running container does not pick up a new
@@ -129,7 +138,11 @@ value.
 ```console
 $ minato down
 $ minato status
-  web   stopped   https://web.feature-loud-banner.myapp.localhost
+╭ myapp / feature-loud-banner ────────────────────────────────────╮
+│ feature/loud-banner  /path/to/myapp.wt/feature-loud-banner      │
+│                                                                 │
+│ ○ web  stopped  https://web.feature-loud-banner.myapp.localhost │
+╰─────────────────────────────────────────────────────────────────╯
 ```
 
 The URL is still there. Stopped is not gone:
@@ -161,8 +174,10 @@ The exit code is the command's, so `npm test` can drive a script.
 $ cd ../../myapp
 $ minato rm -w feature-loud-banner
 $ minato ls
-WORKSPACE   SERVICES   BRANCH
-(main)      1/1        main
+╭ workspaces ─────────────────╮
+│ WORKSPACE  SERVICES  BRANCH │
+│ (main)     1/1       main   │
+╰─────────────────────────────╯
 ```
 
 The branch is still there; only the worktree and its containers are gone.

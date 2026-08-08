@@ -7,7 +7,9 @@ Minato はエージェントによる操作を前提に設計しています。�
 
 ```console
 $ minato skill install
-installed /path/to/myapp/.claude/skills/minato/SKILL.md
+╭ skill ───────────────────────────────────────────────────╮
+│ installed  /path/to/myapp/.claude/skills/minato/SKILL.md │
+╰──────────────────────────────────────────────────────────╯
 ```
 
 Claude Code が自動的に読み込む Skill ファイルを生成します。コミットしておけば、

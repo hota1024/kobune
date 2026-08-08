@@ -33,11 +33,14 @@ daemon 内で対話的なプロンプトが表示されるとエージェント�
 ```console
 $ minato tunnel enable --domain example.com --public
   ✓ starting the tunnel
-tunnel: running  (*.example.com)
-  DNS:   *.myapp.example.com
-
-  This environment is reachable from the internet.
-  Minato cannot see whether a Cloudflare Access policy is in front of it.
+╭ tunnel ─────────────────────────────────────────────────────────────────╮
+│ running  *.example.com                                                  │
+│                                                                         │
+│ DNS  *.myapp.example.com                                                │
+│                                                                         │
+│ this environment is reachable from the internet.                        │
+│ Minato cannot see whether a Cloudflare Access policy is in front of it. │
+╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
 named tunnel の作成、プロジェクト用ワイルドカード DNS レコードの登録、
@@ -48,10 +51,14 @@ named tunnel の作成、プロジェクト用ワイルドカード DNS レコ�
 
 ```console
 $ minato status
-  web   ready     https://web.feature-auth.myapp.localhost
-
-  shared over the tunnel:
-  web   https://web-feature-auth.myapp.example.com
+╭ myapp / feature-auth ──────────────────────────────────╮
+│ feature/auth  /path/to/myapp.wt/feature-auth           │
+│                                                        │
+│ ● web  ready  https://web.feature-auth.myapp.localhost │
+│                                                        │
+│ shared over the tunnel:                                │
+│ web  https://web-feature-auth.myapp.example.com        │
+╰────────────────────────────────────────────────────────╯
 ```
 
 トンネル側のホスト名は、サービス名と workspace 名を `-` で連結します。トンネル
@@ -73,7 +80,9 @@ $ minato status
 
 ```console
 $ minato tunnel disable
-tunnel: disabled  (*.example.com)
+╭ tunnel ─────────────────╮
+│ disabled  *.example.com │
+╰─────────────────────────╯
 ```
 
 `cloudflared` を停止し、トンネル側のホスト名を削除します。named tunnel と DNS
