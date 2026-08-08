@@ -240,10 +240,7 @@ mod tests {
 
     #[test]
     fn the_certificate_to_untrust_sits_inside_what_gets_deleted() {
-        // This is the reason the privileged steps run before anything is
-        // removed. `security remove-trusted-cert` names a file; if the
-        // state directory has already gone, there is nothing to point at,
-        // the command fails, and the CA stays trusted for good.
+        // Why the privileged steps run before anything is removed.
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().join("minato");
         let ca = root.join("ca/minato-ca.crt");
@@ -256,9 +253,23 @@ mod tests {
             ca.display()
         );
 
-        // And the command really does name that path, so deleting the
-        // root first would break it.
-        assert!(system::untrust_command(&ca).contains(&ca.display().to_string()));
+        let command = system::untrust_command(&ca);
+
+        if cfg!(target_os = "macos") {
+            // `security remove-trusted-cert` names the file itself. Delete
+            // the state root first and there is nothing left to point at,
+            // the command fails, and the CA stays trusted for good.
+            assert!(
+                command.contains(&ca.display().to_string()),
+                "got: {command}"
+            );
+        } else {
+            // Elsewhere the certificate was *copied* into the system
+            // store, so untrusting removes that copy and the argument goes
+            // unused. The ordering still holds, but for the LaunchDaemon's
+            // sake rather than this one's.
+            assert!(command.contains("ca-certificates"), "got: {command}");
+        }
     }
 
     #[test]
