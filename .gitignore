@@ -5,3 +5,9 @@ docs/.vitepress/cache/
 
 # copied from the repository root by the docs build
 docs/public/install.sh
+
+# Working copies, not settings. `.claude/` itself is shared — project
+# settings, commands and agents belong in the repository — but a worktree
+# under it is a checkout of this repository inside itself, and `git add -A`
+# stages one as an embedded repository rather than ignoring it.
+.claude/worktrees/
