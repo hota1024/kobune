@@ -214,16 +214,47 @@ mod tests {
     fn stub(dir: &std::path::Path, script: &str) -> String {
         let path = dir.join("cloudflared-stub");
         let mut file = std::fs::File::create(&path).expect("creates");
-        write!(file, "#!/bin/sh\n{script}\n").expect("writes");
+        // The probe below has to be answerable without running the body,
+        // or waiting for the stub would be a call the test can see.
+        write!(
+            file,
+            "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\n{script}\n"
+        )
+        .expect("writes");
         drop(file);
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            wait_until_runnable(&path);
         }
 
         path.to_string_lossy().to_string()
+    }
+
+    /// Waits for the kernel to allow the stub to be executed.
+    ///
+    /// Tests run in parallel, and a sibling spawning a process in the
+    /// window where this file is open for writing leaves that child
+    /// holding a writer to it until it execs. Linux refuses to run a file
+    /// anything has open for writing, so the first spawn of a stub could
+    /// fail with `ETXTBSY` for a reason that has nothing to do with what
+    /// the test is checking. The window shuts on its own; wait for it here
+    /// instead of letting a test fail on it.
+    #[cfg(unix)]
+    fn wait_until_runnable(path: &std::path::Path) {
+        for _ in 0..500 {
+            match std::process::Command::new(path).arg("--probe").status() {
+                Ok(_) => return,
+                Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("cannot run the stub at {}: {err}", path.display()),
+            }
+        }
+
+        panic!("{} never stopped being busy", path.display());
     }
 
     fn settings(dir: &std::path::Path, script: &str) -> TunnelSettings {
