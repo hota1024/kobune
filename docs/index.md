@@ -5,6 +5,9 @@ hero:
   name: Minato
   text: A preview environment per git worktree
   tagline: Create a branch, and the environment is already running. Built for AI agents to drive.
+  image:
+    src: /logo/minato-mark.svg
+    alt: Minato
   actions:
     - theme: brand
       text: Get started

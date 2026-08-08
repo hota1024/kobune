@@ -3,15 +3,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "mkdir -p public && cp ../install.sh public/install.sh",
+    "sync": "mkdir -p public/logo && cp ../install.sh public/install.sh && cp ../assets/logo/*.svg public/logo/ && node scripts/og.mjs",
+    "predev": "pnpm sync",
     "dev": "vitepress dev",
-    "prebuild": "mkdir -p public && cp ../install.sh public/install.sh",
+    "prebuild": "pnpm sync",
     "build": "vitepress build",
     "preview": "vitepress preview",
     "deploy:pages": "wrangler pages deploy .vitepress/dist --project-name=minato-docs"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "vitepress": "^1.6.3",
+    "wawoff2": "^2.0.1",
     "wrangler": "^4.119.0"
   }
 }

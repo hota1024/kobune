@@ -5,6 +5,10 @@ name: Documentation
 # README tells people to pipe into a shell. Left out, a fix to the script
 # alone would never be deployed and the old one would go on being installed.
 #
+# `assets/**` is there for the same reason: the logo is copied into
+# `public/logo/` by the same step, so a new logo reaches the site only if
+# changing one builds it.
+#
 # The two lists are duplicated because GitHub Actions does not resolve YAML
 # anchors. Keep them in step.
 on:
@@ -12,11 +16,13 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'assets/**'
       - 'install.sh'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
       - 'docs/**'
+      - 'assets/**'
       - 'install.sh'
       - '.github/workflows/docs.yml'
 

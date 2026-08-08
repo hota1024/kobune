@@ -5,6 +5,9 @@ hero:
   name: Minato
   text: git worktree ごとのプレビュー環境
   tagline: ブランチを切れば、環境はすでに動いています。AI エージェントが操作することを前提に設計しました。
+  image:
+    src: /logo/minato-mark.svg
+    alt: Minato
   actions:
     - theme: brand
       text: はじめる
