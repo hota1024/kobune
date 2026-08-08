@@ -4,6 +4,7 @@
 //! the runtime directly would undo the principle that the daemon's API is
 //! the product (`docs/DESIGN.md` §3, §13).
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,14 +12,41 @@ use minato_api::{
     ApiError, ClientMessage, Event, MessageStream, PROTOCOL_VERSION, Pong, Request, RequestId,
     Response, ServerMessage, write_message,
 };
-use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{TcpStream, UnixStream};
 
 /// How long to wait for the daemon to come up.
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How often to retry while waiting.
 const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How long to spend finding out whether launchd holds the port.
+///
+/// Short: this is a loopback connection, and every failed attempt delays a
+/// command that could have started a daemon itself by now.
+const LAUNCHD_POKE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How long to give launchd to produce a daemon once poked.
+///
+/// Less than [`SPAWN_TIMEOUT`], because falling back still has to fit
+/// inside the patience of whoever typed the command.
+const LAUNCHD_WAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How the daemon on the other end got there.
+///
+/// The distinction that matters is [`Self::Direct`]: that daemon could not
+/// take 80 or 443, so no URL works. Anything that starts a daemon has to be
+/// able to say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonStart {
+    /// It was already answering.
+    Existing,
+    /// launchd started it, so it holds the privileged ports.
+    Launchd,
+    /// Started directly, without launchd.
+    Direct,
+}
 
 /// The daemon's executable name.
 const DAEMON_PROGRAM: &str = "minatod";
@@ -132,9 +160,9 @@ impl Client {
     /// Starts the daemon first if nothing answers.
     ///
     /// The CLI uses this by default, so the daemon stays invisible.
-    pub async fn connect_or_spawn(&self) -> Result<Connection, ClientError> {
+    pub async fn connect_or_spawn(&self) -> Result<(Connection, DaemonStart), ClientError> {
         match self.connect().await {
-            Ok(connection) => return Ok(connection),
+            Ok(connection) => return Ok((connection, DaemonStart::Existing)),
             Err(err) => {
                 tracing::debug!("cannot connect, trying to start the daemon: {err}");
             }
@@ -146,6 +174,18 @@ impl Client {
             let _ = std::fs::remove_file(&self.socket);
         }
 
+        // **Before spawning anything.** With a LaunchDaemon installed,
+        // launchd holds 80, 443 and 53 whether or not the job is running,
+        // so a daemon started any other way can never serve a URL — and
+        // once it owns the socket, every later command reaches it instead.
+        // That is the state `minato daemon stop` used to leave behind for
+        // good.
+        if minato_core::launchd::is_installed()
+            && let Some(connection) = self.wake_launchd().await
+        {
+            return Ok((connection, DaemonStart::Launchd));
+        }
+
         self.spawn_daemon()?;
 
         let deadline = std::time::Instant::now() + SPAWN_TIMEOUT;
@@ -153,11 +193,52 @@ impl Client {
             tokio::time::sleep(SPAWN_POLL_INTERVAL).await;
 
             if let Ok(connection) = self.connect().await {
-                return Ok(connection);
+                return Ok((connection, DaemonStart::Direct));
             }
 
             if std::time::Instant::now() >= deadline {
                 return Err(ClientError::SpawnTimeout);
+            }
+        }
+    }
+
+    /// Asks launchd to start the job, by reaching for the socket it holds.
+    ///
+    /// **This is the way back that needs no root.** `launchctl kickstart`
+    /// would do it too, but the job is in the system domain, so that needs
+    /// sudo — which is exactly what an agent cannot supply.
+    ///
+    /// `None` means launchd did not produce a daemon: the plist is there
+    /// but was never bootstrapped, or something unrelated holds the port.
+    /// The caller falls back to starting one directly.
+    async fn wake_launchd(&self) -> Option<Connection> {
+        let addr = SocketAddr::from(([127, 0, 0, 1], minato_core::launchd::ACTIVATION_PORT));
+
+        // Connecting is the whole trigger; nothing needs to be sent. A
+        // refusal means launchd is not holding the port after all.
+        match tokio::time::timeout(LAUNCHD_POKE_TIMEOUT, TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => drop(stream),
+            _ => {
+                tracing::debug!(
+                    "nothing is holding :{}",
+                    minato_core::launchd::ACTIVATION_PORT
+                );
+                return None;
+            }
+        }
+
+        let deadline = std::time::Instant::now() + LAUNCHD_WAKE_TIMEOUT;
+        loop {
+            tokio::time::sleep(SPAWN_POLL_INTERVAL).await;
+
+            if let Ok(connection) = self.connect().await {
+                tracing::debug!("launchd started the daemon");
+                return Some(connection);
+            }
+
+            if std::time::Instant::now() >= deadline {
+                tracing::debug!("reaching :80 did not produce a daemon");
+                return None;
             }
         }
     }

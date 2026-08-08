@@ -73,11 +73,6 @@ impl Paths {
         Ok(())
     }
 
-    /// The daemon's PID file. Used to detect a second instance.
-    pub fn pid_file(&self) -> PathBuf {
-        self.root.join("minatod.pid")
-    }
-
     pub fn log_dir(&self) -> PathBuf {
         self.root.join("logs")
     }

@@ -25,6 +25,41 @@ pub const DNS_PORT_ENV: &str = "MINATO_DNS_PORT";
 /// The default DNS port.
 pub const DEFAULT_DNS_PORT: u16 = 53;
 
+/// Why a listener could not be held.
+///
+/// **Worth keeping, not just logging.** "Needs privileges" and "something
+/// else has it" want opposite fixes, and after `minato daemon stop` the
+/// second one is what happens — launchd keeps the socket while the job is
+/// idle. Reporting that as a privileges problem sends people back to
+/// `minato setup`, which they have already run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindFailure {
+    /// A port below 1024, without the privileges to hold it.
+    Privileged,
+    /// Another process has it.
+    InUse,
+    Other,
+}
+
+impl BindFailure {
+    fn classify(err: &std::io::Error, addr: SocketAddr) -> Self {
+        match err.kind() {
+            std::io::ErrorKind::PermissionDenied if addr.port() < 1024 => Self::Privileged,
+            std::io::ErrorKind::AddrInUse => Self::InUse,
+            _ => Self::Other,
+        }
+    }
+
+    /// What to show as the check's detail.
+    pub fn detail(self) -> &'static str {
+        match self {
+            Self::Privileged => "not listening (the port needs privileges)",
+            Self::InUse => "not listening (another process holds the port)",
+            Self::Other => "not listening (the port could not be held)",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GatewaySettings {
     pub http_port: u16,
@@ -106,6 +141,10 @@ pub struct Gateway {
     /// The addresses that were meant to be bound, for working out which
     /// were missed.
     wanted: Vec<IpAddr>,
+    /// Why each listener is missing, when it is.
+    http_failure: Option<BindFailure>,
+    https_failure: Option<BindFailure>,
+    dns_failure: Option<BindFailure>,
 }
 
 impl Gateway {
@@ -119,11 +158,11 @@ impl Gateway {
     ) -> Self {
         let routes = Routes::new();
 
-        let http_addrs =
+        let (http_addrs, http_failure) =
             Self::start_http(&routes, settings, activator.clone(), shutdown.clone()).await;
-        let (https_addrs, ca_path) =
+        let (https_addrs, ca_path, https_failure) =
             Self::start_https(paths, &routes, settings, activator, shutdown.clone()).await;
-        let dns_port = Self::start_dns(settings, shutdown).await;
+        let (dns_port, dns_failure) = Self::start_dns(settings, shutdown).await;
 
         Self {
             routes,
@@ -132,6 +171,9 @@ impl Gateway {
             dns_port,
             ca_path,
             wanted: settings.bind.clone(),
+            http_failure,
+            https_failure,
+            dns_failure,
         }
     }
 
@@ -140,7 +182,7 @@ impl Gateway {
         settings: &GatewaySettings,
         activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
-    ) -> Vec<SocketAddr> {
+    ) -> (Vec<SocketAddr>, Option<BindFailure>) {
         // Use launchd's already-bound socket when there is one. 80 is
         // privileged, so unprivileged there is no other way to hold it.
         let activated = adopt_listeners(activation::HTTP_SOCKET);
@@ -162,10 +204,11 @@ impl Gateway {
             }
 
             tracing::info!("HTTP proxy: inherited from launchd ({addrs:?})");
-            return addrs;
+            return (addrs, None);
         }
 
         let mut bound = Vec::new();
+        let mut failure = None;
 
         for ip in &settings.bind {
             let addr = SocketAddr::new(*ip, settings.http_port);
@@ -186,11 +229,13 @@ impl Gateway {
 
                     tracing::info!("HTTP proxy: {addr}");
                 }
-                Err(err) => report_bind_failure("the HTTP proxy", addr, &err),
+                Err(err) => {
+                    failure = Some(report_bind_failure("the HTTP proxy", addr, &err));
+                }
             }
         }
 
-        bound
+        (bound, failure)
     }
 
     async fn start_https(
@@ -199,12 +244,12 @@ impl Gateway {
         settings: &GatewaySettings,
         activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
-    ) -> (Vec<SocketAddr>, Option<PathBuf>) {
+    ) -> (Vec<SocketAddr>, Option<PathBuf>, Option<BindFailure>) {
         let ca = match LocalCa::load_or_create(&paths.ca_dir()) {
             Ok(ca) => Arc::new(ca),
             Err(err) => {
                 tracing::warn!("no CA available, so HTTPS stays off: {err}");
-                return (Vec::new(), None);
+                return (Vec::new(), None, Some(BindFailure::Other));
             }
         };
 
@@ -232,10 +277,11 @@ impl Gateway {
             }
 
             tracing::info!("HTTPS proxy: inherited from launchd ({addrs:?})");
-            return (addrs, Some(ca_path));
+            return (addrs, Some(ca_path), None);
         }
 
         let mut bound = Vec::new();
+        let mut failure = None;
 
         for ip in &settings.bind {
             let addr = SocketAddr::new(*ip, settings.https_port);
@@ -259,14 +305,19 @@ impl Gateway {
 
                     tracing::info!("HTTPS proxy: {addr}");
                 }
-                Err(err) => report_bind_failure("the HTTPS proxy", addr, &err),
+                Err(err) => {
+                    failure = Some(report_bind_failure("the HTTPS proxy", addr, &err));
+                }
             }
         }
 
-        (bound, Some(ca_path))
+        (bound, Some(ca_path), failure)
     }
 
-    async fn start_dns(settings: &GatewaySettings, shutdown: Arc<Notify>) -> Option<u16> {
+    async fn start_dns(
+        settings: &GatewaySettings,
+        shutdown: Arc<Notify>,
+    ) -> (Option<u16>, Option<BindFailure>) {
         // :53 is privileged too. Use launchd's if it has one.
         let udp = adopt_udp(activation::DNS_UDP_SOCKET);
         let tcp = adopt_listeners(activation::DNS_TCP_SOCKET);
@@ -290,7 +341,7 @@ impl Gateway {
             });
 
             tracing::info!("DNS: inherited from launchd (:{})", port.unwrap_or(0));
-            return port.or(Some(settings.dns_port));
+            return (port.or(Some(settings.dns_port)), None);
         }
 
         let addr = SocketAddr::new(settings.dns_bind, settings.dns_port);
@@ -300,8 +351,7 @@ impl Gateway {
         match tokio::net::UdpSocket::bind(addr).await {
             Ok(socket) => drop(socket),
             Err(err) => {
-                report_bind_failure("DNS", addr, &err);
-                return None;
+                return (None, Some(report_bind_failure("DNS", addr, &err)));
             }
         }
 
@@ -313,7 +363,7 @@ impl Gateway {
         });
 
         tracing::info!("DNS: {addr}");
-        Some(settings.dns_port)
+        (Some(settings.dns_port), None)
     }
 
     /// A gateway listening on nothing — the same as every bind failing.
@@ -326,6 +376,9 @@ impl Gateway {
             dns_port: None,
             ca_path: None,
             wanted: Vec::new(),
+            http_failure: Some(BindFailure::Other),
+            https_failure: Some(BindFailure::Other),
+            dns_failure: Some(BindFailure::Other),
         }
     }
 
@@ -349,6 +402,9 @@ impl Gateway {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
             ],
+            http_failure: None,
+            https_failure: None,
+            dns_failure: None,
         }
     }
 
@@ -389,6 +445,18 @@ impl Gateway {
 
     pub fn dns_port(&self) -> Option<u16> {
         self.dns_port
+    }
+
+    pub fn http_failure(&self) -> Option<BindFailure> {
+        self.http_failure
+    }
+
+    pub fn https_failure(&self) -> Option<BindFailure> {
+        self.https_failure
+    }
+
+    pub fn dns_failure(&self) -> Option<BindFailure> {
+        self.dns_failure
     }
 
     pub fn ca_path(&self) -> Option<&std::path::Path> {
@@ -450,20 +518,22 @@ fn adopt_udp(name: &str) -> Vec<tokio::net::UdpSocket> {
         .collect()
 }
 
-fn report_bind_failure(what: &str, addr: SocketAddr, err: &std::io::Error) {
-    if err.kind() == std::io::ErrorKind::PermissionDenied && addr.port() < 1024 {
-        tracing::warn!(
+fn report_bind_failure(what: &str, addr: SocketAddr, err: &std::io::Error) -> BindFailure {
+    let failure = BindFailure::classify(err, addr);
+
+    match failure {
+        BindFailure::Privileged => tracing::warn!(
             "{what} cannot hold {addr} (a port below 1024 needs privileges). \
              `minato doctor` says what to do about it"
-        );
-    } else if err.kind() == std::io::ErrorKind::AddrInUse {
-        tracing::warn!(
+        ),
+        BindFailure::InUse => tracing::warn!(
             "{what} cannot hold {addr} (another process has it). \
              Check `minato doctor`"
-        );
-    } else {
-        tracing::warn!("{what} cannot hold {addr}: {err}");
+        ),
+        BindFailure::Other => tracing::warn!("{what} cannot hold {addr}: {err}"),
     }
+
+    failure
 }
 
 #[cfg(test)]
@@ -539,6 +609,9 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
             ],
+            http_failure: None,
+            https_failure: None,
+            dns_failure: None,
         };
 
         assert_eq!(
@@ -553,6 +626,34 @@ mod tests {
             Gateway::with_ports(Some(80), Some(443))
                 .missing_families()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_taken_port_is_not_a_privileges_problem() {
+        // launchd holds 80 while its job is idle, so this is what a bind
+        // failure looks like after `minato daemon stop` — and it wants the
+        // opposite advice from a permissions failure.
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80);
+        let in_use = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+
+        assert_eq!(BindFailure::classify(&in_use, addr), BindFailure::InUse);
+    }
+
+    #[test]
+    fn a_privileged_port_is_only_privileged_below_1024() {
+        let denied = || std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let low = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80);
+        let high = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+
+        assert_eq!(
+            BindFailure::classify(&denied(), low),
+            BindFailure::Privileged
+        );
+        assert_eq!(
+            BindFailure::classify(&denied(), high),
+            BindFailure::Other,
+            "8080 being refused is not about privileges"
         );
     }
 
