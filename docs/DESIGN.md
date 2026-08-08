@@ -1031,6 +1031,29 @@ would leave nothing resolving once it lands.
 | --- | --- | --- |
 | `minato.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Undecided |
 
+### Branching: trunk on `main`, and when that changes
+
+`main` is the trunk. Short-lived branches, a pull request into it, CI as the
+gate, and merging replaces the rolling `nightly` build. There is no `develop`.
+
+`develop` was considered and left out. What it solves is keeping a released
+version maintainable while unreleased work continues — a report against v1.2
+that has to ship while 1.3 is in progress. Nothing here is in that position:
+no tags, no versioned release, nobody running one. Adding it now would mean
+two merges per change, two protected branches, and three workflows each
+having to decide which branch they follow, in exchange for reviewing one's
+own already-reviewed work a second time.
+
+`main` is always releasable because CI gates it, not because a second branch
+absorbs the risk.
+
+**Revisit when 0.1.0 is tagged and someone is running it.** Even then a
+`develop` is not the only answer: cutting `release/0.1` from the tag at the
+moment a patch is actually needed costs nothing until that moment, which is
+how Rust and Go handle it. If a `develop` does arrive, `nightly` moves to it
+and the docs site follows it — `main` carrying the nightly while also meaning
+"released" would answer neither question.
+
 ## 15. Open questions
 
 - **Firecracker**: needs KVM, so it cannot be developed or run on macOS. It
