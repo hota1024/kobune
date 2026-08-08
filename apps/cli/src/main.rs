@@ -9,6 +9,7 @@ mod output;
 mod skill;
 mod system;
 mod ui;
+mod uninstall;
 mod update;
 
 use std::path::PathBuf;
@@ -189,6 +190,26 @@ enum Command {
         /// Report whether a newer build exists, without installing it
         #[arg(long)]
         check: bool,
+    },
+
+    /// Take Minato back off this machine
+    ///
+    /// Containers, the daemon's state, the binaries and the shell
+    /// completions. **Worktrees are left alone** — they are your
+    /// checkouts, and `minato rm` is how one goes.
+    ///
+    /// What it found is shown first, and nothing happens until you say so.
+    Uninstall {
+        /// Go ahead without asking
+        ///
+        /// Required when there is no terminal to ask at, which is what an
+        /// agent or a pipe has.
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        /// List what would go, and remove nothing
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Print a shell completion script
@@ -448,6 +469,12 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
         return handle_daemon(cli, &client, command).await;
     }
 
+    // Uninstalling is half the daemon's and half this side's, and it has
+    // to ask before doing either.
+    if let Command::Uninstall { yes, dry_run } = &cli.command {
+        return handle_uninstall(cli, &client, *yes, *dry_run).await;
+    }
+
     let target = Target::new(cwd).workspace(cli.workspace.clone());
     let request = build_request(cli, target)?;
 
@@ -582,6 +609,7 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
         | Command::Daemon { .. }
         | Command::Skill { .. }
         | Command::Completions { .. }
+        | Command::Uninstall { .. }
         | Command::Update { .. } => {
             unreachable!("the commands that need no daemon are handled before this")
         }
@@ -685,6 +713,206 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Takes Minato off the machine.
+///
+/// Two halves. The daemon takes down what it made, because only it knows
+/// what that is; everything else is removed here, because only this side
+/// knows where it was installed from.
+///
+/// **Nothing happens before the list has been shown.** A terminal is asked
+/// to confirm; anywhere else — a pipe, an agent — `--yes` is required, so
+/// a command that cannot ask cannot proceed by accident.
+async fn handle_uninstall(
+    cli: &Cli,
+    client: &Client,
+    yes: bool,
+    dry_run: bool,
+) -> Result<ExitCode, CliError> {
+    // Asking the daemon first, and only for a report. It may not be
+    // running, and it may not be able to start — neither is a reason to
+    // leave the rest of an uninstall undone.
+    let mut connection = client.connect().await.ok();
+
+    // Why it could not answer matters. "There is no daemon" means there is
+    // nothing of its to remove; "the daemon said no" means there may well
+    // be, and it is about to become unreachable. Collapsing the two would
+    // let an uninstall leave containers running and say nothing.
+    let daemon: Result<minato_api::PurgeReport, String> = match &mut connection {
+        None => Err("it is not running, so it has nothing to take down".to_string()),
+        Some(connection) => match connection.request(Request::Purge { dry_run: true }).await {
+            Ok(Response::Purge(report)) => Ok(report),
+            Ok(other) => Err(format!("it answered with {other:?} instead of a report")),
+            Err(err) => Err(err.to_string()),
+        },
+    };
+
+    // The CA lives under the daemon's root whether or not it answers, so
+    // the keychain step does not depend on reaching it.
+    let ca_path = minato_core::Paths::resolve()
+        .ok()
+        .map(|paths| paths.ca_dir().join("minato-ca.crt"));
+
+    let plan = uninstall::plan(DEFAULT_DOMAIN_SUFFIX, ca_path.as_deref());
+
+    let nothing_to_do = plan.is_empty()
+        && daemon
+            .as_ref()
+            .map(|report| report.is_empty())
+            .unwrap_or(true);
+
+    if cli.json {
+        output::print_json(&serde_json::json!({
+            "dry_run": dry_run,
+            "daemon": daemon.as_ref().ok(),
+            "daemon_error": daemon.as_ref().err(),
+            "files": plan.files,
+            "privileged": plan.privileged,
+        }));
+
+        if dry_run || nothing_to_do {
+            return Ok(ExitCode::SUCCESS);
+        }
+    } else {
+        ui::uninstall_plan(&plan, daemon.as_ref(), dry_run);
+
+        if nothing_to_do {
+            return Ok(ExitCode::SUCCESS);
+        }
+        if dry_run {
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
+    if !yes && !confirm("Remove all of this?")? {
+        ui::confirm("nothing was removed");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // The containers first: once the daemon is gone, nothing knows their
+    // names.
+    if let Some(connection) = &mut connection {
+        let progress = (!cli.json).then(ui::Progress::start);
+
+        let outcome = connection
+            .call(Request::Purge { dry_run: false }, |event| {
+                if let Some(progress) = &progress {
+                    progress.handle(&event);
+                }
+            })
+            .await;
+
+        if let Some(progress) = &progress {
+            progress.finish();
+        }
+
+        if let Err(err) = outcome {
+            ui::error(&format!("cannot take the containers down: {err}"), None);
+        }
+
+        // Stopping it is what releases the socket and the ports, and what
+        // stops it writing the state file back out after it is deleted.
+        let _ = connection.request(Request::Shutdown).await;
+    }
+
+    let failures = uninstall::remove_files(&plan);
+
+    let privileged = run_privileged(&plan, yes);
+
+    ui::uninstall_done(&failures, &privileged);
+
+    Ok(if failures.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// Runs the steps that need root, and returns whatever is left to do.
+///
+/// sudo only where there is a terminal to type a password into. Under an
+/// agent or a pipe it would hang at the prompt with nothing to say —
+/// exactly the failure `minato setup` exists to avoid — so there the
+/// commands are handed back to be run by hand.
+fn run_privileged(plan: &uninstall::Plan, yes: bool) -> Vec<uninstall::Privileged> {
+    use std::io::IsTerminal;
+
+    if plan.privileged.is_empty() {
+        return Vec::new();
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return plan.privileged.clone();
+    }
+
+    // `--yes` skipped the question about the whole plan, and these are the
+    // part of it that touches the system rather than this user's files.
+    if !yes {
+        ui::notice(vec![ui::note(
+            "the next steps need root; sudo will ask for your password",
+        )]);
+    }
+
+    let mut remaining = Vec::new();
+
+    for step in &plan.privileged {
+        let failed: Vec<String> = step
+            .commands
+            .iter()
+            .filter(|command| !run_shell(command))
+            .cloned()
+            .collect();
+
+        if !failed.is_empty() {
+            remaining.push(uninstall::Privileged {
+                label: step.label.clone(),
+                commands: failed,
+            });
+        }
+    }
+
+    remaining
+}
+
+/// Runs one command through the shell, and says whether it worked.
+///
+/// Through `sh -c` because the commands are pipelines — `printf … | sudo
+/// tee …` — and they are the same strings `minato setup` prints, so what
+/// runs is what the documentation says runs.
+fn run_shell(command: &str) -> bool {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Asks, on a terminal.
+///
+/// Anywhere else this is an error rather than a default: something that
+/// cannot be asked must not be assumed to have agreed.
+fn confirm(question: &str) -> Result<bool, CliError> {
+    use std::io::{IsTerminal, Write};
+
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::Local(
+            "there is no terminal to confirm at. Pass --yes to go ahead, or \
+             --dry-run to see the list first"
+                .to_string(),
+        ));
+    }
+
+    eprint!("{question} [y/N] ");
+    let _ = std::io::stderr().flush();
+
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|err| CliError::Local(format!("cannot read the answer: {err}")))?;
+
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
 /// Installing the Skill. Needs no daemon.
@@ -827,8 +1055,9 @@ fn present(cli: &Cli, response: &Response) -> Result<(), CliError> {
         Response::Workspace { workspace } => ui::workspace(workspace),
         Response::Tunnel(tunnel) => ui::tunnel(tunnel),
         // logs has already printed its lines; exec speaks through its
-        // exit code.
-        Response::Exec { .. } => {}
+        // exit code. `uninstall` presents its own two halves — the plan
+        // and the outcome — and never reaches here.
+        Response::Exec { .. } | Response::Purge(_) => {}
         Response::Empty if matches!(cli.command, Command::Logs { .. }) => {}
         Response::Empty => ui::confirm("done"),
     }
@@ -1236,6 +1465,49 @@ mod tests {
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
         assert!(matches!(request, Request::TunnelStatus { .. }));
+    }
+
+    #[test]
+    fn uninstall_asks_before_it_acts() {
+        // Neither flag set is the safe shape: the plan is shown and a
+        // terminal is asked.
+        let cli = Cli::try_parse_from(["minato", "uninstall"]).expect("parses");
+        match cli.command {
+            Command::Uninstall { yes, dry_run } => {
+                assert!(!yes, "confirmation is not skipped by default");
+                assert!(!dry_run);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uninstall_can_be_told_to_go_ahead() {
+        for args in [
+            vec!["minato", "uninstall", "--yes"],
+            vec!["minato", "uninstall", "-y"],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert!(matches!(cli.command, Command::Uninstall { yes: true, .. }));
+        }
+    }
+
+    #[test]
+    fn uninstall_can_report_without_removing() {
+        let cli = Cli::try_parse_from(["minato", "uninstall", "--dry-run"]).expect("parses");
+        assert!(matches!(
+            cli.command,
+            Command::Uninstall { dry_run: true, .. }
+        ));
+    }
+
+    #[test]
+    fn the_purge_dry_run_is_not_treated_as_long_running() {
+        // It is a read. Decorating it with a spinner would put a live
+        // display in front of a list the user is about to be asked to
+        // approve.
+        assert!(!Request::Purge { dry_run: true }.is_long_running());
+        assert!(Request::Purge { dry_run: false }.is_long_running());
     }
 
     #[test]

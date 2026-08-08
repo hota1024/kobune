@@ -90,6 +90,20 @@ pub fn daemon_stopped() {
     Surface::stdout().print(views::daemon_stopped);
 }
 
+/// What `uninstall` is about to do, before it does any of it.
+pub fn uninstall_plan(
+    plan: &crate::uninstall::Plan,
+    daemon: Result<&minato_api::PurgeReport, &String>,
+    dry_run: bool,
+) {
+    Surface::stdout().print(|decor| views::uninstall_plan(plan, daemon, dry_run, decor));
+}
+
+/// What it managed, and what is left to run by hand.
+pub fn uninstall_done(failures: &[String], remaining: &[crate::uninstall::Privileged]) {
+    Surface::stdout().print(|decor| views::uninstall_done(failures, remaining, decor));
+}
+
 /// A command that did one thing, and what to do next.
 pub fn done(title: &'static str, facts: &[(&'static str, String)], next: Vec<Line<'static>>) {
     Surface::stdout().print(|decor| views::done(title, facts, next.clone(), decor));

@@ -183,9 +183,32 @@ fn resolver_fix(suffix: &str, dns_port: Option<u16>) -> String {
     )
 }
 
+/// The command that takes the resolver file back out.
+pub fn resolver_remove_command(suffix: &str) -> String {
+    format!("sudo rm -f {}", resolver_path(suffix).display())
+}
+
 /// The command that trusts the CA.
 pub fn trust_command(ca_path: &Path) -> String {
     trust_fix(ca_path)
+}
+
+/// The command that stops trusting the CA.
+///
+/// Left behind, the certificate stays trusted for anything signed by it —
+/// including a future Minato with a *different* private key, since the two
+/// are only ever matched by the subject name.
+pub fn untrust_command(ca_path: &Path) -> String {
+    if cfg!(target_os = "macos") {
+        // By file rather than by name: `-d` names the admin domain, and
+        // deleting by common name would take out any other certificate
+        // that happens to share it.
+        format!("sudo security remove-trusted-cert -d {}", ca_path.display())
+    } else {
+        "sudo rm -f /usr/local/share/ca-certificates/minato-ca.crt \
+         && sudo update-ca-certificates --fresh"
+            .to_string()
+    }
 }
 
 fn trust_fix(ca_path: &Path) -> String {

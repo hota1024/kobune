@@ -39,8 +39,66 @@ pub enum Response {
     /// The state of the Cloudflare Tunnel.
     Tunnel(TunnelInfo),
 
+    /// What `Purge` found, or what it took down.
+    Purge(PurgeReport),
+
     /// Operations with nothing to return (`rm` / `shutdown`).
     Empty,
+}
+
+/// Everything the daemon owns, listed so it can be taken down — or, after
+/// it has been, what went.
+///
+/// Structured rather than counted: "3 containers" is not something a person
+/// can check, and an agent deciding whether to go ahead needs the names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeReport {
+    /// Whether this is what would happen, or what did.
+    #[serde(default)]
+    pub dry_run: bool,
+
+    pub projects: Vec<PurgeProject>,
+
+    /// Worktrees Minato created and is **leaving in place**.
+    ///
+    /// Removing them is `minato rm`, one at a time and with a `--force`
+    /// that means something. An uninstaller that deleted a checkout would
+    /// take uncommitted work with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktrees: Vec<PathBuf>,
+}
+
+impl PurgeReport {
+    /// Whether the daemon has anything of its own left.
+    pub fn is_empty(&self) -> bool {
+        self.projects.iter().all(|project| {
+            project
+                .workspaces
+                .iter()
+                .all(|workspace| workspace.services.is_empty())
+        })
+    }
+
+    pub fn service_count(&self) -> usize {
+        self.projects
+            .iter()
+            .flat_map(|project| &project.workspaces)
+            .map(|workspace| workspace.services.len())
+            .sum()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeProject {
+    pub name: String,
+    pub workspaces: Vec<PurgeWorkspace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeWorkspace {
+    pub label: String,
+    /// The containers behind it, by service name.
+    pub services: Vec<String>,
 }
 
 /// Where the tunnel stands.
@@ -259,6 +317,77 @@ mod tests {
         assert_eq!(info.display_name(), "(main)");
         assert!(info.service("web").is_some());
         assert!(info.service("nope").is_none());
+    }
+
+    #[test]
+    fn a_purge_report_roundtrips() {
+        let report = PurgeReport {
+            dry_run: true,
+            projects: vec![PurgeProject {
+                name: "myapp".into(),
+                workspaces: vec![PurgeWorkspace {
+                    label: "feat-1".into(),
+                    services: vec!["web".into()],
+                }],
+            }],
+            worktrees: vec![PathBuf::from("/repo/myapp.wt/feat-1")],
+        };
+
+        let json = serde_json::to_string(&Response::Purge(report.clone())).expect("serializes");
+        let back: Response = serde_json::from_str(&json).expect("deserializes");
+
+        match back {
+            Response::Purge(back) => assert_eq!(back, report),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_report_with_no_containers_is_empty_even_with_workspaces() {
+        // A registered workspace whose containers are already gone is
+        // nothing left to take down, and `uninstall` should not claim it
+        // has work to do.
+        let report = PurgeReport {
+            dry_run: false,
+            projects: vec![PurgeProject {
+                name: "myapp".into(),
+                workspaces: vec![PurgeWorkspace {
+                    label: "feat-1".into(),
+                    services: Vec::new(),
+                }],
+            }],
+            worktrees: Vec::new(),
+        };
+
+        assert!(report.is_empty());
+        assert_eq!(report.service_count(), 0);
+    }
+
+    #[test]
+    fn a_report_counts_every_service_across_projects() {
+        let report = PurgeReport {
+            dry_run: false,
+            projects: vec![
+                PurgeProject {
+                    name: "a".into(),
+                    workspaces: vec![PurgeWorkspace {
+                        label: "main".into(),
+                        services: vec!["web".into(), "db".into()],
+                    }],
+                },
+                PurgeProject {
+                    name: "b".into(),
+                    workspaces: vec![PurgeWorkspace {
+                        label: "main".into(),
+                        services: vec!["api".into()],
+                    }],
+                },
+            ],
+            worktrees: Vec::new(),
+        };
+
+        assert!(!report.is_empty());
+        assert_eq!(report.service_count(), 3);
     }
 
     #[test]

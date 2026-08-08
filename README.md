@@ -184,6 +184,9 @@ not an `export` line it would reject.
 
 `minato update` does the same thing later, and a check runs once a day on its
 own — `MINATO_NO_UPDATE_CHECK=1` stops it, and `--json` never carries it.
+`minato uninstall` is the way back out: it shows what it found — containers,
+state, binaries, completions, and the steps that need root — and asks before
+removing any of it. **Your worktrees are left where they are.**
 
 Every merge to `main` replaces the [`nightly`](https://github.com/hota1024/minato/releases/tag/nightly)
 pre-release, for macOS (Apple Silicon and Intel) and Linux x86_64. By hand:
