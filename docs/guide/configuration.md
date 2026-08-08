@@ -170,10 +170,34 @@ Override `domain` to serve a project under something else. Whatever you choose
 still has to resolve to 127.0.0.1, which for anything other than `.localhost`
 means another `/etc/resolver` entry.
 
+## Building your own image
+
+Point `build` at a context instead of naming an `image`:
+
+```toml
+[services.web]
+build = "."
+port = 3000
+command = "npm run dev"
+```
+
+The context comes from the worktree, so a branch that edits its Dockerfile
+gets the image that Dockerfile describes.
+
+Images are tagged with a fingerprint of the Dockerfile and the build args, so
+two worktrees that agree share one image and a build is skipped when that exact
+image already exists. That last part is what keeps waking a stopped service
+fast.
+
+The fingerprint cannot see a file the Dockerfile copies in, so a change to
+`package.json` alone does not rebuild. `minato up --build` forces one.
+
+Prefer a prebuilt image where you can. Mounting your source into `node:22`
+starts faster than building, and it is the shorter path to a working
+environment; reach for `build` when you need system packages or a toolchain
+that an off-the-shelf image does not carry.
+
 ## What is not supported yet
 
-- **`build`** — building from a Dockerfile. Use a prebuilt image and mount your
-  source; it starts faster and matches the "up straight away" goal. This is
-  planned.
 - **`minato.local.toml`** — per-worktree overrides. Environment variable layers
   cover most of what it was for.

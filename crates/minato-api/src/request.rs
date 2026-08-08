@@ -70,6 +70,9 @@ pub enum Request {
         /// Whether to start the services afterwards.
         #[serde(default = "yes")]
         start: bool,
+        /// Rebuild images even when one built from the same inputs exists.
+        #[serde(default)]
+        rebuild: bool,
     },
 
     /// Destroys a worktree and its environment.
@@ -86,6 +89,14 @@ pub enum Request {
         /// The services to act on. Empty means all of them.
         #[serde(default)]
         services: Vec<String>,
+        /// Rebuild images even when one built from the same inputs exists.
+        ///
+        /// A build is normally skipped when the tag is already there, and
+        /// the tag carries a fingerprint of the Dockerfile and build args.
+        /// That fingerprint cannot see a file the Dockerfile copies in, so
+        /// this is the way to pick such a change up.
+        #[serde(default)]
+        rebuild: bool,
     },
 
     /// Stops services.
@@ -211,6 +222,7 @@ mod tests {
             base: None,
             path: None,
             start: true,
+            rebuild: false,
         };
 
         let json = serde_json::to_string(&request).expect("serializes");
@@ -251,7 +263,8 @@ mod tests {
         assert!(
             Request::Up {
                 target,
-                services: vec![]
+                services: vec![],
+                rebuild: false
             }
             .is_long_running()
         );

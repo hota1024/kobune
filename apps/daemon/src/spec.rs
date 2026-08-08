@@ -5,12 +5,14 @@
 //! values only.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use minato_api::ApiError;
 use minato_core::config::MOUNT_TARGET;
 use minato_core::{MinatoConfig, ServiceConfig, ServiceScope};
-use minato_runtime::{ServiceSpec, SourceMount, VolumeMount, WorkspaceKey, WorkspaceSpec};
+use minato_runtime::{
+    BuildSpec, ServiceSpec, SourceMount, VolumeMount, WorkspaceKey, WorkspaceSpec,
+};
 
 /// Builds the spec for a whole workspace.
 pub fn build_workspace_spec(
@@ -51,6 +53,132 @@ pub fn build_workspace_spec(
     })
 }
 
+/// Works out what to build, and under what tag.
+///
+/// **The context comes from the worktree, not the main checkout.** A branch
+/// that edits its Dockerfile has to get the image that Dockerfile describes;
+/// building from the main worktree would hand it somebody else's.
+///
+/// The tag carries a fingerprint of what went into the image, which settles
+/// both halves of the problem at once. Two worktrees whose Dockerfiles agree
+/// land on the same tag and share one image, built once. A worktree that
+/// changes anything lands on a different tag, so neither overwrites the
+/// other, and "does this need building?" is just "does this tag exist?".
+fn build_spec(
+    service: &ServiceConfig,
+    name: &str,
+    project: &str,
+    context: &str,
+    worktree_path: &Path,
+) -> Result<BuildSpec, ApiError> {
+    let context = resolve_within(worktree_path, context, name, "build")?;
+
+    let dockerfile = match &service.dockerfile {
+        Some(path) => resolve_within(worktree_path, path, name, "dockerfile")?,
+        None => context.join("Dockerfile"),
+    };
+
+    if !dockerfile.is_file() {
+        return Err(ApiError::new(
+            minato_api::ErrorCode::InvalidConfig,
+            format!(
+                "service `{name}`: no Dockerfile at {}",
+                dockerfile.display()
+            ),
+        )
+        .with_hint("point dockerfile at it, or add one to the build context"));
+    }
+
+    let fingerprint = fingerprint(&dockerfile, &service.build_args).map_err(|err| {
+        ApiError::internal(format!(
+            "service `{name}`: cannot read {}: {err}",
+            dockerfile.display()
+        ))
+    })?;
+
+    Ok(BuildSpec {
+        context,
+        dockerfile,
+        tag: format!("minato-{project}-{name}:{fingerprint}"),
+        fingerprint,
+        args: service.build_args.clone(),
+    })
+}
+
+/// Resolves a configured path, keeping it inside the worktree.
+///
+/// `build = "../../../etc"` would otherwise send the whole directory to the
+/// runtime as a build context. The paths come from a committed file, so this
+/// is about catching a mistake rather than an attack, but the failure mode
+/// is bad enough to be worth refusing.
+fn resolve_within(
+    worktree_path: &Path,
+    path: &str,
+    service: &str,
+    key: &str,
+) -> Result<PathBuf, ApiError> {
+    let joined = worktree_path.join(path);
+
+    // `canonicalize` needs the path to exist, and a missing build context
+    // deserves its own message rather than a confusing io error.
+    if !joined.exists() {
+        return Err(ApiError::new(
+            minato_api::ErrorCode::InvalidConfig,
+            format!(
+                "service `{service}`: {key} points at {}, which does not exist",
+                joined.display()
+            ),
+        ));
+    }
+
+    let resolved = joined.canonicalize().map_err(|err| {
+        ApiError::internal(format!(
+            "service `{service}`: cannot resolve {}: {err}",
+            joined.display()
+        ))
+    })?;
+
+    let root = worktree_path
+        .canonicalize()
+        .unwrap_or_else(|_| worktree_path.to_path_buf());
+    if !resolved.starts_with(&root) {
+        return Err(ApiError::new(
+            minato_api::ErrorCode::InvalidConfig,
+            format!(
+                "service `{service}`: {key} points outside the worktree ({})",
+                resolved.display()
+            ),
+        )
+        .with_hint("a build context has to live in the repository"));
+    }
+
+    Ok(resolved)
+}
+
+/// What the image was built from, as a short hash.
+///
+/// Covers the Dockerfile and the build args. **A file the Dockerfile copies
+/// in is not covered** — that would mean parsing the Dockerfile to find out
+/// which files those are. So editing `package.json` does not by itself cause
+/// a rebuild; `minato up --build` forces one. The same limitation applies to
+/// `docker compose up`.
+fn fingerprint(dockerfile: &Path, args: &BTreeMap<String, String>) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(std::fs::read(dockerfile)?);
+
+    // BTreeMap iterates in order, so the same args always hash the same.
+    for (key, value) in args {
+        hasher.update(key.as_bytes());
+        hasher.update(b"=");
+        hasher.update(value.as_bytes());
+        hasher.update(b"\0");
+    }
+
+    Ok(format!("{:x}", hasher.finalize())[..12].to_string())
+}
+
 /// Builds the spec for one service.
 pub fn build_service_spec(
     service: &ServiceConfig,
@@ -61,15 +189,16 @@ pub fn build_service_spec(
     env: BTreeMap<String, String>,
     all_services: Vec<String>,
 ) -> Result<ServiceSpec, ApiError> {
-    // Prebuilt images only for now. Building a Dockerfile comes in M0.5.
-    let image = match (&service.image, &service.build) {
+    // Either a prebuilt image to pull, or a context to build. The
+    // configuration has already rejected both and neither.
+    let build = match &service.build {
+        Some(context) => Some(build_spec(service, name, project, context, worktree_path)?),
+        None => None,
+    };
+
+    let image = match (&service.image, &build) {
         (Some(image), _) => image.clone(),
-        (None, Some(_)) => {
-            return Err(ApiError::unsupported(format!(
-                "service `{name}`: building an image with build is not \
-                 supported yet. Name a prebuilt image with image"
-            )));
-        }
+        (None, Some(build)) => build.tag.clone(),
         (None, None) => {
             return Err(ApiError::unsupported(format!(
                 "service `{name}`: no image was given"
@@ -126,6 +255,7 @@ pub fn build_service_spec(
         key,
         attached_to,
         image,
+        build,
         command,
         workdir: service.workdir().to_string(),
         env,
@@ -275,25 +405,179 @@ mod tests {
         );
     }
 
+    /// A worktree with a Dockerfile in it, since building resolves real
+    /// paths and refuses what is not there.
+    fn worktree(dockerfile: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("web")).expect("creates");
+        std::fs::write(dir.path().join("web/Dockerfile"), dockerfile).expect("writes");
+        dir
+    }
+
+    fn built(dir: &Path, toml: &str) -> Result<WorkspaceSpec, ApiError> {
+        build_workspace_spec(&config(toml), "myapp", "feat-1", dir, &no_envs())
+    }
+
+    const BUILDS: &str = r#"
+        [project]
+        name = "myapp"
+        [services.web]
+        build = "./web"
+        port = 3000
+    "#;
+
     #[test]
-    fn rejects_build_with_actionable_message() {
-        let config = config(
+    fn a_built_service_gets_a_tag_of_its_own() {
+        let dir = worktree("FROM scratch\n");
+        let spec = built(dir.path(), BUILDS).expect("builds");
+        let web = spec.service("web").expect("exists");
+
+        let build = web.build.as_ref().expect("has a build");
+        assert_eq!(web.image, build.tag, "the image to run is what gets built");
+        assert!(
+            build.tag.starts_with("minato-myapp-web:"),
+            "got: {}",
+            build.tag
+        );
+        assert_eq!(build.dockerfile, build.context.join("Dockerfile"));
+    }
+
+    #[test]
+    fn the_same_dockerfile_gives_the_same_tag() {
+        // Two worktrees that agree share one image rather than building it
+        // twice, and that only works if the tag is a function of the input.
+        let one = worktree("FROM scratch\n");
+        let two = worktree("FROM scratch\n");
+
+        let a = built(one.path(), BUILDS).expect("builds");
+        let b = built(two.path(), BUILDS).expect("builds");
+
+        assert_eq!(
+            a.service("web").expect("exists").image,
+            b.service("web").expect("exists").image
+        );
+    }
+
+    #[test]
+    fn editing_the_dockerfile_changes_the_tag() {
+        // This is what makes a rebuild happen at all: the old tag stays
+        // valid for whoever is still on the old Dockerfile.
+        let one = worktree("FROM scratch\n");
+        let two = worktree("FROM alpine\n");
+
+        let a = built(one.path(), BUILDS).expect("builds");
+        let b = built(two.path(), BUILDS).expect("builds");
+
+        assert_ne!(
+            a.service("web").expect("exists").image,
+            b.service("web").expect("exists").image
+        );
+    }
+
+    #[test]
+    fn build_args_are_part_of_the_tag() {
+        // Same Dockerfile, different args, different image. Sharing the tag
+        // would hand one service the other's build.
+        let dir = worktree("FROM scratch\n");
+
+        let plain = built(dir.path(), BUILDS).expect("builds");
+        let with_args = built(
+            dir.path(),
             r#"
             [project]
             name = "myapp"
             [services.web]
             build = "./web"
+            port = 3000
+            build_args = { VERSION = "2" }
         "#,
+        )
+        .expect("builds");
+
+        assert_ne!(
+            plain.service("web").expect("exists").image,
+            with_args.service("web").expect("exists").image
         );
+    }
 
-        let err = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"), &no_envs())
-            .unwrap_err();
+    #[test]
+    fn a_missing_dockerfile_is_named_as_such() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("web")).expect("creates");
 
-        assert_eq!(err.code, minato_api::ErrorCode::Unsupported);
+        let err = built(dir.path(), BUILDS).unwrap_err();
+
+        assert_eq!(err.code, minato_api::ErrorCode::InvalidConfig);
+        assert!(err.message.contains("Dockerfile"), "got: {err}");
+    }
+
+    #[test]
+    fn a_missing_context_is_named_as_such() {
+        // Distinct from a missing Dockerfile: the fix is different.
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let err = built(dir.path(), BUILDS).unwrap_err();
+
+        assert!(err.message.contains("does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn a_context_outside_the_worktree_is_refused() {
+        // `build = "../.."` would hand the runtime a build context of
+        // somebody's home directory.
+        let dir = worktree("FROM scratch\n");
+
+        let err = built(
+            dir.path(),
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            build = "../.."
+            port = 3000
+        "#,
+        )
+        .unwrap_err();
+
+        assert!(err.message.contains("outside the worktree"), "got: {err}");
+    }
+
+    #[test]
+    fn a_dockerfile_can_live_outside_the_context() {
+        // One context, several images is a common layout.
+        let dir = worktree("FROM scratch\n");
+        std::fs::write(dir.path().join("Dockerfile.web"), "FROM alpine\n").expect("writes");
+
+        let spec = built(
+            dir.path(),
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            build = "."
+            dockerfile = "./Dockerfile.web"
+            port = 3000
+        "#,
+        )
+        .expect("builds");
+
+        let build = spec
+            .service("web")
+            .expect("exists")
+            .build
+            .as_ref()
+            .expect("has a build");
+
         assert!(
-            err.message.contains("image"),
-            "it points at what to do instead: {err}"
+            build.dockerfile.ends_with("Dockerfile.web"),
+            "got: {build:?}"
         );
+    }
+
+    #[test]
+    fn a_prebuilt_image_has_no_build() {
+        let spec = build();
+        assert!(spec.service("web").expect("exists").build.is_none());
     }
 
     #[test]

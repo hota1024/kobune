@@ -68,9 +68,26 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub image: Option<String>,
 
-    /// The directory holding a Dockerfile. Mutually exclusive with `image`.
+    /// The build context, relative to the repository root. Mutually
+    /// exclusive with `image`.
     #[serde(default)]
     pub build: Option<String>,
+
+    /// The Dockerfile, relative to the repository root.
+    ///
+    /// Defaults to `Dockerfile` inside the build context. Naming it
+    /// separately is what lets several services build different images
+    /// from one context.
+    #[serde(default)]
+    pub dockerfile: Option<String>,
+
+    /// `--build-arg` values.
+    ///
+    /// A `BTreeMap` so the order is stable: these feed the fingerprint that
+    /// decides whether a rebuild is needed, and a map that reordered itself
+    /// would rebuild at random.
+    #[serde(default)]
+    pub build_args: BTreeMap<String, String>,
 
     /// The port the service listens on inside the container.
     #[serde(default)]
@@ -281,6 +298,19 @@ impl MinatoConfig {
                 )));
             }
             _ => {}
+        }
+
+        if svc.dockerfile.is_some() && svc.build.is_none() {
+            return Err(Error::ConfigInvalid(format!(
+                "service `{name}`: dockerfile needs build to say which \
+                 context to build in"
+            )));
+        }
+
+        if !svc.build_args.is_empty() && svc.build.is_none() {
+            return Err(Error::ConfigInvalid(format!(
+                "service `{name}`: build_args has no effect without build"
+            )));
         }
 
         if svc.expose == Some(true) && svc.port.is_none() {

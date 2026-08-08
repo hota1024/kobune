@@ -54,8 +54,10 @@ volumes = ["pgdata:/var/lib/postgresql/data"]
 
 | キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `image` | string | **必須** | 既製イメージ。`postgres:16`、`docker.io/library/node:22` など |
-| `build` | string | — | **未対応。** Dockerfile のビルド用に予約されています |
+| `image` | string | いずれか必須 | 既製イメージ。`postgres:16`、`docker.io/library/node:22` など |
+| `build` | string | いずれか必須 | ビルドコンテキスト。worktree からの相対パス。`image` と排他 |
+| `dockerfile` | string | `{build}/Dockerfile` | Dockerfile のパス。worktree からの相対。`build` が必要 |
+| `build_args` | table | `{}` | `--build-arg` に渡す値。`build` が必要 |
 | `command` | string | イメージの既定値 | イメージ側のコマンドを上書きします。シェルと同様に解釈され、引用符で囲んだ範囲は 1 つの引数になります |
 | `workdir` | string | `/workspace` | コンテナ内の作業ディレクトリ |
 
@@ -73,6 +75,36 @@ worktree は `/workspace` にマウントされるため、これが既定値に
 
 コンテナ内では `127.0.0.1` ではなく `0.0.0.0` にバインドしてください。
 コンテナ内のループバックにバインドしたサーバには、外部から到達できません。
+
+#### イメージをビルドする
+
+```toml
+[services.web]
+build = "."
+dockerfile = "./docker/web.Dockerfile"   # 省略可
+build_args = { NODE_VERSION = "22" }     # 省略可
+port = 3000
+```
+
+コンテキストは **main worktree ではなく、その worktree から**取得します。
+Dockerfile を変更したブランチには、その Dockerfile が示すイメージが渡ります。
+コンテキストは worktree の内側である必要があり、`build = "../.."` のような
+指定は、ビルドコンテキストとしてランタイムに渡す前に拒否されます。
+
+イメージには `minato-{project}-{service}:{fingerprint}` というタグが付きます。
+fingerprint は Dockerfile と build_args から算出されます。ここから 2 つの
+挙動が導かれます。
+
+- Dockerfile が同一の worktree 同士は同じタグになり、**1 つのイメージを共有**
+  します。ビルドは 1 回だけです。
+- **そのタグが既にあればビルドをスキップします。** 停止中のサービスを起動する
+  際にビルドが走らないのは、この判定によるものです。
+
+::: warning COPY したファイルの変更では再ビルドされません
+fingerprint は Dockerfile が `COPY` するファイルまでは見ないため、
+`package.json` だけを変更しても再ビルドは発生しません。`minato up --build`
+を使用してください。`docker compose` も同様の挙動です。
+:::
 
 ### 起動完了の判定
 

@@ -63,7 +63,12 @@ pub trait Runtime: Send + Sync {
     async fn probe(&self) -> Result<RuntimeInfo>;
 
     /// Groundwork for one workspace: networks, volumes and images.
-    async fn prepare(&self, spec: &WorkspaceSpec, events: &EventSink) -> Result<()>;
+    ///
+    /// `rebuild` forces a build even when an image with the same tag is
+    /// already present. Left false, an existing tag is taken to mean the
+    /// image is current, which is what keeps waking a stopped service from
+    /// running a build.
+    async fn prepare(&self, spec: &WorkspaceSpec, rebuild: bool, events: &EventSink) -> Result<()>;
 
     /// Starts a service. Already running: returns as-is, does nothing.
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService>;
@@ -126,6 +131,13 @@ pub mod labels {
     pub const SCOPE: &str = "dev.minato.scope";
     /// The port listened on inside the container.
     pub const PORT: &str = "dev.minato.port";
+
+    /// What a built image was built from.
+    ///
+    /// Put on the image, not the container. A build is skipped when the
+    /// image already carries the current value, so this is what decides
+    /// whether `up` rebuilds.
+    pub const BUILD_FINGERPRINT: &str = "dev.minato.build";
 
     pub const MANAGED_VALUE: &str = "1";
 }

@@ -34,8 +34,8 @@ use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names};
 use crate::spec::{
-    RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount, WorkspaceKey,
-    WorkspaceSpec,
+    BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
+    WorkspaceKey, WorkspaceSpec,
 };
 
 const RUNTIME_ID: &str = "apple";
@@ -223,6 +223,74 @@ impl AppleContainerRuntime {
             Err(err) if err.to_string().contains("exists") => Ok(name),
             Err(err) => Err(err),
         }
+    }
+
+    /// Builds the image unless that exact one is already here.
+    ///
+    /// The tag carries a fingerprint of the inputs, so an existing tag means
+    /// an image built from exactly this Dockerfile and these args. Skipping
+    /// matters most for scale-to-zero, where `prepare` sits in the path of
+    /// the request that woke the service.
+    ///
+    /// Unlike Docker, the context is not packed and sent: `container build`
+    /// takes a directory.
+    async fn ensure_built(
+        &self,
+        build: &BuildSpec,
+        rebuild: bool,
+        events: &EventSink,
+    ) -> Result<()> {
+        let label = format!("building {}", build.tag);
+
+        if !rebuild && self.image_exists(&build.tag).await {
+            events.step_skipped("build", label, "already built");
+            return Ok(());
+        }
+
+        events.step_started("build", &label);
+
+        let context = build.context.to_string_lossy().to_string();
+        let dockerfile = build.dockerfile.to_string_lossy().to_string();
+
+        let mut args: Vec<String> = vec![
+            "build".into(),
+            "--tag".into(),
+            build.tag.clone(),
+            "--file".into(),
+            dockerfile,
+        ];
+
+        for (key, value) in &build.args {
+            args.push("--build-arg".into());
+            args.push(format!("{key}={value}"));
+        }
+
+        args.push(context);
+
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        match self.run(&arg_refs).await {
+            Ok(_) => {
+                events.step_done("build", &label);
+                Ok(())
+            }
+            Err(err) => {
+                events.step_failed("build", &label, err.to_string());
+                Err(err)
+            }
+        }
+    }
+
+    /// Whether an image with this tag is already present.
+    async fn image_exists(&self, tag: &str) -> bool {
+        let Ok(json) = self.run(&["image", "list", "--format", "json"]).await else {
+            return false;
+        };
+
+        parse_image_tags(&json)
+            .unwrap_or_default()
+            .iter()
+            .any(|existing| existing == tag)
     }
 
     /// Creates the host directory backing a named volume.
@@ -421,7 +489,7 @@ impl Runtime for AppleContainerRuntime {
         })
     }
 
-    async fn prepare(&self, spec: &WorkspaceSpec, events: &EventSink) -> Result<()> {
+    async fn prepare(&self, spec: &WorkspaceSpec, rebuild: bool, events: &EventSink) -> Result<()> {
         events.step_started("network", "preparing the network");
         self.ensure_network(&spec.key, events).await?;
         if spec
@@ -435,6 +503,11 @@ impl Runtime for AppleContainerRuntime {
         events.step_done("network", "preparing the network");
 
         for service in &spec.services {
+            if let Some(build) = &service.build {
+                self.ensure_built(build, rebuild, events).await?;
+                continue;
+            }
+
             let label = format!("pulling image {}", service.image);
             events.step_started("pull", &label);
 
@@ -457,7 +530,17 @@ impl Runtime for AppleContainerRuntime {
         let name = names::container(&spec.key);
 
         if let Some(existing) = self.find_container(&spec.key).await? {
-            if existing.is_running() {
+            // A built image is tagged with a fingerprint of its inputs, so
+            // an edited Dockerfile produces a new tag. Leaving the old
+            // container up would build the new image and serve the old one.
+            let stale = existing
+                .configuration
+                .image
+                .as_ref()
+                .and_then(|image| image.reference.as_deref())
+                .is_some_and(|reference| reference != spec.image);
+
+            if !stale && existing.is_running() {
                 events.step_skipped(
                     "start",
                     format!("starting {}", spec.name()),
@@ -473,7 +556,8 @@ impl Runtime for AppleContainerRuntime {
             }
 
             // A stopped container may be carrying a stale configuration,
-            // so recreate it.
+            // and a running one may be on a superseded image. Either way,
+            // recreate.
             self.run(&["delete", "--force", &name]).await?;
         }
 
@@ -898,6 +982,42 @@ fn parse_container_list(json: &str) -> Result<Vec<AppleContainerRecord>> {
     })
 }
 
+/// The tags `container image list --format json` reports.
+///
+/// The tag lives at `configuration.name`, complete with registry and tag —
+/// `docker.io/library/busybox:latest`, or `minato-bldapp-web:79ef7f8c89e1`
+/// for something built here. Captured from the real command rather than
+/// guessed: the first attempt looked for a top-level `reference`, found
+/// nothing, and quietly rebuilt on every `up`.
+fn parse_image_tags(json: &str) -> Result<Vec<String>> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    #[derive(Deserialize)]
+    struct ImageRecord {
+        #[serde(default)]
+        configuration: ImageConfiguration,
+    }
+
+    #[derive(Default, Deserialize)]
+    struct ImageConfiguration {
+        #[serde(default)]
+        name: Option<String>,
+    }
+
+    let records: Vec<ImageRecord> =
+        serde_json::from_str(json).map_err(|err| RuntimeError::Failed {
+            operation: "parsing the output of container image list".to_string(),
+            message: format!("{err}\noutput: {json}"),
+        })?;
+
+    Ok(records
+        .into_iter()
+        .filter_map(|record| record.configuration.name)
+        .collect())
+}
+
 fn parse_network_names(json: &str) -> Result<Vec<String>> {
     if json.trim().is_empty() {
         return Ok(Vec::new());
@@ -1125,6 +1245,30 @@ mod tests {
     }
 
     #[test]
+    fn finds_a_built_image_by_tag() {
+        // Captured from `container image list --format json` on 1.2.1. The
+        // tag is under `configuration.name`; looking for a top-level
+        // `reference` found nothing and rebuilt on every up.
+        let json = r#"[
+          {"id": "abc",
+           "configuration": {"name": "docker.io/library/busybox:latest"}},
+          {"id": "def",
+           "configuration": {"name": "minato-bldapp-web:79ef7f8c89e1"}}
+        ]"#;
+
+        let tags = parse_image_tags(json).expect("parses");
+
+        assert!(tags.iter().any(|t| t == "minato-bldapp-web:79ef7f8c89e1"));
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn an_empty_image_list_is_not_an_error() {
+        assert!(parse_image_tags("[]").expect("parses").is_empty());
+        assert!(parse_image_tags("").expect("empty is fine").is_empty());
+    }
+
+    #[test]
     fn parses_network_list() {
         // The shape `container network list --format json` really prints:
         // the name lives under `configuration`, mirrored by a top-level id.
@@ -1144,6 +1288,7 @@ mod tests {
         ServiceSpec {
             key: WorkspaceKey::new("myapp", "feat-1").service("api"),
             attached_to: WorkspaceKey::new("myapp", "feat-1"),
+            build: None,
             image: "node:22".into(),
             command: None,
             workdir: "/workspace".into(),

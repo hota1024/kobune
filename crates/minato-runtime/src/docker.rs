@@ -8,8 +8,9 @@
 //! Exposing them on `0.0.0.0` would put the development environment in
 //! front of everyone else on the LAN.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
 
 use async_trait::async_trait;
 use bollard::Docker;
@@ -18,7 +19,7 @@ use bollard::container::{
     RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::image::CreateImageOptions;
+use bollard::image::{BuildImageOptions, CreateImageOptions};
 use bollard::models::{
     ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
 };
@@ -33,11 +34,22 @@ use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names};
 use crate::spec::{
-    RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount, WorkspaceKey,
-    WorkspaceSpec,
+    BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
+    WorkspaceKey, WorkspaceSpec,
 };
 
 const RUNTIME_ID: &str = "docker";
+
+/// How many lines of build output a failure carries with it.
+///
+/// Enough to see the failing command and what it printed, without turning
+/// an error into a wall of text.
+const BUILD_CONTEXT_LINES: usize = 12;
+
+/// Where a Dockerfile from outside the build context is placed in the tar.
+///
+/// Prefixed so it cannot collide with a real file in the context.
+const DOCKERFILE_ENTRY: &str = ".minato-dockerfile";
 
 /// How many seconds a stop waits before it escalates to SIGKILL.
 const STOP_TIMEOUT_SECS: i64 = 10;
@@ -113,6 +125,112 @@ impl DockerRuntime {
             .map_err(|e| RuntimeError::failed("creating the network", e))?;
 
         Ok(name)
+    }
+
+    /// Builds the image unless that exact one is already here.
+    ///
+    /// The tag carries a fingerprint of the inputs, so an existing tag means
+    /// an image built from exactly this Dockerfile and these args. Skipping
+    /// matters most for scale-to-zero: waking a stopped service goes through
+    /// `prepare`, and a rebuild there would put a Docker build in the path of
+    /// an incoming request.
+    async fn ensure_built(
+        &self,
+        build: &BuildSpec,
+        rebuild: bool,
+        events: &EventSink,
+    ) -> Result<()> {
+        let label = format!("building {}", build.tag);
+
+        if !rebuild && self.docker.inspect_image(&build.tag).await.is_ok() {
+            events.step_skipped("build", label, "already built");
+            return Ok(());
+        }
+
+        events.step_started("build", &label);
+
+        let pack = || -> std::io::Result<(Vec<u8>, String)> {
+            let mut context = pack_context(&build.context)?;
+
+            // Docker names the Dockerfile by its path inside the tar. One
+            // in the context is named where it sits; one from elsewhere in
+            // the worktree is added under a reserved name.
+            match build.dockerfile.strip_prefix(&build.context) {
+                Ok(relative) => Ok((context, relative.to_string_lossy().to_string())),
+                Err(_) => {
+                    let packed = append_dockerfile(&mut context, &build.dockerfile)?;
+                    Ok((packed, DOCKERFILE_ENTRY.to_string()))
+                }
+            }
+        };
+
+        let (context, dockerfile) = pack().map_err(|err| {
+            events.step_failed("build", &label, err.to_string());
+            RuntimeError::failed(format!("packing the build context for {}", build.tag), err)
+        })?;
+
+        let options = BuildImageOptions {
+            dockerfile,
+            t: build.tag.clone(),
+            buildargs: build
+                .args
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            // Without this, an intermediate container is left behind for
+            // every failed build.
+            rm: true,
+            forcerm: true,
+            ..Default::default()
+        };
+
+        let mut stream = self.docker.build_image(options, None, Some(context.into()));
+
+        // The last few lines of output, kept so a failure can say what the
+        // build was doing. Docker's own error is often just "exit code 3",
+        // and the command that produced it is the part worth reading.
+        let mut recent: VecDeque<String> = VecDeque::with_capacity(BUILD_CONTEXT_LINES);
+
+        while let Some(item) = stream.next().await {
+            let failure = match item {
+                Ok(info) => {
+                    // Docker reports progress as the build output itself,
+                    // line by line, which is what someone watching a build
+                    // wants to see.
+                    if let Some(line) = info.stream {
+                        let line = line.trim_end();
+                        if !line.is_empty() {
+                            if recent.len() == BUILD_CONTEXT_LINES {
+                                recent.pop_front();
+                            }
+                            recent.push_back(line.to_string());
+                            events.step_progress("build", &label, line);
+                        }
+                    }
+
+                    // A failing RUN can come back in-band rather than as a
+                    // stream error, so both paths have to be handled.
+                    info.error
+                }
+                // bollard folds an in-band failure into this, but its
+                // Display drops the message, leaving "Docker stream error"
+                // and nothing else. Dig the real one out.
+                Err(bollard::errors::Error::DockerStreamError { error }) => Some(error),
+                Err(err) => Some(err.to_string()),
+            };
+
+            if let Some(error) = failure {
+                let message = with_recent_output(error.trim(), &recent);
+                events.step_failed("build", &label, message.clone());
+                return Err(RuntimeError::failed(
+                    format!("building {}", build.tag),
+                    message,
+                ));
+            }
+        }
+
+        events.step_done("build", &label);
+        Ok(())
     }
 
     /// Pulls the image unless it is already local.
@@ -450,7 +568,7 @@ impl Runtime for DockerRuntime {
         })
     }
 
-    async fn prepare(&self, spec: &WorkspaceSpec, events: &EventSink) -> Result<()> {
+    async fn prepare(&self, spec: &WorkspaceSpec, rebuild: bool, events: &EventSink) -> Result<()> {
         events.step_started("network", "preparing the network");
         self.ensure_network(&spec.key).await?;
 
@@ -466,7 +584,10 @@ impl Runtime for DockerRuntime {
         events.step_done("network", "preparing the network");
 
         for service in &spec.services {
-            self.ensure_image(&service.image, events).await?;
+            match &service.build {
+                Some(build) => self.ensure_built(build, rebuild, events).await?,
+                None => self.ensure_image(&service.image, events).await?,
+            }
         }
 
         Ok(())
@@ -480,7 +601,16 @@ impl Runtime for DockerRuntime {
         if let Some(existing) = self.find_container(&spec.key).await? {
             let id = existing.id.clone().unwrap_or_default();
 
-            if existing.state.as_deref() == Some("running") {
+            // Unless it is running the wrong image. A built image is tagged
+            // with a fingerprint of its inputs, so an edited Dockerfile
+            // produces a new tag — and leaving the old container up would
+            // build the new image and then serve the old one.
+            let stale = existing
+                .image
+                .as_deref()
+                .is_some_and(|image| image != spec.image);
+
+            if !stale && existing.state.as_deref() == Some("running") {
                 events.step_skipped(
                     "start",
                     format!("starting {}", spec.name()),
@@ -497,8 +627,9 @@ impl Runtime for DockerRuntime {
             }
 
             // A stopped container may be carrying a stale configuration,
-            // so recreate it. That costs a few seconds; a configuration
-            // change silently not taking effect costs more.
+            // and a running one may be on a superseded image. Either way,
+            // recreate. That costs a few seconds; a change silently not
+            // taking effect costs more.
             self.docker
                 .remove_container(
                     &id,
@@ -832,6 +963,56 @@ impl Runtime for DockerRuntime {
             .filter_map(Self::summary_to_status)
             .collect())
     }
+}
+
+/// Puts the tail of the build output alongside the error.
+///
+/// "The command '/bin/sh -c npm ci' returned a non-zero code: 1" says which
+/// command failed and nothing about why. What npm printed is the answer, and
+/// it has already gone past as progress.
+fn with_recent_output(error: &str, recent: &VecDeque<String>) -> String {
+    if recent.is_empty() {
+        return error.to_string();
+    }
+
+    let output = recent
+        .iter()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{error}\n\nthe build was doing:\n{output}")
+}
+
+/// Tars a build context for the Docker API.
+///
+/// The API takes the context as a tar stream, so the whole directory is read
+/// into memory. That is fine for the contexts this is aimed at — a
+/// Dockerfile and a lock file — and a `.dockerignore` keeps a `node_modules`
+/// out of it.
+fn pack_context(context: &Path) -> std::io::Result<Vec<u8>> {
+    let mut builder = tar::Builder::new(Vec::new());
+    builder.follow_symlinks(false);
+    builder.append_dir_all(".", context)?;
+    builder.into_inner()
+}
+
+/// Adds a Dockerfile that lives outside the context.
+///
+/// `dockerfile` may point anywhere in the worktree, so one context can build
+/// several images. Docker names the Dockerfile by its path inside the tar,
+/// so an outside one has to be placed into it.
+fn append_dockerfile(context: &mut Vec<u8>, dockerfile: &Path) -> std::io::Result<Vec<u8>> {
+    let contents = std::fs::read(dockerfile)?;
+
+    let mut builder = tar::Builder::new(std::mem::take(context));
+    let mut header = tar::Header::new_gnu();
+    header.set_size(contents.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder.append_data(&mut header, DOCKERFILE_ENTRY, contents.as_slice())?;
+
+    builder.into_inner()
 }
 
 #[cfg(test)]

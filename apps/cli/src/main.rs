@@ -83,6 +83,10 @@ enum Command {
         /// Create it without starting anything
         #[arg(long)]
         no_start: bool,
+
+        /// Rebuild images even when nothing Minato can see has changed
+        #[arg(long)]
+        build: bool,
     },
 
     /// Destroy a worktree and its environment
@@ -96,6 +100,14 @@ enum Command {
     Up {
         /// Which services. All of them when left out
         services: Vec<String>,
+
+        /// Rebuild images even when nothing Minato can see has changed
+        ///
+        /// A build is skipped when an image built from the same Dockerfile
+        /// and build args is already there. That check cannot see a file
+        /// the Dockerfile copies in, so this is how to pick one up.
+        #[arg(long)]
+        build: bool,
     },
 
     /// Stop services
@@ -381,20 +393,23 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             base,
             path,
             no_start,
+            build,
         } => Request::New {
             target,
             branch: branch.clone(),
             base: base.clone(),
             path: path.clone(),
             start: !no_start,
+            rebuild: *build,
         },
         Command::Rm { force } => Request::Rm {
             target,
             force: *force,
         },
-        Command::Up { services } => Request::Up {
+        Command::Up { services, build } => Request::Up {
             target,
             services: services.clone(),
+            rebuild: *build,
         },
         Command::Down { services, all } => Request::Down {
             target,
@@ -1022,7 +1037,8 @@ mod tests {
         assert!(
             Request::Up {
                 target: Target::new(PathBuf::from("/repo")),
-                services: vec![]
+                services: vec![],
+                rebuild: false,
             }
             .is_long_running()
         );

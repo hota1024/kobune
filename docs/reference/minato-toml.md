@@ -55,8 +55,10 @@ letters, digits and `-`.
 
 | Key | Type | | |
 | --- | --- | --- | --- |
-| `image` | string | **required** | A prebuilt image. `postgres:16`, `docker.io/library/node:22` |
-| `build` | string | — | **Not supported yet.** Reserved for building a Dockerfile |
+| `image` | string | one of these | A prebuilt image. `postgres:16`, `docker.io/library/node:22` |
+| `build` | string | one of these | A build context, relative to the worktree. Mutually exclusive with `image` |
+| `dockerfile` | string | `{build}/Dockerfile` | The Dockerfile, relative to the worktree. Needs `build` |
+| `build_args` | table | `{}` | `--build-arg` values. Needs `build` |
 | `command` | string | image default | Replaces the image's command. Parsed shell-style, so quotes group arguments |
 | `workdir` | string | `/workspace` | Working directory inside the container |
 
@@ -74,6 +76,36 @@ Container gives the container its own IP.
 
 Bind `0.0.0.0` inside the container, not `127.0.0.1` — a server on loopback
 inside a container is unreachable from outside it.
+
+#### Building
+
+```toml
+[services.web]
+build = "."
+dockerfile = "./docker/web.Dockerfile"   # optional
+build_args = { NODE_VERSION = "22" }     # optional
+port = 3000
+```
+
+The context comes from **the worktree, not the main checkout**, so a branch
+that edits its Dockerfile gets the image that Dockerfile describes. It has to
+stay inside the worktree; `build = "../.."` is refused rather than handed to
+the runtime as a build context.
+
+The image is tagged `minato-{project}-{service}:{fingerprint}`, where the
+fingerprint covers the Dockerfile and the build args. Two consequences worth
+knowing:
+
+- Two worktrees whose Dockerfiles agree land on the same tag and **share one
+  image**, built once.
+- **A build is skipped when that tag already exists.** This is what keeps
+  waking a stopped service from running a build.
+
+::: warning A copied file does not trigger a rebuild
+The fingerprint cannot see files the Dockerfile `COPY`s in, so editing
+`package.json` alone does not cause a rebuild. Use `minato up --build`.
+`docker compose` behaves the same way.
+:::
 
 ### Readiness
 

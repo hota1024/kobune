@@ -25,6 +25,7 @@ serde_json.workspace = true
 shell-words.workspace = true
 chrono.workspace = true
 humantime.workspace = true
+sha2.workspace = true
 indexmap.workspace = true
 libc = "0.2"
 anyhow.workspace = true

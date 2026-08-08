@@ -141,6 +141,9 @@ one is there from the start.
 **`expose`**: true by default when there is a `port`. An internal service like a
 database sets it to `false` and gets no URL.
 
+**`build`**: a context to build instead of an image to pull. See
+[§7's note on building](#building-rather-than-pulling).
+
 **`health`**: what scale-to-zero rests on. Without it the proxy 502s a service
 that has started but is not answering yet. Three forms are supported:
 `http://`, `tcp://` and `cmd:`.
@@ -424,6 +427,48 @@ to the wrong conclusion — "the server is broken".
 - `node_modules` and the like live in a named volume per workspace, installed
   once
 - `minato new` runs `prepare` ahead of time (`--no-warm` turns it off)
+
+### Building rather than pulling (M0.5)
+
+`build` names a context; the image is built rather than pulled. Three
+decisions shape it.
+
+**The context comes from the worktree, not the main checkout.** A branch that
+edits its Dockerfile has to get the image that Dockerfile describes —
+otherwise the environment does not match the branch, which is the invariant
+this whole thing rests on. The path is resolved and refused if it escapes the
+worktree; `build = "../.."` would otherwise hand the runtime a build context of
+somebody's home directory.
+
+**The tag carries a fingerprint of the inputs**, so an image is
+`minato-{project}-{service}:{hash of Dockerfile + build args}`. This settles
+two problems with one mechanism. Two worktrees whose Dockerfiles agree land on
+the same tag and share one image, which is the "base images are built at
+project scope" idea from earlier in this section, arrived at without a separate
+scope. A worktree that changes anything lands on a different tag, so neither
+overwrites the other. And "does this need building?" reduces to "does this tag
+exist?" — no label to compare, no state to keep.
+
+Skipping matters more than it first appears: waking a stopped service goes
+through `prepare`, so without the skip a Docker build would sit in the path of
+an incoming request.
+
+**A file the Dockerfile copies in is not covered.** Finding those means parsing
+the Dockerfile, and a half-correct answer is worse than a stated limitation.
+`minato up --build` forces a rebuild. `docker compose` draws the line in the
+same place.
+
+#### A running container can be stale too (found while building this)
+
+`up` left a running container alone, on the grounds that starting something
+already started is a no-op. With `build` that became wrong: the new image was
+built, the old container kept serving, and the output said `✓ building` and
+`- starting (already running)` — both true, and together completely
+misleading.
+
+A container is now recreated when its image does not match the spec, running or
+not. The fingerprint tag is what makes that detectable at all; with a mutable
+`:latest` there would have been nothing to compare.
 
 ### The runtime's labels are the source of truth (settled in M0)
 
@@ -937,7 +982,6 @@ would leave nothing resolving once it lands.
 
 | Item | Why | When |
 | --- | --- | --- |
-| `build`, building a Dockerfile | A prebuilt image plus a bind mount starts faster, which suits "up straight away". It also needs the build context tarred | M0.5 |
 | `Request::Cancel` | In the protocol, unimplemented in the daemon. Long-running work is confined to prepare and start, and nobody has asked to cancel one | M2 |
 | `ls --all-projects` | The state store does not know where other projects' `minato.toml` files are | M3 |
 | `minato.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Undecided |

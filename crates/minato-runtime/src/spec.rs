@@ -93,7 +93,13 @@ pub struct ServiceSpec {
     /// Even a shared service has to join the caller's workspace network.
     pub attached_to: WorkspaceKey,
 
+    /// The image to run. When [`Self::build`] is set this is the tag the
+    /// build produces, not something to pull.
     pub image: String,
+
+    /// How to build the image, when the service builds rather than pulls.
+    pub build: Option<BuildSpec>,
+
     pub command: Option<Vec<String>>,
     pub workdir: String,
     pub env: BTreeMap<String, String>,
@@ -130,6 +136,37 @@ impl ServiceSpec {
     pub fn env_pairs(&self) -> Vec<String> {
         self.env.iter().map(|(k, v)| format!("{k}={v}")).collect()
     }
+}
+
+/// How to build an image from a Dockerfile.
+///
+/// The tag and the fingerprint are settled by the daemon rather than the
+/// runtime, so both backends produce the same name for the same service
+/// and agree on when a rebuild is needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildSpec {
+    /// The build context, as an absolute path.
+    pub context: PathBuf,
+
+    /// The Dockerfile, as an absolute path.
+    ///
+    /// Usually `context/Dockerfile`, but `dockerfile` in `minato.toml` can
+    /// point elsewhere — one context, several images is a common layout.
+    pub dockerfile: PathBuf,
+
+    /// The tag the build produces.
+    pub tag: String,
+
+    /// What the image was built from.
+    ///
+    /// Stored as a label on the result. A build is skipped when the image
+    /// already carries this value, which is what keeps `up` from rebuilding
+    /// on every call and, more importantly, keeps waking a stopped service
+    /// fast. See [`crate::labels::BUILD_FINGERPRINT`].
+    pub fingerprint: String,
+
+    /// `--build-arg` values, sorted so the fingerprint is stable.
+    pub args: BTreeMap<String, String>,
 }
 
 /// How the worktree source is exposed to a container.
@@ -356,6 +393,7 @@ mod tests {
         let spec = ServiceSpec {
             key: WorkspaceKey::new("myapp", "feat-1").service("web"),
             attached_to: WorkspaceKey::new("myapp", "feat-1"),
+            build: None,
             image: "node:22".into(),
             command: None,
             workdir: "/workspace".into(),

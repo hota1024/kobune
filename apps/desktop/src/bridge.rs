@@ -255,6 +255,9 @@ async fn run_operation(cwd: &Path, workspace: &str, start: bool) -> Result<(), S
         Request::Up {
             target,
             services: Vec::new(),
+            // The button starts things; forcing a rebuild is a decision
+            // with a cost, and there is nowhere in the UI that says so.
+            rebuild: false,
         }
     } else {
         Request::Down {

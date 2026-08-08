@@ -20,8 +20,8 @@ pub use event::EventSink;
 pub use health::{DEFAULT_READINESS_TIMEOUT, await_service, probe, wait_until_ready};
 pub use runtime::{ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names};
 pub use spec::{
-    RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount, WorkspaceKey,
-    WorkspaceSpec,
+    BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
+    WorkspaceKey, WorkspaceSpec,
 };
 
 /// Builds a runtime implementation from its identifier.

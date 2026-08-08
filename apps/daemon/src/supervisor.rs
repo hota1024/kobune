@@ -88,12 +88,27 @@ impl Supervisor {
                 base,
                 path,
                 start,
+                rebuild,
             } => {
-                self.new_workspace(target, branch, base, path, start, events)
-                    .await
+                self.new_workspace(
+                    target,
+                    NewWorkspace {
+                        branch,
+                        base,
+                        path,
+                        start,
+                        rebuild,
+                    },
+                    events,
+                )
+                .await
             }
             Request::Rm { target, force } => self.rm(target, force, events).await,
-            Request::Up { target, services } => self.up(target, services, events).await,
+            Request::Up {
+                target,
+                services,
+                rebuild,
+            } => self.up(target, services, rebuild, events).await,
             Request::Down {
                 target,
                 services,
@@ -1111,7 +1126,10 @@ impl Supervisor {
             worktree_path: record.path.clone(),
             services: vec![service_spec.clone()],
         };
-        runtime.prepare(&workspace_spec, &events).await?;
+        // Never a forced rebuild: this sits in the path of the request
+        // that woke the service, and the fingerprint in the tag already
+        // means an existing image was built from these inputs.
+        runtime.prepare(&workspace_spec, false, &events).await?;
 
         tracing::info!("a request to {host} is starting {}", route.service);
         let running = runtime.start(&service_spec, &events).await?;
@@ -1352,12 +1370,17 @@ impl Supervisor {
     async fn new_workspace(
         &self,
         target: Target,
-        branch: String,
-        base: Option<String>,
-        path: Option<PathBuf>,
-        start: bool,
+        options: NewWorkspace,
         events: &EventSink,
     ) -> Result<Response, ApiError> {
+        let NewWorkspace {
+            branch,
+            base,
+            path,
+            start,
+            rebuild,
+        } = options;
+
         let context = self.resolve_project_only(&target).await?;
 
         let worktree_path =
@@ -1411,7 +1434,7 @@ impl Supervisor {
         };
 
         if start {
-            self.start_services(&resolved, &[], events).await?;
+            self.start_services(&resolved, &[], rebuild, events).await?;
         }
 
         let statuses = self.refresh(&resolved.project, &resolved.config).await?;
@@ -1477,10 +1500,12 @@ impl Supervisor {
         &self,
         target: Target,
         services: Vec<String>,
+        rebuild: bool,
         events: &EventSink,
     ) -> Result<Response, ApiError> {
         let resolved = self.resolve(&target).await?;
-        self.start_services(&resolved, &services, events).await?;
+        self.start_services(&resolved, &services, rebuild, events)
+            .await?;
 
         let statuses = self.refresh(&resolved.project, &resolved.config).await?;
 
@@ -1498,6 +1523,7 @@ impl Supervisor {
         &self,
         resolved: &Resolved,
         only: &[String],
+        rebuild: bool,
         events: &EventSink,
     ) -> Result<(), ApiError> {
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
@@ -1543,7 +1569,7 @@ impl Supervisor {
             services: filtered.clone(),
         };
 
-        runtime.prepare(&prepare_spec, events).await?;
+        runtime.prepare(&prepare_spec, rebuild, events).await?;
 
         // Started in startup_order.
         for service in &filtered {
@@ -1678,6 +1704,20 @@ fn default_worktree_path(main_root: &std::path::Path, branch: &str) -> PathBuf {
     let label = minato_core::naming::sanitize_label(branch);
 
     parent.join(format!("{repo_name}.wt")).join(label)
+}
+
+/// What `minato new` was asked for, beyond the target.
+///
+/// A struct rather than five more parameters: they arrive together, from
+/// one request, and travel as a unit.
+struct NewWorkspace {
+    branch: String,
+    base: Option<String>,
+    path: Option<PathBuf>,
+    /// Whether to start the services once the worktree exists.
+    start: bool,
+    /// Whether to rebuild images that are already built.
+    rebuild: bool,
 }
 
 /// Maps a tunnel failure onto the API's vocabulary.
