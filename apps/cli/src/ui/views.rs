@@ -386,6 +386,155 @@ pub fn done(
     Panel::new(decor, title).grid(grid).lines(next)
 }
 
+/// What `minato uninstall` is about to do, before it does any of it.
+///
+/// The containers come from the daemon, the rest from looking at the
+/// machine. Worktrees get a section of their own because they are the one
+/// thing here that is **not** going, and that has to be as visible as what
+/// is.
+pub fn uninstall_plan(
+    plan: &crate::uninstall::Plan,
+    daemon: Result<&minato_api::PurgeReport, &String>,
+    dry_run: bool,
+    decor: Decor,
+) -> Panel {
+    let mut panel = Panel::new(decor, "uninstall");
+
+    let services = daemon.map(|report| report.service_count()).unwrap_or(0);
+
+    if services > 0 {
+        let mut grid = Grid::new().caption(Span::styled("containers:", theme::heading()));
+        for project in daemon.iter().flat_map(|report| &report.projects) {
+            for workspace in &project.workspaces {
+                for service in &workspace.services {
+                    grid.push(vec![
+                        Line::styled(
+                            format!("{} / {}", project.name, workspace.label),
+                            theme::muted(),
+                        ),
+                        Line::styled(service.clone(), theme::subject()),
+                    ]);
+                }
+            }
+        }
+        panel = panel.grid(grid);
+    }
+
+    // Said out loud, and with the reason. A list that silently leaves the
+    // containers out looks like a machine that has none.
+    if let Err(reason) = daemon {
+        panel = panel.lines(vec![
+            Line::styled(
+                "the daemon's containers are not in this list:",
+                theme::warn(),
+            ),
+            Line::styled(format!("  {reason}"), theme::muted()),
+        ]);
+    }
+
+    if !plan.files.is_empty() {
+        let mut grid = Grid::new().caption(Span::styled("files:", theme::heading()));
+        for removal in &plan.files {
+            grid.push(vec![
+                Line::styled(removal.label, theme::muted()),
+                Line::raw(display_path(&removal.path)),
+            ]);
+        }
+        panel = panel.grid(grid);
+    }
+
+    if !plan.privileged.is_empty() {
+        let mut lines = vec![Line::styled("needs root:", theme::heading())];
+        for step in &plan.privileged {
+            lines.push(Line::styled(format!("  {}", step.label), theme::subject()));
+            lines.extend(
+                step.commands
+                    .iter()
+                    .map(|command| Line::styled(format!("    {command}"), theme::command())),
+            );
+        }
+        panel = panel.lines(lines);
+    }
+
+    // The point of saying so: someone uninstalling wants to know whether
+    // their branches went with it.
+    let worktrees = daemon
+        .map(|report| report.worktrees.as_slice())
+        .unwrap_or(&[]);
+    if !worktrees.is_empty() {
+        let mut lines = vec![Line::styled(
+            format!(
+                "left alone — {} worktree{}:",
+                worktrees.len(),
+                if worktrees.len() == 1 { "" } else { "s" }
+            ),
+            theme::good(),
+        )];
+        lines.extend(
+            worktrees
+                .iter()
+                .map(|path| Line::styled(format!("  {}", display_path(path)), theme::muted())),
+        );
+        panel = panel.lines(lines);
+    }
+
+    if plan.files.is_empty() && plan.privileged.is_empty() && services == 0 {
+        return panel.line(Span::styled(
+            "nothing of Minato's was found on this machine",
+            theme::muted(),
+        ));
+    }
+
+    if dry_run {
+        panel = panel.line(hint("to go ahead, run", "minato uninstall"));
+    }
+
+    panel
+}
+
+/// What `minato uninstall` managed, and what it did not.
+pub fn uninstall_done(
+    failures: &[String],
+    remaining: &[crate::uninstall::Privileged],
+    decor: Decor,
+) -> Panel {
+    let mut panel = Panel::new(decor, "uninstall");
+
+    panel = if failures.is_empty() {
+        panel.line(Line::from(vec![
+            Span::styled("✓ ", theme::good()),
+            Span::raw("removed"),
+        ]))
+    } else {
+        let mut lines = vec![Line::styled("could not remove:", theme::bad())];
+        lines.extend(
+            failures
+                .iter()
+                .map(|failure| Line::styled(format!("  {failure}"), theme::muted())),
+        );
+        panel.lines(lines)
+    };
+
+    if remaining.is_empty() {
+        return panel;
+    }
+
+    // Reached when there was no terminal to type a password into, or sudo
+    // said no. Printing the commands is the same answer `minato setup`
+    // gives, and it leaves the machine in a state a person can finish.
+    let mut lines = vec![Line::styled("still to run, as root:", theme::heading())];
+    for step in remaining {
+        lines.push(Line::styled(format!("  {}", step.label), theme::subject()));
+        lines.extend(
+            step.commands
+                .iter()
+                .map(|command| Line::styled(format!("    {command}"), theme::command())),
+        );
+    }
+
+    panel.lines(lines)
+}
+
 /// A remark of the CLI's own, set apart from the daemon's answer.
 pub fn note(text: &str) -> Line<'static> {
     Line::from(vec![
@@ -742,6 +891,127 @@ mod tests {
     fn a_stopped_daemon_says_how_to_start_it() {
         let text = render(&daemon_stopped(Decor::PLAIN));
         assert!(text.contains("minato daemon start"), "got:\n{text}");
+    }
+
+    fn purge_report() -> minato_api::PurgeReport {
+        minato_api::PurgeReport {
+            dry_run: true,
+            projects: vec![minato_api::PurgeProject {
+                name: "myapp".into(),
+                workspaces: vec![minato_api::PurgeWorkspace {
+                    label: "feat-1".into(),
+                    services: vec!["web".into(), "db".into()],
+                }],
+            }],
+            worktrees: vec![PathBuf::from("/repo/myapp.wt/feat-1")],
+        }
+    }
+
+    fn host_plan() -> crate::uninstall::Plan {
+        crate::uninstall::Plan {
+            files: vec![crate::uninstall::Removal {
+                label: "state, logs and the local CA",
+                path: PathBuf::from("/home/u/.minato"),
+            }],
+            privileged: vec![crate::uninstall::Privileged {
+                label: "stop trusting the local CA".into(),
+                commands: vec![
+                    "sudo security remove-trusted-cert -d /home/u/.minato/ca.crt".into(),
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn the_plan_shows_every_kind_of_thing_it_would_remove() {
+        let report = purge_report();
+        let text = render(&uninstall_plan(
+            &host_plan(),
+            Ok(&report),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("web"), "containers:\n{text}");
+        assert!(text.contains(".minato"), "files:\n{text}");
+        assert!(text.contains("remove-trusted-cert"), "root steps:\n{text}");
+    }
+
+    #[test]
+    fn the_plan_says_which_worktrees_survive() {
+        // Someone uninstalling wants to know their branches did not go
+        // with it, and silence does not answer that.
+        let report = purge_report();
+        let text = render(&uninstall_plan(
+            &host_plan(),
+            Ok(&report),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("left alone"), "got:\n{text}");
+        assert!(text.contains("myapp.wt/feat-1"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_silent_daemon_is_admitted_to_rather_than_hidden() {
+        // Without it the list looks complete when it is not, and someone
+        // would think their containers had gone.
+        let reason = "connection refused".to_string();
+        let text = render(&uninstall_plan(
+            &host_plan(),
+            Err(&reason),
+            false,
+            Decor::PLAIN,
+        ));
+        assert!(text.contains("not in this list"), "got:\n{text}");
+        assert!(text.contains("connection refused"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_dry_run_says_how_to_go_ahead() {
+        let report = purge_report();
+        let text = render(&uninstall_plan(
+            &host_plan(),
+            Ok(&report),
+            true,
+            Decor::PLAIN,
+        ));
+        assert!(text.contains("minato uninstall"), "got:\n{text}");
+    }
+
+    #[test]
+    fn finding_nothing_is_said_out_loud() {
+        let empty = crate::uninstall::Plan::default();
+        let reason = "it is not running".to_string();
+        let text = render(&uninstall_plan(&empty, Err(&reason), false, Decor::PLAIN));
+        assert!(text.contains("nothing of Minato"), "got:\n{text}");
+    }
+
+    #[test]
+    fn what_could_not_be_removed_is_named() {
+        let text = render(&uninstall_done(
+            &["/usr/local/bin/minato: Permission denied".to_string()],
+            &[],
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("could not remove"), "got:\n{text}");
+        assert!(text.contains("Permission denied"), "got:\n{text}");
+    }
+
+    #[test]
+    fn root_steps_that_did_not_run_are_handed_back() {
+        // The machine is left in a state a person can finish by hand,
+        // which is the same answer `minato setup` gives.
+        let remaining = vec![crate::uninstall::Privileged {
+            label: "stop the LaunchDaemon".into(),
+            commands: vec!["sudo launchctl bootout system/dev.minato.daemon".into()],
+        }];
+
+        let text = render(&uninstall_done(&[], &remaining, Decor::PLAIN));
+        assert!(text.contains("still to run, as root"), "got:\n{text}");
+        assert!(text.contains("launchctl bootout"), "got:\n{text}");
     }
 
     #[test]

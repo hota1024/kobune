@@ -42,6 +42,25 @@ pub enum Request {
     /// Shuts the daemon down.
     Shutdown,
 
+    /// Takes down everything Minato has made, across every project.
+    ///
+    /// This is the daemon's half of `minato uninstall`: containers,
+    /// networks and the state file. What lives outside the daemon — the
+    /// binaries, the CA in the keychain, `/etc/resolver` — is the CLI's,
+    /// because the daemon does not know where it was installed from.
+    ///
+    /// **Worktrees are never touched.** They are the user's git
+    /// repository, with the user's uncommitted work in it, and no
+    /// uninstaller has any business there. They are reported so that a
+    /// person can see what is being left behind.
+    Purge {
+        /// Report what would go, and remove nothing.
+        ///
+        /// The CLI shows this before asking. The daemon never prompts
+        /// (`docs/DESIGN.md` §3), so the confirmation is a second call.
+        dry_run: bool,
+    },
+
     /// Diagnoses the environment, reporting what the daemon can see.
     ///
     /// Carries a target so the project's `[runtime] default` can be the
@@ -200,6 +219,9 @@ impl Request {
                 | Self::Logs { .. }
                 | Self::Exec { .. }
                 | Self::TunnelEnable { .. }
+                // Only when it is actually removing something. The
+                // dry run is a read, and answers at once.
+                | Self::Purge { dry_run: false }
         )
     }
 }

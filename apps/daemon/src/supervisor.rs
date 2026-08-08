@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use minato_api::{
-    ApiError, Check, Diagnostics, EnvInfo, ErrorCode, Pong, Request, Response, ServiceInfo, Target,
-    TunnelState, WorkspaceInfo,
+    ApiError, Check, Diagnostics, EnvInfo, ErrorCode, Pong, PurgeProject, PurgeReport,
+    PurgeWorkspace, Request, Response, ServiceInfo, Target, TunnelState, WorkspaceInfo,
 };
 use minato_core::{
     MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, TunnelRecord, WorkspaceRecord,
@@ -78,6 +78,7 @@ impl Supervisor {
                 self.shutdown.notify_waiters();
                 Ok(Response::Empty)
             }
+            Request::Purge { dry_run } => self.purge(dry_run, events).await,
             Request::Ls {
                 target,
                 all_projects,
@@ -1547,6 +1548,111 @@ impl Supervisor {
         }
 
         Ok(Response::Empty)
+    }
+
+    /// Takes down everything this daemon has made, across every project.
+    ///
+    /// The daemon's half of `minato uninstall`. It works from the state
+    /// file rather than from a working directory, because by the time
+    /// anyone uninstalls, the repository a project was registered from may
+    /// well have been deleted already.
+    ///
+    /// **Worktrees are left exactly where they are.** They are the user's
+    /// checkouts, with the user's uncommitted work in them. They are
+    /// listed so the CLI can say what is being left behind.
+    async fn purge(&self, dry_run: bool, events: &EventSink) -> Result<Response, ApiError> {
+        let mut report = PurgeReport {
+            dry_run,
+            ..PurgeReport::default()
+        };
+
+        for project in self.known_projects().await? {
+            let runtime = match self.purge_runtime(&project).await {
+                Ok(runtime) => runtime,
+                // One unreachable runtime must not strand the others. The
+                // project stays in the state file so a later run can
+                // finish the job, rather than being forgotten with its
+                // containers still up.
+                Err(err) => {
+                    events.warn(format!("skipping {project}: {err}"));
+                    continue;
+                }
+            };
+
+            let statuses = runtime.list_project(&project).await?;
+
+            // Every workspace the runtime knows of, and every one the
+            // state file does. A workspace can be in one and not the
+            // other: a container started before a crash, or a record whose
+            // containers are already gone.
+            let mut workspaces: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for record in self.workspace_records(&project).await? {
+                workspaces.entry(record.label).or_default();
+                report.worktrees.push(record.path);
+            }
+            for status in &statuses {
+                workspaces
+                    .entry(status.key.workspace.workspace.clone())
+                    .or_default()
+                    .push(status.key.service.clone());
+            }
+
+            if !dry_run {
+                for label in workspaces.keys() {
+                    let key = WorkspaceKey::new(&project, label);
+                    if let Err(err) = runtime.destroy_workspace(&key, events).await {
+                        // Reported and carried past for the same reason:
+                        // stopping here would leave the rest running with
+                        // nothing left to manage them.
+                        events.warn(format!("cannot remove {project}/{label}: {err}"));
+                    }
+                }
+            }
+
+            report.projects.push(PurgeProject {
+                name: project,
+                workspaces: workspaces
+                    .into_iter()
+                    .map(|(label, mut services)| {
+                        services.sort();
+                        PurgeWorkspace { label, services }
+                    })
+                    .collect(),
+            });
+        }
+
+        if !dry_run {
+            events.step_started("state", "forgetting every project");
+            let _guard = self.state_lock.lock().await;
+            self.store
+                .update(|state| {
+                    state.projects.clear();
+                    Ok(())
+                })
+                .map_err(ApiError::from)?;
+            events.step_done("state", "forgetting every project");
+        }
+
+        report.worktrees.sort();
+        report.worktrees.dedup();
+
+        Ok(Response::Purge(report))
+    }
+
+    /// The runtime to tear a project down with.
+    ///
+    /// Its own `[runtime] default` when the configuration can still be
+    /// read, and the built-in default when it cannot — a project whose
+    /// repository has been deleted still has containers to remove, and
+    /// giving up on them is how a machine ends up with orphans nothing
+    /// knows the name of.
+    async fn purge_runtime(&self, project: &str) -> Result<Arc<dyn Runtime>, ApiError> {
+        let id = match self.project_config(project).await {
+            Ok(config) => config.runtime.default,
+            Err(_) => minato_core::RuntimeSection::default().default,
+        };
+
+        self.runtime(&id).await
     }
 
     async fn up(

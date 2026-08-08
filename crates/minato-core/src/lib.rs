@@ -14,7 +14,7 @@ pub mod paths;
 pub mod service;
 pub mod state;
 
-pub use config::{HealthCheck, MinatoConfig, ServiceConfig, ServiceScope};
+pub use config::{HealthCheck, MinatoConfig, RuntimeSection, ServiceConfig, ServiceScope};
 pub use env::{EnvEntry, EnvLayers, EnvScope, SecretRef};
 pub use error::{Error, Result};
 pub use git::Repository;

@@ -361,3 +361,20 @@ logs, the local CA, and any generated tunnel configuration.
 A Unix socket path is limited to about 100 bytes, so `MINATO_HOME` cannot be
 somewhere deep. Minato checks this at startup and tells you rather than failing
 with an opaque error.
+
+## Taking it off again
+
+```console
+$ minato uninstall
+```
+
+It shows what it found — containers, the daemon's state, the binaries, the
+completions, and the steps that need root — and asks before removing any of
+it. `--dry-run` prints the list and stops; `--yes` skips the question, and is
+required where there is no terminal to ask at.
+
+**Your worktrees are left where they are.** They are listed, so you can see
+what is being kept, and `minato rm` is how one goes.
+
+The full list of what it removes, and how the privileged steps are handled, is
+in the [CLI reference](../reference/cli#taking-it-off-again).

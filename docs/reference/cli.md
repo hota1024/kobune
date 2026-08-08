@@ -246,6 +246,56 @@ meaning this build records no commit, so there is nothing to compare.
 A check runs by itself once a day after any command and prints one line to
 stderr. `MINATO_NO_UPDATE_CHECK` turns it off, and `--json` never includes it.
 
+## Taking it off again
+
+```console
+$ minato uninstall
+╭ uninstall ─────────────────────────────────────────────────────────────────╮
+│ containers:                                                                │
+│ myapp / main               web                                             │
+│ myapp / main               db                                              │
+│ myapp / feature-user-auth  web                                             │
+│                                                                            │
+│ files:                                                                     │
+│ state, logs and the local CA  /home/u/.minato                              │
+│ shell completions             /home/u/.config/fish/completions/minato.fish │
+│ the binary                    /home/u/.local/bin/minato                    │
+│ the binary                    /home/u/.local/bin/minatod                   │
+│                                                                            │
+│ needs root:                                                                │
+│   stop the LaunchDaemon holding 80/443/53                                  │
+│     sudo launchctl bootout system/dev.minato.daemon                        │
+│     sudo rm /Library/LaunchDaemons/dev.minato.daemon.plist                 │
+│   stop trusting the local CA                                               │
+│     sudo security remove-trusted-cert -d ~/.minato/ca/minato-ca.crt        │
+│                                                                            │
+│ left alone — 2 worktrees:                                                  │
+│   /path/to/myapp                                                           │
+│   /path/to/myapp.wt/feature-user-auth                                      │
+╰────────────────────────────────────────────────────────────────────────────╯
+Remove all of this? [y/N]
+```
+
+| Flag | |
+| --- | --- |
+| `-y, --yes` | Go ahead without asking. Required where there is no terminal |
+| `--dry-run` | Print the list and remove nothing |
+
+**Worktrees are never touched.** They are your checkouts, with your
+uncommitted work in them; `minato rm` removes one at a time, and asks for
+`--force` when git objects. They are listed so you can see what is being left
+behind.
+
+Nothing is listed that is not there, so the list is what is actually on the
+machine rather than everywhere Minato might have put something. The binaries
+are left alone when they are `cargo build` output — running `uninstall` from a
+checkout removes the installation, not your build.
+
+The steps that need root are run with `sudo`, which asks for your password.
+Without a terminal to type into — an agent, a pipe, CI — they are printed
+instead, the same as `minato setup` does, and the rest of the uninstall still
+happens.
+
 ## Completions
 
 ```console

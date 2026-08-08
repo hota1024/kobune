@@ -248,6 +248,55 @@ $ minato update --check
 チェックはコマンドの実行後に 1 日 1 回自動で走り、stderr に 1 行表示します。
 `MINATO_NO_UPDATE_CHECK` で停止でき、`--json` のときは表示しません。
 
+## アンインストール
+
+```console
+$ minato uninstall
+╭ uninstall ─────────────────────────────────────────────────────────────────╮
+│ containers:                                                                │
+│ myapp / main               web                                             │
+│ myapp / main               db                                              │
+│ myapp / feature-user-auth  web                                             │
+│                                                                            │
+│ files:                                                                     │
+│ state, logs and the local CA  /home/u/.minato                              │
+│ shell completions             /home/u/.config/fish/completions/minato.fish │
+│ the binary                    /home/u/.local/bin/minato                    │
+│ the binary                    /home/u/.local/bin/minatod                   │
+│                                                                            │
+│ needs root:                                                                │
+│   stop the LaunchDaemon holding 80/443/53                                  │
+│     sudo launchctl bootout system/dev.minato.daemon                        │
+│     sudo rm /Library/LaunchDaemons/dev.minato.daemon.plist                 │
+│   stop trusting the local CA                                               │
+│     sudo security remove-trusted-cert -d ~/.minato/ca/minato-ca.crt        │
+│                                                                            │
+│ left alone — 2 worktrees:                                                  │
+│   /path/to/myapp                                                           │
+│   /path/to/myapp.wt/feature-user-auth                                      │
+╰────────────────────────────────────────────────────────────────────────────╯
+Remove all of this? [y/N]
+```
+
+| フラグ | 説明 |
+| --- | --- |
+| `-y, --yes` | 確認せずに実行します。端末がない場合は必須です |
+| `--dry-run` | 一覧を表示するだけで、何も削除しません |
+
+**worktree には一切触れません。** あなたのチェックアウトであり、コミットして
+いない変更が入っているためです。削除は `minato rm` が 1 つずつ行い、git が
+拒否する場合は `--force` を求めます。何が残るかが分かるよう、一覧には表示
+します。
+
+存在しないものは一覧に出しません。つまりこの一覧は「Minato が置いた可能性の
+ある場所」ではなく、実際にこのマシンにあるものです。`cargo build` の出力に
+ついてはバイナリを削除しません。チェックアウトから `uninstall` を実行しても、
+消えるのはインストール済みのものだけで、ビルド成果物は残ります。
+
+root が必要な手順は `sudo` で実行し、パスワードを尋ねます。入力できる端末が
+ない場合——エージェント、パイプ、CI——は `minato setup` と同じくコマンドを
+表示するにとどめ、それ以外の削除は続行します。
+
 ## 補完
 
 ```console
