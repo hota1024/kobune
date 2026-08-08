@@ -110,14 +110,25 @@ const STOP_TIMEOUT_SECS: i64 = 10;
 /// paint every `minato down` red.
 const CLEAN_EXITS: [i64; 3] = [0, 143, 137];
 
+/// The exit code of a container that fell over, if that is what happened.
+///
+/// **A container that died is not the same as one that was stopped.**
+/// Reporting both as `stopped` leaves a start-up script that failed looking
+/// like a service nobody started, and nothing but the logs to tell them
+/// apart. `None` covers all three ways that is not what happened: no status
+/// line, one that cannot be read, and a clean exit.
+fn crash_code(status: Option<&str>) -> Option<i64> {
+    exit_code_from(status?).filter(|code| !CLEAN_EXITS.contains(code))
+}
+
 /// Takes `127` out of `Exited (127) 3 seconds ago`.
 ///
 /// The exit code is not a field of its own on the list response, and
 /// inspecting every container to read one would cost a round trip each.
 fn exit_code_from(status: &str) -> Option<i64> {
-    let start = status.find('(')? + 1;
-    let end = status[start..].find(')')? + start;
-    status[start..end].trim().parse().ok()
+    let (_, rest) = status.split_once('(')?;
+    let (code, _) = rest.split_once(')')?;
+    code.trim().parse().ok()
 }
 
 pub struct DockerRuntime {
@@ -583,30 +594,21 @@ impl DockerRuntime {
             .and_then(|value| value.parse::<u16>().ok());
 
         // The `docker ps` state is a string.
-        //
-        // **A container that fell over is not the same as a stopped one.**
-        // Reporting both as `stopped` is what leaves a start-up script that
-        // died looking like a service nobody started, and the only way left
-        // to find out is to read the logs and guess.
         let state = match summary.state.as_deref() {
             Some("running") => ServiceState::Ready,
-            Some("created") | Some("restarting") => ServiceState::Starting,
-            Some("exited") => match summary.status.as_deref().and_then(exit_code_from) {
-                Some(code) if !CLEAN_EXITS.contains(&code) => ServiceState::Failed {
-                    reason: format!(
-                        "the container exited with code {code}. \
-                         `minato logs {service}` has the output"
-                    ),
-                },
-                _ => ServiceState::Stopped,
+            Some("created" | "restarting") => ServiceState::Starting,
+            Some("exited") => match crash_code(summary.status.as_deref()) {
+                Some(code) => ServiceState::failed(format!(
+                    "the container exited with code {code}. \
+                     `minato logs {service}` has the output"
+                )),
+                None => ServiceState::Stopped,
             },
-            Some("dead") => ServiceState::Failed {
-                reason: format!(
-                    "the container is dead. `minato logs {service}` has whatever it \
-                     managed to write"
-                ),
-            },
-            Some("paused") | Some("removing") => ServiceState::Stopped,
+            Some("dead") => ServiceState::failed(format!(
+                "the container is dead. `minato logs {service}` has whatever it \
+                 managed to write"
+            )),
+            Some("paused" | "removing") => ServiceState::Stopped,
             _ => ServiceState::Unknown,
         };
 
@@ -973,15 +975,15 @@ impl Runtime for DockerRuntime {
         })?;
 
         if container.state.as_deref() != Some("running") {
-            // **Say whether it died or was stopped.** Wanting to exec into
-            // a container is at its most likely just after one fell over,
-            // and "start it with `minato up`" describes the wrong problem.
-            let detail = match container.status.as_deref().and_then(exit_code_from) {
-                Some(code) if !CLEAN_EXITS.contains(&code) => format!(
+            // Wanting to exec into a container is at its most likely just
+            // after one fell over, and "start it with `minato up`" describes
+            // the wrong problem.
+            let detail = match crash_code(container.status.as_deref()) {
+                Some(code) => format!(
                     "the container exited with code {code}. `minato logs {}` says why",
                     key.service
                 ),
-                _ => "the container is not running. Start it with `minato up`".to_string(),
+                None => "the container is not running. Start it with `minato up`".to_string(),
             };
 
             return Err(RuntimeError::failed(
@@ -1221,29 +1223,49 @@ mod tests {
     }
 
     #[test]
-    fn being_asked_to_stop_is_not_a_failure() {
-        // `docker stop` sends SIGTERM, and a shell exits 143 for it. Every
-        // `minato down` would otherwise end in red.
-        for line in ["Exited (0) 1 second ago", "Exited (143) 1 second ago"] {
+    fn a_dead_container_is_failed_too() {
+        let status = DockerRuntime::summary_to_status(&summary_with(minato_labels(), "dead"))
+            .expect("recovers");
+
+        let ServiceState::Failed { reason } = &status.state else {
+            panic!("expected a failure, got {:?}", status.state);
+        };
+        assert!(reason.contains("minato logs web"), "{reason}");
+    }
+
+    #[test]
+    fn anything_but_a_crash_stays_stopped() {
+        // `docker stop` sends SIGTERM, and a shell exits 143 for it, so
+        // every `minato down` would otherwise end in red. An unreadable or
+        // absent status line must not be guessed at either.
+        for line in [
+            "Exited (0) 1 second ago",
+            "Exited (143) 1 second ago",
+            "Exited (137) 1 second ago",
+            "Exited (oops) 1 second ago",
+        ] {
             let status = DockerRuntime::summary_to_status(&exited_with(line)).expect("recovers");
             assert_eq!(status.state, ServiceState::Stopped, "{line}");
         }
-    }
 
-    #[test]
-    fn an_exit_code_that_cannot_be_read_stays_stopped() {
-        // Guessing "failed" from an unparseable status would cry wolf.
-        let status =
+        let no_status =
             DockerRuntime::summary_to_status(&summary_with(minato_labels(), "exited")).expect("ok");
-        assert_eq!(status.state, ServiceState::Stopped);
+        assert_eq!(no_status.state, ServiceState::Stopped, "no status line");
     }
 
     #[test]
-    fn reads_the_exit_code_out_of_the_status_line() {
-        assert_eq!(exit_code_from("Exited (127) 2 seconds ago"), Some(127));
-        assert_eq!(exit_code_from("Exited (0) 5 minutes ago"), Some(0));
-        assert_eq!(exit_code_from("Up 3 hours"), None);
-        assert_eq!(exit_code_from("Exited (oops) ago"), None);
+    fn a_crash_is_told_from_a_clean_exit() {
+        assert_eq!(crash_code(Some("Exited (127) 2 seconds ago")), Some(127));
+
+        for clean in [
+            Some("Exited (0) 5 minutes ago"),
+            Some("Exited (143) 5 minutes ago"),
+            Some("Up 3 hours"),
+            Some("Exited (oops) ago"),
+            None,
+        ] {
+            assert_eq!(crash_code(clean), None, "{clean:?}");
+        }
     }
 
     #[test]
