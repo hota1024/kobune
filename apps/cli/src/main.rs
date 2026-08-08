@@ -762,31 +762,40 @@ async fn handle_uninstall(
             .map(|report| report.is_empty())
             .unwrap_or(true);
 
-    if cli.json {
-        output::print_json(&serde_json::json!({
+    // Under `--json` exactly one document comes back, so the plan is held
+    // until the end and the outcome folded into it. Printing it here and
+    // the result afterwards would put two documents on a stream that is
+    // being parsed.
+    let as_json = |removed: bool, failures: &[String], remaining: &[uninstall::Privileged]| {
+        serde_json::json!({
+            "removed": removed,
             "dry_run": dry_run,
             "daemon": daemon.as_ref().ok(),
             "daemon_error": daemon.as_ref().err(),
             "files": plan.files,
             "privileged": plan.privileged,
-        }));
+            "failures": failures,
+            "remaining": remaining,
+        })
+    };
 
-        if dry_run || nothing_to_do {
-            return Ok(ExitCode::SUCCESS);
-        }
-    } else {
+    if !cli.json {
         ui::uninstall_plan(&plan, daemon.as_ref(), dry_run);
+    }
 
-        if nothing_to_do {
-            return Ok(ExitCode::SUCCESS);
+    if dry_run || nothing_to_do {
+        if cli.json {
+            output::print_json(&as_json(false, &[], &[]));
         }
-        if dry_run {
-            return Ok(ExitCode::SUCCESS);
-        }
+        return Ok(ExitCode::SUCCESS);
     }
 
     if !yes && !confirm("Remove all of this?")? {
-        ui::confirm("nothing was removed");
+        if cli.json {
+            output::print_json(&as_json(false, &[], &[]));
+        } else {
+            ui::confirm("nothing was removed");
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -820,7 +829,11 @@ async fn handle_uninstall(
 
     let privileged = run_privileged(&plan, yes);
 
-    ui::uninstall_done(&failures, &privileged);
+    if cli.json {
+        output::print_json(&as_json(true, &failures, &privileged));
+    } else {
+        ui::uninstall_done(&failures, &privileged);
+    }
 
     Ok(if failures.is_empty() {
         ExitCode::SUCCESS
