@@ -108,6 +108,10 @@ const STOP_TIMEOUT_SECS: i64 = 10;
 /// `docker stop` sends SIGTERM and then SIGKILL, and a process that lets
 /// either through exits `128 + signal`. Reading those as failures would
 /// paint every `minato down` red.
+///
+/// 137 is therefore forgiven, which also forgives an OOM kill. Telling them
+/// apart needs `oom_killed`, and that only comes from inspecting each
+/// container — a round trip per service on a path that lists them all.
 const CLEAN_EXITS: [i64; 3] = [0, 143, 137];
 
 /// The exit code of a container that fell over, if that is what happened.
