@@ -155,6 +155,21 @@ $ cargo build --workspace
 $ cargo test --workspace
 ```
 
+### A prebuilt Linux binary
+
+Every merge to `main` replaces the [`nightly`](https://github.com/hota1024/minato/releases/tag/nightly)
+pre-release. Linux x86_64 only — macOS is built from source, because signing
+is unresolved and its runners are expensive on a private repository.
+
+```console
+$ gh release download nightly --repo hota1024/minato
+$ sha256sum -c minato-x86_64-unknown-linux-gnu.tar.gz.sha256
+$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz
+```
+
+`minato` and `minatod` have to stay in the same directory: the CLI starts the
+daemon by looking next to itself.
+
 Running it needs a container runtime. Reaching the Docker API is enough — the
 `docker` CLI itself is not required, and OrbStack, Docker Desktop and colima
 all work.
@@ -170,6 +185,15 @@ CA. A Unix socket path has a length limit, so it cannot live somewhere deep.
 
 The listening ports come from `MINATO_HTTP_PORT`, `MINATO_HTTPS_PORT` and
 `MINATO_DNS_PORT`.
+
+## Contributing
+
+`main` is the release branch. It takes pull requests only, and CI — Rust on
+macOS and Linux, plus the desktop app — has to pass. Merging replaces the
+`nightly` build.
+
+A pull request that touches `docs/` gets its own preview URL, so prose can be
+reviewed by reading the rendered page.
 
 ## License
 
