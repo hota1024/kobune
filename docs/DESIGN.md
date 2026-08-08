@@ -1031,6 +1031,20 @@ would leave nothing resolving once it lands.
 | --- | --- | --- |
 | `minato.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Undecided |
 
+### What ships, and what does not
+
+`nightly` carries `minato` and `minatod` for macOS — Apple Silicon and Intel —
+and Linux x86_64. Both Apple targets are built on one runner: the second is a
+cross-compile that costs a minute, where a second matrix entry pays for a
+whole runner again, and a macOS runner bills at ten times the rate on a
+private repository.
+
+Nothing is signed. macOS quarantines the CLI and the daemon on first run,
+which `xattr -d com.apple.quarantine` clears. **The desktop app is not
+shipped at all**, because Gatekeeper stops an unsigned `.app` outright rather
+than warning about it — an archive nobody can open would promise more than it
+delivers. Signing and notarisation stay open below.
+
 ### Branching: trunk on `main`, and when that changes
 
 `main` is the trunk. Short-lived branches, a pull request into it, CI as the

@@ -155,17 +155,28 @@ $ cargo build --workspace
 $ cargo test --workspace
 ```
 
-### A prebuilt Linux binary
+### A prebuilt binary
 
 Every merge to `main` replaces the [`nightly`](https://github.com/hota1024/minato/releases/tag/nightly)
-pre-release. Linux x86_64 only — macOS is built from source, because signing
-is unresolved and its runners are expensive on a private repository.
+pre-release, for macOS (Apple Silicon and Intel) and Linux x86_64.
 
 ```console
-$ gh release download nightly --repo hota1024/minato
-$ sha256sum -c minato-x86_64-unknown-linux-gnu.tar.gz.sha256
-$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz
+$ gh release download nightly --repo hota1024/minato \
+    --pattern 'minato-aarch64-apple-darwin.tar.gz*'
+$ shasum -a 256 -c minato-aarch64-apple-darwin.tar.gz.sha256
+$ tar xzf minato-aarch64-apple-darwin.tar.gz
 ```
+
+| | |
+| --- | --- |
+| Apple Silicon | `minato-aarch64-apple-darwin.tar.gz` |
+| Intel Mac | `minato-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `minato-x86_64-unknown-linux-gnu.tar.gz` |
+
+The CLI and the daemon are not signed, so macOS quarantines them on first
+run. `xattr -d com.apple.quarantine minato minatod` clears it, or build from
+source. The desktop app is not shipped at all for the same reason —
+Gatekeeper stops an unsigned `.app` outright.
 
 `minato` and `minatod` have to stay in the same directory: the CLI starts the
 daemon by looking next to itself.
