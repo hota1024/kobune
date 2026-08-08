@@ -43,11 +43,7 @@ pub struct ProjectSection {
 
     /// Files to copy into a new worktree, relative to the repository root.
     ///
-    /// **For what git does not carry.** `git worktree add` gives a new
-    /// worktree the tracked files and nothing else, so an untracked but
-    /// required `.env` is missing and the environment cannot start — which
-    /// makes "create a worktree and its preview is up" untrue for any
-    /// project that needs one.
+    /// For what git does not carry: an untracked but required `.env`.
     #[serde(default)]
     pub carry: Vec<String>,
 }
@@ -69,44 +65,6 @@ impl Default for RuntimeSection {
 
 fn default_runtime() -> String {
     "docker".to_string()
-}
-
-/// Checks one `carry` entry before anything is copied.
-///
-/// **These name files Minato reads on the user's behalf**, and a
-/// `minato.toml` arrives with a cloned repository as readily as it is
-/// written by hand. Anything reaching outside the repository is refused
-/// here rather than at copy time, so a bad entry is a configuration error
-/// with a clear message instead of a surprise during `minato new`.
-///
-/// Syntax only. A symlink inside the repository can still point out of it,
-/// and that is caught where the copy happens, against the resolved path.
-fn validate_carry_entry(entry: &str) -> Result<()> {
-    let refuse = |why: &str| {
-        Err(Error::ConfigInvalid(format!(
-            "[project] carry entry `{entry}` {why}. Use a path relative to \
-             the repository root, like \".env\" or \"apps/api/.env\""
-        )))
-    };
-
-    if entry.trim().is_empty() {
-        return refuse("is empty");
-    }
-
-    let path = Path::new(entry);
-
-    if path.is_absolute() || entry.starts_with('~') {
-        return refuse("is an absolute path");
-    }
-
-    if path
-        .components()
-        .any(|part| matches!(part, std::path::Component::ParentDir))
-    {
-        return refuse("leaves the repository");
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -315,7 +273,7 @@ impl MinatoConfig {
         }
 
         for entry in &self.project.carry {
-            validate_carry_entry(entry)?;
+            self.validate_carry_entry(entry)?;
         }
 
         if self.services.is_empty() {
@@ -327,6 +285,50 @@ impl MinatoConfig {
         }
 
         self.validate_no_dependency_cycle()?;
+        Ok(())
+    }
+
+    /// Checks one `carry` entry before anything is copied.
+    ///
+    /// **These name files Minato reads on the user's behalf**, and a
+    /// `minato.toml` arrives with a cloned repository as readily as it is
+    /// written by hand. Anything reaching outside the repository is refused
+    /// here rather than at copy time, so a bad entry is a configuration error
+    /// with a clear message instead of a surprise during `minato new`.
+    ///
+    /// Syntax only. A symlink inside the repository can still point out of it,
+    /// and that is caught where the copy happens, against the resolved path.
+    fn validate_carry_entry(&self, entry: &str) -> Result<()> {
+        let refuse = |why: &str| {
+            Err(Error::ConfigInvalid(format!(
+                "[project] carry entry `{entry}` {why}. Use a path relative to \
+                 the repository root, like \".env\" or \"apps/api/.env\""
+            )))
+        };
+
+        if entry.trim().is_empty() {
+            return refuse("is empty");
+        }
+
+        let path = Path::new(entry);
+
+        // Its own message: `~/x` is not an absolute path, and saying it is
+        // sends someone looking for a leading slash they never wrote.
+        if entry.starts_with('~') {
+            return refuse("starts with ~, which Minato does not expand");
+        }
+
+        if path.is_absolute() {
+            return refuse("is an absolute path");
+        }
+
+        if path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return refuse("leaves the repository");
+        }
+
         Ok(())
     }
 
@@ -635,7 +637,16 @@ mod tests {
     fn refuses_carry_entries_that_leave_the_repository() {
         // These name files Minato reads on someone's behalf, and a
         // minato.toml arrives with a clone as readily as it is hand-written.
-        for entry in ["../.env", "a/../../b", "/etc/passwd", "~/.aws/credentials"] {
+        // Asserted per entry: a message that is true of one of these and
+        // not the others is exactly the drift worth catching.
+        let cases = [
+            ("../.env", "leaves the repository"),
+            ("a/../../b", "leaves the repository"),
+            ("/etc/passwd", "is an absolute path"),
+            ("~/.aws/credentials", "which Minato does not expand"),
+        ];
+
+        for (entry, expected) in cases {
             let err = parse(&format!(
                 r#"
                 [project]
@@ -649,10 +660,7 @@ mod tests {
 
             let message = err.to_string();
             assert!(message.contains("carry"), "{entry}: {message}");
-            assert!(
-                message.contains("absolute") || message.contains("leaves the repository"),
-                "{entry}: {message}"
-            );
+            assert!(message.contains(expected), "{entry}: {message}");
         }
     }
 

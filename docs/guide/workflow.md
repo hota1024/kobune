@@ -32,6 +32,20 @@ $ minato new feature/x --path ../elsewhere
 $ minato new feature/x --no-start         # worktree only
 ```
 
+::: warning A new worktree has only the tracked files
+`git worktree add` brings what git knows about and nothing else, so an
+untracked `.env` is not there and the services fail to start. Name those files
+and Minato brings them over:
+
+```toml
+[project]
+carry = [".env"]
+```
+
+Existing files are never replaced, and a missing one is reported rather than
+fatal. See [`carry`](../reference/minato-toml#carry).
+:::
+
 If the branch already exists, it is checked out rather than created.
 
 A worktree made with plain `git worktree add` is picked up too — Minato

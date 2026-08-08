@@ -234,5 +234,5 @@ $ minato status
 ```
 
 The configuration is checked when it is read. Unknown service references,
-circular `depends_on`, malformed volumes and invalid durations are all caught
-before anything starts.
+circular `depends_on`, malformed volumes, `carry` entries that leave the
+repository and invalid durations are all caught before anything starts.

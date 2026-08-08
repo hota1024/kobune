@@ -6,9 +6,11 @@
 
 mod activation;
 mod activator;
+mod carry;
 mod env;
 mod gateway;
 mod idle;
+mod paths;
 mod resolve;
 mod secrets;
 mod server;
