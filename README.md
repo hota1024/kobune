@@ -1,5 +1,7 @@
 # Minato
 
+[![CI](https://github.com/hota1024/minato/actions/workflows/ci.yml/badge.svg)](https://github.com/hota1024/minato/actions/workflows/ci.yml)
+
 A development environment manager for AI agents.
 
 **Create a git worktree, and its preview environment is up.**
@@ -167,3 +169,7 @@ CA. A Unix socket path has a length limit, so it cannot live somewhere deep.
 
 The listening ports come from `MINATO_HTTP_PORT`, `MINATO_HTTPS_PORT` and
 `MINATO_DNS_PORT`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

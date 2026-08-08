@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes whatever was already running for the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Backtraces cost nothing here and turn "a test failed" into something
+  # that can be acted on without re-running locally.
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Everything but the desktop app. Fast, and the signal that matters for
+  # almost every change.
+  rust:
+    name: Rust
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      # `minato-desktop` is excluded here and built in its own job: it pulls
+      # GPUI from the Zed repository, which dominates the build time and
+      # would delay the result for changes that cannot affect it.
+      - name: Clippy
+        run: cargo clippy --workspace --exclude minato-desktop --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --exclude minato-desktop
+
+  # The GUI, on its own because of the GPUI dependency. Slow on a cold
+  # cache — the Zed checkout alone is large.
+  desktop:
+    name: Desktop app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own cache: sharing one with the `rust` job would have each
+          # evict the other's artefacts.
+          key: desktop
+
+      # If bindgen cannot find the system frameworks, a clang that does not
+      # know about macOS is first on PATH. Setting LIBCLANG_PATH to the
+      # Command Line Tools is the fix; runners have not needed it so far.
+      - name: Clippy
+        run: cargo clippy -p minato-desktop --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test -p minato-desktop
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        working-directory: docs
+
+      # VitePress fails the build on a dead internal link, so this checks
+      # the cross-references between pages as well as that it compiles.
+      - name: Build
+        run: pnpm build
+        working-directory: docs
