@@ -334,8 +334,8 @@ $ minato completions <bash|zsh|fish|elvish|powershell>
 | 変数 | 説明 |
 | --- | --- |
 | `MINATO_HOME` | 状態、ログ、ソケット、CA の保存先。既定値 `~/.minato` |
-| `MINATO_HTTP_PORT` | プロキシの HTTP ポート。既定値 80 |
-| `MINATO_HTTPS_PORT` | プロキシの HTTPS ポート。既定値 443 |
+| `MINATO_HTTP_PORT` | プロキシの HTTP ポート。既定値 80、確保できない場合は 18080。明示した場合はその値がそのまま使われます |
+| `MINATO_HTTPS_PORT` | プロキシの HTTPS ポート。既定値 443、確保できない場合は 18443。明示した場合はその値がそのまま使われます |
 | `MINATO_DNS_PORT` | DNS のポート。既定値 53 |
 | `MINATO_CLOUDFLARED` | `PATH` 以外に配置された `cloudflared` のパス |
 | `MINATO_LOG` | daemon のログフィルタ。例: `debug` |

@@ -202,7 +202,11 @@ impl Supervisor {
         checks.extend(self.runtime_checks(&configured).await);
 
         checks.push(match self.gateway.http_port() {
-            Some(port) => Check::ok("proxy-http", "HTTP proxy", format!("127.0.0.1:{port}")),
+            Some(port) => Check::ok(
+                "proxy-http",
+                "HTTP proxy",
+                listening_detail(port, minato_proxy::DEFAULT_HTTP_PORT),
+            ),
             None => {
                 let failure = self.gateway.http_failure();
                 Check::fail("proxy-http", "HTTP proxy", detail_for(failure)).with_fix(bind_fix(
@@ -237,7 +241,11 @@ impl Supervisor {
         }
 
         checks.push(match self.gateway.https_port() {
-            Some(port) => Check::ok("proxy-https", "HTTPS proxy", format!("127.0.0.1:{port}")),
+            Some(port) => Check::ok(
+                "proxy-https",
+                "HTTPS proxy",
+                listening_detail(port, minato_proxy::DEFAULT_HTTPS_PORT),
+            ),
             None => {
                 let failure = self.gateway.https_failure();
                 Check::warn(
@@ -1927,6 +1935,20 @@ impl Supervisor {
             ),
         })
     }
+}
+
+/// How a listener that did come up is described.
+///
+/// **Says when it is not on the port anyone expects.** Landing on the
+/// fallback is not a failure — URLs work — but they carry a port, and
+/// without a word here that reads as an oddity rather than the consequence
+/// of a privilege the daemon never had.
+fn listening_detail(port: u16, expected: u16) -> String {
+    if port == expected {
+        return format!("127.0.0.1:{port}");
+    }
+
+    format!("127.0.0.1:{port} (not {expected}, so every URL carries the port)")
 }
 
 /// How a missing listener is described.
