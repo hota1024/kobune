@@ -19,6 +19,24 @@ REPO="${MINATO_REPO:-hota1024/minato}"
 CHANNEL="${MINATO_CHANNEL:-nightly}"
 INSTALL_DIR="${MINATO_INSTALL_DIR:-$HOME/.local/bin}"
 
+# Whether there is a line to rewrite in place.
+#
+# The spinner and the bar work by drawing over what they drew a moment
+# ago, which needs a terminal. A pipe, a CI log or `TERM=dumb` gets one
+# line per step, printed before the step rather than after it, so that a
+# log that stops shows what it stopped on.
+if [ -t 1 ] && [ "${TERM:-}" != "dumb" ]; then
+    live=1
+else
+    live=""
+fi
+
+# The step being drawn, empty between steps. Everything that writes to the
+# screen consults it, because a message printed while a line is being held
+# would land in the middle of that line.
+step_label=""
+spin=0
+
 say() {
     printf '%s\n' "$*"
 }
@@ -26,12 +44,152 @@ say() {
 # Diagnostics go to stderr so `… | sh` still shows them when stdout is
 # redirected somewhere.
 die() {
+    step_drop
     printf 'error: %s\n' "$*" >&2
     exit 1
 }
 
+# A warning, without losing the step it interrupted.
+warn() {
+    step_drop_line
+    printf 'warning: %s\n' "$*" >&2
+    step_redraw
+}
+
 need() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Steps
+#
+# What the install is doing, one step at a time: the current one is held on
+# the bottom line with a spinner, and finished ones are left above it with a
+# tick. This is what `minato` itself shows while the daemon works, in the one
+# form a POSIX shell can manage.
+# ---------------------------------------------------------------------------
+
+# The bar is this many cells wide, whatever the window.
+BAR_WIDTH=20
+
+step() {
+    step_label="$1"
+
+    if [ -n "$live" ]; then
+        step_draw ""
+    else
+        # Braced: bash 3.2 — which is what `/bin/sh` is on macOS — reads
+        # the bytes of the ellipsis as part of the name without them.
+        say "${step_label}…"
+    fi
+}
+
+# Redraws the held line: the spinner, the label, and whatever the step
+# wants after it.
+step_draw() {
+    spin=$(((spin + 1) % 10))
+    printf '\r\033[2K  %s %s%s' "$(spinner)" "$step_label" "$1"
+}
+
+step_redraw() {
+    if [ -n "$live" ] && [ -n "$step_label" ]; then
+        step_draw ""
+    fi
+}
+
+# The same frames the CLI spins, so the two look like one program.
+#
+# A `case` rather than an index into a string: these are multi-byte, and
+# `cut -c` counts bytes in the C locale.
+spinner() {
+    case "$spin" in
+        0) printf '⠋' ;;
+        1) printf '⠙' ;;
+        2) printf '⠹' ;;
+        3) printf '⠸' ;;
+        4) printf '⠼' ;;
+        5) printf '⠴' ;;
+        6) printf '⠦' ;;
+        7) printf '⠧' ;;
+        8) printf '⠇' ;;
+        *) printf '⠏' ;;
+    esac
+}
+
+# Ends the step, leaving it on screen with a tick and, optionally, what it
+# came to: a size, a directory, the shells that got completions.
+step_done() {
+    if [ -n "$live" ]; then
+        printf '\r\033[2K  ✓ %s%s\n' "$step_label" "${1:+  $1}"
+    elif [ -n "${1:-}" ]; then
+        say "  $1"
+    fi
+
+    step_label=""
+}
+
+# Ends a step that turned out to have nothing to do, leaving nothing
+# behind: a tick against work that did not happen reads as a lie.
+step_drop() {
+    step_drop_line
+    step_label=""
+}
+
+# Clears the held line without forgetting the step, for the things that
+# have something to say in the middle of one.
+step_drop_line() {
+    if [ -n "$live" ] && [ -n "$step_label" ]; then
+        printf '\r\033[2K'
+    fi
+}
+
+# A size to read at a glance, in whole-integer arithmetic.
+#
+# `awk` would do this in a line; this way the script asks for nothing a
+# busybox does not have. The tenth of a megabyte is divided out rather
+# than multiplied into, which keeps every value well inside the 32-bit
+# signed range a shell is only promised to have.
+human() {
+    if [ "$1" -ge 1048576 ]; then
+        printf '%d.%d MB' "$(($1 / 1048576))" "$(($1 / 104858 % 10))"
+    else
+        printf '%d kB' "$(($1 / 1024))"
+    fi
+}
+
+# The bar, the percentage, and how much of the file has arrived.
+step_bar() {
+    # $1 bytes so far, $2 bytes in total
+    #
+    # Kilobytes throughout, for the same 32-bit reason: bytes × 100 leaves
+    # the promised range behind at about 21 MB, which a release archive
+    # passes.
+    total_kb=$(($2 / 1024))
+    if [ "$total_kb" -lt 1 ]; then
+        total_kb=1
+    fi
+
+    percent=$(($1 / 1024 * 100 / total_kb))
+    if [ "$percent" -gt 100 ]; then
+        # Content-Length is what a server says, not what it sends.
+        percent=100
+    fi
+
+    filled=$((percent * BAR_WIDTH / 100))
+    bar=""
+    cell=0
+    while [ "$cell" -lt "$BAR_WIDTH" ]; do
+        # Braced for the same reason as the ellipsis above: bash 3.2 reads
+        # the bytes of the block as part of the name otherwise.
+        if [ "$cell" -lt "$filled" ]; then
+            bar="${bar}█"
+        else
+            bar="${bar}░"
+        fi
+        cell=$((cell + 1))
+    done
+
+    step_draw "$(printf '  %s %3d%%  %s/%s' "$bar" "$percent" "$(human "$1")" "$(human "$2")")"
 }
 
 # The target triple, which is also how the archives are named.
@@ -73,6 +231,95 @@ download() {
     fi
 }
 
+# Downloads the archive with a bar in front of it.
+#
+# The transfer runs in the background and the file it is writing is
+# measured as it grows. curl and wget both have progress meters of their
+# own, but they look nothing like each other and nothing like the rest of
+# this — and which of the two is installed is not something to show a
+# person.
+#
+# A server that will not say how big the file is gets the amount so far
+# and no bar: a bar has to know where the end is, and one that guesses is
+# worse than none. With no terminal at all there is nothing to watch, and
+# the download is simply run.
+download_watched() {
+    # $1 url, $2 destination
+    if [ -z "$live" ]; then
+        download "$1" "$2"
+        return
+    fi
+
+    total="$(content_length "$1")"
+    if [ -n "$total" ] && [ "$total" -lt 1 ]; then
+        total=""
+    fi
+
+    download "$1" "$2" &
+    download_pid=$!
+
+    while kill -0 "$download_pid" 2>/dev/null; do
+        got=0
+        if [ -f "$2" ]; then
+            got="$(wc -c <"$2" | tr -d ' ')"
+        fi
+
+        if [ -n "$total" ]; then
+            step_bar "$got" "$total"
+        else
+            step_draw "  $(human "$got")"
+        fi
+
+        sleep "$tick"
+    done
+
+    if wait "$download_pid"; then
+        download_pid=""
+
+        # Whatever the last poll caught, the file is now whole. Leaving the
+        # bar at 98% would say the opposite.
+        if [ -n "$total" ]; then
+            step_bar "$total" "$total"
+        fi
+    else
+        download_pid=""
+        return 1
+    fi
+}
+
+# How big the download is, according to the server. Empty when it will not
+# say, or says something that is not a number.
+#
+# `-L` because a release download is a redirect to a CDN, and it is the
+# CDN that knows the length.
+#
+# The status is checked before the headers are read, and that is the whole
+# point of the function: a server that refuses HEAD answers with an error
+# page, which has a Content-Length of its own. Believing it draws a bar
+# that is full from the second frame.
+content_length() {
+    if need curl; then
+        headers="$(curl -fsSLI "$1" 2>/dev/null)" || return 0
+    elif need wget; then
+        headers="$(wget -qS --spider "$1" 2>&1)" || return 0
+    else
+        return 0
+    fi
+
+    length="$(
+        printf '%s\n' "$headers" |
+            tr -d '\r' |
+            grep -i '^ *content-length:' |
+            tail -n 1 |
+            sed 's/.*: *//'
+    )"
+
+    case "$length" in
+        '' | *[!0-9]*) return 0 ;;
+        *) printf '%s' "$length" ;;
+    esac
+}
+
 # The checksum is published alongside the archive, so a truncated download
 # fails here instead of turning into a confusing "cannot execute".
 verify() {
@@ -84,7 +331,7 @@ verify() {
     elif need shasum; then
         actual="$(shasum -a 256 "$1" | cut -d' ' -f1)"
     else
-        say "warning: no sha256 tool found, skipping verification" >&2
+        warn "no sha256 tool found, skipping verification"
         return 0
     fi
 
@@ -272,19 +519,60 @@ say "  into     $INSTALL_DIR"
 say ""
 
 tmp="$(mktemp -d)"
-# Runs on failure too, so a mismatched checksum does not leave an archive
-# behind for someone to find and trust later.
-trap 'rm -rf "$tmp"' EXIT INT TERM
+download_pid=""
 
-say "downloading ${archive}…"
-download "$base/$archive" "$tmp/$archive" ||
+# Runs on failure too, so a mismatched checksum does not leave an archive
+# behind for someone to find and trust later — and so that a Ctrl-C during
+# the download takes the transfer with it rather than leaving it writing
+# into a directory nobody will look at again.
+cleanup() {
+    if [ -n "$download_pid" ]; then
+        kill "$download_pid" 2>/dev/null || true
+    fi
+
+    if [ -n "$live" ]; then
+        printf '\033[?25h'
+    fi
+
+    rm -rf "$tmp"
+}
+
+trap cleanup EXIT
+# Interrupted means stopped. Without this the handler would run and the
+# script would carry on to unpack an archive that is half a file.
+trap 'cleanup; exit 130' INT TERM
+
+# How long to wait between two paints of the bar.
+#
+# POSIX only promises `sleep` whole seconds, and a bar that moves once a
+# second is barely a bar — so a fraction is tried first and taken if it
+# works.
+if sleep 0.1 2>/dev/null; then
+    tick=0.1
+else
+    tick=1
+fi
+
+# The cursor would otherwise sit blinking at the end of the bar, and jump
+# about as the line is redrawn. Put back by `cleanup`, on every exit.
+if [ -n "$live" ]; then
+    printf '\033[?25l'
+fi
+
+step "downloading $archive"
+download_watched "$base/$archive" "$tmp/$archive" ||
     die "cannot download $base/$archive"
 download "$base/$archive.sha256" "$tmp/$archive.sha256" ||
     die "cannot download the checksum for $archive"
+step_done "$(human "$(wc -c <"$tmp/$archive" | tr -d ' ')")"
 
+step "verifying the checksum"
 verify "$tmp/$archive" "$tmp/$archive.sha256"
+step_done
 
+step "unpacking the archive"
 tar xzf "$tmp/$archive" -C "$tmp" || die "cannot unpack $archive"
+step_done
 
 # The archive nests the binaries under a directory named after the target,
 # so that unpacking it by hand does not scatter files into the current one.
@@ -299,6 +587,8 @@ fi
 for binary in minato minatod; do
     [ -f "$payload/$binary" ] || die "$archive does not contain $binary"
 done
+
+step "installing minato and minatod"
 
 mkdir -p "$INSTALL_DIR" || die "cannot create $INSTALL_DIR"
 
@@ -321,17 +611,26 @@ fi
 version="$("$INSTALL_DIR/minato" --version 2>/dev/null || true)"
 [ -n "$version" ] || die "the installed binary does not run. Report this at https://github.com/$REPO/issues"
 
+# No directory after it: the header said where this was going, and the
+# summary below says it again with the two names.
+step_done
+
+# Quick enough that there is nothing to watch, and it can come to nothing
+# at all — no shell to write for, or a build too old to have `minato
+# completions`. So it is announced afterwards, and only if it happened: a
+# step named before the fact would sit there having claimed something.
 completions_written=""
 install_completions "$INSTALL_DIR/minato"
+
+if [ -n "$completions_written" ]; then
+    step "writing completions"
+    step_done "$completions_written"
+fi
 
 say ""
 say "installed $version"
 say "  $INSTALL_DIR/minato"
 say "  $INSTALL_DIR/minatod"
-
-if [ -n "$completions_written" ]; then
-    say "  completions: $completions_written"
-fi
 
 # Only when it is not already reachable, and in the syntax of the shell the
 # person is actually in. A wrong line here gets pasted into a config file
