@@ -8,12 +8,22 @@ mod launchd;
 mod output;
 mod skill;
 mod system;
+mod update;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use minato_api::{Request, Response, Target};
+
+/// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
+/// is what tells one build from another.
+fn version() -> &'static str {
+    // Leaked once at startup: clap wants a `&'static str`, and the string is
+    // built from two compile-time constants so there is nothing to free.
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| minato_core::version_string(env!("CARGO_PKG_VERSION")))
+}
 
 /// The suffix used when `[project] domain` is left out. It is also what
 /// the resolver gets installed for.
@@ -23,7 +33,7 @@ use minato_client::{Client, ClientError};
 #[derive(Parser, Debug)]
 #[command(
     name = "minato",
-    version,
+    version = version(),
     about = "A development environment manager for AI agents",
     long_about = "Manages a preview environment per git worktree.\n\
                   Every command supports --json, and the exit code says what kind of failure it was."
@@ -173,6 +183,22 @@ enum Command {
         command: DaemonCommand,
     },
 
+    /// Replace this installation with the latest build
+    Update {
+        /// Report whether a newer build exists, without installing it
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Print a shell completion script
+    ///
+    /// The installer writes these for you. This is how to do it by hand, or
+    /// after adding a shell.
+    Completions {
+        /// bash, zsh, fish, elvish or powershell
+        shell: clap_complete::Shell,
+    },
+
     /// Reach this environment from outside, over Cloudflare Tunnel
     Tunnel {
         #[command(subcommand)]
@@ -260,9 +286,23 @@ enum DaemonCommand {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    restore_sigpipe();
+
     let cli = Cli::parse();
 
-    match run(&cli).await {
+    let outcome = run(&cli).await;
+
+    // After the command, so a slow network cannot delay the output anyone is
+    // waiting for. Never under `--json`: that stream is parsed, and a line
+    // about a new build landing in it would be a bug rather than a nuisance.
+    // stderr regardless, so `$(minato url web)` never picks it up.
+    if !cli.json && wants_update_notice(&cli.command) {
+        if let Some(notice) = update_notice().await {
+            eprintln!("{notice}");
+        }
+    }
+
+    match outcome {
         Ok(code) => code,
         Err(err) => {
             if cli.json {
@@ -278,6 +318,44 @@ async fn main() -> ExitCode {
             ExitCode::from(exit_code_for(&err) as u8)
         }
     }
+}
+
+/// Restores the default action for SIGPIPE.
+///
+/// Rust ignores it at startup, which turns a closed pipe into a write error
+/// and then a panic inside `println!`. Since the documentation tells people
+/// to pipe this — `minato url | …`, `minato logs | grep` — a panic on
+/// `| head` is a papercut worth removing.
+///
+/// SAFETY: called once, before any thread is spawned, and restores the
+/// disposition the operating system starts a process with.
+fn restore_sigpipe() {
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+/// Whether a command should carry the update notice.
+///
+/// `update` says everything there is to say about updates itself, and
+/// following "installed c7282b8" with "a newer build is available" would
+/// simply be wrong. `completions` is redirected into a file.
+fn wants_update_notice(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Update { .. } | Command::Completions { .. }
+    )
+}
+
+/// The once-a-day check, or nothing at all.
+///
+/// Silent on every failure, including having no configuration directory:
+/// this runs after a command that already worked, and has nothing to add
+/// when it cannot reach GitHub.
+async fn update_notice() -> Option<String> {
+    let paths = minato_core::Paths::resolve().ok()?;
+    update::background_notice(&paths).await
 }
 
 /// The errors the CLI deals with. Ones from the daemon keep its exit
@@ -338,6 +416,19 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     // Installing the Skill needs no daemon either.
     if let Command::Skill { command } = &cli.command {
         return handle_skill(cli, command, &cwd);
+    }
+
+    // Updating talks to GitHub, not to the daemon.
+    if let Command::Update { check } = &cli.command {
+        return handle_update(cli, *check).await;
+    }
+
+    // Nor does printing a completion script.
+    if let Command::Completions { shell } = &cli.command {
+        let mut command = <Cli as CommandFactory>::command();
+        let name = command.get_name().to_string();
+        clap_complete::generate(*shell, &mut command, name, &mut std::io::stdout());
+        return Ok(ExitCode::SUCCESS);
     }
 
     let client = Client::from_env().map_err(|err| {
@@ -459,12 +550,95 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             TunnelCommand::Status => Request::TunnelStatus { target },
         },
         Command::Doctor | Command::Setup => Request::Doctor { target },
-        Command::Init { .. } | Command::Daemon { .. } | Command::Skill { .. } => {
+        Command::Init { .. }
+        | Command::Daemon { .. }
+        | Command::Skill { .. }
+        | Command::Completions { .. }
+        | Command::Update { .. } => {
             unreachable!("the commands that need no daemon are handled before this")
         }
     };
 
     Ok(request)
+}
+
+/// Checks for a newer build, and installs it unless only asked to check.
+async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError> {
+    let status = update::check()
+        .await
+        .map_err(|err| CliError::Local(err.to_string()))?;
+
+    let available = match &status {
+        update::Status::Current => {
+            if cli.json {
+                output::print_json(&serde_json::json!({
+                    "status": "current",
+                    "commit": minato_core::BUILD_COMMIT,
+                }));
+            } else {
+                println!("up to date ({})", minato_core::BUILD_COMMIT_SHORT);
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+        // Nothing to compare against, so nothing is claimed either way.
+        // Saying "up to date" would be a guess, and saying "out of date"
+        // would push someone off a build they made on purpose.
+        update::Status::Unknown => {
+            if cli.json {
+                output::print_json(&serde_json::json!({
+                    "status": "unknown",
+                    "commit": minato_core::BUILD_COMMIT,
+                }));
+            } else {
+                println!("cannot tell: this build does not record a commit");
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+        update::Status::Available { commit } => commit.clone(),
+    };
+
+    let short: String = available.chars().take(7).collect();
+
+    if check_only {
+        if cli.json {
+            output::print_json(&serde_json::json!({
+                "status": "available",
+                "commit": available,
+                "running": minato_core::BUILD_COMMIT,
+            }));
+        } else {
+            println!("a newer build is available ({short})");
+            println!("run `minato update` to install it");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if !cli.json {
+        println!("installing {short}…");
+    }
+
+    let installed = update::install()
+        .await
+        .map_err(|err| CliError::Local(err.to_string()))?;
+
+    let installed_short: String = installed.chars().take(7).collect();
+
+    if cli.json {
+        output::print_json(&serde_json::json!({
+            "status": "installed",
+            "commit": installed,
+        }));
+    } else {
+        println!("installed {installed_short}");
+        println!();
+        // The running daemon is still the old binary. It is not restarted
+        // here because that is launchd's job where launchd is installed,
+        // and stopping it is what makes launchd pick the new one up.
+        println!("the running daemon is still the previous build.");
+        println!("`minato daemon stop` to replace it (launchd starts it again).");
+    }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Installing the Skill. Needs no daemon.

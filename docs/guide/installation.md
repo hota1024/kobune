@@ -1,21 +1,51 @@
 # Installation
 
-Minato is not published to crates.io yet, so it is built from source.
+```console
+$ curl -fsSL https://minato.1024.works/install.sh | sh
+```
+
+That picks the archive for your machine, checks it against its published
+`.sha256`, installs `minato` and `minatod` into `~/.local/bin`, and writes shell
+completions for whichever of bash, zsh and fish you have.
+
+Nothing it does needs root, and it prints the one PATH line you may need at the
+end — written for your shell, so fish users do not get `export PATH`.
 
 ## Requirements
 
 | | |
 | --- | --- |
-| **Rust** | 1.85 or later |
 | **A container runtime** | Docker, OrbStack or colima — or Apple Container on macOS 26+ |
 | **macOS** | Fully supported. Linux works for the core, minus launchd socket activation |
+| **Rust 1.85+** | Only to [build from source](#build-it) |
 
 The desktop app is optional and needs a little more; see
 [The desktop app](./gui).
 
-## A prebuilt binary
+## The install script
 
-Skip the build if there is an archive for your machine:
+Read it before you run it — [`install.sh`](https://minato.1024.works/install.sh)
+is about 250 lines of POSIX shell and does nothing surprising. Two settings:
+
+| | |
+| --- | --- |
+| `MINATO_INSTALL_DIR` | where the binaries go, `~/.local/bin` by default |
+| `MINATO_NO_COMPLETIONS` | set to anything to skip the completion scripts |
+
+```console
+$ curl -fsSL https://minato.1024.works/install.sh | MINATO_INSTALL_DIR=/usr/local/bin sh
+```
+
+It installs the `nightly` build, which is replaced on every merge to `main`.
+That is the latest build rather than a release: nothing in it carries a version,
+and what it contains changes without notice.
+
+Rerunning it upgrades in place. So does [`minato update`](#keeping-it-up-to-date),
+without needing the network twice or a shell pipeline.
+
+## A prebuilt binary, by hand
+
+The same archives the script downloads:
 
 | | |
 | --- | --- |
@@ -31,20 +61,19 @@ $ tar xzf minato-aarch64-apple-darwin.tar.gz
 $ cd minato-aarch64-apple-darwin
 ```
 
-`nightly` is replaced on every merge to `main`. It is the latest build rather
-than a release: nothing in it carries a version, and what it contains changes
-without notice.
-
 ::: warning macOS quarantines unsigned binaries
 ```console
 $ xattr -d com.apple.quarantine minato minatod
 ```
-Signing is unresolved, so the alternative is to build from source. The
-desktop app is not shipped at all for the same reason: Gatekeeper stops an
-unsigned `.app` outright rather than warning about it.
+The install script does this for you. Signing is unresolved, so the other
+option is to build from source. The desktop app is not shipped at all for the
+same reason: Gatekeeper stops an unsigned `.app` outright rather than warning
+about it.
 :::
 
 ## Build it
+
+Minato is not on crates.io yet, so building means cloning it.
 
 ```console
 $ git clone https://github.com/hota1024/minato
@@ -65,6 +94,98 @@ $ cp target/release/minato target/release/minatod ~/.local/bin/
 
 They ship together and expect to sit side by side: the CLI starts the daemon by
 looking next to itself.
+
+## Shell completions
+
+The install script writes these already. To do it yourself, or for a shell it
+did not find:
+
+::: code-group
+```console [fish]
+$ minato completions fish > ~/.config/fish/completions/minato.fish
+```
+
+```console [zsh]
+$ mkdir -p ~/.local/share/zsh/site-functions
+$ minato completions zsh > ~/.local/share/zsh/site-functions/_minato
+$ echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
+```
+
+```console [bash]
+$ mkdir -p ~/.local/share/bash-completion/completions
+$ minato completions bash > ~/.local/share/bash-completion/completions/minato
+```
+:::
+
+fish loads its file with no further setup. zsh needs the directory on `fpath`,
+which is why the extra line is there. bash needs
+[bash-completion](https://github.com/scop/bash-completion) 2.x installed.
+
+`elvish` and `powershell` are also accepted, since they come free with the
+generator, but nothing is tested against them.
+
+## Keeping it up to date
+
+```console
+$ minato update
+installing 9f3c1a2…
+installed 9f3c1a2
+
+the running daemon is still the previous build.
+`minato daemon stop` to replace it (launchd starts it again).
+```
+
+`update` replaces the installation it is run from — the directory holding the
+`minato` that you invoked, not a configured one — with the current `nightly`.
+Both binaries go together, because a CLI and a daemon from different builds
+would not agree on the protocol between them.
+
+The new files are written beside the old ones and renamed into place. A running
+executable cannot be written to, but it can be replaced, so an update while the
+daemon is up leaves it running the old build until it is restarted. Which is
+what the last line is about: stopping it is how launchd picks the new one up.
+
+To look without installing:
+
+```console
+$ minato update --check
+a newer build is available (9f3c1a2)
+run `minato update` to install it
+```
+
+### The automatic check
+
+Once a day, after a command has finished, Minato asks GitHub what `nightly`
+points at and says one line on **stderr** if it is not what you are running:
+
+```
+a newer build is available (9f3c1a2). Run `minato update`
+```
+
+It runs after the command, never before, so a slow network cannot delay output
+you are waiting for. It is skipped entirely under `--json`, so nothing an agent
+parses ever contains it. Every failure is silent: a check that cannot reach
+GitHub has nothing to say.
+
+Turn it off with an environment variable:
+
+```console
+$ export MINATO_NO_UPDATE_CHECK=1
+```
+
+The answer is cached in `~/.minato/update-check.json` for 24 hours, and the
+notice is repeated from that cache in between — a warning shown once a day and
+never again would just be missed.
+
+A build made from source reports nothing either way. It records the commit it
+was built from, and with no commit to compare there is no honest answer: "up to
+date" would be a guess, and "out of date" would push you off a build you made
+on purpose.
+
+```console
+$ minato --version
+minato 0.1.0 (9f3c1a2)
+```
 
 ## Pick a container runtime
 

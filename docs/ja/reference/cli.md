@@ -208,6 +208,37 @@ $ minato daemon status
 launchd が再起動します。80/443 番ポートを保持したまま設定を再読み込みする
 手段です。
 
+## 更新
+
+```console
+$ minato update
+$ minato update --check
+```
+
+実行した `minato` が置かれているディレクトリの 2 つのバイナリを、現在の
+`nightly` に差し替えます。`--check` は結果を表示するだけで何もインストール
+しません。`--json` の出力は次の形です。
+
+```json
+{ "status": "available", "commit": "…", "running": "…" }
+```
+
+`status` は `current` / `available` / `installed` / `unknown` のいずれかです。
+`unknown` は、そのビルドがコミットを記録しておらず比較できないことを表します。
+
+チェックはコマンドの実行後に 1 日 1 回自動で走り、stderr に 1 行表示します。
+`MINATO_NO_UPDATE_CHECK` で停止でき、`--json` のときは表示しません。
+
+## 補完
+
+```console
+$ minato completions <bash|zsh|fish|elvish|powershell>
+```
+
+スクリプトを標準出力に書き出します。各シェルの配置先は
+[インストール](../guide/installation#シェル補完) を参照してください。
+インストールスクリプトを使った場合は設定済みです。
+
 ## Minato 自体の設定に使う環境変数
 
 | 変数 | 説明 |
@@ -218,3 +249,4 @@ launchd が再起動します。80/443 番ポートを保持したまま設定�
 | `MINATO_DNS_PORT` | DNS のポート。既定値 53 |
 | `MINATO_CLOUDFLARED` | `PATH` 以外に配置された `cloudflared` のパス |
 | `MINATO_LOG` | daemon のログフィルタ。例: `debug` |
+| `MINATO_NO_UPDATE_CHECK` | 何か値を設定すると 1 日 1 回の更新チェックを行いません |

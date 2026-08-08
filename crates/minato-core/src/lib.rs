@@ -21,3 +21,30 @@ pub use git::Repository;
 pub use paths::Paths;
 pub use service::ServiceState;
 pub use state::{ProjectRecord, State, StateStore, TunnelRecord, WorkspaceRecord};
+
+/// The commit this was built from, or `unknown`.
+///
+/// Every nightly build carries version 0.1.0, so this is what tells one
+/// build from another — and therefore the only thing the update check can
+/// compare.
+pub const BUILD_COMMIT: &str = env!("MINATO_BUILD_COMMIT");
+
+/// The target triple this was built for, e.g. `aarch64-apple-darwin`.
+///
+/// Names the release archive that would replace this binary.
+pub const BUILD_TARGET: &str = env!("MINATO_BUILD_TARGET");
+
+/// [`BUILD_COMMIT`], shortened to the length `git log --oneline` uses.
+pub const BUILD_COMMIT_SHORT: &str = env!("MINATO_BUILD_COMMIT_SHORT");
+
+/// How the version is presented: `0.1.0 (abc1234)`.
+///
+/// The commit is in brackets rather than appended to the version so it does
+/// not read as part of a semantic version.
+pub fn version_string(crate_version: &str) -> String {
+    if BUILD_COMMIT == "unknown" {
+        crate_version.to_string()
+    } else {
+        format!("{crate_version} ({BUILD_COMMIT_SHORT})")
+    }
+}

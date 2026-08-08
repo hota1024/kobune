@@ -27,11 +27,10 @@ env:
   CHANNEL: nightly
 
 jobs:
-  # Targets are grouped by runner rather than one per entry. A macOS runner
-  # bills at ten times the rate on a private repository, so both Apple
-  # targets are built on one — the second is a cross-compile and costs a
-  # minute, where a second matrix entry would pay for a whole runner again:
-  # checkout, toolchain, cache.
+  # Targets are grouped by runner rather than one per entry. Both Apple
+  # targets are built on one macOS runner: the second is a cross-compile and
+  # costs about a minute, where a second matrix entry would pay for a whole
+  # runner again — checkout, toolchain, cache.
   build:
     name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.runs-on }}
@@ -62,6 +61,11 @@ jobs:
       # reaches, so shipping one would promise more than it delivers.
       # Signing and notarisation are open in docs/DESIGN.md §15.
       - name: Build and package
+        env:
+          # Every nightly reports the same 0.1.0, so the binary records the
+          # commit it was built from instead. `minato update` compares that
+          # against the release to decide whether there is anything to do.
+          MINATO_BUILD_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -131,6 +135,16 @@ jobs:
             "The latest build of \`main\`, replaced on every merge. Not a" \
             "release: nothing here carries a version, and what it contains" \
             "changes without notice." \
+            "" \
+            "\`\`\`console" \
+            "\$ curl -fsSL https://minato.1024.works/install.sh | sh" \
+            "\`\`\`" \
+            "" \
+            "That picks the right archive, checks it against its \`.sha256\`," \
+            "and installs shell completions. \`minato update\` replaces an" \
+            "installation with whatever this tag points at." \
+            "" \
+            "By hand:" \
             "" \
             "\`\`\`console" \
             "\$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz" \
