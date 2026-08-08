@@ -126,6 +126,6 @@ $ tail -f ~/.minato/logs/minatod.log   # cloudflared のログもここに出力
 
 ## 次に読むもの
 
-- [トンネルで共有する](../guide/tunnel) — 構成とその設計理由
+- [Cloudflare Tunnel で共有する](../guide/tunnel) — 構成とその設計理由
 - [AI エージェントと使う](../guide/agents) — エージェントが `tunnel enable` を
   自ら実行すべきでない理由も含みます

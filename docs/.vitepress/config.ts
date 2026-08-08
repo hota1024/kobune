@@ -84,7 +84,10 @@ const PAGES = {
   ],
   goingFurther: [
     ['guide/runtimes', { en: 'Runtimes', ja: 'ランタイム' }],
-    ['guide/tunnel', { en: 'Sharing over a tunnel', ja: 'トンネルで共有する' }],
+    ['guide/tunnel', {
+      en: 'Sharing over Cloudflare Tunnel',
+      ja: 'Cloudflare Tunnel で共有する',
+    }],
     ['guide/how-it-works', { en: 'How it works', ja: '仕組み' }],
     ['guide/troubleshooting', { en: 'Troubleshooting', ja: '困ったときは' }],
   ],

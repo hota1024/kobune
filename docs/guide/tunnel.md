@@ -1,4 +1,4 @@
-# Sharing over a tunnel
+# Sharing over Cloudflare Tunnel
 
 A Cloudflare Tunnel makes an environment reachable from outside your machine —
 a phone, a reviewer, a webhook that has to reach you.
