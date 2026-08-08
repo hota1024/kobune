@@ -65,19 +65,24 @@ jobs:
         run: pnpm build
         working-directory: docs
 
-      # A fork's pull request has no access to secrets, so there is nothing
-      # to deploy with. The build above is still the useful half.
+      # A fork's pull request has no access to the environment's secrets, so
+      # there is nothing to deploy with. The build above is still the useful
+      # half.
+      #
+      # wrangler is a devDependency rather than something an action installs
+      # for us: cloudflare/wrangler-action runs `pnpm add wrangler` mid-job,
+      # and pnpm blocks workerd's install script unless it is allowed by
+      # name — which is a thing to configure for a dependency that is not
+      # in the lockfile. Pinning it here makes the version reproducible and
+      # the install one `pnpm install`.
       - name: Deploy
         if: env.CLOUDFLARE_API_TOKEN != ''
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # A branch other than main becomes a preview deployment with its
-          # own URL, which is the point of hosting the docs here: prose is
-          # reviewed by reading it, not by reading its diff.
-          command: >-
-            pages deploy .vitepress/dist
-            --project-name=minato-docs
-            --branch=${{ github.head_ref || github.ref_name }}
-          workingDirectory: docs
+        working-directory: docs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # Any branch other than main becomes a preview deployment with its
+        # own URL, which is the point of hosting the docs here: prose is
+        # reviewed by reading it, not by reading its diff.
+        run: >-
+          pnpm deploy:pages
+          --branch=${{ github.head_ref || github.ref_name }}

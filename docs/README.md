@@ -61,6 +61,15 @@ hosted here — prose is reviewed by reading it, not by reading its diff.
 from forks, and deploys only when the secrets are present. A fork cannot see
 them, so its pull requests get the build check and no preview.
 
+The credentials are **environment secrets on `Release`**, so the job names
+that environment. Without it they are simply absent, which looks identical to
+a fork's pull request and skips the deploy without complaining.
+
+Deploying runs `pnpm deploy:pages`, with wrangler as a devDependency.
+cloudflare/wrangler-action installs wrangler mid-job instead, and pnpm blocks
+workerd's install script unless it is allowed by name — awkward for something
+that is not in the lockfile.
+
 ### One-time setup
 
 Already done, and recorded here for whoever has to do it again.
