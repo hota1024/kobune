@@ -202,7 +202,11 @@ impl Supervisor {
         checks.extend(self.runtime_checks(&configured).await);
 
         checks.push(match self.gateway.http_port() {
-            Some(port) => Check::ok("proxy-http", "HTTP proxy", format!("127.0.0.1:{port}")),
+            Some(port) => Check::ok(
+                "proxy-http",
+                "HTTP proxy",
+                listening_detail(port, self.gateway.http_fell_back()),
+            ),
             None => {
                 let failure = self.gateway.http_failure();
                 Check::fail("proxy-http", "HTTP proxy", detail_for(failure)).with_fix(bind_fix(
@@ -237,7 +241,11 @@ impl Supervisor {
         }
 
         checks.push(match self.gateway.https_port() {
-            Some(port) => Check::ok("proxy-https", "HTTPS proxy", format!("127.0.0.1:{port}")),
+            Some(port) => Check::ok(
+                "proxy-https",
+                "HTTPS proxy",
+                listening_detail(port, self.gateway.https_fell_back()),
+            ),
             None => {
                 let failure = self.gateway.https_failure();
                 Check::warn(
@@ -1929,6 +1937,24 @@ impl Supervisor {
     }
 }
 
+/// How a listener that did come up is described.
+///
+/// **Says when it had to settle.** Landing on the fallback is not a failure
+/// — URLs work — but they carry a port from then on, and without a word
+/// here that reads as an oddity rather than the consequence of a privilege
+/// the daemon never had.
+///
+/// Keyed on having fallen back rather than on the port not being 80: a port
+/// named with `MINATO_HTTP_PORT` is what was asked for, and calling that
+/// unexpected would be wrong.
+fn listening_detail(port: u16, fell_back: bool) -> String {
+    if !fell_back {
+        return format!("127.0.0.1:{port}");
+    }
+
+    format!("127.0.0.1:{port} (a fallback, so every URL carries the port)")
+}
+
 /// How a missing listener is described.
 fn detail_for(failure: Option<BindFailure>) -> String {
     failure.unwrap_or(BindFailure::Other).detail().to_string()
@@ -2308,6 +2334,26 @@ mod tests {
         // "could not be held" was all it ever said, whatever happened.
         assert!(detail_for(Some(BindFailure::Privileged)).contains("privileges"));
         assert!(detail_for(Some(BindFailure::InUse)).contains("another process"));
+    }
+
+    #[test]
+    fn a_fallback_port_is_reported_as_such() {
+        // Landing on the fallback is not a failure, but the URLs carry a
+        // port from then on. Left unsaid that reads as an oddity rather
+        // than the consequence of a privilege the daemon never had.
+        let detail = listening_detail(crate::gateway::FALLBACK_HTTPS_PORT, true);
+
+        assert!(detail.contains("18443"), "{detail}");
+        assert!(detail.contains("fallback"), "{detail}");
+        assert!(detail.contains("carries the port"), "{detail}");
+    }
+
+    #[test]
+    fn a_port_that_was_asked_for_is_reported_plainly() {
+        // MINATO_HTTPS_PORT=8443 got exactly what it named. Calling that a
+        // fallback would present the user's own choice as an anomaly.
+        assert_eq!(listening_detail(8443, false), "127.0.0.1:8443");
+        assert_eq!(listening_detail(443, false), "127.0.0.1:443");
     }
 
     #[test]

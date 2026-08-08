@@ -111,6 +111,14 @@ root and hands the daemon the file descriptors; `UserName` in the plist means
 the daemon itself runs as you. Containers and files it creates end up owned by
 the right account.
 
+Without that, the proxy takes 18080 and 18443 and the URLs carry the port. A
+proxy on an awkward port beats no proxy: with none at all no URL is issued,
+which also means no `MINATO_URL_<SERVICE>` reaches a container.
+
+It does not move when the plist *is* installed — launchd holds 80 either way
+then, so a refusal means its job needs starting rather than a different port —
+nor from a port named with `MINATO_HTTP_PORT`, which is used as given.
+
 macOS does not use systemd's `LISTEN_FDS` convention, so this goes through
 `launch_activate_socket()`, looking descriptors up by the names in the plist.
 

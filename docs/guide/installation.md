@@ -348,17 +348,35 @@ $ minato doctor
 
 ### Skipping it
 
-You do not have to. Name unprivileged ports and everything works, with the port
-in the URL:
+You do not have to, and nothing has to be configured to skip it. When 80 and
+443 cannot be held, the proxy takes 18080 and 18443 instead and the port goes
+into the URL:
+
+```console
+$ minato url web
+https://web.feat-1.myapp.localhost:18443
+```
+
+`minato doctor` says so rather than leaving you to notice.
+
+To choose the ports yourself, name them — a port you name is used as given and
+never fallen back from:
 
 ```console
 $ export MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353
 $ minato daemon start
 ```
 
-You still need the `/etc/resolver` entry for `*.localhost` to resolve — that
-part is macOS, not Minato. `minato doctor` prints the exact command, including
-the right port.
+**DNS has no fallback**, because moving it achieves nothing on its own: the
+`/etc/resolver` entry names the port, and writing that needs root either way.
+That part is macOS, not Minato. `minato doctor` prints the exact command,
+including the right port.
+
+::: tip Already run `minato setup`?
+Then the proxy does *not* fall back. launchd holds 80 whether or not its job
+is running, so a refusal there means the job needs starting — and listening
+somewhere else would hide that. `minato doctor` says which it is.
+:::
 
 ## Check the result
 
