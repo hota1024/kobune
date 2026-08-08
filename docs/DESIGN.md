@@ -1,95 +1,110 @@
-# Minato 設計ドキュメント
+# Minato design notes
 
-AI エージェント向けの開発環境管理ツール。git worktree を作ったら即座にプレビュー環境が立ち上がる状態を作る。
+A development environment manager for AI agents. The goal is that creating a
+git worktree is all it takes to have a preview environment running.
 
-## 1. コンセプト
+## 1. The idea
 
-**「worktree = 環境」の 1:1 対応を不変条件にする。**
+**One worktree, one environment. That correspondence is the invariant.**
 
-worktree が生まれたら環境が生まれ、消えたら消える。エージェントはこの対応関係さえ知っていれば、自分が今どの環境を見ているのか、変更をどう確認すればいいのかを迷わない。
+An environment appears with its worktree and goes with it. Knowing that much,
+an agent never has to wonder which environment it is looking at or how to check
+a change.
 
 ```
 ~/ghq/github.com/hota1024/myapp/            # main worktree   → myapp.localhost
 ~/ghq/github.com/hota1024/myapp.wt/feat-1/  # feat-1 worktree → feat-1.myapp.localhost
                                   /feat-2/  # feat-2 worktree → feat-2.myapp.localhost
 
-https://web.feat-1.myapp.localhost   → feat-1 の web コンテナ :3000
-https://api.feat-1.myapp.localhost   → feat-1 の api コンテナ :8080
+https://web.feat-1.myapp.localhost   → feat-1's web container, :3000
+https://api.feat-1.myapp.localhost   → feat-1's api container, :8080
 ```
 
-エージェントに提供する体験は次の 3 つに集約される。
+What an agent gets comes down to three things.
 
-1. `minato new feat-1` で環境ごとブランチが生える
-2. `minato url web` で確認先の URL が手に入る
-3. `minato logs` / `minato exec` で中を覗ける（`docker` コマンドを直接触らせない）
+1. `minato new feat-1` grows a branch and its environment together
+2. `minato url web` hands back the URL to check
+3. `minato logs` and `minato exec` see inside — without ever touching `docker`
 
-## 2. 用語
+## 2. Vocabulary
 
-| 用語 | 意味 |
+| Term | Meaning |
 | --- | --- |
-| **Project** | git リポジトリ。main worktree の `origin` URL、なければ絶対パスで同定する |
-| **Workspace** | worktree 1 つに対応する環境。名前は worktree 名（ブランチ名をサニタイズしたもの） |
-| **Service** | Workspace 内の 1 プロセス（web, api, db …） |
-| **Runtime** | 仮想化バックエンド（Docker / Firecracker / Apple Container） |
-| **Supervisor** | daemon 内で Workspace のライフサイクルを管理するコンポーネント |
+| **Project** | A git repository, identified by the main worktree's `origin` URL, or its absolute path when there is none |
+| **Workspace** | The environment for one worktree. Named after the worktree, which is the branch name sanitised |
+| **Service** | One process in a workspace (web, api, db, …) |
+| **Runtime** | A virtualisation backend (Docker, Firecracker, Apple Container) |
+| **Supervisor** | The component inside the daemon that owns a workspace's lifecycle |
 
-「Environment」という語は環境変数と紛らわしいので使わない。
+The word "environment" is avoided: it collides with environment variables.
 
-## 3. アーキテクチャ
+## 3. Architecture
 
 ```
   minato (CLI) ──────┐
   minato-desktop ────┼─── Unix socket / JSON-RPC ───┐
   SKILL.md (agent) ──┘                              │
-        └── いずれも minato-client 経由              ▼
+        └── all of them through minato-client       ▼
                                             ┌───────────┐
                                             │  minatod  │
                                             │ Supervisor│
                                             └─────┬─────┘
               ┌──────────────┬───────────────┼──────────────┬──────────────┐
               ▼              ▼               ▼              ▼              ▼
-         DNS (:53)     Proxy (:80/:443)   Runtime      Env Resolver     Tunnel
-      hickory-server   hyper + rustls    ┌──trait──┐   3層マージ +    cloudflared
-      *.localhost →     Host ベース      │ Docker  │   シークレット参照   ingress
-        127.0.0.1        振り分け        │Firecracker│
+         DNS (:53)     Proxy (:80/:443)   Runtime      Env resolver     Tunnel
+      hickory-server   hyper + rustls    ┌──trait──┐   3-layer merge   cloudflared
+      *.localhost →     routes on Host   │ Docker  │   + secret refs     ingress
+        127.0.0.1                        │Firecracker│
                                          │ Apple   │
                                          └─────────┘
 ```
 
-**daemon を置く**。ポート台帳・リバースプロキシ・DNS・Tunnel・アイドル監視はいずれも常駐が要る。
+**There is a daemon.** The port ledger, the reverse proxy, DNS, the tunnel and
+idle sweeping all need something to stay running.
 
-### 原則: daemon の API が製品の本体
+### Principle: the daemon's API is the product
 
-CLI・GUI・Skills はいずれも daemon の**同格のクライアント**であり、表層に過ぎない。ロジックはクライアント側に一切置かない。
+The CLI, the GUI and Skills are **equal clients** of the daemon, and nothing
+more than surface. No logic lives on the client side.
 
-この原則は M0 の時点から守る必要がある。CLI 専用の都合（人間向けの整形、対話的な確認、進捗表示）を daemon の API に混ぜると、GUI 実装時に必ず破綻する。具体的には次を守る。
+This has to hold from M0. Letting CLI-specific concerns — formatting for
+people, interactive confirmation, progress display — into the daemon's API
+guarantees a reckoning when the GUI arrives. Concretely:
 
-- daemon の応答は常に構造化データ。人間向け文字列を返さない
-- 長時間処理（起動、ビルド）は**イベントストリームを返す**。CLI はそれをプログレス表示に、GUI は同じものを進捗バーに変換する
-- 確認プロンプトは daemon が出さない。破壊的操作は `force` フラグをクライアントが渡す
+- A daemon response is always structured data. It never returns a string meant
+  for a person
+- Long-running work — starting, building — **returns an event stream**. The CLI
+  turns it into progress lines; the GUI turns the same thing into a progress bar
+- The daemon never prompts for confirmation. A destructive operation takes a
+  `force` flag from the client
 
-イベントストリームを M0 から用意しておく点が特に重要で、後付けにすると `minato up` が完了までブロックする設計になってしまい、GUI で「起動中の様子」を出せなくなる。
+Having the event stream from M0 matters most. Bolted on later, `minato up`
+would have been designed to block until completion, and the GUI could never
+show a start in progress.
 
-### なぜ daemon か
+### Why a daemon
 
-| 責務 | 常駐が必要な理由 |
+| Responsibility | Why it has to stay running |
 | --- | --- |
-| Proxy | :80/:443 を占有し続ける必要がある |
-| DNS | :53 を占有し続ける必要がある |
-| Supervisor | scale-to-zero のアイドル判定に時間軸が要る |
-| Port 台帳 | 複数 workspace 間のポート衝突を防ぐ single source of truth |
-| Tunnel | cloudflared プロセスの寿命管理 |
+| Proxy | :80 and :443 have to stay held |
+| DNS | :53 has to stay held |
+| Supervisor | Idle detection for scale-to-zero needs a clock |
+| Port ledger | One source of truth against collisions between workspaces |
+| Tunnel | Something has to own the cloudflared process |
 
-## 4. 環境定義: `minato.toml`
+## 4. Defining an environment: `minato.toml`
 
-独自スキーマを第一級とする。Docker は「バックエンドの一つ」であり、compose は内部生成の実装詳細に落とす。これにより Firecracker 対応時に定義フォーマットを作り直さずに済む。
+The schema is Minato's own and comes first. Docker is one backend among
+several, and compose is an implementation detail generated internally. That way
+Firecracker support does not mean redesigning the format.
 
-プロジェクトルート（main worktree）に置いてコミットする。worktree 固有の上書きは `minato.local.toml`（gitignore 対象）。
+It sits at the project root — the main worktree — and is committed.
+Worktree-specific overrides go in `minato.local.toml`, which is gitignored.
 
 ```toml
 [project]
 name = "myapp"
-# domain = "myapp.localhost"   # 省略時は name から導出
+# domain = "myapp.localhost"   # derived from name when left out
 
 [runtime]
 default = "docker"
@@ -98,7 +113,7 @@ default = "docker"
 build = "./web"                 # or image = "node:22"
 port = 3000
 command = "pnpm dev"
-health = "http://localhost:3000/healthz"   # scale-to-zero の起動完了判定
+health = "http://localhost:3000/healthz"   # readiness, for scale-to-zero
 idle_timeout = "30m"
 env = { NODE_ENV = "development" }
 
@@ -111,49 +126,68 @@ health = "tcp://localhost:8080"
 [services.db]
 image = "postgres:16"
 port = 5432
-scope = "project"               # worktree 間で共有（デフォルトは "workspace"）
+scope = "project"               # shared across worktrees (default is "workspace")
 volumes = ["pgdata:/var/lib/postgresql/data"]
-expose = false                  # URL を生やさない（内部通信のみ）
+expose = false                  # no URL; internal traffic only
 ```
 
-### 設計上の要点
+### The parts that matter
 
-**`scope`**: `workspace`（既定）は worktree ごとに独立したインスタンスを立てる。`project` は同一プロジェクトの全 worktree で 1 インスタンスを共有する。DB を worktree ごとに立てると seed とリソースが辛いので、共有できる余地を最初から用意しておく。
+**`scope`**: `workspace`, the default, gives each worktree its own instance.
+`project` shares one instance across every worktree of a project. A database
+per worktree is painful for both seeding and resources, so the room to share
+one is there from the start.
 
-**`expose`**: 既定は `port` があれば true。DB のような内部サービスは `false` にして URL を生やさない。
+**`expose`**: true by default when there is a `port`. An internal service like a
+database sets it to `false` and gets no URL.
 
-**`health`**: scale-to-zero の要。これがないと「起動したがまだ受け付けない」状態でプロキシが 502 を返す。`http://`, `tcp://`, `cmd:` の 3 形式をサポートする。
+**`health`**: what scale-to-zero rests on. Without it the proxy 502s a service
+that has started but is not answering yet. Three forms are supported:
+`http://`, `tcp://` and `cmd:`.
 
-**サービス間の名前解決**: 同一 workspace 内では runtime 側のネットワークでサービス名（`db:5432`）が引ける。異なる scope をまたぐ場合（workspace の api → project の db）は daemon がエイリアスを張る。
+**Resolving service names**: within a workspace, the runtime's network resolves
+service names (`db:5432`). Across scopes — a workspace's api reaching a
+project's db — the daemon sets up an alias.
 
-## 5. 命名とルーティング
+## 5. Naming and routing
 
-### ホスト名の構成
+### How a hostname is built
 
 ```
 {service}.{workspace}.{project}.localhost
 ```
 
-main worktree は workspace ラベルを省略して `{service}.{project}.localhost` とする。
+The main worktree drops the workspace label: `{service}.{project}.localhost`.
 
-### サニタイズ規則
+### Sanitising
 
-ブランチ名は DNS ラベルとして使えない文字を含む。
+A branch name contains characters a DNS label cannot.
 
-1. 小文字化し、`[a-z0-9-]` 以外を `-` に置換（`feature/user-auth` → `feature-user-auth`）
-2. 連続する `-` を 1 つに畳み、先頭末尾の `-` を除去
-3. 63 文字を超える場合は 55 文字に切り詰め、元の名前の SHA-256 先頭 7 文字を `-` 区切りで付与
-4. サニタイズ後に既存 workspace と衝突する場合も同様にハッシュを付与
+1. Lowercase, and replace anything outside `[a-z0-9-]` with `-`
+   (`feature/user-auth` → `feature-user-auth`)
+2. Collapse runs of `-` into one, and trim `-` from both ends
+3. Over 63 characters, truncate to 55 and append the first 7 characters of the
+   original's SHA-256, separated by `-`
+4. Append the same hash when the result collides with an existing workspace
 
-**区切り記号以外の文字が落ちた場合もハッシュを付ける。** `/` `_` `-` `.` 空白は区切りとみなすが、それ以外（日本語など）が落ちたときは情報が消えている。`feature/デモ環境` と `feature/検証環境` がどちらも `feature` になると URL が衝突する。日本語のブランチ名は現実に使われるので、ここは黙って潰してはいけない。
+**A hash is also appended when anything but a separator was dropped.** `/`, `_`,
+`-`, `.` and whitespace count as separators; anything else disappearing means
+information was lost. If `feature/デモ環境` and `feature/検証環境` both become
+`feature`, their URLs collide. Non-ASCII branch names really do get used, so
+this cannot be flattened silently.
 
-サニタイズ結果は状態ストアに永続化し、以後は再計算せず参照する（規則を変えても既存環境の URL が変わらないようにするため）。
+The result is persisted in the state store and read back rather than
+recomputed, so changing the rules never changes an existing workspace's URL.
 
 ### DNS
 
-macOS では `*.localhost` はシステムレベルでは解決されない。Chrome は独自に 127.0.0.1 へ解決するが、`curl` / Safari / Node.js の fetch は解決しない。**エージェントは curl で疎通確認する**ので、これは致命的。
+macOS does not resolve `*.localhost` at the system level. Chrome resolves it to
+127.0.0.1 on its own, but `curl`, Safari and Node's fetch do not. **Agents
+check connectivity with curl**, so this is fatal.
 
-対策として daemon 内に DNS サーバを持ち、`/etc/resolver/localhost` に `nameserver 127.0.0.1` を書く。これは `minato setup` が案内する（sudo が要るため実行は利用者に委ねる）。
+The answer is a DNS server inside the daemon, plus `nameserver 127.0.0.1` in
+`/etc/resolver/localhost`. `minato setup` walks through it — installing it needs
+sudo, so running it is left to the user.
 
 ```
 /etc/resolver/localhost:
@@ -161,58 +195,92 @@ macOS では `*.localhost` はシステムレベルでは解決されない。Ch
   port 15353
 ```
 
-**`port` を書けるおかげで DNS に root が要らない。** :53 を取らずに非特権ポートで動かせる。
+**That `port` line is what keeps DNS out of root's hands.** It can run
+unprivileged instead of holding :53.
 
-Linux では `systemd-resolved` が `.localhost` を解決するため、DNS サーバは任意（`.test` など別 TLD を使う場合のみ必要）。
+On Linux `systemd-resolved` resolves `.localhost` already, so the DNS server is
+optional — only a different TLD such as `.test` needs it.
 
-**ルートの有無を見ずに解決する。** 未知のホスト名も 127.0.0.1 に向け、プロキシに 404 を返させる。DNS で解決を失敗させると「名前が引けない」としか分からないが、プロキシまで届けば「どの workspace が動いているか」まで案内できる。
+**Resolution does not check whether a route exists.** An unknown hostname
+resolves to 127.0.0.1 too, and the proxy 404s it. A DNS failure says only "that
+name does not resolve"; reaching the proxy means the answer can say which
+workspaces are running.
 
-### Proxy と TLS
+### Proxy and TLS
 
-hyper ベースのリバースプロキシが :80/:443 で待ち受け、Host ヘッダ（HTTPS は SNI）でルーティングする。
+A hyper reverse proxy listens on :80 and :443 and routes on the Host header, or
+SNI over HTTPS.
 
-**WebSocket と SSE は必ず通す**。開発サーバの HMR がこれに依存しているため、ここが動かないと使いものにならない。HTTP/2 は ALPN で広告していない（WebSocket の upgrade は HTTP/1.1 の機構なので、h2 を通すと HMR が繋がらなくなる）。
+**WebSocket and SSE must get through.** Dev-server HMR depends on them, and
+without it the whole thing is unusable. HTTP/2 is not advertised over ALPN: a
+WebSocket upgrade is an HTTP/1.1 mechanism, and offering h2 breaks HMR.
 
-**Host ヘッダは書き換えない。** Vite などは Host を見て許可判定をするため、ブラウザで開いた URL がそのままアプリに見える形を保つ。
+**The Host header is not rewritten.** Vite and friends check Host against an
+allowlist, so the app sees the same URL the browser opened.
 
-#### 証明書は SNI ごとに動的発行する（M1 で確定）
+#### Certificates are issued per SNI name, on demand (settled in M1)
 
-ワイルドカード証明書は 1 ラベルしかカバーしない。`*.localhost` では `web.feat-1.myapp.localhost` を賄えず、worktree が増えるたびに深さの違う名前が生まれるため、証明書を事前に用意する方法では追いつかない。
+A wildcard certificate covers one label. `*.localhost` cannot cover
+`web.feat-1.myapp.localhost`, and every new worktree invents a name at a new
+depth, so preparing certificates ahead of time never keeps up.
 
-そこでローカル CA を `~/.minato/ca/` に 1 つ持ち、**SNI で要求された名前の証明書をその場で発行してキャッシュする**。利用者が信頼するのは CA 1 枚だけで済む。
+So there is one local CA in `~/.minato/ca/`, and it **issues a certificate for
+whatever name SNI asks for, on the spot, and caches it**. The user only ever
+has to trust that single CA.
 
-CA を読み込むときは**ディスク上の証明書をそのままチェーンに載せる**。rcgen で読み直して再署名すると、ECDSA の署名が毎回変わるため、利用者が信頼したものとバイト列が食い違う。
+When the CA is loaded, **the certificate on disk goes into the chain as-is**.
+Re-signing it through rcgen produces different bytes every time — ECDSA
+signatures are not deterministic — and what goes out would no longer match what
+the user trusted.
 
-#### IPv4 と IPv6 の両方で待ち受ける（M1 で判明）
+#### Listen on both IPv4 and IPv6 (found in M1)
 
-macOS は `*.localhost` を `::1` と `127.0.0.1` の**両方**に解決し、クライアントは IPv6 を優先する。IPv4 だけで待ち受けると、`[::1]` に別のアプリがいた場合そちらへ silently 繋がってしまう（実際に開発中の Node アプリに吸われた）。
+macOS resolves `*.localhost` to **both** `::1` and `127.0.0.1`, and clients
+prefer IPv6. Listening only on IPv4 silently routes traffic to whatever is on
+`[::1]` — during development that turned out to be an unrelated Node app.
 
-プロキシはループバックの両アドレスで待ち受ける。DNS は resolver 設定が `127.0.0.1` を名指しするため曖昧さがなく、IPv4 のみでよい。
+The proxy listens on both loopback addresses. DNS needs only IPv4: the resolver
+configuration names `127.0.0.1` outright, so there is no ambiguity.
 
-### 特権ポート
+### Privileged ports
 
-macOS では非 root プロセスは 1024 未満をバインドできない。launchd の socket activation を使い、launchd（root）が :53 / :80 / :443 をバインドしてファイルディスクリプタを daemon に渡す。plist に `UserName` を書くことで、**daemon 本体は利用者の権限で動く**（root で動かすと、作るコンテナやファイルの所有者がずれる）。
+On macOS an unprivileged process cannot bind below 1024. launchd's socket
+activation covers it: launchd, as root, binds :53, :80 and :443 and hands the
+file descriptors to the daemon. A `UserName` in the plist means **the daemon
+itself runs as the user** — as root, the containers and files it creates would
+end up owned by the wrong account.
 
-**macOS は systemd の `LISTEN_FDS` 規約を使わない。** `launch_activate_socket()` を呼び、plist の `Sockets` に書いた名前で fd を引く。この関数は `libSystem` にあるので FFI で宣言する。
+**macOS does not use systemd's `LISTEN_FDS` convention.** Instead
+`launch_activate_socket()` looks descriptors up by the name in the plist's
+`Sockets`. It lives in `libSystem`, so it is declared through FFI.
 
-`SockNodeName` に `localhost` を書くと、launchd は `::1` と `127.0.0.1` の両方に socket を開いて fd を 2 つ渡してくる。これで IPv6 を優先するクライアントも取りこぼさない。
+With `localhost` in `SockNodeName`, launchd opens sockets on both `::1` and
+`127.0.0.1` and hands over two descriptors, which covers clients that prefer
+IPv6.
 
-`KeepAlive` は `SuccessfulExit: false` にする。無条件に `true` にすると `minato daemon stop` の直後に launchd が起動し直してしまう。
+`KeepAlive` is set to `SuccessfulExit: false`. An unconditional `true` would
+have launchd start the daemon again the moment `minato daemon stop` finished.
 
-launchd 経由でない場合（開発中の手動起動など）は通常の bind にフォールバックし、`MINATO_HTTP_PORT` などで非特権ポートを指定できる。
+Started outside launchd — by hand during development, say — everything falls
+back to an ordinary bind, and `MINATO_HTTP_PORT` and friends name unprivileged
+ports.
 
-Linux では `CAP_NET_BIND_SERVICE` または systemd socket activation を使う（未実装）。
+On Linux this would be `CAP_NET_BIND_SERVICE` or systemd socket activation,
+which is not implemented.
 
-## 6. Runtime 抽象
+## 6. The Runtime abstraction
 
-Runtime は「サービス 1 つを起動して待ち受けアドレスを返すもの」として定義する。ネットワークの結線とルーティングは Minato 側が持つ。これにより Docker の compose や network の概念に抽象が引きずられない。
+A runtime is defined as "something that starts one service and says where it
+listens". Wiring the network and routing stays on Minato's side, which keeps
+the abstraction from being dragged towards Docker's notions of compose and
+networks.
 
 ```rust
 #[async_trait]
 pub trait Runtime: Send + Sync {
     fn id(&self) -> &'static str;
 
-    /// イメージ/rootfs のビルド、ネットワーク・ボリュームの用意
+    /// Build images and rootfs; prepare networks and volumes
     async fn prepare(&self, ws: &WorkspaceSpec) -> Result<()>;
 
     async fn start(&self, svc: &ServiceSpec) -> Result<RunningService>;
@@ -226,142 +294,179 @@ pub trait Runtime: Send + Sync {
 
 pub struct RunningService {
     pub id: ServiceId,
-    /// Proxy がここへ転送する。Docker なら 127.0.0.1:<動的ポート>、
-    /// Firecracker なら VM の tap インタフェース上の IP:port
+    /// Where the proxy forwards. Under Docker, 127.0.0.1:<dynamic port>;
+    /// under Firecracker, an IP:port on the VM's tap interface
     pub endpoint: SocketAddr,
 }
 ```
 
-`endpoint: SocketAddr` を返すのが要点。プロキシは Runtime の実装を一切知らずに済む。
+Returning `endpoint: SocketAddr` is the crux. The proxy never learns which
+runtime it is talking to.
 
-### バックエンド別の対応状況
+### Where each backend stands
 
-| Runtime | 対象 OS | 位置づけ |
+| Runtime | OS | Role |
 | --- | --- | --- |
-| Docker | macOS / Linux | v0 のデフォルト。`bollard` で Docker API を直接叩く（compose CLI は呼ばない）。M0 で実装済み |
-| Apple Container | macOS 15+ | `container` CLI を叩く。M0 で実装済み（実機未検証） |
-| Firecracker | **Linux のみ** | 高密度・強い分離が要る場合。macOS では動かない |
+| Docker | macOS, Linux | The v0 default. Talks to the Docker API through `bollard`, never the compose CLI. Implemented in M0 |
+| Apple Container | macOS 15+ | Drives the `container` CLI. Implemented in M0, untested on real hardware |
+| Firecracker | **Linux only** | For density and stronger isolation. Does not run on macOS |
 
-### Docker と Apple Container の構造的な差（M0 で判明）
+### The structural gap between Docker and Apple Container (found in M0)
 
-両方を実装したことで、Runtime 抽象が吸収すべき差が具体的になった。
+Implementing both made concrete what the Runtime abstraction has to absorb.
 
 | | Docker | Apple Container |
 | --- | --- | --- |
-| 操作方法 | HTTP API（bollard） | CLI (`container`) |
-| ポート | ホストへ動的フォワード（`127.0.0.1:49312`） | **各コンテナが専用 IP**（`192.168.64.3:3000`）。publish 不要 |
-| 絞り込み | API 側でラベルフィルタ | フィルタ不可。全件取得して手元で絞る |
-| ネットワーク | 任意に作成可能 | **macOS 26 以降のみ**。それ以前は既定ネットワークに相乗り |
-| サービス名の解決 | ネットワークエイリアスで `db:5432` | エイリアスなし。`{コンテナ名}.test` でのみ引ける |
-| 名前付きボリューム | ネイティブ対応 | 概念がない。`~/.minato/volumes/` の bind mount に写像 |
+| Interface | HTTP API (bollard) | CLI (`container`) |
+| Ports | Forwarded dynamically to the host (`127.0.0.1:49312`) | **Each container gets its own IP** (`192.168.64.3:3000`); nothing is published |
+| Filtering | Label filters, server-side | No filters. Fetch everything and narrow it here |
+| Networks | Created freely | **macOS 26 and later only.** Before that, everything shares the default |
+| Service names | Network aliases give `db:5432` | No aliases. Only `{container name}.test` resolves |
+| Named volumes | Native | No such concept. Mapped onto bind mounts under `~/.minato/volumes/` |
 
-**`RunningService::endpoint: SocketAddr` を返す設計がここで効いた。** Docker はホストのフォワードポート、Apple Container はコンテナ自身の IP を返すが、プロキシと Supervisor はその違いを一切知らない。ポートフォワードを前提にした型（`host_port: u16`）にしていたら Apple Container 対応で作り直しになっていた。
+**This is where returning `RunningService::endpoint: SocketAddr` paid off.**
+Docker returns a forwarded host port and Apple Container the container's own
+IP, and neither the proxy nor the supervisor knows the difference. A type built
+around port forwarding (`host_port: u16`) would have had to be rebuilt for
+Apple Container.
 
-サービス名の解決だけは抽象化しきれず、`ServiceSpec::peers` を追加した。Apple Container はこれを使って `MINATO_HOST_<SERVICE>` を注入し、相手のホスト名をアプリに伝える。Docker では未使用。
+Only service-name resolution resisted abstraction, hence `ServiceSpec::peers`.
+Apple Container uses it to inject `MINATO_HOST_<SERVICE>` and tell the app what
+to call its neighbours. Docker ignores it.
 
-**注意**: Firecracker は KVM 依存で macOS では動作しない。開発機が macOS なので、Firecracker サポートは Linux サーバ上の Minato（リモートホスト運用）か、macOS では Apple Container / krunkit を代替とする前提で設計する。Runtime trait はこの差を吸収するために存在する。
+**Note**: Firecracker depends on KVM and does not run on macOS. Since
+development happens on macOS, Firecracker support assumes either Minato running
+on a Linux server — a remote host — or Apple Container and krunkit standing in
+locally. Absorbing that gap is what the Runtime trait is for.
 
-## 7. 起動戦略: scale-to-zero + オンデマンド
+## 7. Starting strategy: scale-to-zero and on demand
 
-worktree を 10 個作っても全部を常時起動しない。これが Minato の差別化点であり、「気軽に worktree を作れる」体験の前提になる。
+Ten worktrees do not mean ten running environments. This is what sets Minato
+apart, and what makes creating a worktree feel cheap.
 
-### 状態機械
+### The state machine
 
 ```
-Stopped ──(リクエスト到達)──> Starting ──(health OK)──> Ready
-   ▲                              │                        │
-   └──(idle_timeout 経過)── Idle <─┘ (health NG/timeout)    │
-                              ▲                            │
-                              └────(無アクセス継続)─────────┘
+Stopped ──(a request arrives)──> Starting ──(health OK)──> Ready
+   ▲                                 │                       │
+   └──(idle_timeout elapsed)── Idle <─┘ (health fails/times out)
+                                 ▲                           │
+                                 └────(still no access)──────┘
 ```
 
-### 起動待ちのハンドリング
+### Waiting for a start
 
-初回リクエストは数秒〜数十秒待たされる。クライアント種別で挙動を変える。
+The first request waits somewhere between seconds and tens of seconds. What
+happens next depends on the client.
 
-| クライアント | 挙動 |
+| Client | Behaviour |
 | --- | --- |
-| ブラウザ（`Accept: text/html`） | 即座に「起動中」ページを 200 で返し、SSE で Ready を待って自動リロード |
-| API / curl / エージェント | Ready まで待ってから転送。最大 120 秒でタイムアウトし 504 |
+| A browser (`Accept: text/html`) | An immediate "starting" page, which waits for readiness over SSE and reloads itself |
+| An API call, curl, an agent | Held until ready, then forwarded. 504 after 120 seconds |
 
-エージェントの `curl` は待たせるのが正解。中途半端にエラーを返すとエージェントが誤った判断（「サーバが壊れている」）をする。
+Making an agent's `curl` wait is the right answer. A half-hearted error leads it
+to the wrong conclusion — "the server is broken".
 
-### 起動を速くする施策
+### Making starts faster
 
-- ベースイメージは project スコープでビルドし、worktree 間で共有する
-- worktree 固有の差分はソースコードの bind mount のみに限る
-- `node_modules` などは named volume を workspace ごとに持ち、初回のみインストール
-- `minato new` の時点で先行して `prepare` を走らせる（`--no-warm` で無効化）
+- Base images are built at project scope and shared across worktrees
+- The only per-worktree difference is the bind-mounted source
+- `node_modules` and the like live in a named volume per workspace, installed
+  once
+- `minato new` runs `prepare` ahead of time (`--no-warm` turns it off)
 
-### 状態の正は runtime のラベル（M0 で確定）
+### The runtime's labels are the source of truth (settled in M0)
 
-daemon は**実行中の状態を状態ファイルに持たない**。コンテナのラベル（`dev.minato.*`）が唯一の正であり、daemon が再起動しても `list_project` の結果だけで全状態を復元できる。
+The daemon **holds no runtime state in a state file**. A container's labels
+(`dev.minato.*`) are the only truth, and after a restart the result of
+`list_project` alone restores everything.
 
-状態ストアが持つのは「どの worktree を Minato が管理しているか」と「その worktree に発行した URL ラベル」だけ。ラベルを永続化するのは、[命名規則](#5-命名とルーティング)を将来変更しても既存 workspace の URL が変わらないようにするため。
+The state store holds two things: which worktrees Minato manages, and the URL
+label issued to each. The label is persisted so that changing the
+[naming rules](#5-naming-and-routing) later never changes an existing
+workspace's URL.
 
-この設計により、未決事項に挙げていた「クラッシュ後の実コンテナとの reconcile」がほぼ消える。突き合わせるべき二重の状態が存在しない。
+This design all but removes "reconciling against real containers after a
+crash", which was on the open-questions list. There is no second copy of the
+state to reconcile against.
 
-### プロキシは runtime を知らないまま起動を要求する（M2 で確定）
+### The proxy asks for a start without knowing the runtime (settled in M2)
 
-「リクエストが来たら起動する」には runtime を動かす必要があるが、プロキシは
-`minato-runtime` に依存できない（§13 の依存の向き）。そこで `Activator` trait
-を境界に置き、実装は daemon に持たせる。プロキシは「このホストを受け付け
-られる状態にしてくれ」と頼むだけでよい。
+"Start it when a request arrives" needs the runtime, but the proxy cannot
+depend on `minato-runtime` (§13, the direction of dependencies). So an
+`Activator` trait forms the boundary and the daemon supplies the
+implementation. All the proxy does is ask for a host to be made ready.
 
-`Routes` は**停止中のサービスも保持する**。「止まっている」ことと「存在しない」
-ことを区別できないと、停止中のサービスを起こせず 404 になる。転送先
-（`endpoint`）が入っているものだけが起動中で、そこが最短経路になる。
+`Routes` **keeps stopped services too**. Without telling "stopped" apart from
+"does not exist", a stopped service can never be woken and just 404s. The ones
+with a target (`endpoint`) are the running ones, and that is the fast path.
 
-**Activator に渡すホスト名は必ず正規化する。** `Host` にはポートが付くことが
-あり、生のまま渡すとアイドル判定のキーがルーティングのキーと食い違う。
-その状態ではアクセスが記録されず、使用中のサービスが停止される。
+**The hostname passed to the activator is always normalised.** `Host` can carry
+a port, and passing it raw makes the idle-tracking key disagree with the
+routing key. Accesses then go unrecorded, and a service in active use gets shut
+down.
 
-### 「起動した」と「受け付けられる」は別（M0 で判明）
+### "Started" and "ready to serve" are different (found in M0)
 
-コンテナが起動しても、中のアプリはまだ listen していない。`up` が返った直後に `curl` すると connection refused になる。
+A container being up does not mean the app inside is listening. A `curl` right
+after `up` returns fails with connection refused.
 
-人間なら「まだかな」と数秒待つが、**エージェントは 1 回失敗した時点で「サーバが壊れている」と判断してしまう**。エージェント向けツールとしてこれは致命的なので、M0 の時点で TCP 接続が通るまで待つ処理を入れた（`readiness::await_service`、上限 15 秒）。
+A person waits a few seconds and tries again. **An agent decides, on one
+failure, that the server is broken.** For a tool aimed at agents that is fatal,
+so from M0 there was a wait for a TCP connection to succeed
+(`readiness::await_service`, capped at 15 seconds).
 
-上限を超えた場合は待たずに進み、警告だけ出す。開発サーバの初回起動は依存解決やコンパイルでこれより長くかかることがあり、無限に待つと `up` が返らなくなるため。
+Past the cap it carries on and warns. A dev server's first start can take
+longer while it resolves dependencies and compiles, and waiting forever means
+`up` never returns.
 
-M2 でこれを `minato.toml` の `health` による判定に置き換えた。`http://` は
-パスだけを使ってホスト側の待ち受けアドレスに対して発行する（設定に書くのは
-コンテナ内から見たアドレスで、ホストから届くアドレスとは別のため）。
-`cmd:` はコンテナ内での実行が要るため未対応。
+M2 replaced this with the `health` check from `minato.toml`. For `http://`,
+only the path is used and the request goes to the host-side address — what the
+configuration names is the address from inside the container, which is not what
+the host can reach. `cmd:` is unsupported, since it would have to run inside
+the container.
 
-### 停止中のコンテナは作り直す
+### A stopped container is recreated
 
-`up` は既に動いているコンテナには手を触れない（何度叩いても同じ結果になる）。一方、**停止中のコンテナは削除して作り直す**。設定を変えたのに反映されない方が、起動が数秒遅いことより混乱を招くため。
+`up` leaves a running container alone, so running it repeatedly gives the same
+result. A **stopped container is deleted and recreated**, though: a
+configuration change silently not taking effect causes more confusion than a
+start being a few seconds slower.
 
-副作用として、`down` → `up` でホスト側のポート番号が変わる。M1 で URL が固定されるまでの間だけ表に出る性質。
+A side effect is that `down` then `up` changes the host-side port. That is only
+visible until M1 pins the URLs.
 
-## 8. 環境変数管理
+## 8. Environment variables
 
-### 3 層マージ
+### Three layers
 
-後勝ちで解決する。
+Later wins.
 
 ```
-1. global     ~/.minato/env                     全プロジェクト共通
-2. project    minato.toml の env + .minato/env  リポジトリにコミット
-3. workspace  .minato/env.local                 gitignore、worktree 固有
+1. global     ~/.minato/env                     every project
+2. project    env in minato.toml + .minato/env  committed
+3. workspace  .minato/env.local                 gitignored, per worktree
 ```
 
-### シークレット
+### Secrets
 
-平文をリポジトリに入れない。値に参照形式を書けるようにし、起動時に解決する。
+Nothing in plaintext in the repository. A value can be a reference, resolved at
+start.
 
 ```
 DATABASE_PASSWORD = "op://Development/myapp/password"   # 1Password CLI
 API_KEY           = "keychain://minato/myapp/api-key"   # macOS Keychain
-STRIPE_KEY        = "env://STRIPE_KEY"                  # daemon の環境変数から
+STRIPE_KEY        = "env://STRIPE_KEY"                  # the daemon's environment
 ```
 
-解決した値は daemon のメモリ上にのみ置き、ディスクに書かない。`minato env ls` はマスクして表示する。
+A resolved value lives in the daemon's memory and never touches disk.
+`minato env ls` masks it.
 
-### 自動注入される変数
+### What gets injected
 
-全サービスに以下を注入する。**フロントエンドが API の URL を知る手段がないと worktree ごとの環境は成立しない**ため、これは必須機能。
+Every service receives the following. **Without a way for the frontend to learn
+the API's URL, a per-worktree environment cannot hold together**, so this is not
+optional.
 
 ```
 MINATO_PROJECT       = myapp
@@ -369,67 +474,86 @@ MINATO_WORKSPACE     = feat-1
 MINATO_SERVICE       = web
 MINATO_URL_WEB       = https://web.feat-1.myapp.localhost
 MINATO_URL_API       = https://api.feat-1.myapp.localhost
-MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # Tunnel 有効時（M4）
+MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
 ```
 
-サービス名の `-` は `_` に変換する（`api-server` → `MINATO_URL_API_SERVER`）。環境変数名に `-` は使えないため。
+A `-` in a service name becomes `_` (`api-server` →
+`MINATO_URL_API_SERVER`), since a variable name cannot contain one.
 
-**自動注入は層の最下段に置く。** 利用者の指定で上書きできるようにするため。逆にすると Minato の都合で利用者の設定が消える。
+**Injection is the bottom layer**, so the user can override it. The other way
+round, Minato's conveniences would erase the user's settings.
 
-**プロキシが動いていないときは URL を注入しない。** 空文字を入れると「設定されているのに繋がらない」状態になり、原因が分かりにくくなる。
+**No URL is injected while the proxy is down.** An empty string would leave it
+"set, but unreachable", and the cause is hard to see.
 
-### M3 で分かったこと
+### What M3 turned up
 
-- `minato env ls` は**どの層で定義された値かを併記する**。3 層あるので、意図しない層の値が効いていることに気づけないと原因が掴めない
-- 自動注入した値はマスクしない。Minato が作ったもので秘密ではなく、URL を確認したい場面が多い
-- シークレットは `--reveal` でも参照のまま表示する。実体を出すには解決が要り、それは起動時にだけ行う
-- **`env set` の後に再起動が要ることを明示する**。既存コンテナには反映されないので、黙っていると「設定したのに効かない」と受け取られる
-- シークレットの解決に失敗しても daemon は落とさない。1Password にサインインしていないだけということが多く、その 1 つのために環境全体が起動しない方が困る。失敗は警告として伝え、そのキーだけ落とす
+- `minato env ls` **says which layer each value came from**. With three layers,
+  not seeing that an unintended one is winning makes the cause impossible to
+  find
+- Injected values are not masked. They are Minato's own and hold no secrets, and
+  checking a URL is common
+- A secret stays a reference even under `--reveal`. Showing the value would mean
+  resolving it, and that only happens at start
+- **`env set` says outright that a restart is needed.** Containers already
+  running do not pick it up, and left unsaid that reads as "I set it and nothing
+  happened"
+- A secret failing to resolve does not take the daemon down. Usually it just
+  means nobody is signed in to 1Password, and letting that keep the whole
+  environment from starting is the worse outcome. It comes back as a warning,
+  and only that key is dropped
 
 ## 9. Cloudflare Tunnel
 
-### 方式
+### Approach
 
-named tunnel を **マシン単位で 1 本**張る。ingress ルールは `http://127.0.0.1:80` へ全部流し、Host ヘッダによる振り分けはローカルプロキシに任せる。
+**One named tunnel per machine.** The ingress rule sends everything to
+`http://127.0.0.1:80` and leaves routing on Host to the local proxy.
 
-DNS 側は `*.{project}.example.com` のワイルドカード CNAME を 1 本作るだけで済み、workspace が増減してもレコード操作が発生しない。これが最も単純で、起動レイテンシにも影響しない。
+On the DNS side that is a single wildcard CNAME for `*.{project}.example.com`,
+so workspaces can come and go without touching any records. It is the simplest
+arrangement and costs nothing at startup.
 
 ```yaml
-# 生成される cloudflared 設定
+# the generated cloudflared configuration
 tunnel: <tunnel-id>
 ingress:
   - hostname: "*.myapp.example.com"
     service: http://127.0.0.1:80
     originRequest:
-      httpHostHeader: <リクエストの Host を localhost 名に書き換え>
+      httpHostHeader: <rewrite the request's Host to the localhost name>
   - service: http_status:404
 ```
 
-Tunnel 側のホスト名はドット区切りのサブドメインが 1 段しか使えない場合があるため、`{service}-{workspace}.{project}.example.com` の形にする。
+Tunnel hostnames sometimes allow only one level of subdomain, so the form is
+`{service}-{workspace}.{project}.example.com`.
 
-### アクセス制御
+### Access control
 
-既定で Cloudflare Access のポリシーを張る。開発環境が無認証でインターネットに露出するのは事故なので、**opt-out（`--public`）にする**。
+A Cloudflare Access policy is applied by default. A development environment
+open to the internet without authentication is an accident, so it is
+**opt-out (`--public`)**.
 
-## 10. CLI
+## 10. The CLI
 
-全コマンドが `--json` を持ち、終了コードと構造化出力だけで完結する。エージェントが人間向けの出力をパースする必要をなくす。
+Every command has `--json`, and the exit code plus structured output is all it
+takes. An agent never has to parse output written for people.
 
 ```
-minato init                       # minato.toml 生成 + daemon/DNS/CA セットアップ
-minato doctor                     # DNS resolver / docker / 証明書 / ポート占有の診断
+minato init                       # write minato.toml, set up daemon/DNS/CA
+minato doctor                     # check the DNS resolver, docker, certificates, ports
 
-minato new <branch> [--from main] # git worktree add + 環境の warm-up + URL 表示
-minato rm <workspace> [--force]   # 環境破棄 + git worktree remove
-minato ls [--json]                # workspace 一覧と状態
+minato new <branch> [--from main] # git worktree add, warm the environment, print URLs
+minato rm <workspace> [--force]   # destroy the environment, git worktree remove
+minato ls [--json]                # workspaces and their state
 
-minato up [--service web]         # 明示起動
+minato up [--service web]         # start explicitly
 minato down [--all]
 minato restart <service>
 minato status [--json]
 
-minato url [service]              # URL を stdout に 1 行で
-minato open [service]             # ブラウザで開く
+minato url [service]              # the URL, one line on stdout
+minato open [service]             # open it in a browser
 minato logs <service> [-f] [--tail N] [--since 5m]
 minato exec <service> -- <cmd>
 
@@ -442,9 +566,10 @@ minato tunnel disable
 minato tunnel status
 ```
 
-`minato doctor` は初期設定に sudo と外部依存（Docker, cloudflared）が絡むため優先度が高い。失敗時に「何をすればいいか」を出す。
+`minato doctor` ranks high because the initial setup involves sudo and outside
+dependencies (Docker, cloudflared). On failure it says what to do about it.
 
-### JSON 出力の例
+### An example of the JSON
 
 ```jsonc
 // minato status --json
@@ -469,97 +594,127 @@ minato tunnel status
 
 ## 11. Skills
 
-`minato skill install` で `.claude/skills/minato/SKILL.md` を配置する。CLI のリファレンスではなく、**判断基準**を書く。「何ができるか」は `--help` で分かるが、「`docker` を直接使わない」「ポートを推測しない」といった約束は書かないと伝わらない。
+`minato skill install` writes `.claude/skills/minato/SKILL.md`. What goes in it
+is **judgement**, not a CLI reference. `--help` covers what the commands do;
+promises like "never reach for `docker`" and "never guess a port" only land if
+they are written down.
 
-Skill の本文はバイナリに埋め込む（`include_str!`）。`minato` 単体で完結する方が、インストール手段を選ばない。既存ファイルと内容が同じなら書き直さない（git の差分を汚さないため）。
+The Skill is baked into the binary with `include_str!`. A self-contained
+`minato` works however it was installed. Identical content is left alone, so
+git stays clean.
 
-### `logs` と `exec` は Skills の前提（M5 で判明）
+### `logs` and `exec` are what Skills rest on (found in M5)
 
-「エージェントが `docker` を直接触らずに開発を完了できる」を満たすには、ログの閲覧とコンテナ内でのコマンド実行が要る。**これが無いとデバッグの時点で `docker` に戻らざるを得ず、Skill に何を書いても守られない。**
+"An agent finishes the work without touching `docker`" needs log viewing and
+running commands inside a container. **Without them, debugging forces a return
+to `docker`, and nothing written in the Skill survives that.**
 
-`minato exec` は実行したコマンドの終了コードをそのまま返す。`minato exec web -- pnpm test` の成否をエージェントが終了コードだけで判定できる必要があるため。TTY は要求しない（対話を待って固まる方が危険）。
+`minato exec` passes the command's exit code straight through, because an agent
+has to be able to judge `minato exec web -- pnpm test` by exit status alone. No
+TTY is requested — hanging on a prompt is the worse outcome.
 
-### エージェントが最初に躓く場所
+### Where an agent trips first
 
-`minato setup` を済ませていない環境では、`curl` が終了コード 60（証明書が信頼されていない）で失敗する。`curl -s` だけだとエラーが握り潰され、「空の応答が返った」ようにしか見えない。SKILL にこの症状と `minato doctor` への導線を明記した。
+Without `minato setup`, `curl` fails with exit code 60: the certificate is not
+trusted. With plain `curl -s` the error is swallowed and it looks like nothing
+but an empty response. The Skill names this symptom and points at
+`minato doctor`.
 
-MCP サーバは当面作らない。CLI が `--json` を持つ以上、Bash 経由で十分に扱えるため、二重メンテのコストに見合わない。
+No MCP server, for now. With `--json` on every command, Bash is enough, and a
+second surface is not worth maintaining.
 
-## 12. GUI (`minato-desktop`)
+## 12. The GUI (`minato-desktop`)
 
-egui / eframe による純 Rust の GUI。`minato-client` を直接リンクするため、型定義の共有に生成ステップが要らない（TypeScript を使わない選択の最大の利点）。
+Pure Rust, on GPUI with gpui-component. It links `minato-client` directly, so
+sharing type definitions needs no generation step — the biggest advantage of
+not using TypeScript.
 
-### 想定する画面
+### The screen
 
-immediate mode UI は「頻繁に更新される一覧」と相性が良く、Minato の GUI に必要なものはほぼそれに収まる。
+1. **A sidebar of workspaces** — project, workspace, and each service's state
+   (`stopped` / `starting` / `ready` / `idle`), updated continuously
+2. **A detail pane** — URLs to copy or open, and start and stop buttons
+3. **A log viewer** — tailing across services, filterable
+4. **An environment editor** — showing which of the three layers each value came
+   from, with secrets masked
+5. **doctor** — the DNS resolver, certificates and port checks, with one-click
+   fixes
 
-1. **Workspace 一覧** — project / workspace / サービスの状態（`stopped` / `starting` / `ready` / `idle`）とリソース使用量を常時更新
-2. **URL パネル** — クリックでコピー、ブラウザで開く、Tunnel URL の切り替え
-3. **ログビューア** — サービス横断の tail、フィルタ
-4. **環境変数エディタ** — 3 層のどこで定義された値かを可視化（シークレットはマスク）
-5. **doctor** — DNS resolver / 証明書 / ポート占有の診断と、ワンクリック修復
+### Living in the menu bar
 
-### メニューバー常駐
+Minato's GUI is not something to keep open; it is mostly for glancing at which
+environments are running and opening one. GPUI cannot do a tray on its own, so
+`tray-icon` handles that part:
 
-Minato の GUI は常時開くものではなく、「今どの環境が動いているか」を確認して開く用途が主になる。egui 単体では tray を扱えないため `tray-icon` crate を併用し、次の構成をとる。
+- Only the tray icon is resident. Its menu reaches the running workspaces and
+  their URLs directly
+- The window opens only when asked for
+- Closing the window does not end the process
 
-- 常駐は tray アイコンのみ。メニューから起動中の workspace と URL に直接アクセスできる
-- ウィンドウは要求されたときだけ開く（`eframe` を遅延起動）
-- ウィンドウを閉じてもプロセスは終了しない
+### Async
 
-### 非同期の扱い
-
-egui の描画ループは同期的で、`async` を直接扱えない。以下の構造で分離する。
+The render loop is synchronous and cannot handle `async` directly. The two are
+kept apart:
 
 ```
-[tokio runtime スレッド]                    [egui 描画スレッド]
-  minato-client で daemon を購読              AppState を読んで描画
-  受信したイベントを AppState に反映   ───>   ユーザー操作をコマンドとして送出
-       (Arc<RwLock<AppState>> + ctx.request_repaint())
+[tokio runtime thread]                      [render thread]
+  subscribes to the daemon                    reads AppState and draws
+  writes what arrives into AppState   ───>    sends user actions as commands
+       (Arc<RwLock<AppState>> + a notification channel)
 ```
 
-daemon 側でイベントストリームを用意してある（§3）ため、GUI はポーリングせずに済む。`request_repaint()` はイベント受信時のみ呼び、アイドル時は再描画しない。
+The daemon already provides an event stream (§3), so the GUI never polls. A
+redraw is requested only when an event arrives; idle costs nothing.
 
-### 既知の注意点
+### Things to watch
 
-- **日本語フォント**: egui はデフォルトで CJK グリフを持たない。埋め込むとバイナリが数 MB 増えるので、**システムのフォントを探して使う**。`FontData` に `index` があるため `.ttc`（フォントコレクション）も扱える（macOS のヒラギノは ttc）。既定フォントの**後ろ**に足す — 前に置くと英数字までこのフォントになる
-- **表現力**: ネイティブ感は劣る。UI の作り込みに時間をかけず、情報密度と更新の速さで勝負する方針をとる
+- **Fonts**: GPUI goes through font-kit and finds system fonts, including CJK,
+  without anything embedded. Under egui this needed explicit handling, and the
+  code for it was removed with the GPUI rewrite
+- **Fidelity**: it will not feel native. Rather than pour time into the UI, the
+  bet is on information density and how fast it updates
 
-### M6 で分かったこと
+### What M6 turned up
 
-- **GUI から daemon を起動しない。** daemon の面倒を見るのは launchd の仕事で、GUI が二重に管理すると責務が重なる（§15 の未決事項をこの方針で確定）
-- tray のメニューは**変化したときだけ作り直す**。毎フレーム作り直すと、開いている最中に閉じてしまう
-- 接続に失敗したことをログに残す。画面に出すだけだと、GUI が繋がらないときログに何も残らず切り分けられない
-- 再描画は**イベントを受けたときだけ要求する**。常時再描画すると何もしていない間も CPU を回し続ける
+- **The GUI never starts the daemon.** Looking after the daemon is launchd's
+  job, and a GUI managing it too would split that responsibility. This settles
+  the open question in §15
+- The tray menu is **rebuilt only when it changes**. Rebuilding every frame
+  closes it out from under whoever has it open
+- A failed connection is logged. Shown on screen only, it leaves no trace to
+  diagnose from when the GUI cannot connect
+- A redraw is **requested only on an event**. Redrawing continuously burns CPU
+  doing nothing
 
-## 13. リポジトリ構成
+## 13. Repository layout
 
-Cargo workspace 単体で完結する。egui を選んだため Node.js / pnpm のツールチェーンは不要で、`packages/`（TS）は設けない。
+One Cargo workspace, self-contained. With GPUI there is no Node.js or pnpm
+toolchain and no `packages/` for TypeScript.
 
 ```
 minato/
 ├── Cargo.toml            # [workspace] members + workspace.dependencies
 ├── rust-toolchain.toml
-├── crates/               # ライブラリ（出荷しない）
-│   ├── minato-core/      #   spec, config, naming, state store（依存グラフの底）
-│   ├── minato-api/       #   RPC のリクエスト/レスポンス/イベント型（単一ソース）
-│   ├── minato-client/    #   RPC クライアント。CLI と GUI が共有
-│   ├── minato-runtime/   #   Runtime trait + docker 実装
-│   ├── minato-proxy/     #   hyper リバースプロキシ + rustls + ローカル CA
-│   ├── minato-dns/       #   hickory-server ラッパー
-│   └── minato-tunnel/    #   cloudflared プロセス管理
-├── apps/                 # バイナリ（出荷する）
-│   ├── daemon/           #   minatod — Supervisor + RPC サーバ
+├── crates/               # libraries, not shipped
+│   ├── minato-core/      #   spec, config, naming, state store (the bottom of the graph)
+│   ├── minato-api/       #   RPC request/response/event types (one source)
+│   ├── minato-client/    #   the RPC client, shared by the CLI and the GUI
+│   ├── minato-runtime/   #   the Runtime trait plus the Docker implementation
+│   ├── minato-proxy/     #   the hyper reverse proxy, rustls, the local CA
+│   ├── minato-dns/       #   a hickory-server wrapper
+│   └── minato-tunnel/    #   managing the cloudflared process
+├── apps/                 # binaries, shipped
+│   ├── daemon/           #   minatod — the supervisor and the RPC server
 │   ├── cli/              #   minato
-│   └── desktop/          #   minato-desktop — egui GUI
+│   └── desktop/          #   minato-desktop — the GPUI GUI
 ├── skills/
 │   └── minato/SKILL.md
-├── xtask/                # cargo xtask（ビルド・パッケージング・launchd plist 生成）
+├── xtask/                # cargo xtask: building, packaging, generating the launchd plist
 └── docs/
     └── DESIGN.md
 ```
 
-### 依存の方向
+### The direction of dependencies
 
 ```
 apps/cli ────┐
@@ -568,90 +723,114 @@ apps/daemon ─────────────────────>  mi
        └──> minato-runtime / minato-proxy / minato-dns / minato-tunnel ──> minato-core
 ```
 
-`minato-api` が daemon とクライアントの唯一の接点。**クライアント側の crate が `minato-runtime` などに依存してはいけない**（依存すると GUI に Docker のロジックが漏れ、daemon 経由という原則が崩れる）。この制約は CI で `cargo-deny` ないし依存グラフの検査で守る。
+`minato-api` is the only point of contact between the daemon and its clients.
+**No client-side crate may depend on `minato-runtime` or its neighbours** —
+that would leak Docker logic into the GUI and break the rule that everything
+goes through the daemon. CI enforces it with `cargo-deny` or a dependency-graph
+check.
 
-### バージョニング
+### Versioning
 
-全 crate を単一バージョンで揃える（`workspace.package.version` を継承）。内部 crate を個別に crates.io へ公開する予定がないため、独立バージョニングの複雑さは不要。公開するのは `minato`（CLI）のみ。
+Every crate shares one version, inherited from `workspace.package.version`.
+None of the internal crates is headed for crates.io individually, so
+independent versioning would only add complexity. Only `minato`, the CLI, is
+published.
 
-### 主要な依存クレート
+### The main dependencies
 
-| 用途 | クレート |
+| For | Crate |
 | --- | --- |
-| 非同期ランタイム | `tokio` |
+| Async runtime | `tokio` |
 | CLI | `clap` (derive) |
-| 設定 | `serde`, `toml`, `figment` |
+| Configuration | `serde`, `toml`, `figment` |
 | Docker API | `bollard` |
-| HTTP / Proxy | `hyper`, `hyper-util`, `axum`（管理 API 用） |
-| TLS | `rustls`, `rcgen`（ローカル CA） |
+| HTTP and proxying | `hyper`, `hyper-util`, `axum` (the management API) |
+| TLS | `rustls`, `rcgen` (the local CA) |
 | DNS | `hickory-server` |
 | IPC | `tokio::net::UnixListener` |
-| GUI | `eframe`, `egui`, `egui_extras`, `tray-icon` |
-| ログ | `tracing`, `tracing-subscriber` |
-| エラー | `thiserror`（ライブラリ）, `anyhow`（バイナリ） |
-| Git | `gix` または `git` コマンド呼び出し |
+| GUI | `gpui`, `gpui-component`, `tray-icon` |
+| Logging | `tracing`, `tracing-subscriber` |
+| Errors | `thiserror` in libraries, `anyhow` in binaries |
+| Git | `gix`, or shelling out to `git` |
 
-## 14. ロードマップ
+## 14. Roadmap
 
-| マイルストーン | 内容 | 完了条件 |
+| Milestone | Contents | Done when |
 | --- | --- | --- |
-| **M0** ✅ | workspace 骨組み + core（config / naming / state）+ `minato-api`（イベントストリーム含む）+ Docker / Apple Container runtime + `init` / `new` / `up` / `down` / `rm` / `ls` / `status` / `url` / `daemon` | worktree を作るとコンテナが起動し、`localhost:<動的ポート>` で見える |
-| **M1** ✅ | DNS + Proxy + TLS + `doctor` / `setup` + launchd socket activation | `https://web.feat-1.myapp.localhost` が curl で通る |
-| **M2** ✅ | scale-to-zero + health check + アイドル停止 + オンデマンド起動 | worktree 10 個作っても実行中コンテナは触っているものだけ |
-| **M3** ✅ | 環境変数管理（3 層 + シークレット参照 + 自動注入） | `MINATO_URL_API` がフロントから読める |
-| **M4** | Cloudflare Tunnel | スマホから `https://web-feat-1.myapp.example.com` が見える |
-| **M5** ✅ | Skills + `logs` / `exec` | エージェントが `docker` を直接触らずに開発を完了できる |
-| **M6** ✅ | GUI（egui + tray） | メニューバーから起動中の workspace と URL が見え、ログが読める |
-| **M7** | Runtime 追加（Apple Container / Firecracker） | `[runtime] default` の切り替えだけで動く |
+| **M0** ✅ | The workspace skeleton, core (config, naming, state), `minato-api` including the event stream, the Docker and Apple Container runtimes, `init` / `new` / `up` / `down` / `rm` / `ls` / `status` / `url` / `daemon` | Creating a worktree starts its containers, reachable at `localhost:<dynamic port>` |
+| **M1** ✅ | DNS, the proxy, TLS, `doctor` / `setup`, launchd socket activation | `https://web.feat-1.myapp.localhost` answers curl |
+| **M2** ✅ | Scale-to-zero, health checks, idle stop, on-demand start | Ten worktrees, and the only running containers are the ones in use |
+| **M3** ✅ | Environment variables: three layers, secret references, injection | The frontend can read `MINATO_URL_API` |
+| **M4** | Cloudflare Tunnel | `https://web-feat-1.myapp.example.com` works from a phone |
+| **M5** ✅ | Skills, `logs` / `exec` | An agent finishes the work without touching `docker` |
+| **M6** ✅ | The GUI: GPUI plus a tray | The menu bar shows the running workspaces and their URLs, and logs are readable |
+| **M7** | More runtimes: Apple Container, Firecracker | Switching `[runtime] default` is all it takes |
 
-M1 完了時点が最小の価値提供ライン。M2 まで行くと日常的に使える。
+M1 is the minimum line worth shipping. M2 is where it becomes usable daily.
 
-GUI を M6 に置いたのは、daemon の API がひととおり出揃ってからの方が手戻りが少ないため。ただし **API のイベントストリームだけは M0 で用意する**（後付けするとブロッキング前提の設計になり、GUI で進捗を出せなくなる）。
+The GUI sits at M6 because doing it after the daemon's API had settled meant
+less rework. But **the API's event stream is there from M0** — added later, the
+design would have assumed blocking, and the GUI could never show progress.
 
-### M2 で分かったこと
+### What M2 turned up
 
-- 停止中でも **URL は出し続ける**。アクセスが起動のきっかけになるので、
-  URL が状態によって消えると起こす手段そのものが見えなくなる
-- 同じホストへの同時リクエストで二重に起動しないよう、起動権を 1 つに絞る。
-  取れなかった側は先行する起動の完了を待つ
-- 共有サービス（`scope = "project"`）は複数の workspace から参照される。
-  参照しているホストが 1 つでも生きていれば止めない
-- daemon 再起動後、起動中なのに記録が無いホストには基準時刻を与える。
-  記録が無いと永久にアイドル判定されず、止まらなくなる
+- A stopped service **keeps its URL**. A request is what starts it, so a URL
+  that came and went with the state would take the way to wake it along
+- Concurrent requests for one host claim a single right to start it. Whoever
+  loses waits on the start already running
+- A shared service (`scope = "project"`) is referenced from several workspaces.
+  One live reference is enough to keep it up
+- After a daemon restart, a host that is running with no record gets a
+  baseline. Without one it never looks idle and never stops
 
-### 権限の要る設定の扱い
+### Handling the privileged setup
 
-**sudo は自動実行しない。** エージェントが実行すると password 待ちで固まり、
-利用者から見れば黙って権限昇格したことになる。`minato doctor` が状態を
-診断し、`minato setup` が必要なコマンドを提示する。実行は利用者に委ねる。
+**sudo is never run automatically.** An agent doing so hangs at the password
+prompt, and from the user's side it looks like a silent privilege escalation.
+`minato doctor` says where things stand and `minato setup` prints the commands.
+Running them is the user's call.
 
-権限が要るのは 3 つ。`minato setup` はこれらをまとめて案内する。
+Three things need privileges, and `minato setup` covers all of them.
 
-1. LaunchDaemon の設置（80/443/53 の確保）
-2. `/etc/resolver/localhost` の設置
-3. ローカル CA の信頼登録
+1. Installing the LaunchDaemon, which holds 80, 443 and 53
+2. Installing `/etc/resolver/localhost`
+3. Trusting the local CA
 
-plist の生成自体には権限が要らないので `~/.minato/` に書き出し、
-設置コマンドだけを提示する。中身を確認してから実行できる。
+Generating the plist needs no privileges, so it is written to `~/.minato/` and
+only the install commands are printed. They can be read before they are run.
 
-**手順は「設定後の状態」に合わせて生成する。** 例えば launchd を設置すると
-DNS は :53 に移るため、resolver に書くポートも :53 になる。現在の待ち受け
-ポートをそのまま書くと、設置後に名前が引けなくなる。
+**The steps are generated for the state after setup.** Installing launchd moves
+DNS to :53, so that is the port the resolver gets. Writing the current port
+would leave nothing resolving once it lands.
 
-### M0 で先送りしたもの
+### Deferred at M0
 
-| 項目 | 先送りした理由 | 予定 |
+| Item | Why | When |
 | --- | --- | --- |
-| `build`（Dockerfile のビルド） | 既製イメージ + bind mount の方が起動が速く、「すぐ立ち上がる」思想に合う。ビルドコンテキストの tar 化も必要 | M0.5 |
-| `Request::Cancel` | プロトコルには入れたが daemon 側が未対応。長時間処理が prepare/start に限られ、中断の要求が出ていない | M2 |
-| `ls --all-projects` | 他プロジェクトの `minato.toml` の場所を状態ストアが持っていない | M3 |
-| `minato.local.toml` の上書き | 環境変数だけで大半の用途が埋まったため、需要が出るまで見送る | 未定 |
+| `build`, building a Dockerfile | A prebuilt image plus a bind mount starts faster, which suits "up straight away". It also needs the build context tarred | M0.5 |
+| `Request::Cancel` | In the protocol, unimplemented in the daemon. Long-running work is confined to prepare and start, and nobody has asked to cancel one | M2 |
+| `ls --all-projects` | The state store does not know where other projects' `minato.toml` files are | M3 |
+| `minato.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Undecided |
 
-## 15. 未決事項
+## 15. Open questions
 
-- **共有 DB のマイグレーション衝突**: `scope = "project"` の DB に対し、複数 worktree が別々のマイグレーションを当てると壊れる。worktree ごとに database を切る（同一インスタンス内で DB 名を分ける）案が有力だが、Runtime 非依存に実装する方法が未定
-- **`minato.toml` の自動生成精度**: `minato init` で既存プロジェクトから推定生成したい（compose / package.json / Dockerfile を読む）。どこまで自動化するか
-- **worktree のディレクトリ規約**: `{repo}.wt/{name}` を既定とするが、既存の運用（ghq 配下、`.git/worktrees` 隣接など）とどう折り合うか
-- **daemon の複数プロジェクト同時管理**: 1 daemon が全プロジェクトを見る前提だが、状態ストアのスキーマとロック戦略が未定
-- **`MINATO_HOME` のパス長**: Unix socket の `sun_path` は macOS で 104 バイト。深い場所を指定すると bind が失敗するため `Paths::check_socket_length()` で事前に弾いているが、そもそも socket を `$TMPDIR` に逃がす手もある
-- **GUI の配布形態**: `.app` バンドルとして署名・公証するか、`cargo install` で済ませるか。tray 常駐する以上、前者が望ましいが公証のコストがかかる
+- **Migration conflicts on a shared database**: several worktrees applying
+  different migrations to a `scope = "project"` database will break it. A
+  database per worktree — separate database names inside one instance — is the
+  leading idea, but how to implement it without depending on the runtime is
+  undecided
+- **How well `minato.toml` can be generated**: `minato init` could infer one
+  from an existing project by reading compose, package.json and Dockerfiles.
+  How far to take that is open
+- **Worktree directory conventions**: `{repo}.wt/{name}` is the default, but how
+  it should sit alongside existing habits — under ghq, next to `.git/worktrees`
+  — is unsettled
+- **One daemon across projects**: the assumption is that one daemon watches
+  every project, but the state store's schema and locking strategy are
+  undecided
+- **The length of `MINATO_HOME`**: `sun_path` is 104 bytes on macOS, so a deep
+  path fails to bind. `Paths::check_socket_length()` catches it up front, but
+  moving the socket to `$TMPDIR` is another option
+- **How the GUI is distributed**: a signed and notarised `.app` bundle, or just
+  `cargo install`. Living in the tray argues for the former, but notarisation
+  has a cost

@@ -22,7 +22,7 @@ license = "MIT"
 repository = "https://github.com/hota1024/minato"
 
 [workspace.dependencies]
-# 内部 crate。依存の方向は docs/DESIGN.md §13 を参照。
+# Internal crates. For the direction of dependencies, see docs/DESIGN.md §13.
 minato-core = { path = "crates/minato-core" }
 minato-api = { path = "crates/minato-api" }
 minato-client = { path = "crates/minato-client" }
@@ -31,13 +31,13 @@ minato-proxy = { path = "crates/minato-proxy" }
 minato-dns = { path = "crates/minato-dns" }
 minato-tunnel = { path = "crates/minato-tunnel" }
 
-# 非同期
+# Async
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 futures = "0.3"
 async-trait = "0.1"
 
-# シリアライズ・設定
+# Serialisation and configuration
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -45,7 +45,7 @@ indexmap = { version = "2", features = ["serde"] }
 humantime-serde = "1"
 humantime = "2"
 
-# ユーティリティ
+# Utilities
 sha2 = "0.10"
 shell-words = "1"
 dirs = "5"
@@ -53,7 +53,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 time = "0.3"
 
-# エラー・ログ
+# Errors and logging
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
@@ -62,7 +62,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
-# ネットワーク
+# Networking
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 axum = "0.8"
@@ -80,17 +80,17 @@ bollard = "0.18"
 
 # GUI
 #
-# gpui / gpui-component は crates.io に無いため git から取る。
+# gpui and gpui-component are not on crates.io, so they come from git.
 #
-# **gpui に rev を指定しない。** gpui-component 側が rev 無しで gpui を
-# 参照しており、こちらだけ固定すると別ソース扱いになって gpui が 2 つ
-# 依存グラフに入る。トレイトの実装が食い違い、`Styled` のメソッドが
-# 見つからないという分かりにくいエラーになる。
-# 実際の版は Cargo.lock で固定される。
+# **Do not pin a rev on gpui.** gpui-component refers to gpui without one,
+# and pinning it here alone makes it a different source, putting two copies
+# of gpui in the dependency graph. Their trait implementations then disagree,
+# and it surfaces as an inscrutable "no method `Styled`" error.
+# The actual revision is pinned by Cargo.lock.
 #
-# runtime_shaders はシェーダを実行時にコンパイルする。既定ではビルド時に
-# Metal コンパイラを呼ぶが、それは完全な Xcode が要る。Command Line Tools
-# だけの環境でもビルドできるようにこちらを使う。
+# runtime_shaders compiles shaders at run time. The default calls the Metal
+# compiler during the build, which needs a full Xcode; this way a machine with
+# only the Command Line Tools can build it.
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "runtime_shaders"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "f96f1576ee704b48476f6782962690e0feb7985b" }

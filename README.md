@@ -1,8 +1,8 @@
 # Minato
 
-AI エージェント向けの開発環境管理ツール。
+A development environment manager for AI agents.
 
-**git worktree を作ったら、すぐにプレビュー環境が立ち上がる。**
+**Create a git worktree, and its preview environment is up.**
 
 ```console
 $ minato new feature/user-auth
@@ -11,30 +11,30 @@ $ minato new feature/user-auth
 ✓ api   https://api.feature-user-auth.myapp.localhost
 ```
 
-## 特徴
+## What it does
 
-- **worktree = 環境** — worktree が生まれたら環境が生まれ、消えたら消える
-- **ポートを覚えない** — サービスごとに `{service}.{workspace}.{project}.localhost` の URL が生える
-- **scale-to-zero** — 触っていない環境は自動で停止し、アクセスが来たら起動する。worktree を何個作ってもいい
-- **リモートからも見える** — Cloudflare Tunnel でスマホや外部レビュアーに共有できる
-- **エージェントが使える** — 全コマンドが `--json` を持ち、`minato skill install` で Skill を配置できる
-- **仮想化を選べる** — Docker / Apple Container / Firecracker を Runtime 抽象で切り替える
+- **A worktree is an environment** — one appears with the worktree and goes with it
+- **No ports to remember** — every service gets `{service}.{workspace}.{project}.localhost`
+- **Scale-to-zero** — an untouched environment stops itself and wakes on the next request, so create as many worktrees as you like
+- **Reachable remotely** — share with a phone or an outside reviewer over Cloudflare Tunnel
+- **Usable by agents** — every command speaks `--json`, and `minato skill install` drops in the Skill
+- **Your choice of virtualisation** — Docker, Apple Container and Firecracker behind one Runtime abstraction
 
-## 状態
+## Status
 
-**M4 以外すべて完了。** worktree を作るとコンテナが起動し、
-`*.localhost` の URL でアクセスできる。触っていない環境は自動で停止し、
-アクセスが来たら起き上がる。各サービスには他サービスの URL が
-`MINATO_URL_<SERVICE>` として渡る。
+**Everything but M4 is done.** Creating a worktree starts its containers and
+they answer on `*.localhost`. An untouched environment stops itself and comes
+back on the next request. Every service receives the others' URLs as
+`MINATO_URL_<SERVICE>`.
 
 ```console
 $ minato init
 $ minato new feature/user-auth
-  ✓ worktree feature/user-auth を作成
-  ✓ ネットワークを用意
-  ✓ イメージ busybox:latest を取得
-  ✓ web を起動
-  ✓ web の応答を待機
+  ✓ creating worktree feature/user-auth
+  ✓ preparing the network
+  ✓ pulling image busybox:latest
+  ✓ starting web
+  ✓ waiting for web
 
 myapp / feature-user-auth  (feature/user-auth)
   /path/to/myapp.wt/feature-user-auth
@@ -42,37 +42,37 @@ myapp / feature-user-auth  (feature/user-auth)
   web   ready     https://web.feature-user-auth.myapp.localhost
 ```
 
-標準ポート（80/443）を使うには一度だけ権限の要る設定がいる。
-`minato doctor` が状態を診断し、`minato setup` が必要なコマンドを示す
-（**sudo は自動実行しない** — 内容を確認してから自分で実行する）。
+The standard ports (80 and 443) need a one-off privileged setup.
+`minato doctor` says where things stand and `minato setup` prints the commands
+(**it never runs sudo for you** — read them, then run them yourself).
 
 ```console
 $ minato setup
-1. launchd に 80/443/53 を確保させる（daemon 自体は非 root のまま動きます）
-2. *.localhost を Minato の DNS に向ける
-3. ローカル CA を信頼する（HTTPS の警告を消す）
+1. let launchd hold 80/443/53 (the daemon itself stays non-root)
+2. point *.localhost at Minato's DNS
+3. trust the local CA, so HTTPS stops warning
 ```
 
-設定せずに使うなら、非標準ポートを指定すれば権限は要らない:
+To skip all of that, name unprivileged ports and no permissions are needed:
 
 ```console
 $ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daemon start
 ```
 
-- 設計ドキュメント: [docs/DESIGN.md](docs/DESIGN.md)
+- Design notes: [docs/DESIGN.md](docs/DESIGN.md)
 
-## ロードマップ
+## Roadmap
 
-| | 内容 |
+| | |
 | --- | --- |
-| M0 ✅ | Docker / Apple Container runtime + `new` / `up` / `down` / `rm` / `ls` / `status` / `url` |
-| M1 ✅ | DNS + リバースプロキシ + TLS + `doctor` / `setup` + launchd socket activation |
-| M2 ✅ | scale-to-zero（health check・アイドル停止・オンデマンド起動） |
-| M3 ✅ | 環境変数管理（3 層マージ・シークレット参照・URL 自動注入） |
+| M0 ✅ | Docker and Apple Container runtimes, `new` / `up` / `down` / `rm` / `ls` / `status` / `url` |
+| M1 ✅ | DNS, reverse proxy, TLS, `doctor` / `setup`, launchd socket activation |
+| M2 ✅ | Scale-to-zero: health checks, idle stop, on-demand start |
+| M3 ✅ | Environment variables: three-layer merge, secret references, injected URLs |
 | M4 | Cloudflare Tunnel |
-| M5 ✅ | Skills + `logs` / `exec` |
-| M6 ✅ | GUI（egui + メニューバー常駐） |
-| M7 | Runtime 追加（Apple Container / Firecracker） |
+| M5 ✅ | Skills, `logs` / `exec` |
+| M6 ✅ | GUI: GPUI, living in the menu bar |
+| M7 | More runtimes: Apple Container, Firecracker |
 
 ## GUI
 
@@ -80,29 +80,30 @@ $ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daem
 $ minato-desktop
 ```
 
-メニューバーに常駐し、workspace の状態・URL・ログを見られる。
-URL はクリックでブラウザが開き、コピーもできる。
+Lives in the menu bar and shows each workspace's state, URLs and logs. Click a
+URL to open it, or copy it.
 
-## 構成
+## Layout
 
-Cargo workspace の monorepo。
+A Cargo workspace monorepo.
 
 ```
-crates/    ライブラリ  core / api / client / runtime / proxy / dns / tunnel
-apps/      バイナリ    daemon (minatod) / cli (minato) / desktop (GUI)
-skills/    エージェント向け Skill
-xtask/     ビルドタスク
+crates/    libraries   core / api / client / runtime / proxy / dns / tunnel
+apps/      binaries    daemon (minatod) / cli (minato) / desktop (GUI)
+skills/    the Skill for agents
+xtask/     build tasks
 ```
 
-## 開発
+## Development
 
 ```console
 $ cargo build --workspace
 $ cargo test --workspace
 ```
 
-動作させるにはコンテナランタイムが要る。Docker API に到達できれば
-`docker` CLI 自体は不要（OrbStack / Docker Desktop / colima のいずれでもよい）。
+Running it needs a container runtime. Reaching the Docker API is enough — the
+`docker` CLI itself is not required, and OrbStack, Docker Desktop and colima
+all work.
 
 ```console
 $ export PATH="$PWD/target/debug:$PATH"
@@ -110,7 +111,8 @@ $ minato daemon status
 $ minato doctor
 ```
 
-`MINATO_HOME`（既定 `~/.minato`）に daemon の socket・状態・ログ・CA が置かれる。
-Unix socket のパス長制限があるため、深い場所は指定できない。
+`MINATO_HOME` (default `~/.minato`) holds the daemon's socket, state, logs and
+CA. A Unix socket path has a length limit, so it cannot live somewhere deep.
 
-待ち受けポートは `MINATO_HTTP_PORT` / `MINATO_HTTPS_PORT` / `MINATO_DNS_PORT` で変えられる。
+The listening ports come from `MINATO_HTTP_PORT`, `MINATO_HTTPS_PORT` and
+`MINATO_DNS_PORT`.
