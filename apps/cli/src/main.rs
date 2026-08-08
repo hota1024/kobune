@@ -1475,15 +1475,19 @@ fn present_setup(
 
     let mut steps: Vec<ui::SetupStep> = Vec::new();
     let launchd_pending = pending("launchd");
+    let mut launchd_step = None;
 
     if launchd_pending {
         match prepare_launchd() {
-            Ok((source, commands)) => steps.push(ui::SetupStep {
-                description: "let launchd hold 80/443/53 (the daemon itself stays non-root)"
-                    .to_string(),
-                note: Some(format!("generated plist: {}", source.display())),
-                commands,
-            }),
+            Ok((source, commands)) => {
+                launchd_step = Some(steps.len());
+                steps.push(ui::SetupStep {
+                    description: "let launchd hold 80/443/53 (the daemon itself stays non-root)"
+                        .to_string(),
+                    note: Some(format!("generated plist: {}", source.display())),
+                    commands,
+                });
+            }
             Err(err) => ui::error(&format!("cannot write the plist: {err}"), None),
         }
     }
@@ -1528,8 +1532,10 @@ fn present_setup(
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Only the LaunchDaemon leaves anything behind to take back out.
-    let undo = if launchd_pending {
+    // Only the LaunchDaemon leaves anything behind to take back out, and
+    // only if there is a step to install it: the plist is generated first,
+    // and a failure there leaves nothing to undo.
+    let undo = if launchd_step.is_some() {
         launchd::uninstall_commands()
     } else {
         Vec::new()
@@ -1599,7 +1605,7 @@ fn present_setup(
             ui::SetupOutcome::Failed
         };
 
-        if index == 0 && launchd_pending && outcome == ui::SetupOutcome::Ran {
+        if Some(index) == launchd_step && outcome == ui::SetupOutcome::Ran {
             launchd_installed = true;
         }
 
