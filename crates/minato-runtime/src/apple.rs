@@ -305,13 +305,20 @@ impl AppleContainerRuntime {
         name: &str,
         scope: crate::spec::VolumeScope,
     ) -> Result<PathBuf> {
+        // **One directory per volume, never one inside another.** Nesting
+        // the worktree would put `cache@workspace` inside a project volume
+        // that happened to be named after that worktree, so clearing the
+        // one would take the other's storage with it.
+        //
+        // `.` separates, for the reason `names::volume` gives: it cannot
+        // occur in a label, so `{worktree}.{name}` can never equal a bare
+        // project volume's name. Project paths are untouched, so nothing
+        // already stored moves.
         let path = match scope {
             crate::spec::VolumeScope::Project => self.volume_root.join(&key.project).join(name),
-            crate::spec::VolumeScope::Workspace => self
-                .volume_root
-                .join(&key.project)
-                .join(&key.workspace)
-                .join(name),
+            crate::spec::VolumeScope::Workspace => self.volume_root.join(&key.project).join(
+                format!("{}.{name}", names::sanitize_segment(&key.workspace)),
+            ),
         };
         std::fs::create_dir_all(&path).map_err(|err| {
             RuntimeError::failed(
@@ -320,6 +327,42 @@ impl AppleContainerRuntime {
             )
         })?;
         Ok(path)
+    }
+
+    /// Removes the storage that belonged to this worktree and nothing else.
+    ///
+    /// **Workspace-scoped only**, for the reason the Docker backend gives:
+    /// a project volume is shared and outlives any worktree, while this one
+    /// is storage for a worktree being destroyed.
+    ///
+    /// There are no labels to filter on here, only directory names, and
+    /// `{worktree}.` is the prefix `ensure_volume_dir` writes them under.
+    fn remove_workspace_volumes(&self, key: &WorkspaceKey, events: &EventSink) {
+        let project_dir = self.volume_root.join(&key.project);
+        let prefix = format!("{}.", names::sanitize_segment(&key.workspace));
+
+        let Ok(entries) = std::fs::read_dir(&project_dir) else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+
+            if !name.starts_with(&prefix) {
+                continue;
+            }
+
+            let path = entry.path();
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => events.debug(format!("removed volume storage {}", path.display())),
+                Err(err) => {
+                    events.debug(format!("{} was not removed: {err}", path.display()));
+                }
+            }
+        }
     }
 
     /// The environment for this service, with its peers' addresses added.
@@ -722,6 +765,8 @@ impl Runtime for AppleContainerRuntime {
                 events.debug(format!("network {network} was not removed"));
             }
         }
+
+        self.remove_workspace_volumes(key, events);
 
         Ok(())
     }

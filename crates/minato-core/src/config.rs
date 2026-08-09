@@ -67,6 +67,25 @@ fn default_runtime() -> String {
     "docker".to_string()
 }
 
+/// Whether a `volumes` source asks for per-worktree storage.
+///
+/// **A host path is never scoped**, however it is spelled: there is nothing
+/// to namespace about a directory the user already owns, and `@` is legal
+/// in a path. Without this, a real directory called `certs@workspace` on a
+/// shared service would be refused with a message describing something
+/// nobody wrote.
+///
+/// Mirrors how `VolumeMount::parse` decides the same thing, in
+/// `minato-runtime`. It cannot be called from here — the runtime sits above
+/// this crate — so the one rule the two share is the prefix test, kept
+/// deliberately trivial so it can be read side by side.
+fn is_workspace_scoped(source: &str) -> bool {
+    let is_host_path =
+        source.starts_with('/') || source.starts_with('.') || source.starts_with('~');
+
+    !is_host_path && source.ends_with("@workspace")
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
@@ -397,11 +416,7 @@ impl MinatoConfig {
         // out as a container mounting whichever one it happened to make.
         if svc.scope == ServiceScope::Project {
             for volume in &svc.volumes {
-                if volume
-                    .split(':')
-                    .next()
-                    .is_some_and(|source| source.ends_with("@workspace"))
-                {
+                if volume.split(':').next().is_some_and(is_workspace_scoped) {
                     return Err(Error::ConfigInvalid(format!(
                         "service `{name}` (scope = \"project\") asks for the \
                          workspace-scoped volume `{volume}`. A shared service \
@@ -765,6 +780,24 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("no worktree"), "{err}");
+    }
+
+    #[test]
+    fn a_host_path_ending_in_workspace_is_not_a_scope() {
+        // A real directory named `certs@workspace`. Refusing this would
+        // fail the whole project with a message about something the user
+        // did not write.
+        parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.db]
+            image = "postgres:16"
+            scope = "project"
+            volumes = ["./certs@workspace:/certs:ro"]
+        "#,
+        )
+        .expect("a host path is never scoped, however it is spelled");
     }
 
     #[test]

@@ -177,20 +177,35 @@ pub mod names {
     ///
     /// A workspace-scoped one carries the worktree too, which is what keeps
     /// two branches from sharing storage whose shape they disagree about.
+    ///
+    /// **The worktree is joined with `.`, not `-`.** Projects, worktrees and
+    /// volume names are all DNS labels, so a hyphen is legal inside every
+    /// one of them and joining with it leaves the two forms sharing a
+    /// namespace: under worktree `feat-1`, a project volume named
+    /// `feat-1-cache` and a workspace volume named `cache` would be the same
+    /// storage. A `.` cannot occur in a label, so the two can never meet.
     pub fn volume(key: &WorkspaceKey, name: &str, scope: crate::spec::VolumeScope) -> String {
         match scope {
             crate::spec::VolumeScope::Project => format!("minato-{}-{name}", key.project),
-            crate::spec::VolumeScope::Workspace => format!(
-                "minato-{}-{}-{name}",
-                key.project,
-                sanitize_segment(&key.workspace)
-            ),
+            crate::spec::VolumeScope::Workspace => {
+                debug_assert!(
+                    !key.is_shared(),
+                    "a shared service has no worktree to scope storage to; \
+                     the configuration is meant to refuse this"
+                );
+
+                format!(
+                    "minato-{}-{}.{name}",
+                    key.project,
+                    sanitize_segment(&key.workspace)
+                )
+            }
         }
     }
 
     /// Some implementations reject a leading `_` in a container name, so
     /// `_shared` loses it.
-    fn sanitize_segment(segment: &str) -> String {
+    pub(crate) fn sanitize_segment(segment: &str) -> String {
         segment.trim_start_matches('_').to_string()
     }
 }
@@ -261,7 +276,7 @@ mod tests {
 
         assert_eq!(
             names::volume(&one, "node-modules", VolumeScope::Workspace),
-            "minato-myapp-feat-1-node-modules"
+            "minato-myapp-feat-1.node-modules"
         );
         assert_ne!(
             names::volume(&one, "node-modules", VolumeScope::Workspace),
@@ -278,6 +293,37 @@ mod tests {
         assert_ne!(
             names::volume(&key, "cache", VolumeScope::Workspace),
             names::volume(&key, "cache", VolumeScope::Project)
+        );
+    }
+
+    #[test]
+    fn a_hyphenated_project_volume_cannot_be_a_workspace_one() {
+        // Joined with `-`, worktree `feat-1` + name `cache` and the project
+        // volume `feat-1-cache` are the same string: the shared and the
+        // per-worktree volume become one, silently, under the scope whose
+        // entire job is keeping them apart. Volume names are labels, and a
+        // label cannot contain `.`, so `.` is what makes that impossible.
+        use crate::spec::VolumeScope;
+
+        let key = WorkspaceKey::new("myapp", "feat-1");
+
+        assert_ne!(
+            names::volume(&key, "cache", VolumeScope::Workspace),
+            names::volume(&key, "feat-1-cache", VolumeScope::Project)
+        );
+    }
+
+    #[test]
+    fn two_worktrees_cannot_be_talked_into_the_same_volume() {
+        // Branch `feat` with `1-cache`, branch `feat-1` with `cache`.
+        use crate::spec::VolumeScope;
+
+        let short = WorkspaceKey::new("myapp", "feat");
+        let long = WorkspaceKey::new("myapp", "feat-1");
+
+        assert_ne!(
+            names::volume(&short, "1-cache", VolumeScope::Workspace),
+            names::volume(&long, "cache", VolumeScope::Workspace)
         );
     }
 }

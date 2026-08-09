@@ -303,12 +303,10 @@ impl VolumeMount {
 /// syntax exists to prevent, arrived at by making it.
 fn split_scope(source: &str, spec: &str) -> Result<(String, VolumeScope), String> {
     let Some((name, suffix)) = source.split_once('@') else {
-        return Ok((source.to_string(), VolumeScope::Project));
+        return Ok((validate_name(source, spec)?, VolumeScope::Project));
     };
 
-    if name.is_empty() {
-        return Err(format!("the volume name is empty: `{spec}`"));
-    }
+    let name = validate_name(name, spec)?;
 
     let scope = match suffix {
         "workspace" => VolumeScope::Workspace,
@@ -322,7 +320,29 @@ fn split_scope(source: &str, spec: &str) -> Result<(String, VolumeScope), String
         }
     };
 
-    Ok((name.to_string(), scope))
+    Ok((name, scope))
+}
+
+/// Checks a named volume's name.
+///
+/// **The same shape as a project or worktree name**, which is what lets
+/// [`crate::names::volume`] argue that the two scopes cannot collide. It
+/// also keeps the name usable as a directory: Apple Container has no named
+/// volumes and joins this straight onto its storage root, where a `..`
+/// would land outside it.
+fn validate_name(name: &str, spec: &str) -> Result<String, String> {
+    if name.is_empty() {
+        return Err(format!("the volume name is empty: `{spec}`"));
+    }
+
+    if !minato_core::naming::is_valid_label(name) {
+        return Err(format!(
+            "`{name}` is not a usable volume name in `{spec}`. \
+             Use lowercase letters, digits and hyphens"
+        ));
+    }
+
+    Ok(name.to_string())
 }
 
 fn dirs_home() -> Option<PathBuf> {
@@ -466,6 +486,29 @@ mod tests {
 
         assert!(err.contains("@worktree"), "{err}");
         assert!(err.contains("@workspace"), "say what does work: {err}");
+    }
+
+    #[test]
+    fn a_volume_name_has_to_be_a_label() {
+        // It is joined into a Docker volume name and, on Apple Container,
+        // straight onto a storage path — where a `/` would land outside
+        // the root. Being a label is also what lets `names::volume` argue
+        // the two scopes cannot collide.
+        //
+        // A leading `.` or `/` is a host path rather than a name, and those
+        // are a different feature; `nested/name` is the case that reaches
+        // this check.
+        for bad in [
+            "nested/name:/x",
+            "Cache:/x",
+            "with space:/x",
+            "under_score:/x",
+        ] {
+            assert!(
+                VolumeMount::parse(bad, Path::new("/repo")).is_err(),
+                "accepted `{bad}`"
+            );
+        }
     }
 
     #[test]

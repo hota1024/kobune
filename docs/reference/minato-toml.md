@@ -223,12 +223,26 @@ volumes = [
 | Written | Docker volume |
 | --- | --- |
 | `pnpm-store` | `minato-{project}-pnpm-store` |
-| `node-modules@workspace` | `minato-{project}-{workspace}-node-modules` |
+| `node-modules@workspace` | `minato-{project}-{workspace}.node-modules` |
+
+The worktree is joined with `.` rather than `-` on purpose. Projects,
+worktrees and volume names are all DNS labels, so a hyphen occurs inside any
+of them: joined with one, worktree `feat-1` with volume `cache` and the
+project volume `feat-1-cache` would be the same storage. A `.` cannot appear
+in a label, so the two forms can never meet.
+
+A volume name has to be a label itself — lowercase letters, digits and
+hyphens.
 
 `@project` can be written out where being explicit helps; it is the default
 either way. An unrecognised suffix is refused rather than treated as part of
 the name, since `@worktree` would otherwise quietly produce a shared volume
 called `node-modules@worktree`.
+
+**A workspace volume goes when its worktree goes.** `minato rm` removes it
+along with the containers, since there is no longer a worktree it belongs to.
+Project volumes are left alone — they are shared, and outlive any one
+worktree.
 
 ::: warning Changing the scope of an existing volume
 The scope is part of the real name, so adding or removing `@workspace` points
