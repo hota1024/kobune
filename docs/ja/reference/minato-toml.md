@@ -183,6 +183,7 @@ health = "cmd:pg_isready -U postgres"      # コンテナ内で実行
 ```toml
 volumes = [
   "pgdata:/var/lib/postgresql/data",   # 名前付き。worktree 間で共有される
+  "node-modules@workspace:/workspace/node_modules",  # worktree ごとに分離
   "./seed:/seed",                      # ホストのパス。worktree からの相対パス
   "/etc/ssl/certs:/certs:ro",          # 絶対パス、読み取り専用
   "~/.cache/npm:/root/.npm",           # ホームディレクトリからの相対パス
@@ -198,14 +199,55 @@ Docker のボリューム `minato-{project}-pgdata` になるため、自分で 
 付ける必要はありません。プロジェクト `myapp` で `myapp-pgdata` と書くと
 `minato-myapp-myapp-pgdata` になります。
 
-::: warning 名前付き領域はすべての worktree で共有されます
-名前に含まれるのは workspace ではなく project なので、2 つの worktree が
-同じボリュームをマウントします。パッケージキャッシュに向いているのはこの
-ためであり、ブランチによって内容が変わるものに向かないのもこのためです。
-ブランチごとに lockfile が異なる `node_modules` は壊れます。そうした用途
-には worktree 配下のホストパスを使うか、ブランチごとに別のボリューム名を
-与えてください。
+#### スコープ
+
+名前付き領域は、既定ではプロジェクト内のすべての worktree で共有されます。
+パッケージキャッシュに向いているのはこのためであり、ブランチによって内容が
+変わるものに向かないのもこのためです。ブランチごとに lockfile が異なる
+`node_modules` を共有すると壊れます。
+
+名前に `@workspace` を付けると、worktree ごとに分離されます。
+
+```toml
+volumes = [
+  "pnpm-store:/pnpm-store",                          # 共有
+  "node-modules@workspace:/workspace/node_modules",  # worktree ごと
+  "certs@workspace:/certs:ro",                       # :ro と併用できる
+]
+```
+
+| 記述 | 実際の Docker ボリューム名 |
+| --- | --- |
+| `pnpm-store` | `minato-{project}-pnpm-store` |
+| `node-modules@workspace` | `minato-{project}-{workspace}.node-modules` |
+
+worktree 名の連結に `-` ではなく `.` を使っているのは意図的です。project、
+worktree、ボリューム名はいずれも DNS ラベルであり、どれにもハイフンが
+含まれ得ます。`-` で連結すると、worktree `feat-1` のボリューム `cache` と、
+project スコープのボリューム `feat-1-cache` が同一の領域になってしまいます。
+`.` はラベルに含められないため、両者が衝突することはありません。
+
+ボリューム名自体もラベルである必要があります（英小文字・数字・ハイフン）。
+
+明示したい場合は `@project` と書けますが、省略時の既定値も同じです。認識
+できない接尾辞はエラーになります。`@worktree` のような打ち間違いを名前の
+一部として受け入れると、`node-modules@worktree` という共有ボリュームが
+黙って作られてしまうためです。
+
+**workspace スコープのボリュームは worktree と一緒に削除されます。**
+`minato rm` がコンテナとあわせて削除します。所属する worktree が無くなる
+以上、残しても到達できないためです。project スコープのボリュームは共有物で
+あり個々の worktree より長生きするため、削除されません。
+
+::: warning 既存ボリュームのスコープ変更について
+スコープは実際のボリューム名の一部です。そのため `@workspace` の付け外しは
+参照先のストレージそのものを変えます。削除はされませんが、それまでの内容は
+見えなくなります。
 :::
+
+`scope = "project"` のサービスは `@workspace` の領域を要求できません。
+1 つのインスタンスがすべての worktree に対応する以上、どの worktree のもの
+かを決められないためです。これは設定の読み込み時にエラーとして検出されます。
 
 Apple Container には名前付きボリュームがないため、
 `~/.minato/volumes/<project>/` へのバインドマウントに置き換えられます。

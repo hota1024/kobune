@@ -176,6 +176,26 @@ pub struct SourceMount {
     pub target: String,
 }
 
+/// How far a named volume is shared.
+///
+/// **Project is the default, and stays the default.** A package cache is
+/// what named storage is usually for, and sharing it is the point. Changing
+/// the default would also rename every existing volume, which does not lose
+/// the data but does hide it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VolumeScope {
+    /// One volume for the project, mounted by every worktree.
+    #[default]
+    Project,
+    /// One per worktree.
+    ///
+    /// For anything a branch changes the shape of. `node_modules` against a
+    /// lockfile that differs per branch is the case that bites: shared, the
+    /// two worktrees overwrite each other, and it reads as a broken install
+    /// rather than as shared state.
+    Workspace,
+}
+
 /// A persistent mount.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VolumeMount {
@@ -184,6 +204,7 @@ pub enum VolumeMount {
         name: String,
         target: String,
         read_only: bool,
+        scope: VolumeScope,
     },
     /// A host path, mounted directly.
     Bind {
@@ -196,9 +217,15 @@ pub enum VolumeMount {
 impl VolumeMount {
     /// Parses one line of `volumes` from `minato.toml`.
     ///
-    /// - `pgdata:/var/lib/postgresql/data` — named storage
+    /// - `pgdata:/var/lib/postgresql/data` — named storage, shared by the
+    ///   project's worktrees
+    /// - `node-modules@workspace:/workspace/node_modules` — one per worktree
     /// - `./seed:/seed`, `/abs/path:/data` — a host path, relative to `base`
     /// - a trailing `:ro` makes it read-only
+    ///
+    /// `@workspace` goes on the name rather than in a third field: `:ro`
+    /// already owns the position after the target, and the two are separate
+    /// choices that have to be able to appear together.
     pub fn parse(spec: &str, base: &std::path::Path) -> Result<Self, String> {
         let parts: Vec<&str> = spec.split(':').collect();
 
@@ -244,10 +271,13 @@ impl VolumeMount {
                 read_only,
             })
         } else {
+            let (name, scope) = split_scope(source, spec)?;
+
             Ok(Self::Named {
-                name: source.to_string(),
+                name,
                 target: target.to_string(),
                 read_only,
+                scope,
             })
         }
     }
@@ -263,6 +293,56 @@ impl VolumeMount {
             Self::Named { read_only, .. } | Self::Bind { read_only, .. } => *read_only,
         }
     }
+}
+
+/// Splits `node-modules@workspace` into its name and its scope.
+///
+/// An unknown suffix is refused rather than folded into the name. A typo
+/// like `@worktree` would otherwise make a volume called
+/// `node-modules@worktree` shared across every worktree — the mistake this
+/// syntax exists to prevent, arrived at by making it.
+fn split_scope(source: &str, spec: &str) -> Result<(String, VolumeScope), String> {
+    let Some((name, suffix)) = source.split_once('@') else {
+        return Ok((validate_name(source, spec)?, VolumeScope::Project));
+    };
+
+    let name = validate_name(name, spec)?;
+
+    let scope = match suffix {
+        "workspace" => VolumeScope::Workspace,
+        "project" => VolumeScope::Project,
+        other => {
+            return Err(format!(
+                "`@{other}` is not a volume scope in `{spec}`. \
+                 Use `@workspace` for one per worktree, or leave it off to \
+                 share it across the project"
+            ));
+        }
+    };
+
+    Ok((name, scope))
+}
+
+/// Checks a named volume's name.
+///
+/// **The same shape as a project or worktree name**, which is what lets
+/// [`crate::names::volume`] argue that the two scopes cannot collide. It
+/// also keeps the name usable as a directory: Apple Container has no named
+/// volumes and joins this straight onto its storage root, where a `..`
+/// would land outside it.
+fn validate_name(name: &str, spec: &str) -> Result<String, String> {
+    if name.is_empty() {
+        return Err(format!("the volume name is empty: `{spec}`"));
+    }
+
+    if !minato_core::naming::is_valid_label(name) {
+        return Err(format!(
+            "`{name}` is not a usable volume name in `{spec}`. \
+             Use lowercase letters, digits and hyphens"
+        ));
+    }
+
+    Ok(name.to_string())
 }
 
 fn dirs_home() -> Option<PathBuf> {
@@ -342,8 +422,102 @@ mod tests {
                 name: "pgdata".into(),
                 target: "/var/lib/postgresql/data".into(),
                 read_only: false,
+                scope: VolumeScope::Project,
+            },
+            "no suffix means the project shares it, as it always has"
+        );
+    }
+
+    #[test]
+    fn parses_a_workspace_scoped_volume() {
+        let volume = VolumeMount::parse(
+            "node-modules@workspace:/workspace/node_modules",
+            Path::new("/repo"),
+        )
+        .expect("valid");
+
+        assert_eq!(
+            volume,
+            VolumeMount::Named {
+                name: "node-modules".into(),
+                target: "/workspace/node_modules".into(),
+                read_only: false,
+                scope: VolumeScope::Workspace,
             }
         );
+    }
+
+    #[test]
+    fn a_scope_composes_with_read_only() {
+        // The two are separate choices, so neither may cost the other.
+        let volume =
+            VolumeMount::parse("certs@workspace:/certs:ro", Path::new("/repo")).expect("valid");
+
+        assert_eq!(
+            volume,
+            VolumeMount::Named {
+                name: "certs".into(),
+                target: "/certs".into(),
+                read_only: true,
+                scope: VolumeScope::Workspace,
+            }
+        );
+    }
+
+    #[test]
+    fn the_project_scope_can_be_written_out() {
+        let volume = VolumeMount::parse("pgdata@project:/data", Path::new("/repo")).expect("valid");
+
+        assert!(matches!(
+            volume,
+            VolumeMount::Named {
+                scope: VolumeScope::Project,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_unknown_scope_is_refused_rather_than_kept_as_a_name() {
+        // `node-modules@worktree` as a *name* would be shared across every
+        // worktree — the exact mistake the suffix exists to prevent, made
+        // by trying to prevent it.
+        let err = VolumeMount::parse("node-modules@worktree:/x", Path::new("/repo")).unwrap_err();
+
+        assert!(err.contains("@worktree"), "{err}");
+        assert!(err.contains("@workspace"), "say what does work: {err}");
+    }
+
+    #[test]
+    fn a_volume_name_has_to_be_a_label() {
+        // It is joined into a Docker volume name and, on Apple Container,
+        // straight onto a storage path — where a `/` would land outside
+        // the root. Being a label is also what lets `names::volume` argue
+        // the two scopes cannot collide.
+        //
+        // A leading `.` or `/` is a host path rather than a name, and those
+        // are a different feature; `nested/name` is the case that reaches
+        // this check.
+        for bad in [
+            "nested/name:/x",
+            "Cache:/x",
+            "with space:/x",
+            "under_score:/x",
+        ] {
+            assert!(
+                VolumeMount::parse(bad, Path::new("/repo")).is_err(),
+                "accepted `{bad}`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scope_on_a_host_path_is_not_a_scope() {
+        // Bind mounts are the host's own directories; there is nothing to
+        // namespace, and `@` is legal in a path.
+        let volume = VolumeMount::parse("./seed@2:/seed", Path::new("/repo")).expect("valid");
+
+        assert!(matches!(volume, VolumeMount::Bind { .. }));
     }
 
     #[test]

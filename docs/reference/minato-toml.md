@@ -187,6 +187,7 @@ incompatible migrations.
 ```toml
 volumes = [
   "pgdata:/var/lib/postgresql/data",   # named, managed, shared across worktrees
+  "node-modules@workspace:/workspace/node_modules",  # one per worktree
   "./seed:/seed",                      # host path, relative to the worktree
   "/etc/ssl/certs:/certs:ro",          # absolute, read-only
   "~/.cache/npm:/root/.npm",           # home-relative
@@ -202,13 +203,56 @@ Docker volume `minato-{project}-pgdata`, so there is no need to prefix the
 name yourself — `myapp-pgdata` under project `myapp` would end up as
 `minato-myapp-myapp-pgdata`.
 
-::: warning Named storage is shared by every worktree
-The name carries the project, not the workspace, so two worktrees mount the
-same volume. That is what makes it useful for a package cache, and what makes
-it wrong for anything a branch can change the shape of — `node_modules`
-against a lockfile that differs per branch will fight itself. Use a host path
-under the worktree for those, or give each branch its own volume name.
+#### Scope
+
+Named storage is shared by every worktree of the project by default. That is
+what makes it useful for a package cache, and what makes it wrong for anything
+a branch can change the shape of — `node_modules` against a lockfile that
+differs per branch would fight itself.
+
+`@workspace` on the name gives each worktree its own:
+
+```toml
+volumes = [
+  "pnpm-store:/pnpm-store",                          # shared
+  "node-modules@workspace:/workspace/node_modules",  # one per worktree
+  "certs@workspace:/certs:ro",                       # composes with :ro
+]
+```
+
+| Written | Docker volume |
+| --- | --- |
+| `pnpm-store` | `minato-{project}-pnpm-store` |
+| `node-modules@workspace` | `minato-{project}-{workspace}.node-modules` |
+
+The worktree is joined with `.` rather than `-` on purpose. Projects,
+worktrees and volume names are all DNS labels, so a hyphen occurs inside any
+of them: joined with one, worktree `feat-1` with volume `cache` and the
+project volume `feat-1-cache` would be the same storage. A `.` cannot appear
+in a label, so the two forms can never meet.
+
+A volume name has to be a label itself — lowercase letters, digits and
+hyphens.
+
+`@project` can be written out where being explicit helps; it is the default
+either way. An unrecognised suffix is refused rather than treated as part of
+the name, since `@worktree` would otherwise quietly produce a shared volume
+called `node-modules@worktree`.
+
+**A workspace volume goes when its worktree goes.** `minato rm` removes it
+along with the containers, since there is no longer a worktree it belongs to.
+Project volumes are left alone — they are shared, and outlive any one
+worktree.
+
+::: warning Changing the scope of an existing volume
+The scope is part of the real name, so adding or removing `@workspace` points
+the service at different storage. Nothing is deleted, but whatever the old
+volume held stops being visible.
 :::
+
+A `scope = "project"` service cannot ask for `@workspace` storage: one
+instance serves every worktree, so there is no worktree whose volume it would
+be. That is refused when the configuration is read.
 
 Apple Container has no named volumes, so they become bind mounts under
 `~/.minato/volumes/<project>/`.

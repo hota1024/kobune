@@ -24,6 +24,7 @@ use bollard::models::{
     ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
 };
 use bollard::network::{ConnectNetworkOptions, CreateNetworkOptions, ListNetworksOptions};
+use bollard::volume::ListVolumesOptions;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use minato_api::OutputStream;
@@ -354,8 +355,13 @@ impl DockerRuntime {
     }
 
     /// Makes sure a named volume exists.
-    async fn ensure_volume(&self, project: &str, name: &str) -> Result<String> {
-        let full = names::volume(project, name);
+    async fn ensure_volume(
+        &self,
+        key: &WorkspaceKey,
+        name: &str,
+        scope: crate::spec::VolumeScope,
+    ) -> Result<String> {
+        let full = names::volume(key, name, scope);
 
         if self.docker.inspect_volume(&full).await.is_ok() {
             return Ok(full);
@@ -366,7 +372,15 @@ impl DockerRuntime {
             labels::MANAGED.to_string(),
             labels::MANAGED_VALUE.to_string(),
         );
-        volume_labels.insert(labels::PROJECT.to_string(), project.to_string());
+        volume_labels.insert(labels::PROJECT.to_string(), key.project.clone());
+
+        // **Only a workspace volume carries a workspace.** That label is
+        // what makes it findable when the worktree goes; a project volume
+        // outlives every worktree, so labelling it with whichever one
+        // happened to create it would be a lie.
+        if scope == crate::spec::VolumeScope::Workspace {
+            volume_labels.insert(labels::WORKSPACE.to_string(), key.workspace.clone());
+        }
 
         self.docker
             .create_volume(bollard::volume::CreateVolumeOptions {
@@ -378,6 +392,49 @@ impl DockerRuntime {
             .map_err(|e| RuntimeError::failed("creating the volume", e))?;
 
         Ok(full)
+    }
+
+    /// Removes the storage that belonged to this worktree and nothing else.
+    ///
+    /// **Workspace-scoped only.** A project volume is shared and outlives
+    /// any one worktree; a workspace one is storage for a worktree that is
+    /// being destroyed, so leaving it behind means an unreachable copy of
+    /// `node_modules` per branch, for ever.
+    ///
+    /// Failing here does not fail the removal. The worktree and its
+    /// containers are already gone by this point, and refusing to finish
+    /// over reclaimable disk would leave a half-removed workspace.
+    async fn remove_workspace_volumes(&self, key: &WorkspaceKey, events: &EventSink) {
+        let mut filters = HashMap::new();
+        filters.insert(
+            "label".to_string(),
+            vec![
+                format!("{}={}", labels::MANAGED, labels::MANAGED_VALUE),
+                format!("{}={}", labels::PROJECT, key.project),
+                format!("{}={}", labels::WORKSPACE, key.workspace),
+            ],
+        );
+
+        let listed = match self
+            .docker
+            .list_volumes(Some(ListVolumesOptions { filters }))
+            .await
+        {
+            Ok(listed) => listed,
+            Err(err) => {
+                events.debug(format!("cannot list this workspace's volumes: {err}"));
+                return;
+            }
+        };
+
+        for volume in listed.volumes.unwrap_or_default() {
+            match self.docker.remove_volume(&volume.name, None).await {
+                Ok(()) => events.debug(format!("removed volume {}", volume.name)),
+                Err(err) => {
+                    events.debug(format!("volume {} was not removed: {err}", volume.name));
+                }
+            }
+        }
     }
 
     /// The container's summary, if there is a container.
@@ -467,9 +524,10 @@ impl DockerRuntime {
                     name,
                     target,
                     read_only,
+                    scope,
                 } => {
                     let full = self
-                        .ensure_volume(&spec.key.workspace.project, name)
+                        .ensure_volume(&spec.key.workspace, name, *scope)
                         .await?;
                     mounts.push(Mount {
                         typ: Some(MountTypeEnum::VOLUME),
@@ -894,6 +952,8 @@ impl Runtime for DockerRuntime {
         if let Err(err) = self.docker.remove_network(&network).await {
             events.debug(format!("network {network} was not removed: {err}"));
         }
+
+        self.remove_workspace_volumes(key, events).await;
 
         Ok(())
     }
