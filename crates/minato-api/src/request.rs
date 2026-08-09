@@ -150,6 +150,16 @@ pub enum Request {
         target: Target,
         service: String,
         command: Vec<String>,
+        /// Run it in a throwaway container instead of the running one.
+        ///
+        /// **The container does not have to be running.** Wanting to look
+        /// inside is at its most likely just after a start-up script died,
+        /// which is precisely when there is nothing to exec into.
+        #[serde(default)]
+        fresh: bool,
+        /// Where to run it. The service's `workdir` when left out.
+        #[serde(default)]
+        workdir: Option<String>,
     },
 
     /// Lists environment variables.

@@ -18,7 +18,9 @@ pub use docker::DockerRuntime;
 pub use error::{Result, RuntimeError};
 pub use event::EventSink;
 pub use health::{DEFAULT_READINESS_TIMEOUT, await_service, probe, wait_until_ready};
-pub use runtime::{ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names};
+pub use runtime::{
+    ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names,
+};
 pub use spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
     VolumeScope, WorkspaceKey, WorkspaceSpec,

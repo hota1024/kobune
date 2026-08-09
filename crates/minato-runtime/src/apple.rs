@@ -32,7 +32,9 @@ use tokio::process::Command;
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
-use crate::runtime::{ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names};
+use crate::runtime::{
+    ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Throwaway, labels, names,
+};
 use crate::spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
     WorkspaceKey, WorkspaceSpec,
@@ -434,21 +436,40 @@ impl AppleContainerRuntime {
         spec: &ServiceSpec,
         network: Option<&str>,
         peer_addresses: &BTreeMap<String, Ipv4Addr>,
+        throwaway: Option<&Throwaway<'_>>,
     ) -> Result<Vec<String>> {
-        let name = names::container(&spec.key);
-        let mut args: Vec<String> = vec!["create".into(), "--name".into(), name];
+        let name = match throwaway {
+            Some(one_off) => one_off.name.clone(),
+            None => names::container(&spec.key),
+        };
+
+        // A throwaway is run rather than created, and removed the moment
+        // it exits. Nothing here should outlive the command.
+        let mut args: Vec<String> = match throwaway {
+            Some(_) => vec!["run".into(), "--rm".into(), "--name".into(), name],
+            None => vec!["create".into(), "--name".into(), name],
+        };
 
         args.push("--workdir".into());
-        args.push(spec.workdir.clone());
+        args.push(
+            throwaway
+                .and_then(|one_off| one_off.workdir.map(str::to_string))
+                .unwrap_or_else(|| spec.workdir.clone()),
+        );
 
         for (key, value) in self.env_with_peers(spec, peer_addresses) {
             args.push("--env".into());
             args.push(format!("{key}={value}"));
         }
 
-        for (key, value) in container_labels(spec) {
-            args.push("--label".into());
-            args.push(format!("{key}={value}"));
+        // **A throwaway carries no labels.** They are how Minato finds its
+        // own containers, so a labelled one would turn up in
+        // `minato status` and in what `down` stops.
+        if throwaway.is_none() {
+            for (key, value) in container_labels(spec) {
+                args.push("--label".into());
+                args.push(format!("{key}={value}"));
+            }
         }
 
         if let Some(network) = network {
@@ -489,8 +510,13 @@ impl AppleContainerRuntime {
 
         args.push(spec.image.clone());
 
-        if let Some(command) = &spec.command {
-            args.extend(command.iter().cloned());
+        match throwaway {
+            Some(one_off) => args.extend(one_off.command.iter().cloned()),
+            None => {
+                if let Some(command) = &spec.command {
+                    args.extend(command.iter().cloned());
+                }
+            }
         }
 
         Ok(args)
@@ -654,7 +680,7 @@ impl Runtime for AppleContainerRuntime {
         // Read after the dependencies have started, so their addresses
         // exist to inject.
         let peer_addresses = self.peer_addresses(spec).await?;
-        let args = self.create_args(spec, network.as_deref(), &peer_addresses)?;
+        let args = self.create_args(spec, network.as_deref(), &peer_addresses, None)?;
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
         if let Err(err) = self.run(&arg_refs).await {
@@ -876,6 +902,7 @@ impl Runtime for AppleContainerRuntime {
         &self,
         key: &ServiceKey,
         command: &[String],
+        options: &ExecOptions,
         events: &EventSink,
     ) -> Result<ExecOutcome> {
         let Some(record) = self.find_container(key).await? else {
@@ -893,7 +920,14 @@ impl Runtime for AppleContainerRuntime {
         }
 
         let name = names::container(key);
-        let mut args: Vec<String> = vec!["exec".into(), name];
+        let mut args: Vec<String> = vec!["exec".into()];
+
+        if let Some(workdir) = &options.workdir {
+            args.push("--workdir".into());
+            args.push(workdir.clone());
+        }
+
+        args.push(name);
         args.extend(command.iter().cloned());
 
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -911,6 +945,40 @@ impl Runtime for AppleContainerRuntime {
         }
         for line in String::from_utf8_lossy(&output.stderr).lines() {
             events.output(Some(key.service.clone()), OutputStream::Stderr, line);
+        }
+
+        Ok(ExecOutcome {
+            exit_code: output.status.code().unwrap_or(-1),
+        })
+    }
+
+    async fn exec_fresh(
+        &self,
+        spec: &ServiceSpec,
+        command: &[String],
+        options: &ExecOptions,
+        events: &EventSink,
+    ) -> Result<ExecOutcome> {
+        let network = self.ensure_network(&spec.key.workspace, events).await?;
+        let peer_addresses = self.peer_addresses(spec).await?;
+        let one_off = Throwaway::new(spec, command, options.workdir.as_deref());
+
+        let args = self.create_args(spec, network.as_deref(), &peer_addresses, Some(&one_off))?;
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        // `run` blocks until the command exits and `--rm` takes the
+        // container away with it, so there is nothing to clean up here.
+        let output = Command::new(&self.program)
+            .args(&arg_refs)
+            .output()
+            .await
+            .map_err(|err| RuntimeError::failed("running the throwaway container", err))?;
+
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            events.output(Some(spec.key.service.clone()), OutputStream::Stdout, line);
+        }
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            events.output(Some(spec.key.service.clone()), OutputStream::Stderr, line);
         }
 
         Ok(ExecOutcome {
@@ -1490,7 +1558,7 @@ mod tests {
         });
 
         let args = runtime
-            .create_args(&spec, Some("minato-myapp-feat-1"), &BTreeMap::new())
+            .create_args(&spec, Some("minato-myapp-feat-1"), &BTreeMap::new(), None)
             .expect("builds");
 
         assert_eq!(args[0], "create");
@@ -1523,6 +1591,90 @@ mod tests {
     }
 
     #[test]
+    fn a_throwaway_runs_the_given_command_and_removes_itself() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().to_path_buf());
+
+        let mut spec = spec_with_peers(vec![]);
+        spec.command = Some(vec!["npm".into(), "run".into(), "dev".into()]);
+
+        let command = vec!["env".to_string()];
+        let one_off = Throwaway::new(&spec, &command, None);
+        let args = runtime
+            .create_args(&spec, None, &BTreeMap::new(), Some(&one_off))
+            .expect("builds");
+
+        assert_eq!(args[0], "run", "created and left behind is not throwaway");
+        assert!(args.contains(&"--rm".to_string()));
+        assert_eq!(args.last().expect("a command"), "env");
+        assert!(
+            !args.windows(3).any(|w| w == ["npm", "run", "dev"]),
+            "the service's own command must not run: {args:?}"
+        );
+    }
+
+    #[test]
+    fn a_throwaway_carries_no_labels() {
+        // Labels are how Minato finds its own containers. A labelled
+        // throwaway would show up in `minato status` and in what `down`
+        // stops.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().to_path_buf());
+
+        let spec = spec_with_peers(vec![]);
+        let command = vec!["sh".to_string()];
+        let one_off = Throwaway::new(&spec, &command, None);
+
+        let args = runtime
+            .create_args(&spec, None, &BTreeMap::new(), Some(&one_off))
+            .expect("builds");
+
+        assert!(!args.iter().any(|arg| arg == "--label"), "{args:?}");
+
+        let real = runtime
+            .create_args(&spec, None, &BTreeMap::new(), None)
+            .expect("builds");
+        assert!(
+            real.iter().any(|arg| arg == "--label"),
+            "the real one keeps them"
+        );
+    }
+
+    #[test]
+    fn a_throwaway_takes_the_workdir_it_was_given() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().to_path_buf());
+
+        let spec = spec_with_peers(vec![]);
+        let command = vec!["ls".to_string()];
+        let one_off = Throwaway::new(&spec, &command, Some("/workspace/apps/api"));
+
+        let args = runtime
+            .create_args(&spec, None, &BTreeMap::new(), Some(&one_off))
+            .expect("builds");
+
+        let workdir = args
+            .windows(2)
+            .find(|w| w[0] == "--workdir")
+            .map(|w| w[1].clone())
+            .expect("has a workdir");
+        assert_eq!(workdir, "/workspace/apps/api");
+    }
+
+    #[test]
+    fn a_throwaway_does_not_take_the_service_container_name() {
+        let spec = spec_with_peers(vec![]);
+        let command = vec!["sh".to_string()];
+        let one_off = Throwaway::new(&spec, &command, None);
+
+        assert_ne!(one_off.name, names::container(&spec.key));
+        assert!(one_off.name.starts_with("minato-tmp-"), "{}", one_off.name);
+    }
+
+    #[test]
     fn maps_named_volumes_to_host_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
         let runtime =
@@ -1537,7 +1689,7 @@ mod tests {
         }];
 
         let args = runtime
-            .create_args(&spec, None, &BTreeMap::new())
+            .create_args(&spec, None, &BTreeMap::new(), None)
             .expect("builds");
         let expected = dir.path().join("myapp").join("pgdata");
 

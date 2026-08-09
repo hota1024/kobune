@@ -128,7 +128,12 @@ impl Supervisor {
                 target,
                 service,
                 command,
-            } => self.exec(target, service, command, events).await,
+                fresh,
+                workdir,
+            } => {
+                self.exec(target, service, command, fresh, workdir, events)
+                    .await
+            }
             Request::EnvList { target, reveal } => self.env_list(target, reveal).await,
             Request::EnvSet {
                 target,
@@ -491,6 +496,8 @@ impl Supervisor {
         target: Target,
         service: String,
         command: Vec<String>,
+        fresh: bool,
+        workdir: Option<String>,
         events: &EventSink,
     ) -> Result<Response, ApiError> {
         if command.is_empty() {
@@ -512,11 +519,62 @@ impl Supervisor {
         };
 
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
-        let outcome = runtime.exec(&key, &command, events).await?;
+        let options = minato_runtime::ExecOptions { workdir };
+
+        let outcome = if fresh {
+            let spec = self.service_spec(&resolved, &service, events).await?;
+
+            // The image may never have been pulled — `--fresh` is at its
+            // most useful before a service has ever come up cleanly — so
+            // the same groundwork `up` does runs first.
+            let workspace = minato_runtime::WorkspaceSpec {
+                key: spec.key.workspace.clone(),
+                worktree_path: resolved.workspace.path.clone(),
+                services: vec![spec.clone()],
+            };
+            runtime.prepare(&workspace, false, events).await?;
+
+            runtime
+                .exec_fresh(&spec, &command, &options, events)
+                .await?
+        } else {
+            runtime.exec(&key, &command, &options, events).await?
+        };
 
         Ok(Response::Exec {
             exit_code: outcome.exit_code,
         })
+    }
+
+    /// The spec for one service, as `up` would build it.
+    async fn service_spec(
+        &self,
+        resolved: &Resolved,
+        service: &str,
+        events: &EventSink,
+    ) -> Result<minato_runtime::ServiceSpec, ApiError> {
+        let envs = self
+            .workspace_envs(
+                &resolved.config,
+                &resolved.project,
+                &resolved.workspace,
+                &resolved.repo.main_root,
+                events,
+            )
+            .await?;
+
+        let workspace_spec = spec::build_workspace_spec(
+            &resolved.config,
+            &resolved.project,
+            &resolved.workspace.label,
+            &resolved.workspace.path,
+            &envs,
+        )?;
+
+        workspace_spec
+            .service(service)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found(format!("no service named `{service}`")))
     }
 
     /// Shows the environment, layer by layer.

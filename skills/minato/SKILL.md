@@ -127,6 +127,18 @@ minato exec web -- pnpm test
 **The command's exit code comes straight back**, so tests can be judged by exit
 status alone. Output arrives split across stdout and stderr.
 
+`-C /workspace/apps/api` runs it somewhere other than the service's `workdir`.
+
+When a service will not start, `--fresh` is the way in:
+
+```bash
+minato exec --fresh api -- env
+```
+
+That runs in a throwaway container built from the same image, environment and
+volumes, **without the service's start-up command** — so it works when the
+real container has died, which is exactly when you need to look.
+
 ### Environment variables
 
 ```bash
@@ -196,6 +208,7 @@ Removes the worktree and its environment. The branch stays.
 | A 404 comes back | Wrong hostname. Get it again from `minato url` |
 | A 502 comes back | The service is registered but not answering. `minato logs` |
 | `MINATO_URL_*: parameter not set` | The proxy is not listening, so no URL was injected. `minato doctor` |
+| `minato exec` says the container is not running | It died. `minato logs` for why, `minato exec --fresh` to get inside anyway |
 | Startup never finishes | Watch it with `minato logs -f` |
 | A config change does nothing | `minato down && minato up` |
 
