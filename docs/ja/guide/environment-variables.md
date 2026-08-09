@@ -65,9 +65,24 @@ MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 
 ```toml
 [services.web.env]
-npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"
-CARGO_HOME = "$MINATO_CACHE_DIR/cargo"
+npm_config_store_dir = "/var/cache/minato/pnpm"
+CARGO_HOME = "/var/cache/minato/cargo"
 ```
+
+::: warning `env` の値で `$VAR` は展開されません
+値は書いたままコンテナに渡されます。Minato も Docker も展開しません。
+`npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` と書くと、workdir すなわち
+worktree からの相対パスとして `$MINATO_CACHE_DIR` という名前のディレクトリが
+作られます。これはまさに、この仕組みが防ごうとしている「リポジトリ内に数 GB」
+そのものです。
+
+ここではパスをそのまま書いてください。`$MINATO_CACHE_DIR` はシェルが展開する
+場所——`command` や起動スクリプト——で使います。
+
+```toml
+command = "sh -c 'pnpm config set store-dir $MINATO_CACHE_DIR/pnpm && pnpm dev'"
+```
+:::
 
 **パッケージマネージャの参照先をここに向けてください。** 既定のままでは多くが
 作業ディレクトリ配下にキャッシュを作りますが、そこは worktree、つまりホストから
@@ -86,8 +101,11 @@ lockfile が異なる `node_modules` など）には
 `mkdir -p "$MINATO_CACHE_DIR/x" && chown` してください。
 :::
 
-このため `cache` はボリューム名として予約されています。同名のボリュームを
-定義すると 1 つの領域に 2 つの意味が乗るため、共有させずにエラーとします。
+コンテナは作成時のマウント構成を保持するため、アップグレード時にすでに起動して
+いたサービスには `minato down && minato up` するまで反映されません。また
+`/var/cache/minato` に自前のボリュームをマウントすることはできません。1 つの
+パスへの二重マウントはコンテナエンジンのエラーになり、原因となった記述から
+遠い場所で表面化するためです。
 
 とくに重要なのが `MINATO_URL_<SERVICE>` です。URL はブランチごとに異なるため、
 フロントエンドは API の URL をハードコードできません。worktree ごとの環境が

@@ -27,10 +27,15 @@ pub const CACHE_TARGET: &str = "/var/cache/minato";
 
 /// The name of the volume behind [`CACHE_TARGET`].
 ///
-/// Reserved: a service naming its own volume `cache` would land on the
-/// same storage, so the configuration refuses that rather than let two
-/// meanings share one volume.
-pub const CACHE_VOLUME: &str = "cache";
+/// **Deliberately not a valid volume name.** [`naming::is_valid_label`]
+/// allows only lowercase letters, digits and hyphens, and `VolumeMount`
+/// checks every declared name against it — so no `volumes` entry can reach
+/// this one however it is spelled.
+///
+/// Calling it `cache` would have collided with anyone already using that
+/// name: their storage would quietly have become the cache, which is the
+/// sort of migration nobody notices until the data looks gone.
+pub const CACHE_VOLUME: &str = "_cache";
 
 /// The default when `idle_timeout` is omitted.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -425,13 +430,20 @@ impl MinatoConfig {
             }
         }
 
+        // The name cannot be taken — `_cache` is not a valid volume name —
+        // but the place it is mounted can be. Two mounts on one target is
+        // an error from the container engine, several steps away from the
+        // line that caused it.
         for volume in &svc.volumes {
-            let source = volume.split(':').next().unwrap_or_default();
-            let named = source.split('@').next().unwrap_or_default();
+            let mut parts = volume.split(':');
+            let _source = parts.next();
 
-            if named == CACHE_VOLUME {
+            if parts.next() == Some(CACHE_TARGET) {
                 return Err(Error::ConfigInvalid(format!(
-                    "service `{name}`: `{CACHE_VOLUME}` is the volume behind                      MINATO_CACHE_DIR, so naming one is asking two things to                      share it. Every service already has {CACHE_TARGET}; use                      $MINATO_CACHE_DIR, or pick another name"
+                    "service `{name}`: {CACHE_TARGET} is where MINATO_CACHE_DIR \
+                     is already mounted, so `{volume}` would be a second mount \
+                     on the same path. Write under $MINATO_CACHE_DIR, or mount \
+                     yours somewhere else"
                 )));
             }
         }
@@ -827,10 +839,13 @@ mod tests {
     }
 
     #[test]
-    fn the_cache_volume_name_is_reserved() {
-        // Naming it would put two meanings on one volume: the service's
-        // own storage and what MINATO_CACHE_DIR points at.
-        let err = parse(
+    fn the_cache_volume_cannot_be_named() {
+        // Not a reservation to remember — `_cache` is not a valid volume
+        // name, so no spelling of `volumes` can reach it. Anyone already
+        // using a volume called `cache` keeps it, and keeps its contents.
+        assert!(!naming::is_valid_label(CACHE_VOLUME));
+
+        parse(
             r#"
             [project]
             name = "myapp"
@@ -839,45 +854,41 @@ mod tests {
             volumes = ["cache:/tmp/cache"]
         "#,
         )
-        .unwrap_err();
-
-        let message = err.to_string();
-        assert!(message.contains("MINATO_CACHE_DIR"), "{message}");
-        assert!(
-            message.contains("pick another name"),
-            "say what to do: {message}"
-        );
+        .expect("`cache` is an ordinary name, and stays one");
     }
 
     #[test]
-    fn the_reservation_covers_a_scoped_spelling_too() {
-        assert!(
-            parse(
-                r#"
-                [project]
-                name = "myapp"
-                [services.web]
-                image = "node:22"
-                volumes = ["cache@workspace:/tmp/cache"]
-            "#,
-            )
-            .is_err(),
-            "the suffix does not make it a different volume name"
-        );
-    }
-
-    #[test]
-    fn a_name_merely_containing_cache_is_fine() {
-        parse(
+    fn a_second_mount_on_the_cache_path_is_refused() {
+        // Two mounts on one target is an error from the container engine,
+        // a long way from the line that caused it.
+        let err = parse(&format!(
             r#"
             [project]
             name = "myapp"
             [services.web]
             image = "node:22"
-            volumes = ["pnpm-cache:/tmp/x", "cached:/tmp/y"]
-        "#,
-        )
-        .expect("only the exact name is reserved");
+            volumes = ["mine:{CACHE_TARGET}"]
+        "#
+        ))
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("MINATO_CACHE_DIR"), "{message}");
+        assert!(!message.contains("  "), "run-together spacing: {message}");
+    }
+
+    #[test]
+    fn mounting_below_the_cache_path_is_allowed() {
+        parse(&format!(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["mine:{CACHE_TARGET}/mine"]
+        "#
+        ))
+        .expect("only the exact path is taken");
     }
 
     #[test]
