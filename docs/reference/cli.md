@@ -114,6 +114,19 @@ in shows fewer rows than it would from inside.
 The current workspace in detail: each service's state, URL, and the address the
 proxy forwards to.
 
+| State | Meaning |
+| --- | --- |
+| `stopped` | No container, or one that was stopped. Reaching for the URL starts it |
+| `starting` | The container is up, but the app inside is not answering yet |
+| `ready` | Answering. Checked, not assumed — see [`health`](./minato-toml#readiness) |
+| `failed` | It fell over. `reason` says what happened |
+
+**`ready` means it was reached.** A container being up and the app inside
+being able to serve are two different things, so a service is probed before it
+is called ready — with `health` where that can be done cheaply, and a
+connection attempt otherwise. A dev server still compiling reads as
+`starting`, which is the answer worth waiting on.
+
 ### `minato rm`
 
 Removes the worktree and its containers. The branch stays, and a shared

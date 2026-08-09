@@ -176,7 +176,8 @@ Removes the worktree and its environment. The branch stays.
 
 1. `minato status --json` — look at each service's `state`
    - `stopped` → reach for it, or run `minato up`
-   - `starting` → wait
+   - `starting` → wait. The container is up but the app is not answering
+     yet, which is what a dev server still building looks like
    - `failed` → `reason` says why. A container that exited non-zero lands
      here, so this is what a start-up script that died looks like
 2. `minato logs <service>` — errors from the app itself

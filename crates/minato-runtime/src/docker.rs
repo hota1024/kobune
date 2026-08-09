@@ -838,7 +838,12 @@ impl Runtime for DockerRuntime {
             container: id.clone(),
         };
 
-        await_service(
+        // **The answer is used, not just waited on.** Running out of time
+        // here is not a failure — a dev server's first build can outlast
+        // any sensible wait — but it does mean the service is still coming
+        // up, and saying `ready` regardless is what made the state useless
+        // for deciding whether to wait.
+        let ready = await_service(
             spec.name(),
             endpoint,
             spec.health.as_ref(),
@@ -848,7 +853,14 @@ impl Runtime for DockerRuntime {
         )
         .await;
 
-        events.service_state(spec.name(), ServiceState::Ready);
+        events.service_state(
+            spec.name(),
+            if ready {
+                ServiceState::Ready
+            } else {
+                ServiceState::Starting
+            },
+        );
 
         Ok(RunningService {
             key: spec.key.clone(),
