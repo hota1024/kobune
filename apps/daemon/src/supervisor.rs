@@ -42,6 +42,12 @@ pub struct Supervisor {
     runtimes: Mutex<HashMap<String, Arc<dyn Runtime>>>,
     /// Serialises writes to the state file.
     state_lock: Mutex<()>,
+    /// Serialises `setup` across the check, the run and the record.
+    ///
+    /// Its own lock rather than [`Self::state_lock`]: this is held for as
+    /// long as an install takes, and holding the state lock that long
+    /// would stall every unrelated command.
+    setup_lock: Mutex<()>,
     /// The proxy and DNS. Also where URLs come from.
     gateway: Arc<Gateway>,
     /// Last-access times, which is what scale-to-zero decides on.
@@ -64,6 +70,7 @@ impl Supervisor {
             store: StateStore::new(paths.state_file()),
             runtimes: Mutex::new(HashMap::new()),
             state_lock: Mutex::new(()),
+            setup_lock: Mutex::new(()),
             gateway,
             idle: IdleTracker::new(),
             tunnel,
@@ -1972,20 +1979,24 @@ impl Supervisor {
 
         runtime.prepare(&prepare_spec, rebuild, events).await?;
 
-        self.run_setup(resolved, &filtered, runtime.as_ref(), events)
-            .await?;
-
-        // Started in startup_order.
+        // Started in startup_order, each one set up just before it starts.
+        //
+        // **Interleaved, not done in a batch first.** A setup that needs a
+        // dependency — migrations against `db` — has to run after the
+        // thing it depends on is up, and `startup_order` already puts them
+        // in that order.
         for service in &filtered {
+            self.run_setup(resolved, service, runtime.as_ref(), events)
+                .await?;
             runtime.start(service, events).await?;
         }
 
         Ok(())
     }
 
-    /// Runs each service's `setup`, for the ones that have not had theirs.
+    /// Runs a service's `setup`, if it has not had this one.
     ///
-    /// **Before anything starts**, and in a throwaway container, so the
+    /// **Before the service starts**, and in a throwaway container, so the
     /// start-up command is left doing nothing but starting the app — which
     /// was the point of asking for this. The throwaway carries the
     /// service's image, environment and volumes, so what it installs is
@@ -1997,89 +2008,95 @@ impl Supervisor {
     async fn run_setup(
         &self,
         resolved: &Resolved,
-        services: &[minato_runtime::ServiceSpec],
+        spec: &minato_runtime::ServiceSpec,
         runtime: &dyn Runtime,
         events: &EventSink,
     ) -> Result<(), ApiError> {
-        for spec in services {
-            let name = spec.name();
-            let Some(setup) = resolved
-                .config
-                .service(name)
-                .ok()
-                .and_then(|service| service.setup.clone())
-            else {
-                continue;
-            };
+        let name = spec.name();
+        let service = resolved.config.service(name).map_err(ApiError::from)?;
+        let Some(setup) = service.setup.clone() else {
+            return Ok(());
+        };
 
-            let record = self.workspace_record(&resolved.project, &resolved.workspace.label)?;
-            if !record.needs_setup(name, &setup) {
-                continue;
+        let command = shell_words::split(&setup).map_err(|err| {
+            ApiError::new(
+                ErrorCode::InvalidConfig,
+                format!("service `{name}`: cannot make sense of setup: {err}"),
+            )
+        })?;
+
+        if command.is_empty() {
+            return Err(ApiError::new(
+                ErrorCode::InvalidConfig,
+                format!("service `{name}`: setup is empty"),
+            ));
+        }
+
+        // **Held across the check and the record, not just the write.**
+        // Two `up`s racing would otherwise both decide it was needed and
+        // both run an install into the same volume, then both remember the
+        // result as good.
+        let _guard = self.setup_lock.lock().await;
+
+        let project = resolved.project.clone();
+        let workspace = resolved.workspace.label.clone();
+
+        let pending = self.store.load().map_err(ApiError::from)?.needs_setup(
+            &project,
+            &workspace,
+            name,
+            service.scope,
+            &setup,
+        );
+
+        if !pending {
+            return Ok(());
+        }
+
+        let step = format!("setup-{name}");
+        let label = format!("setting {name} up");
+        events.step_started(&step, &label);
+
+        let outcome = match runtime
+            .exec_fresh(spec, &command, &Default::default(), events)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                events.step_failed(&step, &label, err.to_string());
+                return Err(err.into());
             }
+        };
 
-            let command = shell_words::split(&setup).map_err(|err| {
-                ApiError::new(
-                    ErrorCode::InvalidConfig,
-                    format!("service `{name}`: cannot make sense of setup: {err}"),
-                )
-            })?;
+        if outcome.exit_code != 0 {
+            events.step_failed(&step, &label, format!("exited with {}", outcome.exit_code));
+            return Err(ApiError::new(
+                ErrorCode::RuntimeFailed,
+                format!("service `{name}`: setup exited with {}", outcome.exit_code),
+            )
+            .with_hint("the output above says what happened. Fix it and run `minato up` again"));
+        }
 
-            let step = format!("setup-{name}");
-            let label = format!("setting {name} up");
-            events.step_started(&step, &label);
+        events.step_done(&step, &label);
 
-            let outcome = runtime
-                .exec_fresh(spec, &command, &Default::default(), events)
-                .await?;
+        // Recorded only once it has worked. A setup that failed has not
+        // run, whatever it managed to do before giving up.
+        let service_name = name.to_string();
+        let scope = service.scope;
+        let recorded = self
+            .store
+            .update(|state| {
+                Ok(state.record_setup(&project, &workspace, &service_name, scope, &setup))
+            })
+            .map_err(ApiError::from)?;
 
-            if outcome.exit_code != 0 {
-                events.step_failed(&step, &label, format!("exited with {}", outcome.exit_code));
-                return Err(ApiError::new(
-                    ErrorCode::RuntimeFailed,
-                    format!("service `{name}`: setup exited with {}", outcome.exit_code),
-                )
-                .with_hint(
-                    "the output above says what happened. Fix it and run `minato up` again",
-                ));
-            }
-
-            events.step_done(&step, &label);
-
-            // Recorded only once it has worked. A setup that failed has not
-            // run, whatever it managed to do before giving up.
-            let project = resolved.project.clone();
-            let workspace = resolved.workspace.label.clone();
-            let service = name.to_string();
-
-            let _guard = self.state_lock.lock().await;
-            self.store
-                .update(|state| {
-                    if let Some(record) = state
-                        .project_mut(&project)
-                        .and_then(|project| project.workspaces.get_mut(&workspace))
-                    {
-                        record.setup_done.insert(service.clone(), setup.clone());
-                    }
-                    Ok(())
-                })
-                .map_err(ApiError::from)?;
+        if !recorded {
+            events.debug(format!(
+                "{name} was set up, but the workspace went before it could be remembered"
+            ));
         }
 
         Ok(())
-    }
-
-    /// The stored registration for one worktree.
-    fn workspace_record(
-        &self,
-        project: &str,
-        workspace: &str,
-    ) -> Result<minato_core::WorkspaceRecord, ApiError> {
-        self.store
-            .load()
-            .map_err(ApiError::from)?
-            .project(project)
-            .and_then(|project| project.workspaces.get(workspace).cloned())
-            .ok_or_else(|| ApiError::not_found(format!("no workspace named `{workspace}`")))
     }
 
     async fn down(

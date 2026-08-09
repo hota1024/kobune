@@ -108,10 +108,23 @@ on every `down`/`up` — which is what this exists to avoid. Minato remembers
 the command it ran against the worktree:
 
 - Change what `setup` says and it runs again. There is nothing else to
-  compare, so editing it is the way to re-run it
+  compare, so editing it is the way to re-run it — **changing `image` does
+  not**, so a native module built against the old runtime stays in the volume
+  until you say otherwise
 - A `setup` that fails stops the `up` and is not remembered, so fixing it and
   running `up` again retries
 - `minato rm` forgets it, along with the `@workspace` volumes it populated
+- A `scope = "project"` service is set up once for the project, not once per
+  worktree — it has one container for all of them
+
+It runs in `startup_order`, immediately before its own service starts, so
+anything it names in `depends_on` is already up. Migrations against a `db`
+work; what does not is a `setup` that expects its *own* service to be
+running, because that is the thing it is about to start.
+
+Waking a stopped service with a request does not run `setup` — only `minato
+up` does, so an edit takes effect on the next `up` rather than on the next
+request.
 
 Not to be confused with `minato setup`, which is the privileged host setup.
 

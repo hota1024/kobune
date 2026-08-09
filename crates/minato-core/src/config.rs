@@ -439,6 +439,21 @@ impl MinatoConfig {
             }
         }
 
+        // An empty one splits to no words at all, which the runtime reads
+        // as "use the image's default command" — so `setup = ""` would
+        // start the service's own entrypoint in the setup container and
+        // wait for it to exit, which for a server is never.
+        if svc
+            .setup
+            .as_deref()
+            .is_some_and(|setup| setup.trim().is_empty())
+        {
+            return Err(Error::ConfigInvalid(format!(
+                "service `{name}`: setup is empty. Give it a command, or \
+                 remove the line"
+            )));
+        }
+
         // The name cannot be taken — `_cache` is not a valid volume name —
         // but the place it is mounted can be. Two mounts on one target is
         // an error from the container engine, several steps away from the
@@ -845,6 +860,27 @@ mod tests {
         "#,
         )
         .expect("a host path is never scoped, however it is spelled");
+    }
+
+    #[test]
+    fn an_empty_setup_is_refused() {
+        // It splits to no words, which the runtime reads as "use the
+        // image's command" — so the setup container would start the
+        // service itself and be waited on for ever.
+        for setup in ["", "   "] {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "node:22"
+                setup = "{setup}"
+            "#
+            ))
+            .unwrap_err();
+
+            assert!(err.to_string().contains("setup is empty"), "{err}");
+        }
     }
 
     #[test]
