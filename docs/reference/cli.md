@@ -114,6 +114,26 @@ in shows fewer rows than it would from inside.
 The current workspace in detail: each service's state, URL, and the address the
 proxy forwards to.
 
+| State | Meaning |
+| --- | --- |
+| `stopped` | No container, or one that was stopped. Reaching for the URL starts it |
+| `starting` | The container is up, but its `health` check is not answering yet |
+| `ready` | Serving |
+| `failed` | It fell over. `reason` says what happened |
+
+::: tip `ready` is only checked when `health` is an HTTP check
+A container being up and the app inside being able to serve are two different
+things. With `health = "http://..."` set, the check is run before a service is
+called ready, so a dev server still compiling reads as `starting` — the answer
+worth waiting on.
+
+Without it, `ready` means "the container is running", which is all that can be
+known from outside. A connection attempt would not add anything: Docker
+publishes a port by putting a forwarder in front of it, and that forwarder
+accepts whether or not anything inside is listening. **If you want `ready` to
+mean served, set [`health`](./minato-toml#readiness).**
+:::
+
 ### `minato rm`
 
 Removes the worktree and its containers. The branch stays, and a shared

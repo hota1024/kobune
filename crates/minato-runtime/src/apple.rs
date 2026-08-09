@@ -628,7 +628,11 @@ impl Runtime for AppleContainerRuntime {
                     format!("starting {}", spec.name()),
                     "already running",
                 );
-                events.service_state(spec.name(), ServiceState::Ready);
+
+                // No state emitted. Nothing was waited on here, so there is
+                // nothing to claim: the caller settles readiness against
+                // `health` before showing anyone an answer, and asserting
+                // `ready` from this path would contradict it.
 
                 return Ok(RunningService {
                     key: spec.key.clone(),
@@ -693,7 +697,12 @@ impl Runtime for AppleContainerRuntime {
             container: name.clone(),
         };
 
-        await_service(
+        // **The answer is used, not just waited on.** Running out of time
+        // here is not a failure — a dev server's first build can outlast
+        // any sensible wait — but it does mean the service is still coming
+        // up, and saying `ready` regardless is what made the state useless
+        // for deciding whether to wait.
+        let ready = await_service(
             spec.name(),
             endpoint,
             spec.health.as_ref(),
@@ -703,7 +712,14 @@ impl Runtime for AppleContainerRuntime {
         )
         .await;
 
-        events.service_state(spec.name(), ServiceState::Ready);
+        events.service_state(
+            spec.name(),
+            if ready {
+                ServiceState::Ready
+            } else {
+                ServiceState::Starting
+            },
+        );
 
         Ok(RunningService {
             key: spec.key.clone(),
