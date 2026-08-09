@@ -94,6 +94,20 @@ pub struct WorkspaceRecord {
     #[serde(default)]
     pub is_main: bool,
     pub created_at: DateTime<Utc>,
+    /// The `setup` that has already run, per service.
+    ///
+    /// The value is the command itself, so editing it is what makes it run
+    /// again — there is nothing else to compare, and a version number
+    /// would be one more thing to remember to change.
+    #[serde(default)]
+    pub setup_done: BTreeMap<String, String>,
+}
+
+impl WorkspaceRecord {
+    /// Whether `setup` still has to run for this service.
+    pub fn needs_setup(&self, service: &str, setup: &str) -> bool {
+        self.setup_done.get(service).map(String::as_str) != Some(setup)
+    }
 }
 
 impl State {
@@ -302,7 +316,26 @@ mod tests {
             path: PathBuf::from(format!("/repo/wt/{label}")),
             is_main: false,
             created_at: Utc::now(),
+            setup_done: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn setup_runs_until_it_has_run_with_this_command() {
+        let mut record = record("feat-1", "feature/one");
+        assert!(record.needs_setup("web", "pnpm install"));
+
+        record
+            .setup_done
+            .insert("web".to_string(), "pnpm install".to_string());
+        assert!(!record.needs_setup("web", "pnpm install"));
+
+        // Editing it is what makes it run again; there is nothing else to
+        // compare against.
+        assert!(record.needs_setup("web", "pnpm install --prod"));
+
+        // And it is per service.
+        assert!(record.needs_setup("api", "pnpm install"));
     }
 
     fn project() -> ProjectRecord {

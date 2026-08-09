@@ -1972,12 +1972,114 @@ impl Supervisor {
 
         runtime.prepare(&prepare_spec, rebuild, events).await?;
 
+        self.run_setup(resolved, &filtered, runtime.as_ref(), events)
+            .await?;
+
         // Started in startup_order.
         for service in &filtered {
             runtime.start(service, events).await?;
         }
 
         Ok(())
+    }
+
+    /// Runs each service's `setup`, for the ones that have not had theirs.
+    ///
+    /// **Before anything starts**, and in a throwaway container, so the
+    /// start-up command is left doing nothing but starting the app — which
+    /// was the point of asking for this. The throwaway carries the
+    /// service's image, environment and volumes, so what it installs is
+    /// there when the real container comes up.
+    ///
+    /// Remembered against the worktree rather than the container: a stopped
+    /// container is recreated by the next `up`, so anything keyed on
+    /// container creation would run on every `down`/`up`.
+    async fn run_setup(
+        &self,
+        resolved: &Resolved,
+        services: &[minato_runtime::ServiceSpec],
+        runtime: &dyn Runtime,
+        events: &EventSink,
+    ) -> Result<(), ApiError> {
+        for spec in services {
+            let name = spec.name();
+            let Some(setup) = resolved
+                .config
+                .service(name)
+                .ok()
+                .and_then(|service| service.setup.clone())
+            else {
+                continue;
+            };
+
+            let record = self.workspace_record(&resolved.project, &resolved.workspace.label)?;
+            if !record.needs_setup(name, &setup) {
+                continue;
+            }
+
+            let command = shell_words::split(&setup).map_err(|err| {
+                ApiError::new(
+                    ErrorCode::InvalidConfig,
+                    format!("service `{name}`: cannot make sense of setup: {err}"),
+                )
+            })?;
+
+            let step = format!("setup-{name}");
+            let label = format!("setting {name} up");
+            events.step_started(&step, &label);
+
+            let outcome = runtime
+                .exec_fresh(spec, &command, &Default::default(), events)
+                .await?;
+
+            if outcome.exit_code != 0 {
+                events.step_failed(&step, &label, format!("exited with {}", outcome.exit_code));
+                return Err(ApiError::new(
+                    ErrorCode::RuntimeFailed,
+                    format!("service `{name}`: setup exited with {}", outcome.exit_code),
+                )
+                .with_hint(
+                    "the output above says what happened. Fix it and run `minato up` again",
+                ));
+            }
+
+            events.step_done(&step, &label);
+
+            // Recorded only once it has worked. A setup that failed has not
+            // run, whatever it managed to do before giving up.
+            let project = resolved.project.clone();
+            let workspace = resolved.workspace.label.clone();
+            let service = name.to_string();
+
+            let _guard = self.state_lock.lock().await;
+            self.store
+                .update(|state| {
+                    if let Some(record) = state
+                        .project_mut(&project)
+                        .and_then(|project| project.workspaces.get_mut(&workspace))
+                    {
+                        record.setup_done.insert(service.clone(), setup.clone());
+                    }
+                    Ok(())
+                })
+                .map_err(ApiError::from)?;
+        }
+
+        Ok(())
+    }
+
+    /// The stored registration for one worktree.
+    fn workspace_record(
+        &self,
+        project: &str,
+        workspace: &str,
+    ) -> Result<minato_core::WorkspaceRecord, ApiError> {
+        self.store
+            .load()
+            .map_err(ApiError::from)?
+            .project(project)
+            .and_then(|project| project.workspaces.get(workspace).cloned())
+            .ok_or_else(|| ApiError::not_found(format!("no workspace named `{workspace}`")))
     }
 
     async fn down(
@@ -2767,6 +2869,7 @@ mod tests {
             path: PathBuf::from("/repo/wt/feat-1"),
             is_main,
             created_at: chrono::Utc::now(),
+            setup_done: Default::default(),
         }
     }
 

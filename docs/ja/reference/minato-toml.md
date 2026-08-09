@@ -82,9 +82,36 @@ carry = [".env", "apps/api/.dev.vars"]
 | `dockerfile` | string | `{build}/Dockerfile` | Dockerfile のパス。worktree からの相対。`build` が必要 |
 | `build_args` | table | `{}` | `--build-arg` に渡す値。`build` が必要 |
 | `command` | string | イメージの既定値 | イメージ側のコマンドを上書きします。シェルと同様に解釈され、引用符で囲んだ範囲は 1 つの引数になります |
+| `setup` | string | — | サービスの初回起動前に一度だけ実行されます。シェルと同様に解釈されます |
 | `workdir` | string | `/workspace` | コンテナ内の作業ディレクトリ |
 
 worktree は `/workspace` にマウントされるため、これが既定値になっています。
+
+#### `setup`
+
+```toml
+[services.web]
+image = "node:24-bookworm-slim"
+setup = "sh -c 'pnpm install --frozen-lockfile'"
+command = "sh -c 'pnpm dev'"
+```
+
+サービスの初回起動前に実行されるため、`command` は「アプリを起動するだけ」に
+できます。実行されるのはサービスのイメージ・環境変数・ボリュームを備えた専用の
+コンテナなので、ボリュームに導入した内容は本来のコンテナ起動時に揃っています。
+
+**コンテナごとではなく worktree ごとに 1 回です。** 停止中のコンテナは次の
+`up` で作り直されるため、コンテナ作成に紐づけると `down` / `up` のたびに実行
+されてしまい、この機能が避けようとしている状態そのものになります。Minato は
+実行したコマンドを worktree に対して記録します。
+
+- `setup` の内容を変更すると再実行されます。比較対象は内容そのものなので、
+  再実行したいときは書き換えてください
+- 失敗した `setup` は `up` を中断し、記録もされません。修正して `up` し直せば
+  再試行されます
+- `minato rm` は記録を消します。`@workspace` ボリュームも一緒に消えます
+
+ホスト側の特権設定を行う `minato setup` とは別のものです。
 
 ### ネットワーク
 

@@ -142,6 +142,15 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub command: Option<String>,
 
+    /// What to run once, before the service first starts.
+    ///
+    /// **Not once per container.** A stopped container is recreated by the
+    /// next `up`, so tying this to container creation would run it on
+    /// every `down`/`up` — which is the thing it exists to stop. It is
+    /// remembered against the worktree, and runs again when this changes.
+    #[serde(default)]
+    pub setup: Option<String>,
+
     /// The working directory inside the container. Defaults to [`MOUNT_TARGET`].
     #[serde(default)]
     pub workdir: Option<String>,

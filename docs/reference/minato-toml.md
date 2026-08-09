@@ -83,9 +83,37 @@ letters, digits and `-`.
 | `dockerfile` | string | `{build}/Dockerfile` | The Dockerfile, relative to the worktree. Needs `build` |
 | `build_args` | table | `{}` | `--build-arg` values. Needs `build` |
 | `command` | string | image default | Replaces the image's command. Parsed shell-style, so quotes group arguments |
+| `setup` | string | — | Run once before the service first starts. Parsed shell-style |
 | `workdir` | string | `/workspace` | Working directory inside the container |
 
 Your worktree is mounted at `/workspace`, which is why that is the default.
+
+#### `setup`
+
+```toml
+[services.web]
+image = "node:24-bookworm-slim"
+setup = "sh -c 'pnpm install --frozen-lockfile'"
+command = "sh -c 'pnpm dev'"
+```
+
+Runs before the service first starts, so `command` is left doing nothing but
+starting the app. It runs in a container of its own with the service's image,
+environment and volumes, so what it installs into a volume is there when the
+real container comes up.
+
+**Once per worktree, not once per container.** A stopped container is
+recreated by the next `up`, so anything tied to container creation would run
+on every `down`/`up` — which is what this exists to avoid. Minato remembers
+the command it ran against the worktree:
+
+- Change what `setup` says and it runs again. There is nothing else to
+  compare, so editing it is the way to re-run it
+- A `setup` that fails stops the `up` and is not remembered, so fixing it and
+  running `up` again retries
+- `minato rm` forgets it, along with the `@workspace` volumes it populated
+
+Not to be confused with `minato setup`, which is the privileged host setup.
 
 ### Networking
 
