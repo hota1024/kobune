@@ -117,15 +117,22 @@ proxy forwards to.
 | State | Meaning |
 | --- | --- |
 | `stopped` | No container, or one that was stopped. Reaching for the URL starts it |
-| `starting` | The container is up, but the app inside is not answering yet |
-| `ready` | Answering. Checked, not assumed — see [`health`](./minato-toml#readiness) |
+| `starting` | The container is up, but its `health` check is not answering yet |
+| `ready` | Serving |
 | `failed` | It fell over. `reason` says what happened |
 
-**`ready` means it was reached.** A container being up and the app inside
-being able to serve are two different things, so a service is probed before it
-is called ready — with `health` where that can be done cheaply, and a
-connection attempt otherwise. A dev server still compiling reads as
-`starting`, which is the answer worth waiting on.
+::: tip `ready` is only checked when `health` is an HTTP check
+A container being up and the app inside being able to serve are two different
+things. With `health = "http://..."` set, the check is run before a service is
+called ready, so a dev server still compiling reads as `starting` — the answer
+worth waiting on.
+
+Without it, `ready` means "the container is running", which is all that can be
+known from outside. A connection attempt would not add anything: Docker
+publishes a port by putting a forwarder in front of it, and that forwarder
+accepts whether or not anything inside is listening. **If you want `ready` to
+mean served, set [`health`](./minato-toml#readiness).**
+:::
 
 ### `minato rm`
 

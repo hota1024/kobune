@@ -16,7 +16,8 @@ use minato_api::{
     PurgeWorkspace, Request, Response, ServiceInfo, Target, TunnelState, WorkspaceInfo,
 };
 use minato_core::{
-    MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, TunnelRecord, WorkspaceRecord,
+    HealthCheck, MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, TunnelRecord,
+    WorkspaceRecord,
 };
 use minato_proxy::{Activation, Route};
 use minato_runtime::{EventSink, Runtime, ServiceStatus, WorkspaceKey};
@@ -372,8 +373,7 @@ impl Supervisor {
         config: &MinatoConfig,
     ) -> Result<Vec<ServiceStatus>, ApiError> {
         let runtime = self.runtime(&config.runtime.default).await?;
-        let mut statuses = runtime.list_project(project).await?;
-        settle_readiness(config, &mut statuses).await;
+        let statuses = runtime.list_project(project).await?;
 
         let records = self.workspace_records(project).await?;
         let entries = route_entries(
@@ -395,6 +395,24 @@ impl Supervisor {
 
         self.gateway.routes().replace_project(project, entries);
 
+        Ok(statuses)
+    }
+
+    /// [`Self::refresh`], plus the readiness the caller is about to show.
+    ///
+    /// **Kept off `refresh` itself.** That one also runs where nobody is
+    /// reading the answer: on the proxy's cold-start path, where it would
+    /// put a probe of every container in the project in front of the
+    /// request that woke one, and at daemon boot, where it would delay the
+    /// first command by a probe per registered project. Neither publishes
+    /// a state to anyone.
+    async fn refresh_for_display(
+        &self,
+        project: &str,
+        config: &MinatoConfig,
+    ) -> Result<Vec<ServiceStatus>, ApiError> {
+        let mut statuses = self.refresh(project, config).await?;
+        settle_readiness(config, &mut statuses).await;
         Ok(statuses)
     }
 
@@ -1381,7 +1399,7 @@ impl Supervisor {
         // Registered worktrees only. Finding unregistered ones would mean
         // opening someone else's repository, and a worktree nobody has run
         // a command in is not one this daemon manages.
-        let statuses = self.refresh(project, &config).await?;
+        let statuses = self.refresh_for_display(project, &config).await?;
 
         // Main first, matching how the current project is listed. Records
         // come back keyed by label, which would put `feature-x` above
@@ -1430,7 +1448,9 @@ impl Supervisor {
         };
 
         // Ask the runtime once, then sort the answer by workspace.
-        let statuses = self.refresh(&context.project, &context.config).await?;
+        let statuses = self
+            .refresh_for_display(&context.project, &context.config)
+            .await?;
 
         let mut workspaces = Vec::with_capacity(records.len());
         for record in records {
@@ -1451,7 +1471,9 @@ impl Supervisor {
 
     async fn status(&self, target: Target) -> Result<Response, ApiError> {
         let resolved = self.resolve(&target).await?;
-        let statuses = self.refresh(&resolved.project, &resolved.config).await?;
+        let statuses = self
+            .refresh_for_display(&resolved.project, &resolved.config)
+            .await?;
 
         Ok(Response::Workspace {
             workspace: self.build_workspace_info(
@@ -1543,7 +1565,9 @@ impl Supervisor {
             self.start_services(&resolved, &[], rebuild, events).await?;
         }
 
-        let statuses = self.refresh(&resolved.project, &resolved.config).await?;
+        let statuses = self
+            .refresh_for_display(&resolved.project, &resolved.config)
+            .await?;
 
         Ok(Response::Workspace {
             workspace: self.build_workspace_info(
@@ -1796,7 +1820,9 @@ impl Supervisor {
         self.start_services(&resolved, &services, rebuild, events)
             .await?;
 
-        let statuses = self.refresh(&resolved.project, &resolved.config).await?;
+        let statuses = self
+            .refresh_for_display(&resolved.project, &resolved.config)
+            .await?;
 
         Ok(Response::Workspace {
             workspace: self.build_workspace_info(
@@ -1950,7 +1976,9 @@ impl Supervisor {
             }
         }
 
-        let statuses = self.refresh(&resolved.project, &resolved.config).await?;
+        let statuses = self
+            .refresh_for_display(&resolved.project, &resolved.config)
+            .await?;
 
         Ok(Response::Workspace {
             workspace: self.build_workspace_info(
@@ -1967,9 +1995,9 @@ impl Supervisor {
 ///
 /// Not [`minato_runtime::DEFAULT_READINESS_TIMEOUT`], which is how long
 /// *starting* waits for an app to come up. This is a question asked while
-/// someone waits for an answer, and on loopback anything that has not
-/// replied by now is not serving. Reporting `starting` after a second beats
-/// making `minato status` sit there.
+/// someone waits for the answer, and a check that has not replied over
+/// loopback by now is not serving. Reporting `starting` after a second
+/// beats making `minato status` sit there.
 const READINESS_GLANCE: Duration = Duration::from_secs(1);
 
 /// Narrows `ready` to `starting` for a container whose app is not answering.
@@ -1977,11 +2005,17 @@ const READINESS_GLANCE: Duration = Duration::from_secs(1);
 /// **A container being up and the app inside being able to answer are two
 /// different things.** Docker reports `running` the moment the process
 /// exists, so a dev server that compiles for a minute, or a start-up script
-/// blocked on a lock, looked exactly like one serving requests — and
-/// `minato status` is where that question is supposed to be settled.
+/// blocked on a lock, looks exactly like one serving requests.
 ///
-/// Only ever downgrades. Anything that cannot be probed keeps the answer
-/// the runtime gave, so this can make the state more accurate and never
+/// **Only an HTTP `health` can settle that from out here**, and that is the
+/// only case this touches. A connection attempt cannot: Docker publishes a
+/// port by putting a forwarder in front of it, and that forwarder accepts
+/// immediately whether or not anything inside is listening — measured, not
+/// assumed. Probing TCP would hand back `ready` for a container with
+/// nothing running in it, which is worse than not asking, and would spend a
+/// connection per service per listing to do it.
+///
+/// Only ever downgrades, so this makes the state more accurate and never
 /// less.
 async fn settle_readiness(config: &MinatoConfig, statuses: &mut [ServiceStatus]) {
     let pending: Vec<_> = statuses
@@ -1989,26 +2023,27 @@ async fn settle_readiness(config: &MinatoConfig, statuses: &mut [ServiceStatus])
         .enumerate()
         .filter(|(_, status)| status.state == ServiceState::Ready)
         .filter_map(|(index, status)| {
-            // No published port, nothing to connect to. A `cmd:` check
-            // would need an exec per service per call, which is too much
-            // to spend on a listing.
             let endpoint = status.endpoint?;
-            let health = config
-                .service(&status.key.service)
-                .ok()
-                .and_then(|service| service.health.clone());
+
+            // `tcp://` is the same connection attempt under another name,
+            // and `cmd:` would need an exec per service per listing.
+            let health = match config.service(&status.key.service).ok()?.health.clone()? {
+                health @ HealthCheck::Http(_) => health,
+                HealthCheck::Tcp(_) | HealthCheck::Cmd(_) => return None,
+            };
 
             Some(async move {
                 let answered = tokio::time::timeout(
                     READINESS_GLANCE,
-                    minato_runtime::probe(endpoint, health.as_ref(), None),
+                    minato_runtime::probe(endpoint, Some(&health), None),
                 )
                 .await;
 
-                // Timed out, or a check that cannot run here: not an
-                // answer either way, and only `Ok(false)` — asked and
-                // refused — is grounds for saying it is still starting.
-                (index, matches!(answered, Ok(Ok(false))))
+                // Running out of time counts as not answering: the check
+                // was asked over loopback and did not reply, which is the
+                // shape of an app that has bound its port and is still
+                // compiling.
+                (index, !matches!(answered, Ok(Ok(true))))
             })
         })
         .collect();
@@ -2444,6 +2479,23 @@ mod tests {
     }
 
     /// A config whose only service is `web`, so `ready(...)` lines up.
+    ///
+    /// `health` is what makes readiness answerable from outside the
+    /// container, so it is the shape worth testing against.
+    fn web_with_http_health() -> MinatoConfig {
+        config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            health = "http://localhost:3000/healthz"
+        "#,
+        )
+    }
+
+    /// The same, with nothing declaring how readiness is decided.
     fn web_only() -> MinatoConfig {
         config(
             r#"
@@ -2456,38 +2508,89 @@ mod tests {
         )
     }
 
+    /// A port that was bound and released: connections are refused rather
+    /// than left hanging.
+    async fn closed_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds");
+        let port = listener.local_addr().expect("bound").port();
+        drop(listener);
+        port
+    }
+
     #[tokio::test]
-    async fn a_container_nobody_answers_on_is_still_starting() {
+    async fn a_health_check_that_does_not_answer_means_starting() {
         // Docker says `running` as soon as the process exists. A dev server
         // compiling for a minute looked exactly like one serving requests,
         // which is the question `minato status` is for.
         let key = WorkspaceKey::new("myapp", "feat-1").service("web");
+        let mut statuses = vec![ready(key, closed_port().await, ServiceScope::Workspace)];
 
-        // A port that was bound and released: nothing is listening, so the
-        // connection is refused rather than left hanging.
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("binds");
-        let port = closed.local_addr().expect("bound").port();
-        drop(closed);
-
-        let mut statuses = vec![ready(key, port, ServiceScope::Workspace)];
-        settle_readiness(&web_only(), &mut statuses).await;
+        settle_readiness(&web_with_http_health(), &mut statuses).await;
 
         assert_eq!(statuses[0].state, ServiceState::Starting);
     }
 
     #[tokio::test]
-    async fn a_service_that_answers_stays_ready() {
+    async fn a_health_check_that_answers_stays_ready() {
         let key = WorkspaceKey::new("myapp", "feat-1").service("web");
 
+        // Answers one request with a 200 and goes away.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("binds");
         let port = listener.local_addr().expect("bound").port();
 
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::AsyncWriteExt;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
         let mut statuses = vec![ready(key, port, ServiceScope::Workspace)];
+        settle_readiness(&web_with_http_health(), &mut statuses).await;
+
+        assert_eq!(statuses[0].state, ServiceState::Ready);
+    }
+
+    #[tokio::test]
+    async fn without_a_health_check_the_runtime_answer_stands() {
+        // **Measured, not assumed.** Docker publishes a port by putting a
+        // forwarder in front of it, and that forwarder accepts the moment
+        // the container starts, whether or not anything inside is
+        // listening. A connection attempt would hand back `ready` for a
+        // container running nothing at all.
+        let key = WorkspaceKey::new("myapp", "feat-1").service("web");
+        let mut statuses = vec![ready(key, closed_port().await, ServiceScope::Workspace)];
+
         settle_readiness(&web_only(), &mut statuses).await;
+
+        assert_eq!(statuses[0].state, ServiceState::Ready);
+    }
+
+    #[tokio::test]
+    async fn a_tcp_health_check_is_not_probed_either() {
+        // Same connection attempt under another name, so it tells us the
+        // same nothing.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            health = "tcp://localhost:3000"
+        "#,
+        );
+
+        let key = WorkspaceKey::new("myapp", "feat-1").service("web");
+        let mut statuses = vec![ready(key, closed_port().await, ServiceScope::Workspace)];
+
+        settle_readiness(&config, &mut statuses).await;
 
         assert_eq!(statuses[0].state, ServiceState::Ready);
     }
@@ -2502,7 +2605,7 @@ mod tests {
             ..ready(key, 3000, ServiceScope::Workspace)
         }];
 
-        settle_readiness(&web_only(), &mut statuses).await;
+        settle_readiness(&web_with_http_health(), &mut statuses).await;
 
         assert_eq!(statuses[0].state, ServiceState::Ready);
     }
@@ -2513,11 +2616,7 @@ mod tests {
         // into looking like it is on its way up.
         let key = WorkspaceKey::new("myapp", "feat-1").service("web");
 
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("binds");
-        let port = closed.local_addr().expect("bound").port();
-        drop(closed);
+        let port = closed_port().await;
 
         for state in [
             ServiceState::Stopped,
@@ -2529,7 +2628,7 @@ mod tests {
                 ..ready(key.clone(), port, ServiceScope::Workspace)
             }];
 
-            settle_readiness(&web_only(), &mut statuses).await;
+            settle_readiness(&web_with_http_health(), &mut statuses).await;
             assert_eq!(statuses[0].state, state);
         }
     }
@@ -2551,14 +2650,8 @@ mod tests {
         );
 
         let key = WorkspaceKey::new("myapp", "feat-1").service("web");
+        let mut statuses = vec![ready(key, closed_port().await, ServiceScope::Workspace)];
 
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("binds");
-        let port = closed.local_addr().expect("bound").port();
-        drop(closed);
-
-        let mut statuses = vec![ready(key, port, ServiceScope::Workspace)];
         settle_readiness(&config, &mut statuses).await;
 
         assert_eq!(statuses[0].state, ServiceState::Ready);

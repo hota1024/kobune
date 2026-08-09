@@ -70,6 +70,8 @@ Worth knowing before you hit them:
   instead
 - `[project] carry = [".env"]` names the untracked files a new worktree
   needs. Without it `minato new` produces an environment that cannot start
+- `health = "http://localhost:PORT/path"` is what makes `ready` mean
+  "serving". Without it, `ready` only means the container is running
 
 ## Everyday work
 
@@ -176,8 +178,8 @@ Removes the worktree and its environment. The branch stays.
 
 1. `minato status --json` — look at each service's `state`
    - `stopped` → reach for it, or run `minato up`
-   - `starting` → wait. The container is up but the app is not answering
-     yet, which is what a dev server still building looks like
+   - `starting` → wait. The container is up but its `health` check is not
+     answering, which is what a dev server still building looks like
    - `failed` → `reason` says why. A container that exited non-zero lands
      here, so this is what a start-up script that died looks like
 2. `minato logs <service>` — errors from the app itself

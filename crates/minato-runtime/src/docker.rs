@@ -764,7 +764,11 @@ impl Runtime for DockerRuntime {
                     "already running",
                 );
                 let endpoint = self.resolve_endpoint(&id, spec.port).await?;
-                events.service_state(spec.name(), ServiceState::Ready);
+
+                // No state emitted. Nothing was waited on here, so there is
+                // nothing to claim: the caller settles readiness against
+                // `health` before showing anyone an answer, and asserting
+                // `ready` from this path would contradict it.
 
                 return Ok(RunningService {
                     key: spec.key.clone(),
