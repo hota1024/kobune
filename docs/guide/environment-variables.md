@@ -52,9 +52,58 @@ any of them:
 MINATO_PROJECT      = myapp
 MINATO_WORKSPACE    = feature-user-auth
 MINATO_SERVICE      = web
+MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 ```
+
+### `MINATO_CACHE_DIR`
+
+Somewhere to put what is worth keeping and not worth committing. It is a
+volume Minato manages, mounted into every service.
+
+```toml
+[services.web.env]
+npm_config_store_dir = "/var/cache/minato/pnpm"
+CARGO_HOME = "/var/cache/minato/cargo"
+```
+
+::: warning `$VAR` is not expanded in `env`
+Values are passed to the container as written — nothing interpolates them, and
+neither does Docker. `npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` makes a
+directory *called* `$MINATO_CACHE_DIR` relative to the workdir, which is the
+worktree: the gigabyte-in-the-repository this exists to prevent.
+
+Write the path out here. `$MINATO_CACHE_DIR` is for where a shell expands it —
+a `command`, or a start-up script:
+
+```toml
+command = "sh -c 'pnpm config set store-dir $MINATO_CACHE_DIR/pnpm && pnpm dev'"
+```
+:::
+
+**Point your package manager at it.** Left alone, most of them cache under the
+working directory — which is your worktree, bind-mounted from the host, so the
+cache lands in the repository. A pnpm store there is a gigabyte of untracked
+files in a checkout.
+
+Shared by every worktree of the project, which is the point: a package store is
+worth downloading once. For anything a branch changes the shape of — a
+`node_modules` against a per-branch lockfile — use a
+[`@workspace` volume](../reference/minato-toml#scope) instead.
+
+::: warning A container that does not run as root
+The volume starts empty and owned by root, so a service running as another
+user cannot write to it until something creates a directory it owns. `USER
+root` for the install step, or `mkdir -p "$MINATO_CACHE_DIR/x" && chown` in the
+start-up script.
+:::
+
+A container keeps the mounts it was created with, so a service that was
+already running when you upgraded does not have this until `minato down &&
+minato up`. Mounting your own volume at `/var/cache/minato` is refused — two
+mounts on one path is an error from the container engine, a long way from the
+line that caused it.
 
 `MINATO_URL_<SERVICE>` is the important one. It is what makes a per-worktree
 environment hold together: the frontend cannot hardcode the API's URL, because

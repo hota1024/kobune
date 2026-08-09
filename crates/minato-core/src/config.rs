@@ -17,6 +17,26 @@ pub const CONFIG_FILE: &str = "minato.toml";
 /// Where the worktree's source is mounted inside the container.
 pub const MOUNT_TARGET: &str = "/workspace";
 
+/// Where a service can write things worth keeping but not committing.
+///
+/// **Deliberately outside [`MOUNT_TARGET`].** Anywhere under the worktree
+/// is the host's disk, inside the repository — which is how a package
+/// store ends up as a gigabyte of untracked files in someone's checkout.
+/// Handed to every service as `MINATO_CACHE_DIR`.
+pub const CACHE_TARGET: &str = "/var/cache/minato";
+
+/// The name of the volume behind [`CACHE_TARGET`].
+///
+/// **Deliberately not a valid volume name.** [`naming::is_valid_label`]
+/// allows only lowercase letters, digits and hyphens, and `VolumeMount`
+/// checks every declared name against it — so no `volumes` entry can reach
+/// this one however it is spelled.
+///
+/// Calling it `cache` would have collided with anyone already using that
+/// name: their storage would quietly have become the cache, which is the
+/// sort of migration nobody notices until the data looks gone.
+pub const CACHE_VOLUME: &str = "_cache";
+
 /// The default when `idle_timeout` is omitted.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -410,6 +430,24 @@ impl MinatoConfig {
             }
         }
 
+        // The name cannot be taken — `_cache` is not a valid volume name —
+        // but the place it is mounted can be. Two mounts on one target is
+        // an error from the container engine, several steps away from the
+        // line that caused it.
+        for volume in &svc.volumes {
+            let mut parts = volume.split(':');
+            let _source = parts.next();
+
+            if parts.next() == Some(CACHE_TARGET) {
+                return Err(Error::ConfigInvalid(format!(
+                    "service `{name}`: {CACHE_TARGET} is where MINATO_CACHE_DIR \
+                     is already mounted, so `{volume}` would be a second mount \
+                     on the same path. Write under $MINATO_CACHE_DIR, or mount \
+                     yours somewhere else"
+                )));
+            }
+        }
+
         // Same reason, for storage rather than services: one instance
         // serves every worktree, so there is no worktree whose volume it
         // would be. Caught here rather than at start, where it would come
@@ -798,6 +836,59 @@ mod tests {
         "#,
         )
         .expect("a host path is never scoped, however it is spelled");
+    }
+
+    #[test]
+    fn the_cache_volume_cannot_be_named() {
+        // Not a reservation to remember — `_cache` is not a valid volume
+        // name, so no spelling of `volumes` can reach it. Anyone already
+        // using a volume called `cache` keeps it, and keeps its contents.
+        assert!(!naming::is_valid_label(CACHE_VOLUME));
+
+        parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["cache:/tmp/cache"]
+        "#,
+        )
+        .expect("`cache` is an ordinary name, and stays one");
+    }
+
+    #[test]
+    fn a_second_mount_on_the_cache_path_is_refused() {
+        // Two mounts on one target is an error from the container engine,
+        // a long way from the line that caused it.
+        let err = parse(&format!(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["mine:{CACHE_TARGET}"]
+        "#
+        ))
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("MINATO_CACHE_DIR"), "{message}");
+        assert!(!message.contains("  "), "run-together spacing: {message}");
+    }
+
+    #[test]
+    fn mounting_below_the_cache_path_is_allowed() {
+        parse(&format!(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["mine:{CACHE_TARGET}/mine"]
+        "#
+        ))
+        .expect("only the exact path is taken");
     }
 
     #[test]
