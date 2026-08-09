@@ -31,6 +31,13 @@ pub struct LogLine {
     pub line: String,
 }
 
+/// How to run a command inside a container.
+#[derive(Debug, Clone, Default)]
+pub struct ExecOptions {
+    /// Where to run it. The service's own `workdir` when left out.
+    pub workdir: Option<String>,
+}
+
 /// The result of running a command inside a container.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecOutcome {
@@ -39,6 +46,40 @@ pub struct ExecOutcome {
     /// **Passed straight back to the caller.** An agent has to be able to
     /// judge `minato exec web -- pnpm test` by its exit code alone.
     pub exit_code: i32,
+}
+
+/// What makes a one-off debugging container different from the real one.
+pub(crate) struct Throwaway<'a> {
+    /// Its own name, so it cannot collide with the service's container.
+    pub(crate) name: String,
+    /// What to run instead of the service's `command`.
+    pub(crate) command: &'a [String],
+    /// Where to run it, when somewhere other than the service's `workdir`.
+    pub(crate) workdir: Option<&'a str>,
+}
+
+impl<'a> Throwaway<'a> {
+    /// A name that will not collide with the real container or with
+    /// another throwaway running beside it.
+    ///
+    /// Prefixed distinctly from `minato-`, so anything left behind by a
+    /// daemon that died mid-command reads as debris rather than as a
+    /// service.
+    pub(crate) fn new(spec: &ServiceSpec, command: &'a [String], workdir: Option<&'a str>) -> Self {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or_default();
+
+        Self {
+            name: format!(
+                "minato-tmp-{}-{}-{stamp}",
+                spec.key.workspace.project, spec.key.service
+            ),
+            command,
+            workdir,
+        }
+    }
 }
 
 /// What a runtime is. Shown by `minato doctor` and `minato ping`.
@@ -110,6 +151,25 @@ pub trait Runtime: Send + Sync {
         &self,
         key: &ServiceKey,
         command: &[String],
+        options: &ExecOptions,
+        events: &EventSink,
+    ) -> Result<ExecOutcome>;
+
+    /// Runs a command in a container made for the purpose, then removes it.
+    ///
+    /// **The service does not have to be running**, which is the whole
+    /// point: a start-up script that fails leaves nothing to exec into, and
+    /// that is when someone most wants to look around. The image, the
+    /// environment and the volumes are the service's; the command is not.
+    ///
+    /// It publishes no ports and carries no Minato labels, so it cannot
+    /// take the real container's ports, appear in `list_project`, or answer
+    /// to the service's name on the network.
+    async fn exec_fresh(
+        &self,
+        spec: &ServiceSpec,
+        command: &[String],
+        options: &ExecOptions,
         events: &EventSink,
     ) -> Result<ExecOutcome>;
 
@@ -136,6 +196,15 @@ pub mod labels {
     pub const SCOPE: &str = "dev.minato.scope";
     /// The port listened on inside the container.
     pub const PORT: &str = "dev.minato.port";
+
+    /// Marks a one-off container from `minato exec --fresh`.
+    ///
+    /// **It carries no `SERVICE` label**, which is what keeps it out of
+    /// `list_project` and therefore out of `minato status` and the routing
+    /// table. It carries the rest so that one left behind by a daemon that
+    /// died mid-command is still findable — an unlabelled container is
+    /// invisible to every Minato command for ever.
+    pub const THROWAWAY: &str = "dev.minato.throwaway";
 
     /// What a built image was built from.
     ///

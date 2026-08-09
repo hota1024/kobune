@@ -15,8 +15,8 @@ use std::path::Path;
 use async_trait::async_trait;
 use bollard::Docker;
 use bollard::container::{
-    Config, CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions,
-    RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
+    AttachContainerOptions, Config, CreateContainerOptions, ListContainersOptions, LogOutput,
+    LogsOptions, RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::{BuildImageOptions, CreateImageOptions};
@@ -33,7 +33,9 @@ use minato_core::{ServiceScope, ServiceState};
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
-use crate::runtime::{ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names};
+use crate::runtime::{
+    ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Throwaway, labels, names,
+};
 use crate::spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
     WorkspaceKey, WorkspaceSpec,
@@ -394,6 +396,113 @@ impl DockerRuntime {
         Ok(full)
     }
 
+    /// Starts a throwaway, pumps its output, and waits for its exit code.
+    ///
+    /// Attached before it is started, so nothing printed in the first
+    /// moments is lost — which for a start-up script that fails at once is
+    /// the whole output.
+    async fn run_throwaway(
+        &self,
+        id: &str,
+        service: &str,
+        events: &EventSink,
+    ) -> Result<ExecOutcome> {
+        // **Claimed before the container runs.** `auto_remove` takes it
+        // away the moment it stops, so a wait registered afterwards finds
+        // nothing left to report.
+        //
+        // `next-exit` rather than the default `not-running`: the container
+        // has been created and not started, which already counts as not
+        // running. That wait returns 0 straight away, and a command that
+        // then failed is reported as having succeeded — measured, after it
+        // turned `exit 42` into an exit code of 0.
+        let waiting = {
+            let docker = self.docker.clone();
+            let id = id.to_string();
+            tokio::spawn(async move {
+                docker
+                    .wait_container(
+                        &id,
+                        Some(bollard::container::WaitContainerOptions {
+                            condition: "next-exit",
+                        }),
+                    )
+                    .next()
+                    .await
+            })
+        };
+
+        let attached = self
+            .docker
+            .attach_container(
+                id,
+                Some(AttachContainerOptions::<String> {
+                    stream: Some(true),
+                    stdout: Some(true),
+                    stderr: Some(true),
+                    logs: Some(true),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| RuntimeError::failed("attaching to the throwaway container", e))?;
+
+        self.docker
+            .start_container(id, None::<StartContainerOptions<String>>)
+            .await
+            .map_err(|e| RuntimeError::failed("starting the throwaway container", e))?;
+
+        let mut output = attached.output;
+        while let Some(chunk) = output.next().await {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    // Truncating silently would look like a command that
+                    // simply printed less than it did.
+                    events.warn(format!("output from the throwaway was cut short: {err}"));
+                    break;
+                }
+            };
+
+            let (stream_kind, bytes) = match chunk {
+                LogOutput::StdErr { message } => (OutputStream::Stderr, message),
+                LogOutput::StdOut { message }
+                | LogOutput::Console { message }
+                | LogOutput::StdIn { message } => (OutputStream::Stdout, message),
+            };
+
+            for line in String::from_utf8_lossy(&bytes).lines() {
+                events.output(Some(service.to_string()), stream_kind, line);
+            }
+        }
+
+        // `wait` reports a non-zero exit as an error carrying the code, so
+        // the code is read from either arm rather than only the happy one.
+        //
+        // **Nothing at all is a failure, not a zero.** The stream ending
+        // without its one response means the connection to Docker broke,
+        // and reporting success would tell an agent judging a test by its
+        // exit status that the test passed.
+        let exit_code = match waiting.await {
+            Ok(Some(Ok(response))) => response.status_code,
+            Ok(Some(Err(bollard::errors::Error::DockerContainerWaitError { code, .. }))) => code,
+            Ok(Some(Err(err))) => {
+                return Err(RuntimeError::failed("waiting for the throwaway", err));
+            }
+            Ok(None) => {
+                return Err(RuntimeError::failed(
+                    "waiting for the throwaway",
+                    "Docker closed the connection without reporting an exit code",
+                ));
+            }
+            Err(err) => return Err(RuntimeError::failed("waiting for the throwaway", err)),
+        };
+
+        Ok(ExecOutcome {
+            exit_code: exit_code as i32,
+        })
+    }
+
     /// Removes the storage that belonged to this worktree and nothing else.
     ///
     /// **Workspace-scoped only.** A project volume is shared and outlives
@@ -463,10 +572,27 @@ impl DockerRuntime {
     }
 
     /// Creates the container, replacing any existing one.
-    async fn create_container(&self, spec: &ServiceSpec, network: &str) -> Result<String> {
-        let name = names::container(&spec.key);
-        let port = spec.port;
+    async fn create_container(
+        &self,
+        spec: &ServiceSpec,
+        network: &str,
+        throwaway: Option<&Throwaway<'_>>,
+    ) -> Result<String> {
+        let name = match throwaway {
+            Some(one_off) => one_off.name.clone(),
+            None => names::container(&spec.key),
+        };
 
+        // **A throwaway publishes nothing.** The real container may be
+        // holding the port, and a debugging shell has no business taking
+        // it from whatever is serving.
+        let port = if throwaway.is_some() { None } else { spec.port };
+
+        // **A throwaway carries no `SERVICE` label.** That is the one
+        // `summary_to_status` needs, so without it a throwaway cannot turn
+        // up in `minato status`, in the routing table, or in what `down`
+        // stops. It keeps the others, so one left behind by a daemon that
+        // died mid-command is still something `rm` and `purge` can find.
         let mut container_labels = HashMap::new();
         container_labels.insert(
             labels::MANAGED.to_string(),
@@ -478,18 +604,29 @@ impl DockerRuntime {
         );
         container_labels.insert(
             labels::WORKSPACE.to_string(),
-            spec.key.workspace.workspace.clone(),
+            spec.attached_to.workspace.clone(),
         );
-        container_labels.insert(labels::SERVICE.to_string(), spec.key.service.clone());
-        container_labels.insert(
-            labels::SCOPE.to_string(),
-            match spec.scope {
-                ServiceScope::Workspace => "workspace".to_string(),
-                ServiceScope::Project => "project".to_string(),
-            },
-        );
-        if let Some(port) = port {
-            container_labels.insert(labels::PORT.to_string(), port.to_string());
+
+        if throwaway.is_some() {
+            container_labels.insert(labels::THROWAWAY.to_string(), "1".to_string());
+        }
+
+        if throwaway.is_none() {
+            container_labels.insert(
+                labels::WORKSPACE.to_string(),
+                spec.key.workspace.workspace.clone(),
+            );
+            container_labels.insert(labels::SERVICE.to_string(), spec.key.service.clone());
+            container_labels.insert(
+                labels::SCOPE.to_string(),
+                match spec.scope {
+                    ServiceScope::Workspace => "workspace".to_string(),
+                    ServiceScope::Project => "project".to_string(),
+                },
+            );
+            if let Some(port) = port {
+                container_labels.insert(labels::PORT.to_string(), port.to_string());
+            }
         }
 
         // An empty host port lets Docker pick a free one. Bound to
@@ -553,21 +690,31 @@ impl DockerRuntime {
             }
         }
 
-        // Make the service name resolvable, so `api` can reach
-        // `db:5432`.
+        // Make the service name resolvable, so `api` can reach `db:5432`.
+        //
+        // A throwaway joins the network — it needs to reach the others —
+        // but takes no alias: two containers answering to `api` would send
+        // half of `db`'s traffic to a debugging shell.
         let mut endpoints = HashMap::new();
         endpoints.insert(
             network.to_string(),
             EndpointSettings {
-                aliases: Some(vec![spec.key.service.clone()]),
+                aliases: throwaway.is_none().then(|| vec![spec.key.service.clone()]),
                 ..Default::default()
             },
         );
 
         let config = Config {
             image: Some(spec.image.clone()),
-            cmd: spec.command.clone(),
-            working_dir: Some(spec.workdir.clone()),
+            cmd: match throwaway {
+                Some(one_off) => Some(one_off.command.to_vec()),
+                None => spec.command.clone(),
+            },
+            working_dir: Some(
+                throwaway
+                    .and_then(|one_off| one_off.workdir.map(str::to_string))
+                    .unwrap_or_else(|| spec.workdir.clone()),
+            ),
             env: Some(spec.env_pairs()),
             labels: Some(container_labels),
             exposed_ports: if exposed_ports.is_empty() {
@@ -576,6 +723,13 @@ impl DockerRuntime {
                 Some(exposed_ports)
             },
             host_config: Some(HostConfig {
+                // **Docker reaps a throwaway even if this daemon does
+                // not.** A cancelled request drops the future before the
+                // explicit removal can run, and the container would
+                // otherwise keep running with nobody left to notice. Also
+                // takes the image's anonymous volumes with it, which a
+                // per-invocation name would accumulate one of each time.
+                auto_remove: throwaway.is_some().then_some(true),
                 mounts: if mounts.is_empty() {
                     None
                 } else {
@@ -799,7 +953,7 @@ impl Runtime for DockerRuntime {
         let network = names::network(&spec.attached_to);
         self.ensure_network(&spec.attached_to).await?;
 
-        let id = self.create_container(spec, &network).await?;
+        let id = self.create_container(spec, &network, None).await?;
 
         // A shared service joins the caller's workspace network as well.
         if spec.scope == ServiceScope::Project {
@@ -1045,6 +1199,7 @@ impl Runtime for DockerRuntime {
         &self,
         key: &ServiceKey,
         command: &[String],
+        options: &ExecOptions,
         events: &EventSink,
     ) -> Result<ExecOutcome> {
         let container = self.find_container(key).await?.ok_or_else(|| {
@@ -1079,6 +1234,7 @@ impl Runtime for DockerRuntime {
                 &id,
                 CreateExecOptions {
                     cmd: Some(command.to_vec()),
+                    working_dir: options.workdir.clone(),
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
                     // No TTY: hanging on a prompt is the worse outcome.
@@ -1121,6 +1277,49 @@ impl Runtime for DockerRuntime {
         Ok(ExecOutcome {
             exit_code: inspected.exit_code.unwrap_or(-1) as i32,
         })
+    }
+
+    async fn exec_fresh(
+        &self,
+        spec: &ServiceSpec,
+        command: &[String],
+        options: &ExecOptions,
+        events: &EventSink,
+    ) -> Result<ExecOutcome> {
+        let network = self.ensure_network(&spec.key.workspace).await?;
+        let one_off = Throwaway::new(spec, command, options.workdir.as_deref());
+        let name = one_off.name.clone();
+
+        let id = self
+            .create_container(spec, &network, Some(&one_off))
+            .await?;
+
+        // Removed whatever happens next, including the command failing or
+        // the caller hanging up. A debugging aid that leaves containers
+        // behind stops being one.
+        let outcome = self.run_throwaway(&id, &spec.key.service, events).await;
+
+        if let Err(err) = self
+            .docker
+            .remove_container(
+                &id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    // The image's anonymous volumes go too. A throwaway
+                    // gets a new name every run, so one left behind per
+                    // invocation would accumulate without bound.
+                    v: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+        {
+            // `auto_remove` has usually got there first, so this is
+            // expected to fail as often as not.
+            events.debug(format!("throwaway container {name} was not removed: {err}"));
+        }
+
+        outcome
     }
 
     async fn list_project(&self, project: &str) -> Result<Vec<ServiceStatus>> {

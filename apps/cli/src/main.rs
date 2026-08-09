@@ -172,6 +172,21 @@ enum Command {
     ///
     /// The command's exit code is passed straight through.
     Exec {
+        /// Run in a throwaway container instead of the running one
+        ///
+        /// Same image, environment and volumes, without the service's
+        /// start-up command, and removed when the command finishes. The
+        /// service does not have to be running — which is the point, since
+        /// a start-up script that fails leaves nothing to exec into.
+        #[arg(long)]
+        fresh: bool,
+
+        /// Where to run it. The service's workdir when left out
+        ///
+        /// `-C` rather than `-w`, which is taken by `--workspace`.
+        #[arg(long, short = 'C')]
+        workdir: Option<String>,
+
         /// Which service
         service: String,
 
@@ -705,10 +720,17 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             follow: *follow,
             tail: *tail,
         },
-        Command::Exec { service, command } => Request::Exec {
+        Command::Exec {
+            fresh,
+            workdir,
+            service,
+            command,
+        } => Request::Exec {
             target,
             service: service.clone(),
             command: command.clone(),
+            fresh: *fresh,
+            workdir: workdir.clone(),
         },
         Command::Env { command } => build_env_request(command, target)?,
         Command::Tunnel { command } => match command {

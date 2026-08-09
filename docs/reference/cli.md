@@ -202,10 +202,39 @@ Undecorated, with stdout and stderr kept separate.
 ```console
 $ minato exec web -- npm test
 $ minato exec web -- sh
+$ minato exec -C /workspace/apps/api api -- pnpm test   # somewhere else
 ```
 
 **The exit code is the command's own.** No TTY is requested, so anything
 waiting for input hangs rather than prompts.
+
+`-C` sets the working directory, defaulting to the service's
+[`workdir`](./minato-toml#image-and-command). It is `-C` rather than `-w`
+because `-w` already selects the workspace.
+
+#### `--fresh`
+
+```console
+$ minato exec --fresh api -- env
+$ minato exec --fresh api -- cat /workspace/.env
+$ minato exec --fresh api -- sh -c 'pnpm install --frozen-lockfile'
+```
+
+No stdin is attached, so `-- sh` on its own reads end-of-file and exits at
+once. Pass what you want run with `sh -c`.
+
+Runs the command in a container made for it and removed afterwards, built from
+the service's image, environment and volumes but **without the service's
+start-up command**.
+
+**The service does not have to be running**, which is the point: a start-up
+script that fails leaves nothing to exec into, and that is when you most want
+to look around.
+
+It publishes no ports and carries no Minato labels, so it cannot take the real
+container's ports, appear in `minato status`, or answer to the service's name
+on the network. The image is pulled or built first if it is not there yet, so
+this works before a service has ever come up cleanly.
 
 ## Interrupting
 
