@@ -66,8 +66,9 @@ Worth knowing before you hit them:
   gets you `minato-myapp-myapp-cache`. Use `cache@workspace:/path` for one
   per worktree — `node_modules` against a per-branch lockfile needs it
 - Your worktree is mounted at `/workspace`. Anything a build writes under
-  it lands in the repository on the host — point caches at a named volume
-  instead
+  it lands in the repository on the host — point caches at
+  `$MINATO_CACHE_DIR` (`/var/cache/minato`), which every service gets and
+  every worktree shares. `npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"`
 - `[project] carry = [".env"]` names the untracked files a new worktree
   needs. Without it `minato new` produces an environment that cannot start
 - `health = "http://localhost:PORT/path"` is what makes `ready` mean

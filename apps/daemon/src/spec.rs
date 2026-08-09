@@ -226,7 +226,19 @@ pub fn build_service_spec(
         ServiceScope::Project => None,
     };
 
-    let mut volumes = Vec::with_capacity(service.volumes.len());
+    // **Every service gets somewhere to write.** Without one, a tool that
+    // caches by default writes under the worktree — on the host's disk,
+    // inside the repository — and a package store turns into a gigabyte of
+    // untracked files. Project-scoped, because sharing a package store
+    // across worktrees is the point of it.
+    let mut volumes = Vec::with_capacity(service.volumes.len() + 1);
+    volumes.push(VolumeMount::Named {
+        name: minato_core::config::CACHE_VOLUME.to_string(),
+        target: minato_core::config::CACHE_TARGET.to_string(),
+        read_only: false,
+        scope: minato_runtime::VolumeScope::Project,
+    });
+
     for raw in &service.volumes {
         volumes.push(VolumeMount::parse(raw, worktree_path).map_err(|message| {
             ApiError::new(
@@ -383,18 +395,58 @@ mod tests {
     }
 
     #[test]
+    fn every_service_can_write_somewhere_off_the_worktree() {
+        // The whole point: a tool that caches by default must have
+        // somewhere to put it that is not the host's repository.
+        let spec = build();
+
+        for service in &spec.services {
+            let cache = service
+                .volumes
+                .iter()
+                .find(|volume| matches!(volume, VolumeMount::Named { target, .. } if target == minato_core::config::CACHE_TARGET))
+                .unwrap_or_else(|| panic!("{} has nowhere to write", service.name()));
+
+            assert!(
+                matches!(cache, VolumeMount::Named { scope, .. } if *scope == minato_runtime::VolumeScope::Project),
+                "a package store is worth sharing between worktrees"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cache_is_not_under_the_worktree() {
+        // Under /workspace it would be on the host's disk, in the
+        // repository — which is the gigabyte this exists to prevent.
+        assert!(
+            !minato_core::config::CACHE_TARGET.starts_with(minato_core::config::MOUNT_TARGET),
+            "{} is inside the bind mount",
+            minato_core::config::CACHE_TARGET
+        );
+    }
+
+    #[test]
     fn parses_volumes_relative_to_worktree() {
         let spec = build();
         let db = spec.service("db").expect("exists");
 
+        // The cache volume is there too, ahead of the declared ones.
         assert_eq!(
             db.volumes,
-            vec![VolumeMount::Named {
-                name: "pgdata".into(),
-                target: "/var/lib/postgresql/data".into(),
-                read_only: false,
-                scope: minato_runtime::VolumeScope::Project,
-            }]
+            vec![
+                VolumeMount::Named {
+                    name: minato_core::config::CACHE_VOLUME.into(),
+                    target: minato_core::config::CACHE_TARGET.into(),
+                    read_only: false,
+                    scope: minato_runtime::VolumeScope::Project,
+                },
+                VolumeMount::Named {
+                    name: "pgdata".into(),
+                    target: "/var/lib/postgresql/data".into(),
+                    read_only: false,
+                    scope: minato_runtime::VolumeScope::Project,
+                }
+            ]
         );
     }
 

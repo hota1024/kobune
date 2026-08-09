@@ -27,6 +27,15 @@ pub fn injected(
     values.insert("MINATO_WORKSPACE".to_string(), record.label.clone());
     values.insert("MINATO_SERVICE".to_string(), service.to_string());
 
+    // Somewhere to put what is worth keeping but not committing. Every
+    // service is mounted a volume here, so a tool pointed at it stops
+    // writing gigabytes into the worktree — and therefore into the
+    // repository on the host.
+    values.insert(
+        "MINATO_CACHE_DIR".to_string(),
+        minato_core::config::CACHE_TARGET.to_string(),
+    );
+
     let domain = config.domain();
     for (name, service_config) in &config.services {
         if !service_config.exposed() {
@@ -178,6 +187,28 @@ mod tests {
         assert_eq!(
             values.get("MINATO_SERVICE").map(String::as_str),
             Some("web")
+        );
+    }
+
+    #[test]
+    fn every_service_is_told_where_it_may_write() {
+        // Without this a tool that caches by default writes under
+        // /workspace, which is the host's repository.
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            "web",
+            &Gateway::inert(),
+        );
+
+        let cache = values.get("MINATO_CACHE_DIR").map(String::as_str);
+        assert_eq!(cache, Some(minato_core::config::CACHE_TARGET));
+        assert!(
+            !cache
+                .expect("set")
+                .starts_with(minato_core::config::MOUNT_TARGET),
+            "pointing it into the worktree would defeat the purpose"
         );
     }
 

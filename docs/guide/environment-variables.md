@@ -52,9 +52,42 @@ any of them:
 MINATO_PROJECT      = myapp
 MINATO_WORKSPACE    = feature-user-auth
 MINATO_SERVICE      = web
+MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 ```
+
+### `MINATO_CACHE_DIR`
+
+Somewhere to put what is worth keeping and not worth committing. It is a
+volume Minato manages, mounted into every service.
+
+```toml
+[services.web.env]
+npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"
+CARGO_HOME = "$MINATO_CACHE_DIR/cargo"
+```
+
+**Point your package manager at it.** Left alone, most of them cache under the
+working directory — which is your worktree, bind-mounted from the host, so the
+cache lands in the repository. A pnpm store there is a gigabyte of untracked
+files in a checkout.
+
+Shared by every worktree of the project, which is the point: a package store is
+worth downloading once. For anything a branch changes the shape of — a
+`node_modules` against a per-branch lockfile — use a
+[`@workspace` volume](../reference/minato-toml#scope) instead.
+
+::: warning A container that does not run as root
+The volume starts empty and owned by root, so a service running as another
+user cannot write to it until something creates a directory it owns. `USER
+root` for the install step, or `mkdir -p "$MINATO_CACHE_DIR/x" && chown` in the
+start-up script.
+:::
+
+`cache` is reserved as a volume name because of this — naming one would put
+two meanings on the same storage, and the configuration says so rather than
+letting them share.
 
 `MINATO_URL_<SERVICE>` is the important one. It is what makes a per-worktree
 environment hold together: the frontend cannot hardcode the API's URL, because

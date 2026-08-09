@@ -53,9 +53,41 @@ $ minato env unset LOG_LEVEL
 MINATO_PROJECT      = myapp
 MINATO_WORKSPACE    = feature-user-auth
 MINATO_SERVICE      = web
+MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 ```
+
+### `MINATO_CACHE_DIR`
+
+残す価値はあるがコミットする必要はないものの置き場所です。Minato が管理する
+ボリュームで、すべてのサービスにマウントされます。
+
+```toml
+[services.web.env]
+npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"
+CARGO_HOME = "$MINATO_CACHE_DIR/cargo"
+```
+
+**パッケージマネージャの参照先をここに向けてください。** 既定のままでは多くが
+作業ディレクトリ配下にキャッシュを作りますが、そこは worktree、つまりホストから
+バインドマウントされた領域です。結果としてキャッシュがリポジトリの中に生まれ、
+pnpm の store であれば数 GB の追跡対象外ファイルがチェックアウトに残ります。
+
+プロジェクト内のすべての worktree で共有されます。パッケージの取得を 1 回で
+済ませるのが目的だからです。ブランチによって内容が変わるもの（ブランチごとに
+lockfile が異なる `node_modules` など）には
+[`@workspace` ボリューム](../reference/minato-toml#スコープ) を使ってください。
+
+::: warning root 以外で動作するコンテナの場合
+ボリュームは空かつ root 所有で作成されるため、別のユーザーで動作するサービスは
+自分が所有するディレクトリが作られるまで書き込めません。インストール処理だけ
+`USER root` にするか、起動スクリプトで
+`mkdir -p "$MINATO_CACHE_DIR/x" && chown` してください。
+:::
+
+このため `cache` はボリューム名として予約されています。同名のボリュームを
+定義すると 1 つの領域に 2 つの意味が乗るため、共有させずにエラーとします。
 
 とくに重要なのが `MINATO_URL_<SERVICE>` です。URL はブランチごとに異なるため、
 フロントエンドは API の URL をハードコードできません。worktree ごとの環境が

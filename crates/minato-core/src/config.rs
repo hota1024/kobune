@@ -17,6 +17,21 @@ pub const CONFIG_FILE: &str = "minato.toml";
 /// Where the worktree's source is mounted inside the container.
 pub const MOUNT_TARGET: &str = "/workspace";
 
+/// Where a service can write things worth keeping but not committing.
+///
+/// **Deliberately outside [`MOUNT_TARGET`].** Anywhere under the worktree
+/// is the host's disk, inside the repository — which is how a package
+/// store ends up as a gigabyte of untracked files in someone's checkout.
+/// Handed to every service as `MINATO_CACHE_DIR`.
+pub const CACHE_TARGET: &str = "/var/cache/minato";
+
+/// The name of the volume behind [`CACHE_TARGET`].
+///
+/// Reserved: a service naming its own volume `cache` would land on the
+/// same storage, so the configuration refuses that rather than let two
+/// meanings share one volume.
+pub const CACHE_VOLUME: &str = "cache";
+
 /// The default when `idle_timeout` is omitted.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -410,6 +425,17 @@ impl MinatoConfig {
             }
         }
 
+        for volume in &svc.volumes {
+            let source = volume.split(':').next().unwrap_or_default();
+            let named = source.split('@').next().unwrap_or_default();
+
+            if named == CACHE_VOLUME {
+                return Err(Error::ConfigInvalid(format!(
+                    "service `{name}`: `{CACHE_VOLUME}` is the volume behind                      MINATO_CACHE_DIR, so naming one is asking two things to                      share it. Every service already has {CACHE_TARGET}; use                      $MINATO_CACHE_DIR, or pick another name"
+                )));
+            }
+        }
+
         // Same reason, for storage rather than services: one instance
         // serves every worktree, so there is no worktree whose volume it
         // would be. Caught here rather than at start, where it would come
@@ -798,6 +824,60 @@ mod tests {
         "#,
         )
         .expect("a host path is never scoped, however it is spelled");
+    }
+
+    #[test]
+    fn the_cache_volume_name_is_reserved() {
+        // Naming it would put two meanings on one volume: the service's
+        // own storage and what MINATO_CACHE_DIR points at.
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["cache:/tmp/cache"]
+        "#,
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("MINATO_CACHE_DIR"), "{message}");
+        assert!(
+            message.contains("pick another name"),
+            "say what to do: {message}"
+        );
+    }
+
+    #[test]
+    fn the_reservation_covers_a_scoped_spelling_too() {
+        assert!(
+            parse(
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "node:22"
+                volumes = ["cache@workspace:/tmp/cache"]
+            "#,
+            )
+            .is_err(),
+            "the suffix does not make it a different volume name"
+        );
+    }
+
+    #[test]
+    fn a_name_merely_containing_cache_is_fine() {
+        parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["pnpm-cache:/tmp/x", "cached:/tmp/y"]
+        "#,
+        )
+        .expect("only the exact name is reserved");
     }
 
     #[test]
