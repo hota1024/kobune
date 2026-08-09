@@ -294,8 +294,25 @@ impl AppleContainerRuntime {
     }
 
     /// Creates the host directory backing a named volume.
-    fn ensure_volume_dir(&self, project: &str, name: &str) -> Result<PathBuf> {
-        let path = self.volume_root.join(project).join(name);
+    /// Apple Container has no named volumes, so they become directories.
+    ///
+    /// The layout mirrors the Docker naming so the two runtimes agree on
+    /// what is shared with what: a workspace-scoped volume gets its own
+    /// directory per worktree.
+    fn ensure_volume_dir(
+        &self,
+        key: &WorkspaceKey,
+        name: &str,
+        scope: crate::spec::VolumeScope,
+    ) -> Result<PathBuf> {
+        let path = match scope {
+            crate::spec::VolumeScope::Project => self.volume_root.join(&key.project).join(name),
+            crate::spec::VolumeScope::Workspace => self
+                .volume_root
+                .join(&key.project)
+                .join(&key.workspace)
+                .join(name),
+        };
         std::fs::create_dir_all(&path).map_err(|err| {
             RuntimeError::failed(
                 format!("creating volume storage at {}", path.display()),
@@ -407,8 +424,9 @@ impl AppleContainerRuntime {
                     name,
                     target,
                     read_only,
+                    scope,
                 } => {
-                    let path = self.ensure_volume_dir(&spec.key.workspace.project, name)?;
+                    let path = self.ensure_volume_dir(&spec.key.workspace, name, *scope)?;
                     (path, target.clone(), *read_only)
                 }
                 VolumeMount::Bind {
@@ -1454,6 +1472,7 @@ mod tests {
             name: "pgdata".into(),
             target: "/var/lib/postgresql/data".into(),
             read_only: false,
+            scope: crate::spec::VolumeScope::Project,
         }];
 
         let args = runtime

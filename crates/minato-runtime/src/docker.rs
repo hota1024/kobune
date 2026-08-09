@@ -354,8 +354,13 @@ impl DockerRuntime {
     }
 
     /// Makes sure a named volume exists.
-    async fn ensure_volume(&self, project: &str, name: &str) -> Result<String> {
-        let full = names::volume(project, name);
+    async fn ensure_volume(
+        &self,
+        key: &WorkspaceKey,
+        name: &str,
+        scope: crate::spec::VolumeScope,
+    ) -> Result<String> {
+        let full = names::volume(key, name, scope);
 
         if self.docker.inspect_volume(&full).await.is_ok() {
             return Ok(full);
@@ -366,7 +371,7 @@ impl DockerRuntime {
             labels::MANAGED.to_string(),
             labels::MANAGED_VALUE.to_string(),
         );
-        volume_labels.insert(labels::PROJECT.to_string(), project.to_string());
+        volume_labels.insert(labels::PROJECT.to_string(), key.project.clone());
 
         self.docker
             .create_volume(bollard::volume::CreateVolumeOptions {
@@ -467,9 +472,10 @@ impl DockerRuntime {
                     name,
                     target,
                     read_only,
+                    scope,
                 } => {
                     let full = self
-                        .ensure_volume(&spec.key.workspace.project, name)
+                        .ensure_volume(&spec.key.workspace, name, *scope)
                         .await?;
                     mounts.push(Mount {
                         typ: Some(MountTypeEnum::VOLUME),

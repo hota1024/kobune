@@ -63,7 +63,8 @@ Worth knowing before you hit them:
   takes longer than that is not a guarantee
 - A named volume (`cache:/path`) is per project and **shared by every
   worktree**. Minato namespaces it, so writing your own project prefix
-  gets you `minato-myapp-myapp-cache`
+  gets you `minato-myapp-myapp-cache`. Use `cache@workspace:/path` for one
+  per worktree — `node_modules` against a per-branch lockfile needs it
 - Your worktree is mounted at `/workspace`. Anything a build writes under
   it lands in the repository on the host — point caches at a named volume
   instead

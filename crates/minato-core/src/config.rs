@@ -391,6 +391,26 @@ impl MinatoConfig {
             }
         }
 
+        // Same reason, for storage rather than services: one instance
+        // serves every worktree, so there is no worktree whose volume it
+        // would be. Caught here rather than at start, where it would come
+        // out as a container mounting whichever one it happened to make.
+        if svc.scope == ServiceScope::Project {
+            for volume in &svc.volumes {
+                if volume
+                    .split(':')
+                    .next()
+                    .is_some_and(|source| source.ends_with("@workspace"))
+                {
+                    return Err(Error::ConfigInvalid(format!(
+                        "service `{name}` (scope = \"project\") asks for the \
+                         workspace-scoped volume `{volume}`. A shared service \
+                         has no worktree to keep one per"
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -726,6 +746,39 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("A shared service cannot"));
+    }
+
+    #[test]
+    fn refuses_a_workspace_volume_on_a_shared_service() {
+        // One instance serves every worktree, so there is no worktree whose
+        // volume it would be.
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.db]
+            image = "postgres:16"
+            scope = "project"
+            volumes = ["pgdata@workspace:/var/lib/postgresql/data"]
+        "#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("no worktree"), "{err}");
+    }
+
+    #[test]
+    fn a_workspace_volume_is_fine_on_a_per_worktree_service() {
+        parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["node-modules@workspace:/workspace/node_modules"]
+        "#,
+        )
+        .expect("this is the case the scope exists for");
     }
 
     #[test]

@@ -393,6 +393,7 @@ mod tests {
                 name: "pgdata".into(),
                 target: "/var/lib/postgresql/data".into(),
                 read_only: false,
+                scope: minato_runtime::VolumeScope::Project,
             }]
         );
     }

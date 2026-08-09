@@ -89,6 +89,9 @@ command = "sh -c 'echo minato ready; sleep infinity'"
 # scope = "project"    # one instance, shared across worktrees
 # expose = false       # no URL for this one
 # volumes = ["pgdata:/var/lib/postgresql/data"]   # shared across worktrees
+#
+# `name@workspace:/path` gives each worktree its own volume instead — for
+# anything a branch changes the shape of, node_modules being the usual one.
 # env = {{ POSTGRES_PASSWORD = "postgres" }}
 "#
     )

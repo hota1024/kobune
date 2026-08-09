@@ -174,8 +174,18 @@ pub mod names {
     }
 
     /// The real name of a named volume. Never collides across projects.
-    pub fn volume(project: &str, name: &str) -> String {
-        format!("minato-{project}-{name}")
+    ///
+    /// A workspace-scoped one carries the worktree too, which is what keeps
+    /// two branches from sharing storage whose shape they disagree about.
+    pub fn volume(key: &WorkspaceKey, name: &str, scope: crate::spec::VolumeScope) -> String {
+        match scope {
+            crate::spec::VolumeScope::Project => format!("minato-{}-{name}", key.project),
+            crate::spec::VolumeScope::Workspace => format!(
+                "minato-{}-{}-{name}",
+                key.project,
+                sanitize_segment(&key.workspace)
+            ),
+        }
     }
 
     /// Some implementations reject a leading `_` in a container name, so
@@ -218,11 +228,56 @@ mod tests {
 
     #[test]
     fn volumes_are_scoped_per_project() {
-        assert_eq!(names::volume("myapp", "pgdata"), "minato-myapp-pgdata");
+        use crate::spec::VolumeScope;
+
+        let one = WorkspaceKey::new("myapp", "feat-1");
+        let two = WorkspaceKey::new("myapp", "feat-2");
+        let other = WorkspaceKey::new("other", "feat-1");
+
+        assert_eq!(
+            names::volume(&one, "pgdata", VolumeScope::Project),
+            "minato-myapp-pgdata"
+        );
+        assert_eq!(
+            names::volume(&one, "pgdata", VolumeScope::Project),
+            names::volume(&two, "pgdata", VolumeScope::Project),
+            "the project scope is what every worktree shares"
+        );
         assert_ne!(
-            names::volume("myapp", "pgdata"),
-            names::volume("other", "pgdata"),
+            names::volume(&one, "pgdata", VolumeScope::Project),
+            names::volume(&other, "pgdata", VolumeScope::Project),
             "a different project means different storage"
+        );
+    }
+
+    #[test]
+    fn a_workspace_volume_is_not_shared_between_worktrees() {
+        // The whole point: two branches whose lockfiles disagree must not
+        // be handed the same node_modules.
+        use crate::spec::VolumeScope;
+
+        let one = WorkspaceKey::new("myapp", "feat-1");
+        let two = WorkspaceKey::new("myapp", "feat-2");
+
+        assert_eq!(
+            names::volume(&one, "node-modules", VolumeScope::Workspace),
+            "minato-myapp-feat-1-node-modules"
+        );
+        assert_ne!(
+            names::volume(&one, "node-modules", VolumeScope::Workspace),
+            names::volume(&two, "node-modules", VolumeScope::Workspace)
+        );
+    }
+
+    #[test]
+    fn a_workspace_volume_does_not_collide_with_a_project_one() {
+        use crate::spec::VolumeScope;
+
+        let key = WorkspaceKey::new("myapp", "feat-1");
+
+        assert_ne!(
+            names::volume(&key, "cache", VolumeScope::Workspace),
+            names::volume(&key, "cache", VolumeScope::Project)
         );
     }
 }
