@@ -407,6 +407,31 @@ impl DockerRuntime {
         service: &str,
         events: &EventSink,
     ) -> Result<ExecOutcome> {
+        // **Claimed before the container runs.** `auto_remove` takes it
+        // away the moment it stops, so a wait registered afterwards finds
+        // nothing left to report.
+        //
+        // `next-exit` rather than the default `not-running`: the container
+        // has been created and not started, which already counts as not
+        // running. That wait returns 0 straight away, and a command that
+        // then failed is reported as having succeeded — measured, after it
+        // turned `exit 42` into an exit code of 0.
+        let waiting = {
+            let docker = self.docker.clone();
+            let id = id.to_string();
+            tokio::spawn(async move {
+                docker
+                    .wait_container(
+                        &id,
+                        Some(bollard::container::WaitContainerOptions {
+                            condition: "next-exit",
+                        }),
+                    )
+                    .next()
+                    .await
+            })
+        };
+
         let attached = self
             .docker
             .attach_container(
@@ -429,7 +454,15 @@ impl DockerRuntime {
 
         let mut output = attached.output;
         while let Some(chunk) = output.next().await {
-            let Ok(chunk) = chunk else { break };
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    // Truncating silently would look like a command that
+                    // simply printed less than it did.
+                    events.warn(format!("output from the throwaway was cut short: {err}"));
+                    break;
+                }
+            };
 
             let (stream_kind, bytes) = match chunk {
                 LogOutput::StdErr { message } => (OutputStream::Stderr, message),
@@ -443,19 +476,26 @@ impl DockerRuntime {
             }
         }
 
-        let mut waits = self
-            .docker
-            .wait_container(id, None::<bollard::container::WaitContainerOptions<String>>);
-
         // `wait` reports a non-zero exit as an error carrying the code, so
         // the code is read from either arm rather than only the happy one.
-        let exit_code = match waits.next().await {
-            Some(Ok(response)) => response.status_code,
-            Some(Err(bollard::errors::Error::DockerContainerWaitError { code, .. })) => code,
-            Some(Err(err)) => {
+        //
+        // **Nothing at all is a failure, not a zero.** The stream ending
+        // without its one response means the connection to Docker broke,
+        // and reporting success would tell an agent judging a test by its
+        // exit status that the test passed.
+        let exit_code = match waiting.await {
+            Ok(Some(Ok(response))) => response.status_code,
+            Ok(Some(Err(bollard::errors::Error::DockerContainerWaitError { code, .. }))) => code,
+            Ok(Some(Err(err))) => {
                 return Err(RuntimeError::failed("waiting for the throwaway", err));
             }
-            None => 0,
+            Ok(None) => {
+                return Err(RuntimeError::failed(
+                    "waiting for the throwaway",
+                    "Docker closed the connection without reporting an exit code",
+                ));
+            }
+            Err(err) => return Err(RuntimeError::failed("waiting for the throwaway", err)),
         };
 
         Ok(ExecOutcome {
@@ -548,19 +588,30 @@ impl DockerRuntime {
         // it from whatever is serving.
         let port = if throwaway.is_some() { None } else { spec.port };
 
-        // **A throwaway carries no labels.** They are how Minato finds its
-        // own containers, so a labelled one would turn up in
-        // `minato status`, in the routing table, and in what `down` stops.
+        // **A throwaway carries no `SERVICE` label.** That is the one
+        // `summary_to_status` needs, so without it a throwaway cannot turn
+        // up in `minato status`, in the routing table, or in what `down`
+        // stops. It keeps the others, so one left behind by a daemon that
+        // died mid-command is still something `rm` and `purge` can find.
         let mut container_labels = HashMap::new();
+        container_labels.insert(
+            labels::MANAGED.to_string(),
+            labels::MANAGED_VALUE.to_string(),
+        );
+        container_labels.insert(
+            labels::PROJECT.to_string(),
+            spec.key.workspace.project.clone(),
+        );
+        container_labels.insert(
+            labels::WORKSPACE.to_string(),
+            spec.attached_to.workspace.clone(),
+        );
+
+        if throwaway.is_some() {
+            container_labels.insert(labels::THROWAWAY.to_string(), "1".to_string());
+        }
+
         if throwaway.is_none() {
-            container_labels.insert(
-                labels::MANAGED.to_string(),
-                labels::MANAGED_VALUE.to_string(),
-            );
-            container_labels.insert(
-                labels::PROJECT.to_string(),
-                spec.key.workspace.project.clone(),
-            );
             container_labels.insert(
                 labels::WORKSPACE.to_string(),
                 spec.key.workspace.workspace.clone(),
@@ -672,6 +723,13 @@ impl DockerRuntime {
                 Some(exposed_ports)
             },
             host_config: Some(HostConfig {
+                // **Docker reaps a throwaway even if this daemon does
+                // not.** A cancelled request drops the future before the
+                // explicit removal can run, and the container would
+                // otherwise keep running with nobody left to notice. Also
+                // takes the image's anonymous volumes with it, which a
+                // per-invocation name would accumulate one of each time.
+                auto_remove: throwaway.is_some().then_some(true),
                 mounts: if mounts.is_empty() {
                     None
                 } else {
@@ -1247,11 +1305,17 @@ impl Runtime for DockerRuntime {
                 &id,
                 Some(RemoveContainerOptions {
                     force: true,
+                    // The image's anonymous volumes go too. A throwaway
+                    // gets a new name every run, so one left behind per
+                    // invocation would accumulate without bound.
+                    v: true,
                     ..Default::default()
                 }),
             )
             .await
         {
+            // `auto_remove` has usually got there first, so this is
+            // expected to fail as often as not.
             events.debug(format!("throwaway container {name} was not removed: {err}"));
         }
 

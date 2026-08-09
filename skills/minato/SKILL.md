@@ -133,7 +133,10 @@ When a service will not start, `--fresh` is the way in:
 
 ```bash
 minato exec --fresh api -- env
+minato exec --fresh api -- sh -c 'pnpm install'
 ```
+
+No stdin is attached, so `-- sh` alone exits immediately — use `sh -c`.
 
 That runs in a throwaway container built from the same image, environment and
 volumes, **without the service's start-up command** — so it works when the

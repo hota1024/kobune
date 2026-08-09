@@ -219,8 +219,12 @@ $ minato exec -C /workspace/apps/api api -- pnpm test   # 別のディレクト�
 
 ```console
 $ minato exec --fresh api -- env
-$ minato exec --fresh api -- sh
+$ minato exec --fresh api -- cat /workspace/.env
+$ minato exec --fresh api -- sh -c 'pnpm install --frozen-lockfile'
 ```
+
+標準入力は接続しないため、`-- sh` だけを渡すと即座に EOF を読んで終了します。
+実行したい内容は `sh -c` に渡してください。
 
 そのコマンドのためだけのコンテナを立てて実行し、終了後に削除します。
 サービスのイメージ・環境変数・ボリュームはそのままに、**サービスの起動

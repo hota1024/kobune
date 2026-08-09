@@ -959,7 +959,9 @@ impl Runtime for AppleContainerRuntime {
         options: &ExecOptions,
         events: &EventSink,
     ) -> Result<ExecOutcome> {
-        let network = self.ensure_network(&spec.key.workspace, events).await?;
+        // The caller's workspace, as `start` uses: `key.workspace` is the
+        // reserved shared key for a `scope = "project"` service.
+        let network = self.ensure_network(&spec.attached_to, events).await?;
         let peer_addresses = self.peer_addresses(spec).await?;
         let one_off = Throwaway::new(spec, command, options.workdir.as_deref());
 

@@ -197,6 +197,15 @@ pub mod labels {
     /// The port listened on inside the container.
     pub const PORT: &str = "dev.minato.port";
 
+    /// Marks a one-off container from `minato exec --fresh`.
+    ///
+    /// **It carries no `SERVICE` label**, which is what keeps it out of
+    /// `list_project` and therefore out of `minato status` and the routing
+    /// table. It carries the rest so that one left behind by a daemon that
+    /// died mid-command is still findable — an unlabelled container is
+    /// invisible to every Minato command for ever.
+    pub const THROWAWAY: &str = "dev.minato.throwaway";
+
     /// What a built image was built from.
     ///
     /// Put on the image, not the container. A build is skipped when the

@@ -216,8 +216,12 @@ because `-w` already selects the workspace.
 
 ```console
 $ minato exec --fresh api -- env
-$ minato exec --fresh api -- sh
+$ minato exec --fresh api -- cat /workspace/.env
+$ minato exec --fresh api -- sh -c 'pnpm install --frozen-lockfile'
 ```
+
+No stdin is attached, so `-- sh` on its own reads end-of-file and exits at
+once. Pass what you want run with `sh -c`.
 
 Runs the command in a container made for it and removed afterwards, built from
 the service's image, environment and volumes but **without the service's
