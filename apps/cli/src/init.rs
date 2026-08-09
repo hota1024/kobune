@@ -56,6 +56,11 @@ name = "{project}"
 # The URL suffix. Defaults to {project}.localhost.
 # domain = "{project}.localhost"
 
+# Files `minato new` copies into a new worktree. `git worktree add` brings
+# the tracked files and nothing else, so an untracked but required .env
+# would leave the new environment unable to start.
+# carry = [".env"]
+
 [runtime]
 # Either docker or apple (Apple Container)
 default = "docker"

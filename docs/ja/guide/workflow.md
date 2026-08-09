@@ -34,6 +34,21 @@ $ minato new feature/x --path ../elsewhere
 $ minato new feature/x --no-start         # worktree の作成のみ
 ```
 
+::: warning 新しい worktree には追跡対象のファイルしかありません
+`git worktree add` が持ってくるのは git が把握しているファイルだけです。
+そのため追跡対象外の `.env` は存在せず、サービスは起動に失敗します。
+必要なファイルを列挙しておくと、Minato がコピーします。
+
+```toml
+[project]
+carry = [".env"]
+```
+
+既存のファイルを置き換えることはなく、コピー元が無い場合もエラーではなく
+報告に留まります。[`carry`](../reference/minato-toml#carry) を参照して
+ください。
+:::
+
 ブランチがすでに存在する場合は、新規作成せずチェックアウトします。
 
 `git worktree add` で作成した worktree も認識されます。その worktree で最初に

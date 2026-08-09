@@ -67,6 +67,8 @@ Worth knowing before you hit them:
 - Your worktree is mounted at `/workspace`. Anything a build writes under
   it lands in the repository on the host — point caches at a named volume
   instead
+- `[project] carry = [".env"]` names the untracked files a new worktree
+  needs. Without it `minato new` produces an environment that cannot start
 
 ## Everyday work
 
@@ -82,6 +84,12 @@ worktree if you do.
 
 Move into the new worktree before working. Its path is the `path` field of
 `minato status --json`.
+
+**A new worktree gets the tracked files and nothing else.** If the services
+need an untracked file — `.env` almost always — name it in `[project] carry`
+so `minato new` copies it over. Without that the new environment fails to
+start every time, and the logs blame a missing variable rather than a missing
+file.
 
 ### Check a change
 

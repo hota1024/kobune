@@ -131,28 +131,20 @@ fn resolve_within(
         ));
     }
 
-    let resolved = joined.canonicalize().map_err(|err| {
-        ApiError::internal(format!(
+    crate::paths::resolve_within(worktree_path, &joined).map_err(|err| match err {
+        crate::paths::Containment::Unresolvable(err) => ApiError::internal(format!(
             "service `{service}`: cannot resolve {}: {err}",
             joined.display()
-        ))
-    })?;
-
-    let root = worktree_path
-        .canonicalize()
-        .unwrap_or_else(|_| worktree_path.to_path_buf());
-    if !resolved.starts_with(&root) {
-        return Err(ApiError::new(
+        )),
+        crate::paths::Containment::Outside(landed) => ApiError::new(
             minato_api::ErrorCode::InvalidConfig,
             format!(
                 "service `{service}`: {key} points outside the worktree ({})",
-                resolved.display()
+                landed.display()
             ),
         )
-        .with_hint("a build context has to live in the repository"));
-    }
-
-    Ok(resolved)
+        .with_hint("a build context has to live in the repository"),
+    })
 }
 
 /// What the image was built from, as a short hash.

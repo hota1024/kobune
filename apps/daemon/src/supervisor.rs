@@ -1503,6 +1503,16 @@ impl Supervisor {
             })?;
         events.step_done("worktree", format!("creating worktree {branch}"));
 
+        // Before anything starts: what git does not carry is exactly what
+        // the services will fail without.
+        crate::carry::files(
+            &context.config.project.carry,
+            &context.repo.main_root,
+            &worktree_path,
+            true,
+            events,
+        );
+
         // Register the new worktree, which settles the label its URLs
         // use.
         let record = {
@@ -1805,6 +1815,21 @@ impl Supervisor {
         events: &EventSink,
     ) -> Result<(), ApiError> {
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
+
+        // Again on every start, not only when the worktree is made. Adding
+        // `carry` to a project whose worktrees already exist would
+        // otherwise do nothing at all, and the failure that follows is the
+        // exact one the setting exists to prevent. Copying is a no-op once
+        // the file is there, so this costs a stat per entry.
+        if !resolved.workspace.is_main {
+            crate::carry::files(
+                &resolved.config.project.carry,
+                &resolved.repo.main_root,
+                &resolved.workspace.path,
+                false,
+                events,
+            );
+        }
 
         // **Said out loud, before anything starts.** With no proxy there is
         // no URL to hand out, so `MINATO_URL_<SERVICE>` is left unset — and
