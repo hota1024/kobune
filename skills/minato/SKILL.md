@@ -204,8 +204,10 @@ Removes the worktree and its environment. The branch stays.
    - `failed` → `reason` says why. A container that exited non-zero lands
      here, so this is what a start-up script that died looks like
 2. `minato logs <service>` — errors from the app itself
-3. `minato env ls` — what the containers are actually given, and which layer
-   each value came from. Check here before concluding a variable is wrong
+3. `minato env ls --service <name>` — what that container is actually given,
+   and which layer each value came from. Check here before concluding a
+   variable is wrong; without `--service` you get only what every service
+   shares
 4. `minato doctor` — problems with the environment. **The fix is in `fix`**
 
 ### Common symptoms

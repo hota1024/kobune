@@ -168,6 +168,13 @@ pub enum Request {
         /// Show values in the clear. Masked by default.
         #[serde(default)]
         reveal: bool,
+        /// Which service's environment to show.
+        ///
+        /// Left out, only what every service shares — a service's own
+        /// `env` belongs to that service, and showing one of them without
+        /// being asked would present it as everyone's.
+        #[serde(default)]
+        service: Option<String>,
     },
 
     /// Sets an environment variable.

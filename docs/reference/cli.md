@@ -249,7 +249,7 @@ running, which `minato status` shows and `minato down` clears.
 ## Environment variables
 
 ```console
-$ minato env ls [--reveal]
+$ minato env ls [--reveal] [--service <name>]
 $ minato env get <KEY>
 $ minato env set <KEY=VALUE> [--scope global|project|workspace]
 $ minato env unset <KEY> [--scope …]
@@ -258,6 +258,13 @@ $ minato env unset <KEY> [--scope …]
 `ls` shows which layer each value came from and masks secrets. `--reveal` shows
 plain values but still leaves secret *references* as references. `get` prints
 one value for piping.
+
+`--service` shows what one container is given, its own
+[`env`](./minato-toml#environment) included, so
+`minato env ls --service api` answers "is `MINATO_URL_WEB` actually reaching
+`api`?" without starting anything. Without it, only what every service shares:
+a service's own `env` belongs to that service, and there is no
+`MINATO_SERVICE` because no service is being named.
 
 `--scope` defaults to `workspace`.
 

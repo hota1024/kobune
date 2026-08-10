@@ -283,10 +283,17 @@ enum TunnelCommand {
 #[derive(Subcommand, Debug)]
 enum EnvCommand {
     /// List environment variables
+    ///
+    /// Without --service, only what every service shares. A service's own
+    /// `env` in minato.toml belongs to that service.
     Ls {
         /// Show the values instead of masking them
         #[arg(long)]
         reveal: bool,
+
+        /// Show what this service is given, its own env included
+        #[arg(long, short = 's')]
+        service: Option<String>,
     },
 
     /// Print one value, ready to pipe
@@ -1293,15 +1300,17 @@ fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, Cl
     };
 
     Ok(match command {
-        EnvCommand::Ls { reveal } => Request::EnvList {
+        EnvCommand::Ls { reveal, service } => Request::EnvList {
             target,
             reveal: *reveal,
+            service: service.clone(),
         },
         // `get` pulls from the listing, and the value itself is the
         // point, so nothing is masked.
         EnvCommand::Get { .. } => Request::EnvList {
             target,
             reveal: true,
+            service: None,
         },
         EnvCommand::Set { assignment, scope } => {
             let Some((key, value)) = assignment.split_once('=') else {
