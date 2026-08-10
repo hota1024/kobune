@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::config::ServiceScope;
 use crate::error::{Error, Result};
 use crate::naming;
 
@@ -81,6 +82,12 @@ pub struct ProjectRecord {
     /// Keyed by the workspace label used in URLs.
     #[serde(default)]
     pub workspaces: BTreeMap<String, WorkspaceRecord>,
+    /// The `setup` already run for services shared by the whole project.
+    ///
+    /// Separate from the per-worktree map because that is where the
+    /// container lives: one instance for every worktree.
+    #[serde(default)]
+    pub setup_done: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +101,70 @@ pub struct WorkspaceRecord {
     #[serde(default)]
     pub is_main: bool,
     pub created_at: DateTime<Utc>,
+    /// The `setup` that has already run, per service.
+    ///
+    /// The value is the command itself, so editing it is what makes it run
+    /// again — there is nothing else to compare, and a version number
+    /// would be one more thing to remember to change.
+    #[serde(default)]
+    pub setup_done: BTreeMap<String, String>,
+}
+
+impl State {
+    /// Whether `setup` still has to run for this service.
+    ///
+    /// **Remembered where the container lives.** A `scope = "project"`
+    /// service has one instance for every worktree, so keeping the record
+    /// per worktree would run its setup once per worktree against the
+    /// single thing it set up.
+    pub fn needs_setup(
+        &self,
+        project: &str,
+        workspace: &str,
+        service: &str,
+        scope: ServiceScope,
+        setup: &str,
+    ) -> bool {
+        let Some(record) = self.projects.get(project) else {
+            return true;
+        };
+
+        let done = match scope {
+            ServiceScope::Project => record.setup_done.get(service),
+            ServiceScope::Workspace => record
+                .workspaces
+                .get(workspace)
+                .and_then(|workspace| workspace.setup_done.get(service)),
+        };
+
+        done.map(String::as_str) != Some(setup)
+    }
+
+    /// Remembers that `setup` has run. `false` if there was nowhere to put
+    /// it, which means the workspace went while it was running.
+    pub fn record_setup(
+        &mut self,
+        project: &str,
+        workspace: &str,
+        service: &str,
+        scope: ServiceScope,
+        setup: &str,
+    ) -> bool {
+        let Some(record) = self.projects.get_mut(project) else {
+            return false;
+        };
+
+        let done = match scope {
+            ServiceScope::Project => &mut record.setup_done,
+            ServiceScope::Workspace => match record.workspaces.get_mut(workspace) {
+                Some(workspace) => &mut workspace.setup_done,
+                None => return false,
+            },
+        };
+
+        done.insert(service.to_string(), setup.to_string());
+        true
+    }
 }
 
 impl State {
@@ -115,6 +186,7 @@ impl State {
             .projects
             .entry(name.to_string())
             .or_insert_with(|| ProjectRecord {
+                setup_done: BTreeMap::new(),
                 name: name.to_string(),
                 root: root.to_path_buf(),
                 workspaces: BTreeMap::new(),
@@ -302,11 +374,98 @@ mod tests {
             path: PathBuf::from(format!("/repo/wt/{label}")),
             is_main: false,
             created_at: Utc::now(),
+            setup_done: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn setup_runs_until_it_has_run_with_this_command() {
+        let mut state = State::default();
+        state
+            .upsert_project("myapp", Path::new("/repo"))
+            .expect("registers");
+        state
+            .project_mut("myapp")
+            .expect("registered")
+            .insert_workspace(record("feat-1", "feature/one"));
+
+        let workspace = ServiceScope::Workspace;
+        assert!(state.needs_setup("myapp", "feat-1", "web", workspace, "pnpm install"));
+
+        assert!(state.record_setup("myapp", "feat-1", "web", workspace, "pnpm install"));
+        assert!(!state.needs_setup("myapp", "feat-1", "web", workspace, "pnpm install"));
+
+        // Editing it is what makes it run again; there is nothing else to
+        // compare against.
+        assert!(state.needs_setup("myapp", "feat-1", "web", workspace, "pnpm install --prod"));
+
+        // And it is per service.
+        assert!(state.needs_setup("myapp", "feat-1", "api", workspace, "pnpm install"));
+    }
+
+    #[test]
+    fn a_shared_service_is_set_up_once_for_the_project() {
+        // One container serves every worktree, so remembering per worktree
+        // would run its setup again from the next worktree — against the
+        // single thing it had already set up.
+        let mut state = State::default();
+        state
+            .upsert_project("myapp", Path::new("/repo"))
+            .expect("registers");
+
+        let project = state.project_mut("myapp").expect("registered");
+        project.insert_workspace(record("feat-1", "feature/one"));
+        project.insert_workspace(record("feat-2", "feature/two"));
+
+        let shared = ServiceScope::Project;
+        assert!(state.record_setup("myapp", "feat-1", "db", shared, "psql -f schema.sql"));
+
+        assert!(
+            !state.needs_setup("myapp", "feat-2", "db", shared, "psql -f schema.sql"),
+            "another worktree must not set the same container up again"
+        );
+    }
+
+    #[test]
+    fn a_workspace_setup_is_not_shared_between_worktrees() {
+        let mut state = State::default();
+        state
+            .upsert_project("myapp", Path::new("/repo"))
+            .expect("registers");
+
+        let project = state.project_mut("myapp").expect("registered");
+        project.insert_workspace(record("feat-1", "feature/one"));
+        project.insert_workspace(record("feat-2", "feature/two"));
+
+        let workspace = ServiceScope::Workspace;
+        assert!(state.record_setup("myapp", "feat-1", "web", workspace, "pnpm install"));
+
+        assert!(
+            state.needs_setup("myapp", "feat-2", "web", workspace, "pnpm install"),
+            "each worktree has its own node_modules to fill"
+        );
+    }
+
+    #[test]
+    fn recording_against_a_workspace_that_went_says_so() {
+        // `minato rm` can land while a setup is running.
+        let mut state = State::default();
+        state
+            .upsert_project("myapp", Path::new("/repo"))
+            .expect("registers");
+
+        assert!(!state.record_setup(
+            "myapp",
+            "gone",
+            "web",
+            ServiceScope::Workspace,
+            "pnpm install"
+        ));
     }
 
     fn project() -> ProjectRecord {
         ProjectRecord {
+            setup_done: BTreeMap::new(),
             name: "myapp".into(),
             root: PathBuf::from("/repo"),
             workspaces: BTreeMap::new(),

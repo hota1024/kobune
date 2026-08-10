@@ -143,6 +143,7 @@ impl ProjectContext {
             path: worktree.path.clone(),
             is_main: worktree.path == self.repo.main_root,
             created_at: Utc::now(),
+            setup_done: Default::default(),
         };
 
         project.insert_workspace(record.clone());

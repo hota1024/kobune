@@ -142,6 +142,15 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub command: Option<String>,
 
+    /// What to run once, before the service first starts.
+    ///
+    /// **Not once per container.** A stopped container is recreated by the
+    /// next `up`, so tying this to container creation would run it on
+    /// every `down`/`up` — which is the thing it exists to stop. It is
+    /// remembered against the worktree, and runs again when this changes.
+    #[serde(default)]
+    pub setup: Option<String>,
+
     /// The working directory inside the container. Defaults to [`MOUNT_TARGET`].
     #[serde(default)]
     pub workdir: Option<String>,
@@ -428,6 +437,21 @@ impl MinatoConfig {
                      depend on a per-worktree one"
                 )));
             }
+        }
+
+        // An empty one splits to no words at all, which the runtime reads
+        // as "use the image's default command" — so `setup = ""` would
+        // start the service's own entrypoint in the setup container and
+        // wait for it to exit, which for a server is never.
+        if svc
+            .setup
+            .as_deref()
+            .is_some_and(|setup| setup.trim().is_empty())
+        {
+            return Err(Error::ConfigInvalid(format!(
+                "service `{name}`: setup is empty. Give it a command, or \
+                 remove the line"
+            )));
         }
 
         // The name cannot be taken — `_cache` is not a valid volume name —
@@ -836,6 +860,27 @@ mod tests {
         "#,
         )
         .expect("a host path is never scoped, however it is spelled");
+    }
+
+    #[test]
+    fn an_empty_setup_is_refused() {
+        // It splits to no words, which the runtime reads as "use the
+        // image's command" — so the setup container would start the
+        // service itself and be waited on for ever.
+        for setup in ["", "   "] {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "node:22"
+                setup = "{setup}"
+            "#
+            ))
+            .unwrap_err();
+
+            assert!(err.to_string().contains("setup is empty"), "{err}");
+        }
     }
 
     #[test]

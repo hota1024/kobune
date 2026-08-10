@@ -73,6 +73,10 @@ image = "node:22"
 port = 3000
 command = "sh -c 'echo minato ready; sleep infinity'"
 
+# Run once before the service first starts, not on every up. Put installs
+# here so `command` is left doing nothing but starting the app.
+# setup = "sh -c 'pnpm install --frozen-lockfile'"
+
 # How readiness is decided. Waited for on start, and again when
 # scale-to-zero wakes it. A TCP connect when left out.
 # health = "http://localhost:3000/healthz"

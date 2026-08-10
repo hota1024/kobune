@@ -73,6 +73,9 @@ Worth knowing before you hit them:
   start-up script
 - `[project] carry = [".env"]` names the untracked files a new worktree
   needs. Without it `minato new` produces an environment that cannot start
+- `setup` runs once before a service first starts — put `pnpm install`
+  there, not in `command`, so it does not run on every `down`/`up`. It runs
+  again if you change what it says
 - `health = "http://localhost:PORT/path"` is what makes `ready` mean
   "serving". Without it, `ready` only means the container is running
 

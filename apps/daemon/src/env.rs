@@ -137,6 +137,7 @@ mod tests {
             path: PathBuf::from("/repo/wt/feat-1"),
             is_main,
             created_at: chrono::Utc::now(),
+            setup_done: Default::default(),
         }
     }
 
