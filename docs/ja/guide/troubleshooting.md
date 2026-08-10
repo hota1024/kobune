@@ -105,7 +105,7 @@ LaunchDaemon を設定していない場合、daemon は自動的には復帰し
 
 ```console
 $ minato doctor
-│ !  launchd socket activation  inactive, though the LaunchDaemon is installed
+│ !  launchd socket activation  inactive, though launchd has the LaunchDaemon
 ```
 
 launchd 以外の方法で起動した daemon が Unix ソケットを保持していると、launchd

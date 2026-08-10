@@ -1538,16 +1538,10 @@ fn present_setup(
 
     // Privileged ports being unavailable has two causes, and they take
     // opposite steps. **Whether launchd already has the job is what tells
-    // them apart.** If it does, the installation is done and only its job
-    // is idle, and installing again cannot help: launchd answers a second
-    // `bootstrap` of a label it knows with `Input/output error`, so the
-    // step could only ever fail.
-    let launchd_loaded = launchd::is_loaded();
-
-    // Waking the job restarts the daemon on the way, so the "now restart
-    // it" that follows an installation would be pointing at what just
-    // happened — and following it would stop the job again.
-    let wakes_launchd = launchd_pending && launchd_loaded;
+    // them apart** — see [`minato_core::launchd::is_loaded`]. Asked only
+    // where the answer can matter: with the sockets already handed over
+    // there is nothing to install and nothing to wake.
+    let wakes_launchd = launchd_pending && minato_core::launchd::is_loaded();
     let mut launchd_step = None;
 
     if wakes_launchd {
@@ -1574,6 +1568,10 @@ fn present_setup(
             Err(err) => ui::error(&format!("cannot write the plist: {err}"), None),
         }
     }
+
+    // Whether the launchd step is the installation, as opposed to the wake
+    // — which restarts the daemon itself, and so leaves nothing owed.
+    let installs_launchd = launchd_step.is_some() && !wakes_launchd;
 
     // Installing launchd moves DNS to :53. A resolver still naming the
     // old port would stop resolving the moment it lands.
@@ -1630,7 +1628,7 @@ fn present_setup(
     }
 
     if dry_run || !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        ui::setup(&steps, &undo, launchd_step.is_some() && !wakes_launchd);
+        ui::setup(&steps, &undo, installs_launchd);
 
         // Without this, being handed a list of commands after asking for
         // `--yes` reads as the flag having been ignored.
@@ -1664,7 +1662,7 @@ fn present_setup(
         if Some(index) == resolver_step && launchd_pending && !launchd_landed {
             let port = dns_port.unwrap_or(53);
             step.commands = vec![system::resolver_command(DEFAULT_DOMAIN_SUFFIX, port)];
-            step.note = Some(if launchd_loaded {
+            step.note = Some(if wakes_launchd {
                 format!("launchd's job is not awake, so DNS stays on :{port}")
             } else {
                 format!("launchd was not installed, so DNS stays on :{port}")
@@ -1705,13 +1703,13 @@ fn present_setup(
     // The undo is worth printing only if there is a LaunchDaemon to take
     // back out — one this run installed, or one that was there before it and
     // only needed waking.
-    let undo = if launchd_landed || minato_core::launchd::is_installed() {
+    let undo = if launchd_landed || wakes_launchd {
         undo
     } else {
         Vec::new()
     };
 
-    ui::setup_done(&steps, &outcomes, &undo, launchd_landed && !wakes_launchd);
+    ui::setup_done(&steps, &outcomes, &undo, launchd_landed && installs_launchd);
 
     // A step that was declined is an answer. One that failed is not: sudo
     // said no, or a command did, and the machine is not set up.

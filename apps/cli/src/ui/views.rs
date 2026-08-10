@@ -248,13 +248,7 @@ pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: 
     }
 
     if restart_needed {
-        panel = panel.lines(vec![
-            hint("afterwards run", "minato daemon stop"),
-            Line::styled(
-                "  launchd starts it again, with the new settings",
-                theme::muted(),
-            ),
-        ]);
+        panel = panel.lines(restart_hint());
     }
 
     if undo.is_empty() {
@@ -268,6 +262,17 @@ pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: 
     );
 
     panel.lines(lines)
+}
+
+/// What to do with the daemon once a step has changed what launchd holds.
+fn restart_hint() -> Vec<Line<'static>> {
+    vec![
+        hint("afterwards run", "minato daemon stop"),
+        Line::styled(
+            "  launchd starts it again, with the new settings",
+            theme::muted(),
+        ),
+    ]
 }
 
 /// What an interactive `minato setup` is about to walk through.
@@ -410,17 +415,10 @@ pub fn setup_done(
         panel = panel.lines(lines);
     }
 
-    // Only worth saying when something landed that the daemon has yet to
-    // pick up. It has nothing new otherwise, and a step that restarted it
-    // itself has already been through this.
+    // Only worth saying when something landed: the daemon has nothing new
+    // to pick up otherwise.
     if ran > 0 && restart_needed {
-        panel = panel.lines(vec![
-            hint("afterwards run", "minato daemon stop"),
-            Line::styled(
-                "  launchd starts it again, with the new settings",
-                theme::muted(),
-            ),
-        ]);
+        panel = panel.lines(restart_hint());
     }
 
     if undo.is_empty() {

@@ -103,7 +103,7 @@ Without the LaunchDaemon installed, the daemon does not come back on its own.
 
 ```console
 $ minato doctor
-│ !  launchd socket activation  inactive, though the LaunchDaemon is installed
+│ !  launchd socket activation  inactive, though launchd has the LaunchDaemon
 ```
 
 A daemon started any other way owns the Unix socket, so launchd's own job finds
