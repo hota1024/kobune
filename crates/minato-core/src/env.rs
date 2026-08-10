@@ -39,6 +39,14 @@ pub enum EnvScope {
     Global,
     /// Shared within the project.
     Project,
+    /// A service's own `env` in `minato.toml`.
+    ///
+    /// Between the project and the worktree: more specific than what the
+    /// whole project sets, less than what this worktree does. It has its
+    /// own name because `project` would send someone editing
+    /// `.minato/env` to change a value that a service overrides — with the
+    /// listing having told them they were looking at the right layer.
+    Service,
     /// Specific to one worktree.
     Workspace,
     /// Injected by Minato. The user may override it.
@@ -54,6 +62,7 @@ impl EnvScope {
         match self {
             Self::Global => "global",
             Self::Project => "project",
+            Self::Service => "service",
             Self::Workspace => "workspace",
             Self::Injected => "injected",
         }
@@ -73,6 +82,8 @@ impl std::str::FromStr for EnvScope {
             "global" => Ok(Self::Global),
             "project" => Ok(Self::Project),
             "workspace" => Ok(Self::Workspace),
+            // `service` is not here on purpose: it is written in
+            // `minato.toml` under the service, not through `env set`.
             other => Err(format!(
                 "`{other}` is not a valid layer. Use global, project or workspace"
             )),

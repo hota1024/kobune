@@ -107,6 +107,10 @@ lockfile が異なる `node_modules` など）には
 パスへの二重マウントはコンテナエンジンのエラーになり、原因となった記述から
 遠い場所で表面化するためです。
 
+`minato env ls` が表示するのは全サービスに共通する内容だけです。
+`MINATO_SERVICE` とサービス固有の `env` は
+`minato env ls --service <name>` で確認してください。
+
 とくに重要なのが `MINATO_URL_<SERVICE>` です。URL はブランチごとに異なるため、
 フロントエンドは API の URL をハードコードできません。worktree ごとの環境が
 成立するのは、この変数があるためです。

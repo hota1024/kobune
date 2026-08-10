@@ -264,7 +264,12 @@ one value for piping.
 `minato env ls --service api` answers "is `MINATO_URL_WEB` actually reaching
 `api`?" without starting anything. Without it, only what every service shares:
 a service's own `env` belongs to that service, and there is no
-`MINATO_SERVICE` because no service is being named.
+`MINATO_SERVICE` because no service is being named. `get` takes it too.
+
+The layer column names five of them, innermost winning: `injected`, `global`,
+`project`, `service`, `workspace`. `service` is a service's own `env` in
+`minato.toml` — it has its own name because reading it as `project` would
+send you to edit `.minato/env` for a value the service overrides.
 
 `--scope` defaults to `workspace`.
 

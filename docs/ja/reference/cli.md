@@ -267,7 +267,12 @@ $ minato env unset <KEY> [--scope …]
 で「`MINATO_URL_WEB` は本当に `api` に届いているか」を、何も起動せずに確認
 できます。指定しない場合は全サービスに共通する内容だけです。サービス固有の
 `env` はそのサービスのものであり、対象となるサービスが無いため
-`MINATO_SERVICE` も含まれません。
+`MINATO_SERVICE` も含まれません。`get` にも同じ指定ができます。
+
+層は内側が優先で 5 つあります。`injected`、`global`、`project`、`service`、
+`workspace` です。`service` は `minato.toml` のサービス固有 `env` を指します。
+これを `project` と表示すると、サービス側が上書きしている値のために
+`.minato/env` を編集させてしまうため、独立した名前にしています。
 
 `--scope` の既定値は `workspace` です。
 

@@ -657,7 +657,7 @@ impl Supervisor {
             })
             .collect();
 
-        Ok(Response::Env { entries })
+        Ok(Response::Env { entries, service })
     }
 
     async fn env_set(

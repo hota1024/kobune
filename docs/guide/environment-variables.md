@@ -105,6 +105,9 @@ minato up`. Mounting your own volume at `/var/cache/minato` is refused — two
 mounts on one path is an error from the container engine, a long way from the
 line that caused it.
 
+`minato env ls` shows only what every service shares, so `MINATO_SERVICE` and
+a service's own `env` appear under `minato env ls --service <name>`.
+
 `MINATO_URL_<SERVICE>` is the important one. It is what makes a per-worktree
 environment hold together: the frontend cannot hardcode the API's URL, because
 the URL is different on every branch.

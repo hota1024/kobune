@@ -100,13 +100,20 @@ pub fn layers_for_service(
     // **Only when one was asked about.** Folding some service's own
     // variables into a listing of what every service shares would show
     // them as everyone's.
-    if let Ok(service_config) = config.service(service.unwrap_or_default()) {
+    //
+    // The two conditions are kept apart on purpose: `None` means nobody
+    // named a service, while a name that does not resolve is a caller's
+    // mistake, and collapsing them would answer that mistake with a
+    // plausible listing missing every one of the service's variables.
+    if let Some(name) = service
+        && let Ok(service_config) = config.service(name)
+    {
         let values: IndexMap<String, String> = service_config
             .env
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        layers.push(EnvScope::Project, values);
+        layers.push(EnvScope::Service, values);
     }
 
     // 5. The workspace — the most specific, so it goes last
@@ -319,9 +326,17 @@ mod tests {
         )
         .expect("builds");
 
-        assert!(
-            web.resolve().iter().any(|entry| entry.key == "ONLY_WEB"),
-            "asked about web, it is web's that matter"
+        let own = web
+            .resolve()
+            .into_iter()
+            .find(|entry| entry.key == "ONLY_WEB")
+            .expect("asked about web, it is web's that matter");
+
+        assert_eq!(
+            own.scope,
+            EnvScope::Service,
+            "labelling it `project` sends someone to edit .minato/env for a \
+             value the service overrides"
         );
     }
 
