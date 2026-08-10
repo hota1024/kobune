@@ -333,6 +333,19 @@ meaning this build records no commit, so there is nothing to compare.
 A check runs by itself once a day after any command and prints one line to
 stderr. `MINATO_NO_UPDATE_CHECK` turns it off, and `--json` never includes it.
 
+`minato --version` checks too, every time rather than once a day, and after
+the version line rather than before it:
+
+```console
+$ minato --version
+minato 0.1.0 (c7282b8)
+› a newer build is available (9f3c1a2). Install it with minato update
+```
+
+The line is stderr, there is none when the running build is the published one,
+and `--json` and `MINATO_NO_UPDATE_CHECK` skip the check as they do the daily
+one.
+
 ## Taking it off again
 
 ```console
@@ -403,4 +416,4 @@ expects it; the install script does this already.
 | `MINATO_DNS_PORT` | DNS port. Default 53 |
 | `MINATO_CLOUDFLARED` | A `cloudflared` binary somewhere other than `PATH` |
 | `MINATO_LOG` | Log filter for the daemon, e.g. `debug` |
-| `MINATO_NO_UPDATE_CHECK` | Set to anything to stop the daily update check |
+| `MINATO_NO_UPDATE_CHECK` | Set to anything to stop the update check, both the daily one and `--version`'s |

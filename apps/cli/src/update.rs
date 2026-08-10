@@ -5,9 +5,10 @@
 //! [`minato_core::BUILD_COMMIT`] carries and the release records as its
 //! target. Comparing those two is the whole of the check.
 //!
-//! **The background check never writes to stdout and never runs under
-//! `--json`.** An agent parses that stream, and a line about a new build
-//! appearing in it would be a bug in Minato, not a nuisance.
+//! **Neither the background check nor the one `--version` makes writes to
+//! stdout, and neither runs under `--json`.** An agent parses that stream,
+//! and a line about a new build appearing in it would be a bug in Minato,
+//! not a nuisance.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,8 +37,13 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 /// A download can take longer, because the user asked for it.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Set to anything non-empty to stop the background check.
+/// Set to anything non-empty to stop the checks — both the background one
+/// and the one `--version` makes.
 pub const NO_CHECK_ENV: &str = "MINATO_NO_UPDATE_CHECK";
+
+/// What [`minato_core::BUILD_COMMIT`] says when there was no commit to
+/// record: a source tarball, or a build from before it was recorded.
+const NO_COMMIT: &str = "unknown";
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
@@ -122,7 +128,7 @@ fn compare(published: &str, running: &str) -> Status {
     // A release edited by hand can carry a branch name here instead of a
     // commit, and comparing "main" against a commit would report an update
     // on every single run. Anything that is not a commit means unknown.
-    if running == "unknown" || !is_commit(published) {
+    if running == NO_COMMIT || !is_commit(published) {
         return Status::Unknown;
     }
 
@@ -435,11 +441,11 @@ struct Cache {
 /// Every failure is silent. A check that cannot reach GitHub has found
 /// nothing to say, and saying so would interrupt a command that worked.
 pub async fn background_notice(paths: &minato_core::Paths) -> Option<String> {
-    if std::env::var_os(NO_CHECK_ENV).is_some_and(|value| !value.is_empty()) {
+    if refused() {
         return None;
     }
 
-    let cache_path = paths.root().join("update-check.json");
+    let cache_path = cache_path(paths);
 
     if let Some(cache) = read_cache(&cache_path)
         && !is_stale(&cache)
@@ -449,20 +455,57 @@ pub async fn background_notice(paths: &minato_core::Paths) -> Option<String> {
         return notice(compare(&cache.published, minato_core::BUILD_COMMIT));
     }
 
+    fresh_notice(&cache_path).await
+}
+
+/// The check `--version` makes.
+///
+/// Fresh every time, where the background one asks at most once a day:
+/// `--version` is someone asking what they are running, and answering that
+/// out of a cache up to a day old would be answering a different question.
+///
+/// It leaves what it found in the cache all the same — what has just been
+/// fetched is newer than whatever the background check has.
+pub async fn version_notice(paths: &minato_core::Paths) -> Option<String> {
+    if refused() {
+        return None;
+    }
+
+    fresh_notice(&cache_path(paths)).await
+}
+
+/// Asks GitHub, records the answer, and says what is worth mentioning.
+///
+/// Silent on every failure: both callers print the notice beside output that
+/// is already correct, and a network that is down has nothing to add to it.
+async fn fresh_notice(cache_path: &Path) -> Option<String> {
+    // A build with no commit of its own comes to `Unknown` whatever the
+    // release turns out to say, so the request is not worth making.
+    if minato_core::BUILD_COMMIT == NO_COMMIT {
+        return None;
+    }
+
     let release = fetch_release().await.ok()?;
+    let status = compare(&release.target_commitish, minato_core::BUILD_COMMIT);
 
     write_cache(
-        &cache_path,
+        cache_path,
         &Cache {
             checked_at: now(),
-            published: release.target_commitish.clone(),
+            published: release.target_commitish,
         },
     );
 
-    notice(compare(
-        &release.target_commitish,
-        minato_core::BUILD_COMMIT,
-    ))
+    notice(status)
+}
+
+/// Whether the check has been turned off.
+fn refused() -> bool {
+    std::env::var_os(NO_CHECK_ENV).is_some_and(|value| !value.is_empty())
+}
+
+fn cache_path(paths: &minato_core::Paths) -> PathBuf {
+    paths.root().join("update-check.json")
 }
 
 /// The commit to mention, shortened. `None` when there is nothing to say.

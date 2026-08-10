@@ -353,10 +353,17 @@ async fn main() -> ExitCode {
 
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        Err(err) => match missing_subcommand(&err) {
-            Some(group) => return print_group_help(&group, wants_json()),
-            None => err.exit(),
-        },
+        Err(err) => {
+            if let Some(group) = missing_subcommand(&err) {
+                return print_group_help(&group, wants_json());
+            }
+
+            if err.kind() == clap::error::ErrorKind::DisplayVersion {
+                return print_version(&err).await;
+            }
+
+            err.exit()
+        }
     };
 
     let outcome = run(&cli).await;
@@ -369,10 +376,7 @@ async fn main() -> ExitCode {
         && wants_update_notice(&cli.command)
         && let Some(commit) = update_notice().await
     {
-        ui::notice(vec![ui::hint(
-            &format!("a newer build is available ({commit}). Install it with"),
-            "minato update",
-        )]);
+        print_update_notice(&commit);
     }
 
     match outcome {
@@ -457,10 +461,38 @@ fn print_group_help(group: &[String], json: bool) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// `--version`, and the update check it carries.
+///
+/// The version line is clap's and goes out first, so someone asking what
+/// they are running has the answer before anything touches the network —
+/// and has it at all when there is no network to touch. The check follows,
+/// and only says anything when a newer build exists: which build this is
+/// was the question, and the line above already answered it.
+///
+/// It asks every time rather than once a day, for the reason
+/// [`update::version_notice`] gives.
+async fn print_version(version: &clap::Error) -> ExitCode {
+    // Clap writes it to stdout, this being a request rather than a failure.
+    // Stdout is line buffered and the line ends in a newline, so it is gone
+    // before the notice that may follow it on stderr.
+    let _ = version.print();
+
+    // Never under `--json`: that stream is parsed, and stderr is the other
+    // half of what `2>&1` captures.
+    if !wants_json()
+        && let Some(commit) = version_update_notice().await
+    {
+        print_update_notice(&commit);
+    }
+
+    ExitCode::SUCCESS
+}
+
 /// Whether `--json` was asked for, read off the command line.
 ///
 /// The parse failed, so there is no [`Cli`] to ask. Only the exact flag
-/// counts, and all this decides is which stream some help goes to.
+/// counts, which is all the two callers need: it decides which stream a
+/// group's help goes to, and whether `--version` adds its update notice.
 fn wants_json() -> bool {
     std::env::args().any(|arg| arg == "--json")
 }
@@ -525,6 +557,27 @@ fn wants_update_notice(command: &Command) -> bool {
 async fn update_notice() -> Option<String> {
     let paths = minato_core::Paths::resolve().ok()?;
     update::background_notice(&paths).await
+}
+
+/// The check `--version` makes, which asks every time rather than once a
+/// day.
+///
+/// Silent on the same failures, including having no configuration directory
+/// to leave the answer in.
+async fn version_update_notice() -> Option<String> {
+    let paths = minato_core::Paths::resolve().ok()?;
+    update::version_notice(&paths).await
+}
+
+/// What either check has to say, in the one wording both use.
+///
+/// On stderr, through [`ui::notice`]: `$(minato url web)` must never pick
+/// it up, and neither must anything parsing `--json`.
+fn print_update_notice(commit: &str) {
+    ui::notice(vec![ui::hint(
+        &format!("a newer build is available ({commit}). Install it with"),
+        "minato update",
+    )]);
 }
 
 /// The errors the CLI deals with. Ones from the daemon keep its exit
@@ -1821,6 +1874,7 @@ async fn handle_daemon(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use clap::error::ErrorKind;
 
     #[test]
     fn cli_definition_is_valid() {
@@ -1907,12 +1961,24 @@ mod tests {
     }
 
     #[test]
+    fn version_is_recognised_so_the_update_check_can_run() {
+        // `--version` never reaches a subcommand, so clap answers it with
+        // the version and stops. It is caught rather than left to exit on
+        // its own, because the check that goes with it comes after.
+        for args in [vec!["minato", "--version"], vec!["minato", "-V"]] {
+            let err = Cli::try_parse_from(&args).expect_err("does not parse");
+
+            assert_eq!(err.kind(), ErrorKind::DisplayVersion, "{args:?}");
+            assert!(missing_subcommand(&err).is_none(), "{args:?}");
+        }
+    }
+
+    #[test]
     fn every_other_parse_failure_is_left_to_clap() {
         // Help, a typo and a missing argument each say something clap
         // says better than a group's help would.
         for args in [
             vec!["minato", "--help"],
-            vec!["minato", "--version"],
             vec!["minato", "bogus"],
             vec!["minato", "exec"],
             vec!["minato", "ls", "--nope"],
