@@ -162,7 +162,15 @@ impl Client {
     /// The CLI uses this by default, so the daemon stays invisible.
     pub async fn connect_or_spawn(&self) -> Result<(Connection, DaemonStart), ClientError> {
         match self.connect().await {
-            Ok(connection) => return Ok((connection, DaemonStart::Existing)),
+            Ok(mut connection) => {
+                // **Checked before the caller's request goes out.** A daemon
+                // left running from an older build answers happily and
+                // ignores fields it does not know, so a new flag comes back
+                // as a plausible answer to a question nobody asked. Nothing
+                // else on this path compares versions.
+                connection.handshake().await?;
+                return Ok((connection, DaemonStart::Existing));
+            }
             Err(err) => {
                 tracing::debug!("cannot connect, trying to start the daemon: {err}");
             }

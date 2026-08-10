@@ -27,6 +27,12 @@ pub enum Response {
     /// A listing of environment variables.
     Env {
         entries: Vec<EnvInfo>,
+        /// Which service this describes, when it describes one.
+        ///
+        /// Without it two listings are structurally identical, so anything
+        /// storing or comparing them cannot tell whose environment it kept.
+        #[serde(default)]
+        service: Option<String>,
     },
     /// The result of a command. Its output arrives as [`crate::Event::Output`].
     Exec {

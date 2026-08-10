@@ -283,14 +283,27 @@ enum TunnelCommand {
 #[derive(Subcommand, Debug)]
 enum EnvCommand {
     /// List environment variables
+    ///
+    /// Without --service, only what every service shares. A service's own
+    /// `env` in minato.toml belongs to that service.
     Ls {
         /// Show the values instead of masking them
         #[arg(long)]
         reveal: bool,
+
+        /// Show what this service is given, its own env included
+        #[arg(long, short = 's')]
+        service: Option<String>,
     },
 
     /// Print one value, ready to pipe
-    Get { key: String },
+    Get {
+        key: String,
+
+        /// Read it as this service would see it
+        #[arg(long, short = 's')]
+        service: Option<String>,
+    },
 
     /// Set an environment variable
     Set {
@@ -1293,15 +1306,17 @@ fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, Cl
     };
 
     Ok(match command {
-        EnvCommand::Ls { reveal } => Request::EnvList {
+        EnvCommand::Ls { reveal, service } => Request::EnvList {
             target,
             reveal: *reveal,
+            service: service.clone(),
         },
         // `get` pulls from the listing, and the value itself is the
         // point, so nothing is masked.
-        EnvCommand::Get { .. } => Request::EnvList {
+        EnvCommand::Get { service, .. } => Request::EnvList {
             target,
             reveal: true,
+            service: service.clone(),
         },
         EnvCommand::Set { assignment, scope } => {
             let Some((key, value)) = assignment.split_once('=') else {
@@ -1338,7 +1353,7 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
 
     // `env get` prints one line too, for the same reason.
     if let Command::Env {
-        command: EnvCommand::Get { key },
+        command: EnvCommand::Get { key, .. },
     } = &cli.command
     {
         return present_env_value(cli, response, key);
@@ -1358,7 +1373,7 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
         Response::Pong(pong) => ui::daemon(pong, None),
         Response::Workspaces { workspaces } => ui::workspaces(workspaces),
         Response::Diagnostics(diagnostics) => ui::diagnostics(diagnostics),
-        Response::Env { entries } => {
+        Response::Env { entries, .. } => {
             ui::env(entries);
 
             // A change does not reach containers that are already
@@ -1439,7 +1454,7 @@ fn present_url(
 
 /// What `minato env get` prints: the value, on one line.
 fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCode, CliError> {
-    let Response::Env { entries } = response else {
+    let Response::Env { entries, .. } = response else {
         return Err(CliError::Local("cannot read the environment".to_string()));
     };
 
@@ -1448,7 +1463,8 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCo
         .find(|entry| entry.key == key)
         .ok_or_else(|| {
             CliError::Local(format!(
-                "`{key}` is not defined. Run `minato env ls` to see what is"
+                "`{key}` is not defined. Run `minato env ls` to see what is, \
+                 or `minato env ls --service <name>` for one service's own"
             ))
         })?;
 

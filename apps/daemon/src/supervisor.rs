@@ -141,7 +141,11 @@ impl Supervisor {
                 self.exec(target, service, command, fresh, workdir, events)
                     .await
             }
-            Request::EnvList { target, reveal } => self.env_list(target, reveal).await,
+            Request::EnvList {
+                target,
+                reveal,
+                service,
+            } => self.env_list(target, reveal, service).await,
             Request::EnvSet {
                 target,
                 scope,
@@ -597,25 +601,30 @@ impl Supervisor {
     /// **Each value says which layer defined it.** With three layers, not
     /// seeing that an unintended one is winning makes the cause impossible
     /// to find.
-    async fn env_list(&self, target: Target, reveal: bool) -> Result<Response, ApiError> {
+    async fn env_list(
+        &self,
+        target: Target,
+        reveal: bool,
+        service: Option<String>,
+    ) -> Result<Response, ApiError> {
         let resolved = self.resolve(&target).await?;
 
-        // Only the shared layers, without any service's own entries.
-        // Per-service differences are `minato status`'s business.
+        // Named: what that container is given, its own `env` included.
+        // Unnamed: only what every service shares.
+        //
+        // **Not "whichever service came first".** That is what this used to
+        // do, and it showed one service's own variables as if they were
+        // everyone's.
+        if let Some(service) = &service {
+            validate_service_names(&resolved.config, std::slice::from_ref(service))?;
+        }
+
         let layers = env::layers_for_service(
             &resolved.config,
             &resolved.project,
             &resolved.workspace,
             &resolved.repo.main_root,
-            // The first service stands in for the rest; everything but
-            // MINATO_SERVICE is shared.
-            resolved
-                .config
-                .services
-                .keys()
-                .next()
-                .map(String::as_str)
-                .unwrap_or(""),
+            service.as_deref(),
             &self.paths,
             &self.gateway,
         )
@@ -648,7 +657,7 @@ impl Supervisor {
             })
             .collect();
 
-        Ok(Response::Env { entries })
+        Ok(Response::Env { entries, service })
     }
 
     async fn env_set(
@@ -672,7 +681,7 @@ impl Supervisor {
         minato_core::env::write_file(&path, &minato_core::env::upsert(&current, &key, &value))
             .map_err(|err| ApiError::internal(err.to_string()))?;
 
-        self.env_list(target, false).await
+        self.env_list(target, false, None).await
     }
 
     async fn env_unset(
@@ -687,7 +696,7 @@ impl Supervisor {
         minato_core::env::write_file(&path, &minato_core::env::remove(&current, &key))
             .map_err(|err| ApiError::internal(err.to_string()))?;
 
-        self.env_list(target, false).await
+        self.env_list(target, false, None).await
     }
 
     /// Where a layer's file lives.
@@ -736,7 +745,7 @@ impl Supervisor {
             project,
             record,
             project_root,
-            service,
+            Some(service),
             &self.paths,
             &self.gateway,
         )

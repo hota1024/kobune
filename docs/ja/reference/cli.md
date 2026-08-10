@@ -252,7 +252,7 @@ Ctrl-C は CLI をその場で終了させるのではなく、daemon に停止�
 ## 環境変数
 
 ```console
-$ minato env ls [--reveal]
+$ minato env ls [--reveal] [--service <name>]
 $ minato env get <KEY>
 $ minato env set <KEY=VALUE> [--scope global|project|workspace]
 $ minato env unset <KEY> [--scope …]
@@ -261,6 +261,18 @@ $ minato env unset <KEY> [--scope …]
 `ls` は定義元の層を表示し、シークレットはマスクします。`--reveal` を指定すると
 平文の値が表示されますが、シークレット「参照」は参照のまま表示されます。
 `get` はパイプで利用できるよう、値を 1 行だけ出力します。
+
+`--service` は、そのコンテナに実際に渡される内容を表示します。サービス固有の
+[`env`](./minato-toml#環境変数) も含まれるため、`minato env ls --service api`
+で「`MINATO_URL_WEB` は本当に `api` に届いているか」を、何も起動せずに確認
+できます。指定しない場合は全サービスに共通する内容だけです。サービス固有の
+`env` はそのサービスのものであり、対象となるサービスが無いため
+`MINATO_SERVICE` も含まれません。`get` にも同じ指定ができます。
+
+層は内側が優先で 5 つあります。`injected`、`global`、`project`、`service`、
+`workspace` です。`service` は `minato.toml` のサービス固有 `env` を指します。
+これを `project` と表示すると、サービス側が上書きしている値のために
+`.minato/env` を編集させてしまうため、独立した名前にしています。
 
 `--scope` の既定値は `workspace` です。
 
