@@ -109,7 +109,7 @@ Point it somewhere shorter — the default `~/.minato` is fine.
 ```console
 $ minato doctor
 │ …
-│ ✗  listening addresses  the HTTPS proxy could not hold ::1. *.localhost
+│ ✗  listening addresses  the HTTPS proxy could not hold [::1]. *.localhost
 │                         resolves to both families and clients prefer IPv6,
 │                         so requests to that address reach another process
 │ …

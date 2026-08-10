@@ -240,7 +240,7 @@ impl Supervisor {
             // at the wrong one half the time.
             let gaps: Vec<String> = missing
                 .iter()
-                .map(|(proxy, family)| format!("{proxy} could not hold {family}"))
+                .map(|(proxy, family)| format!("{proxy} could not hold {}", bracketed(*family)))
                 .collect();
 
             checks.push(
@@ -2244,6 +2244,18 @@ async fn settle_readiness(config: &MinatoConfig, statuses: &mut [ServiceStatus])
     }
 }
 
+/// An address as it is written down: `[::1]`, not `::1`.
+///
+/// `Display` for an `IpAddr` gives the bare form, which reads as a stray
+/// colon run in a sentence and does not match how the docs or the URLs
+/// write it.
+fn bracketed(address: std::net::IpAddr) -> String {
+    match address {
+        std::net::IpAddr::V4(address) => address.to_string(),
+        std::net::IpAddr::V6(address) => format!("[{address}]"),
+    }
+}
+
 /// How a listener that did come up is described.
 ///
 /// **Says when it had to settle.** Landing on the fallback is not a failure
@@ -2641,6 +2653,20 @@ mod tests {
         // "could not be held" was all it ever said, whatever happened.
         assert!(detail_for(Some(BindFailure::Privileged)).contains("privileges"));
         assert!(detail_for(Some(BindFailure::InUse)).contains("another process"));
+    }
+
+    #[test]
+    fn an_address_reads_the_way_it_is_written_down() {
+        // `Display` gives `::1`, which reads as a stray colon run in a
+        // sentence and matches neither the docs nor a URL.
+        assert_eq!(
+            bracketed(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
+            "[::1]"
+        );
+        assert_eq!(
+            bracketed(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+            "127.0.0.1"
+        );
     }
 
     #[test]

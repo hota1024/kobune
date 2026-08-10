@@ -111,7 +111,8 @@ LaunchDaemon を設定していない場合、daemon は自動的には復帰し
 ```console
 $ minato doctor
 │ …
-│ ✗  listening addresses  [::1] could not be held. *.localhost resolves to both,
+│ ✗  listening addresses  the HTTPS proxy could not hold [::1]. *.localhost
+│                         resolves to both families and clients prefer IPv6,
 │                         so requests to that address reach another process
 │ …
 ```
