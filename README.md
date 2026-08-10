@@ -194,7 +194,8 @@ from the process tree rather than `$SHELL`, so fish gets `fish_add_path` and
 not an `export` line it would reject.
 
 `minato update` does the same thing later, and a check runs once a day on its
-own — `MINATO_NO_UPDATE_CHECK=1` stops it, and `--json` never carries it.
+own — as does `minato --version`, every time it is asked.
+`MINATO_NO_UPDATE_CHECK=1` stops both, and `--json` never carries either.
 `minato uninstall` is the way back out: it shows what it found — containers,
 state, binaries, completions, and the steps that need root — and asks before
 removing any of it. **Your worktrees are left where they are.**

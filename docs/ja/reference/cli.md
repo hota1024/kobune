@@ -337,6 +337,18 @@ $ minato update --check
 チェックはコマンドの実行後に 1 日 1 回自動で走り、stderr に 1 行表示します。
 `MINATO_NO_UPDATE_CHECK` で停止でき、`--json` のときは表示しません。
 
+`minato --version` でもチェックします。こちらは 1 日 1 回ではなく毎回、また
+バージョンの行を表示したあとに行います。
+
+```console
+$ minato --version
+minato 0.1.0 (c7282b8)
+› a newer build is available (9f3c1a2). Install it with minato update
+```
+
+この行も stderr です。公開されているビルドと同じなら何も表示しません。
+`--json` と `MINATO_NO_UPDATE_CHECK` は 1 日 1 回のチェックと同じく省略します。
+
 ## アンインストール
 
 ```console
@@ -406,4 +418,4 @@ $ minato completions <bash|zsh|fish|elvish|powershell>
 | `MINATO_DNS_PORT` | DNS のポート。既定値 53 |
 | `MINATO_CLOUDFLARED` | `PATH` 以外に配置された `cloudflared` のパス |
 | `MINATO_LOG` | daemon のログフィルタ。例: `debug` |
-| `MINATO_NO_UPDATE_CHECK` | 何か値を設定すると 1 日 1 回の更新チェックを行いません |
+| `MINATO_NO_UPDATE_CHECK` | 何か値を設定すると更新チェックを行いません（1 日 1 回のものと `--version` のもの、どちらも） |

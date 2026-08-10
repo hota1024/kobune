@@ -236,6 +236,25 @@ The answer is cached in `~/.minato/update-check.json` for 24 hours, and the
 notice is repeated from that cache in between — a warning shown once a day and
 never again would just be missed.
 
+### `minato --version`
+
+The flag carries the same check, and unlike the automatic one it asks every
+time: `--version` is a question about the build in front of you, and answering
+it from a cache up to a day old would be answering a different one. The version
+line is printed first and the check made after, so nothing you asked for waits
+on the network:
+
+```console
+$ minato --version
+minato 0.1.0 (c7282b8)
+› a newer build is available (9f3c1a2). Install it with minato update
+```
+
+Nothing is added when you are already on the published build — the version line
+said which build this is, and that is the whole of what was asked. `--json` and
+`MINATO_NO_UPDATE_CHECK` skip it exactly as they skip the automatic one, and so
+does a network that cannot be reached.
+
 A build made from source reports nothing either way. It records the commit it
 was built from, and with no commit to compare there is no honest answer: "up to
 date" would be a guess, and "out of date" would push you off a build you made
