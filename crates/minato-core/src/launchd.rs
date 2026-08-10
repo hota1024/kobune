@@ -48,6 +48,40 @@ pub fn is_installed() -> bool {
     false
 }
 
+/// Whether launchd has the job, rather than only its plist being on disk.
+///
+/// **The file is not the registration.** A plist copied in by hand, or one
+/// whose `bootstrap` was declined, leaves launchd knowing nothing about the
+/// job: nothing holds 80, `kickstart` has no service to name, and what is
+/// needed is the installation. Once launchd does have it, the opposite
+/// holds — a second `bootstrap` of a label it already knows comes back as
+/// `Input/output error`, so an installation is the one thing that cannot
+/// help.
+///
+/// Only `print` is asked, which needs no privileges even in the system
+/// domain. Being told what state the machine is in should never cost a
+/// password.
+#[cfg(target_os = "macos")]
+pub fn is_loaded() -> bool {
+    if !is_installed() {
+        return false;
+    }
+
+    std::process::Command::new("launchctl")
+        .arg("print")
+        .arg(format!("system/{LABEL}"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Always false where there is no launchd.
+#[cfg(not(target_os = "macos"))]
+pub fn is_loaded() -> bool {
+    false
+}
+
 /// The command that starts the job again, for a `fix` or a hint.
 ///
 /// `kickstart` needs root because the job is in the system domain. It is
@@ -82,5 +116,17 @@ mod tests {
     #[test]
     fn nothing_is_installed_without_launchd() {
         assert!(!is_installed());
+        assert!(!is_loaded());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_plist_means_launchd_does_not_have_the_job() {
+        // The machine running the tests may well have one installed, so
+        // this only pins the half that holds either way: without the file
+        // there is nothing to have been bootstrapped.
+        if !is_installed() {
+            assert!(!is_loaded());
+        }
     }
 }

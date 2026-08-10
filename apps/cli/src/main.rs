@@ -1535,9 +1535,26 @@ fn present_setup(
 
     let mut steps: Vec<ui::SetupStep> = Vec::new();
     let launchd_pending = pending("launchd");
+
+    // Privileged ports being unavailable has two causes, and they take
+    // opposite steps. **Whether launchd already has the job is what tells
+    // them apart** — see [`minato_core::launchd::is_loaded`]. Asked only
+    // where the answer can matter: with the sockets already handed over
+    // there is nothing to install and nothing to wake.
+    let wakes_launchd = launchd_pending && minato_core::launchd::is_loaded();
     let mut launchd_step = None;
 
-    if launchd_pending {
+    if wakes_launchd {
+        launchd_step = Some(steps.len());
+        steps.push(ui::SetupStep {
+            description: "wake launchd's job, so it hands over 80/443/53".to_string(),
+            note: Some(
+                "the LaunchDaemon is installed already; its job is the part that is not running"
+                    .to_string(),
+            ),
+            commands: launchd::wake_commands(),
+        });
+    } else if launchd_pending {
         match prepare_launchd() {
             Ok((source, commands)) => {
                 launchd_step = Some(steps.len());
@@ -1551,6 +1568,10 @@ fn present_setup(
             Err(err) => ui::error(&format!("cannot write the plist: {err}"), None),
         }
     }
+
+    // Whether the launchd step is the installation, as opposed to the wake
+    // — which restarts the daemon itself, and so leaves nothing owed.
+    let installs_launchd = launchd_step.is_some() && !wakes_launchd;
 
     // Installing launchd moves DNS to :53. A resolver still naming the
     // old port would stop resolving the moment it lands.
@@ -1602,12 +1623,12 @@ fn present_setup(
     };
 
     if steps.is_empty() {
-        ui::setup(&steps, &undo);
+        ui::setup(&steps, &undo, false);
         return Ok(ExitCode::SUCCESS);
     }
 
     if dry_run || !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        ui::setup(&steps, &undo);
+        ui::setup(&steps, &undo, installs_launchd);
 
         // Without this, being handed a list of commands after asking for
         // `--yes` reads as the flag having been ignored.
@@ -1631,15 +1652,21 @@ fn present_setup(
     // if launchd does not land it has to name the port DNS is on now —
     // otherwise saying no to one step quietly breaks resolution through the
     // next.
-    let mut launchd_installed = false;
+    //
+    // **What matters is launchd holding :53, not the plist being on disk.**
+    // An installed LaunchDaemon whose job stays asleep leaves DNS exactly
+    // where it was.
+    let mut launchd_landed = false;
 
     for (index, step) in steps.iter_mut().enumerate() {
-        if Some(index) == resolver_step && launchd_pending && !launchd_installed {
+        if Some(index) == resolver_step && launchd_pending && !launchd_landed {
             let port = dns_port.unwrap_or(53);
             step.commands = vec![system::resolver_command(DEFAULT_DOMAIN_SUFFIX, port)];
-            step.note = Some(format!(
-                "launchd was not installed, so DNS stays on :{port}"
-            ));
+            step.note = Some(if wakes_launchd {
+                format!("launchd's job is not awake, so DNS stays on :{port}")
+            } else {
+                format!("launchd was not installed, so DNS stays on :{port}")
+            });
         }
 
         // The commands go on the screen first, every time. Agreeing to a
@@ -1666,17 +1693,23 @@ fn present_setup(
         };
 
         if Some(index) == launchd_step && outcome == ui::SetupOutcome::Ran {
-            launchd_installed = true;
+            launchd_landed = true;
         }
 
         outcomes.push(outcome);
         ui::setup_outcome(outcome);
     }
 
-    // The undo is worth printing only if the LaunchDaemon actually went in.
-    let undo = if launchd_installed { undo } else { Vec::new() };
+    // The undo is worth printing only if there is a LaunchDaemon to take
+    // back out — one this run installed, or one that was there before it and
+    // only needed waking.
+    let undo = if launchd_landed || wakes_launchd {
+        undo
+    } else {
+        Vec::new()
+    };
 
-    ui::setup_done(&steps, &outcomes, &undo);
+    ui::setup_done(&steps, &outcomes, &undo, launchd_landed && installs_launchd);
 
     // A step that was declined is an answer. One that failed is not: sudo
     // said no, or a command did, and the machine is not set up.

@@ -101,6 +101,28 @@ $ minato doctor
 LaunchDaemon を設定していない場合、daemon は自動的には復帰しません。
 `minato setup` が、その設定を実行するか確認します。
 
+### LaunchDaemon は設定済みなのにジョブが起動しない
+
+```console
+$ minato doctor
+│ !  launchd socket activation  inactive, though launchd has the LaunchDaemon
+```
+
+launchd 以外の方法で起動した daemon が Unix ソケットを保持していると、launchd
+のジョブは起動時にそれを見つけて終了します。正常終了したジョブは再起動されない
+ため、以降もフォールバックのポートで動作し続けます。設定の失敗ではありません。
+
+```console
+$ minato daemon stop
+```
+
+次のリクエストが :80 に到達すると launchd がジョブを起動し、そちらが 80・443・
+53 を保持します。`minato setup` も同じ内容を 1 つのステップとして提示します。
+
+**再インストールは解決になりません。** launchd は登録済みのラベルに対する 2 度目
+の `bootstrap` を `Bootstrap failed: 5: Input/output error` として拒否するため、
+`minato setup` もこの状態では再インストールを提示しません。
+
 ### 「the Unix socket path is too long」と表示される
 
 `MINATO_HOME` の階層が深すぎます。ソケットのパスは約 100 バイトまでです。

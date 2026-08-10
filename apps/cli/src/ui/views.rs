@@ -213,7 +213,12 @@ pub enum SetupOutcome {
 
 /// `minato setup` with nowhere to ask: it says what to run, and runs none
 /// of it.
-pub fn setup(steps: &[SetupStep], undo: &[String], decor: Decor) -> Panel {
+///
+/// `restart_needed` is whether the daemon still has to be restarted for
+/// what these steps change to reach it. **Not the same as "something
+/// landed":** waking launchd's job restarts the daemon on the way, so
+/// saying it again there would stop what was just started.
+pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: Decor) -> Panel {
     if steps.is_empty() {
         return Panel::new(decor, "setup")
             .line(Span::styled("everything is set up", theme::good()))
@@ -242,13 +247,9 @@ pub fn setup(steps: &[SetupStep], undo: &[String], decor: Decor) -> Panel {
         panel = panel.lines(lines);
     }
 
-    panel = panel.lines(vec![
-        hint("afterwards run", "minato daemon stop"),
-        Line::styled(
-            "  launchd starts it again, with the new settings",
-            theme::muted(),
-        ),
-    ]);
+    if restart_needed {
+        panel = panel.lines(restart_hint());
+    }
 
     if undo.is_empty() {
         return panel;
@@ -261,6 +262,17 @@ pub fn setup(steps: &[SetupStep], undo: &[String], decor: Decor) -> Panel {
     );
 
     panel.lines(lines)
+}
+
+/// What to do with the daemon once a step has changed what launchd holds.
+fn restart_hint() -> Vec<Line<'static>> {
+    vec![
+        hint("afterwards run", "minato daemon stop"),
+        Line::styled(
+            "  launchd starts it again, with the new settings",
+            theme::muted(),
+        ),
+    ]
 }
 
 /// What an interactive `minato setup` is about to walk through.
@@ -337,10 +349,14 @@ pub fn setup_outcome_line(outcome: SetupOutcome) -> Line<'static> {
 }
 
 /// Where an interactive `minato setup` left the machine.
+///
+/// `restart_needed` is as in [`setup`]: whether anything is left for the
+/// daemon to be restarted for.
 pub fn setup_done(
     steps: &[SetupStep],
     outcomes: &[SetupOutcome],
     undo: &[String],
+    restart_needed: bool,
     decor: Decor,
 ) -> Panel {
     let ran = outcomes
@@ -401,14 +417,8 @@ pub fn setup_done(
 
     // Only worth saying when something landed: the daemon has nothing new
     // to pick up otherwise.
-    if ran > 0 {
-        panel = panel.lines(vec![
-            hint("afterwards run", "minato daemon stop"),
-            Line::styled(
-                "  launchd starts it again, with the new settings",
-                theme::muted(),
-            ),
-        ]);
+    if ran > 0 && restart_needed {
+        panel = panel.lines(restart_hint());
     }
 
     if undo.is_empty() {
@@ -1016,17 +1026,41 @@ mod tests {
             },
         ];
 
-        let text = render(&setup(&steps, &["sudo rm /Library/x".into()], Decor::PLAIN));
+        let text = render(&setup(
+            &steps,
+            &["sudo rm /Library/x".into()],
+            true,
+            Decor::PLAIN,
+        ));
 
         assert!(text.contains("1. let launchd"), "got:\n{text}");
         assert!(text.contains("2. point"), "got:\n{text}");
         assert!(text.contains("/tmp/x.plist"), "got:\n{text}");
         assert!(text.contains("to undo:"), "got:\n{text}");
+        assert!(text.contains("minato daemon stop"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_plan_that_restarts_the_daemon_itself_does_not_ask_for_it_again() {
+        // Waking launchd's job stops the daemon on the way. Being told to
+        // stop it afterwards would stop what had just been started.
+        let steps = vec![SetupStep {
+            description: "wake launchd's job".into(),
+            note: None,
+            commands: vec![
+                "minato daemon stop".into(),
+                "sudo launchctl kickstart -k x".into(),
+            ],
+        }];
+
+        let text = render(&setup(&steps, &[], false, Decor::PLAIN));
+
+        assert!(!text.contains("afterwards run"), "got:\n{text}");
     }
 
     #[test]
     fn nothing_left_to_set_up_is_not_an_empty_screen() {
-        let text = render(&setup(&[], &[], Decor::PLAIN));
+        let text = render(&setup(&[], &[], false, Decor::PLAIN));
         assert!(text.contains("everything is set up"), "got:\n{text}");
     }
 
@@ -1093,6 +1127,7 @@ mod tests {
             &steps,
             &[SetupOutcome::Ran, SetupOutcome::Skipped],
             &["sudo rm /Library/x".into()],
+            true,
             Decor::PLAIN,
         ));
 
@@ -1113,6 +1148,7 @@ mod tests {
             &steps,
             &[SetupOutcome::Failed, SetupOutcome::Failed],
             &[],
+            true,
             Decor::PLAIN,
         ));
 
@@ -1130,12 +1166,30 @@ mod tests {
             &steps,
             &[SetupOutcome::Ran, SetupOutcome::Ran],
             &[],
+            true,
             Decor::PLAIN,
         ));
 
         assert!(text.contains("every step is done"), "got:\n{text}");
         assert!(!text.contains("still to run"), "got:\n{text}");
         assert!(text.contains("minato daemon stop"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_walk_that_restarted_the_daemon_does_not_ask_for_it_again() {
+        // Every step ran, so this is not "nothing landed" — it is that
+        // what landed had the restart in it.
+        let steps = setup_steps();
+        let text = render(&setup_done(
+            &steps,
+            &[SetupOutcome::Ran, SetupOutcome::Ran],
+            &[],
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("every step is done"), "got:\n{text}");
+        assert!(!text.contains("afterwards run"), "got:\n{text}");
     }
 
     #[test]

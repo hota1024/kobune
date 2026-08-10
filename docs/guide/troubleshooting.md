@@ -99,6 +99,28 @@ $ minato doctor
 Without the LaunchDaemon installed, the daemon does not come back on its own.
 `minato setup` offers to install it.
 
+### The LaunchDaemon is installed, but its job never runs
+
+```console
+$ minato doctor
+│ !  launchd socket activation  inactive, though launchd has the LaunchDaemon
+```
+
+A daemon started any other way owns the Unix socket, so launchd's own job finds
+it taken and stands down — and a clean exit is not restarted. It is that first
+daemon still holding the fallback ports, not a setup that failed.
+
+```console
+$ minato daemon stop
+```
+
+The next request reaches :80, launchd starts its job there, and that one comes
+up holding 80, 443 and 53. `minato setup` offers the same thing as a step.
+
+**Installing it again is not the fix**, and `minato setup` no longer offers to:
+launchd answers a second `bootstrap` of a label it already has with `Bootstrap
+failed: 5: Input/output error`.
+
 ### "the Unix socket path is too long"
 
 `MINATO_HOME` is somewhere deep. A socket path is limited to about 100 bytes.

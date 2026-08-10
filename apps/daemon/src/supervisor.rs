@@ -306,25 +306,37 @@ impl Supervisor {
         // Whether privileged ports work comes down to whether launchd
         // handed over any descriptors.
         //
-        // **An installed plist and an inactive job is its own state**, and
-        // the one `minato daemon stop` leaves behind. Telling that apart
-        // from "never set up" is the difference between a fix that works
-        // and being sent back to a `minato setup` that is already done.
+        // **A job launchd has, sitting idle, is its own state**, and the one
+        // `minato daemon stop` leaves behind. Telling that apart from "never
+        // set up" is the difference between a fix that works and being sent
+        // back to a `minato setup` that is already done.
+        //
+        // The plist being on disk is not enough to say which it is: one
+        // copied in without a `bootstrap` behind it leaves launchd knowing
+        // nothing about the job, and `kickstart` no service to name. That is
+        // the install case, so `is_loaded` rather than `is_installed` — and
+        // it keeps this in step with what `minato setup` offers.
         checks.push(if crate::activation::is_active() {
             Check::ok(
                 "launchd",
                 "launchd socket activation",
                 "active (privileged ports are available)".to_string(),
             )
-        } else if launchd_installed {
+        } else if minato_core::launchd::is_loaded() {
             Check::warn(
                 "launchd",
                 "launchd socket activation",
-                "inactive, though the LaunchDaemon is installed".to_string(),
+                "inactive, though launchd has the LaunchDaemon".to_string(),
             )
+            // This daemon got no descriptors from launchd, so it is not
+            // launchd's — which makes it **the reason launchd's job is not
+            // running**: that one stands down when it finds the socket
+            // taken, and a clean exit is not restarted. Waking it without
+            // this one going first only repeats that.
             .with_fix(format!(
-                "`minato daemon start` wakes the job through launchd. If it \
-                 stays inactive, run `{}`",
+                "this daemon was not started by launchd, so it holds the \
+                 socket launchd's job wants. `minato daemon stop` hands it \
+                 over; if it stays inactive, run `{}`",
                 minato_core::launchd::kickstart_command()
             ))
         } else {

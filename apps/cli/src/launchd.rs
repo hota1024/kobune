@@ -55,6 +55,22 @@ pub fn prepare(
     })
 }
 
+/// The steps that hand a job launchd already has its sockets back, for
+/// when [`minato_core::launchd::is_loaded`] says installing is not what is
+/// wanted.
+///
+/// Stopping the daemon comes first because it is usually the reason the job
+/// is not running: a daemon started any other way owns the socket, launchd's
+/// job finds it taken and stands down, and a clean exit is not restarted
+/// (`KeepAlive { SuccessfulExit: false }`). Kickstarting around it would
+/// only repeat that.
+pub fn wake_commands() -> Vec<String> {
+    vec![
+        "minato daemon stop".to_string(),
+        minato_core::launchd::kickstart_command(),
+    ]
+}
+
 /// The steps that undo the installation.
 pub fn uninstall_commands() -> Vec<String> {
     let destination = Path::new(INSTALL_DIR).join(format!("{LABEL}.plist"));
@@ -307,6 +323,23 @@ mod tests {
         assert!(
             plan.commands.iter().any(|c| c.contains("chown root:wheel")),
             "a LaunchDaemon is ignored unless root owns it"
+        );
+    }
+
+    #[test]
+    fn waking_does_not_bootstrap_again() {
+        let commands = wake_commands();
+
+        assert!(
+            !commands.iter().any(|c| c.contains("bootstrap")),
+            "launchd fails a second bootstrap with EIO: {commands:?}"
+        );
+        let stop = commands.iter().position(|c| c.contains("daemon stop"));
+        let kickstart = commands.iter().position(|c| c.contains("kickstart"));
+
+        assert!(
+            matches!((stop, kickstart), (Some(stop), Some(kickstart)) if stop < kickstart),
+            "the daemon holding the socket has to go first: {commands:?}"
         );
     }
 
