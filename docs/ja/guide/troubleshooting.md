@@ -111,7 +111,8 @@ LaunchDaemon を設定していない場合、daemon は自動的には復帰し
 ```console
 $ minato doctor
 │ …
-│ ✗  listening addresses  [::1] could not be held. *.localhost resolves to both,
+│ ✗  listening addresses  the HTTPS proxy could not hold [::1]. *.localhost
+│                         resolves to both families and clients prefer IPv6,
 │                         so requests to that address reach another process
 │ …
 ```
@@ -120,6 +121,10 @@ $ minato doctor
 `::1` と `127.0.0.1` の両方に解決され、クライアントは IPv6 を優先するため、
 一方しか確保できていないと別のプロセスにリクエストが到達します。当該プロセスを
 停止するか、`MINATO_HTTP_PORT` で Minato のポートを変更してください。
+
+**HTTP と HTTPS は個別に報告されます。** 両者は独立して bind するため、HTTP は
+両系統を確保できていて HTTPS だけ一方を失っている、という状態があり得ます。
+確認すべきなのはメッセージに名前が出ているほうです。
 
 ## Apple Container 固有の問題
 

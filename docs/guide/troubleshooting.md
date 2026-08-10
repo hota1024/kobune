@@ -109,7 +109,8 @@ Point it somewhere shorter — the default `~/.minato` is fine.
 ```console
 $ minato doctor
 │ …
-│ ✗  listening addresses  [::1] could not be held. *.localhost resolves to both,
+│ ✗  listening addresses  the HTTPS proxy could not hold [::1]. *.localhost
+│                         resolves to both families and clients prefer IPv6,
 │                         so requests to that address reach another process
 │ …
 ```
@@ -118,6 +119,10 @@ Something else holds one of the loopback addresses. Since `*.localhost`
 resolves to both `::1` and `127.0.0.1` and clients prefer IPv6, holding only
 one sends traffic somewhere else. Stop the other process, or move Minato with
 `MINATO_HTTP_PORT`.
+
+**The two proxies are reported separately** because they bind separately: HTTP
+can hold both families while HTTPS has lost one, and it is the named one that
+needs looking at.
 
 ## Apple Container
 
