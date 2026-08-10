@@ -235,15 +235,23 @@ impl Supervisor {
         // cause impossible to find.
         let missing = self.gateway.missing_families();
         if !missing.is_empty() {
-            let families: Vec<String> = missing.iter().map(|ip| ip.to_string()).collect();
+            // Which proxy is short, not just which address. They bind
+            // separately, so "[::1] could not be held" leaves you looking
+            // at the wrong one half the time.
+            let gaps: Vec<String> = missing
+                .iter()
+                .map(|(proxy, family)| format!("{proxy} could not hold {family}"))
+                .collect();
+
             checks.push(
                 Check::fail(
                     "proxy-families",
                     "listening addresses",
                     format!(
-                        "{} could not be held. *.localhost resolves to both, \
-                         so requests to that address reach another process",
-                        families.join(", ")
+                        "{}. *.localhost resolves to both families and clients \
+                         prefer IPv6, so requests to that address reach \
+                         another process",
+                        gaps.join("; ")
                     ),
                 )
                 .with_fix(

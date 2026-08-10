@@ -508,27 +508,31 @@ impl Gateway {
         self.https_addrs.first().map(|addr| addr.port())
     }
 
-    /// The address families that were wanted but not bound.
+    /// The address families each proxy wanted and did not get.
     ///
     /// Anything here means requests to that address reach some other
-    /// process. `*.localhost` resolves to both, so the damage is real.
-    pub fn missing_families(&self) -> Vec<IpAddr> {
-        if self.http_addrs.is_empty() && self.https_addrs.is_empty() {
-            return Vec::new();
+    /// process. `*.localhost` resolves to both families and clients prefer
+    /// IPv6, so the damage is real.
+    ///
+    /// **Per protocol.** They bind independently, and pooling them hides
+    /// the case that matters: HTTPS losing `[::1]` while HTTP holds it
+    /// leaves every check green and half the HTTPS traffic going to a
+    /// stranger.
+    pub fn missing_families(&self) -> Vec<(&'static str, IpAddr)> {
+        let mut missing = Vec::new();
+
+        for (protocol, bound) in [
+            ("the HTTP proxy", &self.http_addrs),
+            ("the HTTPS proxy", &self.https_addrs),
+        ] {
+            missing.extend(
+                missing_from(bound, &self.wanted)
+                    .into_iter()
+                    .map(|family| (protocol, family)),
+            );
         }
 
-        let bound: Vec<IpAddr> = self
-            .http_addrs
-            .iter()
-            .chain(self.https_addrs.iter())
-            .map(|addr| addr.ip())
-            .collect();
-
-        self.wanted
-            .iter()
-            .filter(|wanted| !bound.iter().any(|got| got.is_ipv4() == wanted.is_ipv4()))
-            .copied()
-            .collect()
+        missing
     }
 
     pub fn dns_port(&self) -> Option<u16> {
@@ -736,6 +740,27 @@ fn settled(what: &str, attempt: Attempt, fell_back: bool) -> Listening {
         failure: attempt.failure,
         fell_back,
     }
+}
+
+/// The wanted families this listener did not get.
+///
+/// Empty when it bound nothing at all: that is `proxy-http` and
+/// `proxy-https`'s business, and a listener that is entirely absent is not
+/// a *family* gap.
+fn missing_from(bound: &[SocketAddr], wanted: &[IpAddr]) -> Vec<IpAddr> {
+    if bound.is_empty() {
+        return Vec::new();
+    }
+
+    wanted
+        .iter()
+        .filter(|wanted| {
+            !bound
+                .iter()
+                .any(|got| got.ip().is_ipv4() == wanted.is_ipv4())
+        })
+        .copied()
+        .collect()
 }
 
 fn report_bind_failure(what: &str, port: u16, failure: Option<BindFailure>) {
@@ -1004,15 +1029,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detects_a_missing_address_family() {
-        // With another app holding [::1]:8080, only IPv4 is available
-        // here. *.localhost resolves to both, so anything arriving over
-        // IPv6 goes to that app instead. This must not pass silently.
-        let gateway = Gateway {
+    /// A gateway with exactly these addresses bound, both families wanted.
+    fn bound(http: Vec<SocketAddr>, https: Vec<SocketAddr>) -> Gateway {
+        Gateway {
             routes: Routes::new(),
-            http_addrs: vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)],
-            https_addrs: Vec::new(),
+            http_addrs: http,
+            https_addrs: https,
             dns_port: None,
             ca_path: None,
             wanted: vec![
@@ -1024,12 +1046,62 @@ mod tests {
             dns_failure: None,
             http_fell_back: false,
             https_fell_back: false,
-        };
+        }
+    }
+
+    fn v4(port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    }
+
+    fn v6(port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port)
+    }
+
+    #[test]
+    fn detects_a_missing_address_family() {
+        // With another app holding [::1]:8080, only IPv4 is available
+        // here. *.localhost resolves to both, so anything arriving over
+        // IPv6 goes to that app instead. This must not pass silently.
+        let gateway = bound(vec![v4(8080)], Vec::new());
 
         assert_eq!(
             gateway.missing_families(),
-            vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]
+            vec![("the HTTP proxy", IpAddr::V6(Ipv6Addr::LOCALHOST))]
         );
+    }
+
+    #[test]
+    fn one_proxy_holding_a_family_does_not_cover_the_other() {
+        // The case pooling the two addresses could not see: HTTP has both
+        // families, HTTPS lost [::1] to something else. Clients prefer
+        // IPv6, so half the HTTPS traffic goes to that process — while
+        // every check reported green.
+        let gateway = bound(vec![v4(80), v6(80)], vec![v4(443)]);
+
+        assert_eq!(
+            gateway.missing_families(),
+            vec![("the HTTPS proxy", IpAddr::V6(Ipv6Addr::LOCALHOST))],
+            "a family held for HTTP says nothing about HTTPS"
+        );
+    }
+
+    #[test]
+    fn each_proxy_is_reported_separately() {
+        let gateway = bound(vec![v4(80)], vec![v6(443)]);
+        let missing = gateway.missing_families();
+
+        assert_eq!(missing.len(), 2, "{missing:?}");
+        assert!(missing.contains(&("the HTTP proxy", IpAddr::V6(Ipv6Addr::LOCALHOST))));
+        assert!(missing.contains(&("the HTTPS proxy", IpAddr::V4(Ipv4Addr::LOCALHOST))));
+    }
+
+    #[test]
+    fn a_proxy_that_bound_nothing_is_not_a_family_gap() {
+        // That is `proxy-http` and `proxy-https`'s business. Reporting it
+        // here as well would say the same thing twice, in worse words.
+        let gateway = bound(vec![v4(80), v6(80)], Vec::new());
+
+        assert!(gateway.missing_families().is_empty(), "HTTPS is simply off");
     }
 
     #[test]
