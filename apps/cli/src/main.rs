@@ -376,10 +376,7 @@ async fn main() -> ExitCode {
         && wants_update_notice(&cli.command)
         && let Some(commit) = update_notice().await
     {
-        ui::notice(vec![ui::hint(
-            &format!("a newer build is available ({commit}). Install it with"),
-            "minato update",
-        )]);
+        print_update_notice(&commit);
     }
 
     match outcome {
@@ -466,38 +463,26 @@ fn print_group_help(group: &[String], json: bool) -> ExitCode {
 
 /// `--version`, and the update check it carries.
 ///
-/// The version line is clap's and is printed first, so someone asking what
-/// they are running gets the answer before anything touches the network —
-/// and gets it at all when the network is gone. The check then says one
-/// line on stderr if a newer build exists, and nothing whatsoever if not:
-/// the version line already said which build this is.
+/// The version line is clap's and goes out first, so someone asking what
+/// they are running has the answer before anything touches the network —
+/// and has it at all when there is no network to touch. The check follows,
+/// and only says anything when a newer build exists: which build this is
+/// was the question, and the line above already answered it.
 ///
-/// Unlike the once-a-day background check, this one asks every time. The
-/// flag is a question about this build, and answering it from a cache up
-/// to a day old would be answering a different one.
+/// It asks every time rather than once a day, for the reason
+/// [`update::version_notice`] gives.
 async fn print_version(version: &clap::Error) -> ExitCode {
     // Clap writes it to stdout, this being a request rather than a failure.
+    // Stdout is line buffered and the line ends in a newline, so it is gone
+    // before the notice that may follow it on stderr.
     let _ = version.print();
 
-    // Before the notice, so the two cannot arrive out of order when both
-    // streams are the same pipe.
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-
-    // Nothing more under `--json`: that stream is parsed, and stderr is
-    // the other half of what gets captured with `2>&1`.
-    if wants_json() {
-        return ExitCode::SUCCESS;
-    }
-
-    // Only where the answer is cached — the check still runs without a
-    // configuration directory to leave it in.
-    let paths = minato_core::Paths::resolve().ok();
-
-    if let Some(commit) = update::version_notice(paths.as_ref()).await {
-        ui::notice(vec![ui::hint(
-            &format!("a newer build is available ({commit}). Install it with"),
-            "minato update",
-        )]);
+    // Never under `--json`: that stream is parsed, and stderr is the other
+    // half of what `2>&1` captures.
+    if !wants_json()
+        && let Some(commit) = version_update_notice().await
+    {
+        print_update_notice(&commit);
     }
 
     ExitCode::SUCCESS
@@ -506,7 +491,8 @@ async fn print_version(version: &clap::Error) -> ExitCode {
 /// Whether `--json` was asked for, read off the command line.
 ///
 /// The parse failed, so there is no [`Cli`] to ask. Only the exact flag
-/// counts, and all this decides is which stream some help goes to.
+/// counts, which is all the two callers need: it decides which stream a
+/// group's help goes to, and whether `--version` adds its update notice.
 fn wants_json() -> bool {
     std::env::args().any(|arg| arg == "--json")
 }
@@ -571,6 +557,27 @@ fn wants_update_notice(command: &Command) -> bool {
 async fn update_notice() -> Option<String> {
     let paths = minato_core::Paths::resolve().ok()?;
     update::background_notice(&paths).await
+}
+
+/// The check `--version` makes, which asks every time rather than once a
+/// day.
+///
+/// Silent on the same failures, including having no configuration directory
+/// to leave the answer in.
+async fn version_update_notice() -> Option<String> {
+    let paths = minato_core::Paths::resolve().ok()?;
+    update::version_notice(&paths).await
+}
+
+/// What either check has to say, in the one wording both use.
+///
+/// On stderr, through [`ui::notice`]: `$(minato url web)` must never pick
+/// it up, and neither must anything parsing `--json`.
+fn print_update_notice(commit: &str) {
+    ui::notice(vec![ui::hint(
+        &format!("a newer build is available ({commit}). Install it with"),
+        "minato update",
+    )]);
 }
 
 /// The errors the CLI deals with. Ones from the daemon keep its exit

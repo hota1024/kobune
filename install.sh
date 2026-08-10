@@ -624,7 +624,10 @@ if [ "$(uname -s)" = "Darwin" ] && need xattr; then
     xattr -d com.apple.quarantine "$INSTALL_DIR/minatod" 2>/dev/null || true
 fi
 
-version="$("$INSTALL_DIR/minato" --version 2>/dev/null || true)"
+# `--version` checks for a newer build, which this has just installed and
+# would only wait on the network to be told about. The check is turned off
+# for the one call rather than left to time out mid-install.
+version="$(MINATO_NO_UPDATE_CHECK=1 "$INSTALL_DIR/minato" --version 2>/dev/null || true)"
 [ -n "$version" ] || die "the installed binary does not run. Report this at https://github.com/$REPO/issues"
 
 # No directory after it: the header said where this was going, and the
