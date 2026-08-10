@@ -66,8 +66,8 @@ pub fn diagnostics(report: &Diagnostics) {
 }
 
 /// `setup` with nowhere to ask: the commands, to run by hand.
-pub fn setup(steps: &[SetupStep], undo: &[String]) {
-    Surface::stdout().print(|decor| views::setup(steps, undo, decor));
+pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool) {
+    Surface::stdout().print(|decor| views::setup(steps, undo, restart_needed, decor));
 }
 
 /// What an interactive `setup` is about to offer, before it offers any of
@@ -92,8 +92,14 @@ pub fn setup_outcome(outcome: SetupOutcome) {
 }
 
 /// Where the whole walk left the machine.
-pub fn setup_done(steps: &[SetupStep], outcomes: &[SetupOutcome], undo: &[String]) {
-    Surface::stdout().print(|decor| views::setup_done(steps, outcomes, undo, decor));
+pub fn setup_done(
+    steps: &[SetupStep],
+    outcomes: &[SetupOutcome],
+    undo: &[String],
+    restart_needed: bool,
+) {
+    Surface::stdout()
+        .print(|decor| views::setup_done(steps, outcomes, undo, restart_needed, decor));
 }
 
 /// `env ls`, and what `env set` / `env unset` leave behind.

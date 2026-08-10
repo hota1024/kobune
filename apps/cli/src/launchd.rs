@@ -55,6 +55,59 @@ pub fn prepare(
     })
 }
 
+/// Whether launchd already has the job, rather than only its plist being
+/// on disk.
+///
+/// **The two come apart.** A plist copied in by hand, or one whose
+/// `bootstrap` was declined, leaves a file launchd knows nothing about:
+/// there `kickstart` fails and the installation is what is really needed.
+/// The other way round it is the installation that cannot succeed, since
+/// launchd refuses a second `bootstrap` of a label it already has. Reading
+/// the answer off the file alone would get one of the two wrong.
+///
+/// Only `print` is asked, which needs no privileges even for the system
+/// domain — nothing here should make anyone type a password to be told
+/// what state they are in.
+#[cfg(target_os = "macos")]
+pub fn is_loaded() -> bool {
+    if !minato_core::launchd::is_installed() {
+        return false;
+    }
+
+    std::process::Command::new("launchctl")
+        .arg("print")
+        .arg(format!("system/{LABEL}"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Always false where there is no launchd.
+#[cfg(not(target_os = "macos"))]
+pub fn is_loaded() -> bool {
+    false
+}
+
+/// The steps that hand an installed job its sockets back.
+///
+/// **Not another `bootstrap`.** launchd answers a second one for a label it
+/// already knows with `Input/output error`, so an installation that is
+/// already in place cannot be repaired by repeating it — there is nothing
+/// wrong with it in the first place. The job is simply not running.
+///
+/// Stopping the daemon comes first because it is usually the reason it is
+/// not running: a daemon started any other way owns the socket, launchd's
+/// job finds it taken and stands down, and a clean exit is not restarted
+/// (`KeepAlive { SuccessfulExit: false }`). Kickstarting around it would
+/// only repeat that.
+pub fn wake_commands() -> Vec<String> {
+    vec![
+        "minato daemon stop".to_string(),
+        minato_core::launchd::kickstart_command(),
+    ]
+}
+
 /// The steps that undo the installation.
 pub fn uninstall_commands() -> Vec<String> {
     let destination = Path::new(INSTALL_DIR).join(format!("{LABEL}.plist"));
@@ -307,6 +360,27 @@ mod tests {
         assert!(
             plan.commands.iter().any(|c| c.contains("chown root:wheel")),
             "a LaunchDaemon is ignored unless root owns it"
+        );
+    }
+
+    #[test]
+    fn waking_does_not_bootstrap_again() {
+        let commands = wake_commands();
+
+        assert!(
+            !commands.iter().any(|c| c.contains("bootstrap")),
+            "launchd fails a second bootstrap with EIO: {commands:?}"
+        );
+        assert!(commands.iter().any(|c| c.contains("kickstart")));
+        assert!(
+            commands
+                .iter()
+                .position(|c| c.contains("daemon stop"))
+                .is_some_and(|stop| commands
+                    .iter()
+                    .position(|c| c.contains("kickstart"))
+                    .is_some_and(|kickstart| stop < kickstart)),
+            "the daemon holding the socket has to go first: {commands:?}"
         );
     }
 

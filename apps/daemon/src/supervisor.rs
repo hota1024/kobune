@@ -322,9 +322,15 @@ impl Supervisor {
                 "launchd socket activation",
                 "inactive, though the LaunchDaemon is installed".to_string(),
             )
+            // This daemon got no descriptors from launchd, so it is not
+            // launchd's — which makes it **the reason launchd's job is not
+            // running**: that one stands down when it finds the socket
+            // taken, and a clean exit is not restarted. Waking it without
+            // this one going first only repeats that.
             .with_fix(format!(
-                "`minato daemon start` wakes the job through launchd. If it \
-                 stays inactive, run `{}`",
+                "this daemon was not started by launchd, so it holds the \
+                 socket launchd's job wants. `minato daemon stop` hands it \
+                 over; if it stays inactive, run `{}`",
                 minato_core::launchd::kickstart_command()
             ))
         } else {

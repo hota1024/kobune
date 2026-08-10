@@ -70,6 +70,12 @@ DNS to :53, so that is the port the resolver gets. Say no to launchd and the
 resolver step is rewritten for the port DNS is actually on, so declining one
 step cannot break the next.
 
+**A LaunchDaemon launchd already has is not installed again.** The step becomes
+waking its job instead, since launchd answers a second `bootstrap` of a label it
+knows with `Input/output error` — installing again could only fail. A plist
+sitting on disk that was never bootstrapped is still an installation, and gets
+one.
+
 Anything declined, or anything whose command failed, is printed at the end to
 run by hand. A failed step is also a non-zero exit code; a declined one is not.
 
