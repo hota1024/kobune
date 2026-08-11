@@ -32,6 +32,16 @@ pub use progress::Progress;
 pub use views::{SetupOutcome, SetupStep};
 
 use surface::Surface;
+pub use surface::window;
+
+/// Whether the screen can be drawn on at all.
+///
+/// The same question every view asks before it decides between a frame
+/// and plain text, so `TERM=dumb` — where escape sequences arrive as
+/// literal text rather than as movement — is a pipe here too.
+pub fn is_interactive() -> bool {
+    Surface::stdout().is_interactive()
+}
 
 /// Something that can be drawn, and that knows how big it wants to be.
 ///

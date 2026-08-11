@@ -894,7 +894,7 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             services: services.clone(),
             follow: *follow,
             tail: *tail,
-            window: attach::window(),
+            window: ui::window(),
             interactive: wants_to_type(cli, services, *follow, *no_input, attach::is_a_terminal()),
         },
         Command::Exec {

@@ -454,7 +454,6 @@ impl AppleContainerRuntime {
         Ok(addresses)
     }
 
-    /// Builds the arguments for `container create`.
     /// Starts a service that asked for a terminal, and keeps the near end.
     ///
     /// `container start --attach --interactive` runs for as long as the
@@ -658,6 +657,9 @@ fn container_labels(spec: &ServiceSpec) -> BTreeMap<String, String> {
     if let Some(port) = spec.port {
         map.insert(labels::PORT.to_string(), port.to_string());
     }
+    if spec.tty {
+        map.insert(labels::TTY.to_string(), labels::MANAGED_VALUE.to_string());
+    }
     map
 }
 
@@ -729,12 +731,21 @@ impl Runtime for AppleContainerRuntime {
             // A built image is tagged with a fingerprint of its inputs, so
             // an edited Dockerfile produces a new tag. Leaving the old
             // container up would build the new image and serve the old one.
-            let stale = existing
+            let wrong_image = existing
                 .configuration
                 .image
                 .as_ref()
                 .and_then(|image| image.reference.as_deref())
                 .is_some_and(|reference| reference != spec.image);
+
+            // Whether a container has a terminal is settled when it is
+            // created, so `tty` turned on in `minato.toml` reaches a
+            // running service only by recreating it. The label is stamped
+            // at creation and came back with the listing.
+            let wrong_terminal =
+                (existing.label(labels::TTY) == Some(labels::MANAGED_VALUE)) != spec.tty;
+
+            let stale = wrong_image || wrong_terminal;
 
             if !stale && existing.is_running() {
                 events.step_skipped(
@@ -965,14 +976,7 @@ impl Runtime for AppleContainerRuntime {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     if sender
-                        .send(LogLine {
-                            stream: OutputStream::Stdout,
-                            // A container with a terminal ends its lines
-                            // `\r\n`. Reading by line takes the newline
-                            // and leaves the carriage return, which would
-                            // put the cursor back over whatever comes next.
-                            line: line.trim_end_matches('\r').to_string(),
-                        })
+                        .send(LogLine::new(OutputStream::Stdout, line))
                         .is_err()
                     {
                         return;
@@ -986,10 +990,7 @@ impl Runtime for AppleContainerRuntime {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     if sender
-                        .send(LogLine {
-                            stream: OutputStream::Stderr,
-                            line: line.trim_end_matches('\r').to_string(),
-                        })
+                        .send(LogLine::new(OutputStream::Stderr, line))
                         .is_err()
                     {
                         return;

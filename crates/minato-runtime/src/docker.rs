@@ -601,6 +601,12 @@ impl DockerRuntime {
         // it from whatever is serving.
         let port = if throwaway.is_some() { None } else { spec.port };
 
+        // **And never gets a terminal.** `run_throwaway` reads stdout and
+        // stderr apart to report them apart, and a terminal is one stream.
+        // `minato exec` is also how an agent runs a command, and an agent
+        // has no use for a program redrawing itself.
+        let terminal = throwaway.is_none() && spec.tty;
+
         // **A throwaway carries no `SERVICE` label.** That is the one
         // `summary_to_status` needs, so without it a throwaway cannot turn
         // up in `minato status`, in the routing table, or in what `down`
@@ -639,6 +645,9 @@ impl DockerRuntime {
             );
             if let Some(port) = port {
                 container_labels.insert(labels::PORT.to_string(), port.to_string());
+            }
+            if terminal {
+                container_labels.insert(labels::TTY.to_string(), labels::MANAGED_VALUE.to_string());
             }
         }
 
@@ -717,12 +726,6 @@ impl DockerRuntime {
             },
         );
 
-        // **A throwaway never gets one.** `run_throwaway` reads stdout and
-        // stderr apart to report them apart, and a terminal is one stream.
-        // `minato exec` is also how an agent runs a command, and an agent
-        // has no use for a program redrawing itself.
-        let terminal = throwaway.is_none() && spec.tty;
-
         let config = Config {
             image: Some(spec.image.clone()),
             // Both halves, or neither. A terminal with no stdin is one the
@@ -790,21 +793,6 @@ impl DockerRuntime {
             .map_err(|e| RuntimeError::failed(format!("creating container {name}"), e))?;
 
         Ok(created.id)
-    }
-
-    /// Whether the container was created with a terminal.
-    ///
-    /// `None` when there is no telling — the container went away between
-    /// the listing and this call, most likely. Read as "leave it alone":
-    /// recreating a service on the strength of a failed inspect would be a
-    /// restart nobody asked for.
-    async fn has_tty(&self, container_id: &str) -> Option<bool> {
-        let details = self
-            .docker
-            .inspect_container(container_id, None)
-            .await
-            .ok()?;
-        details.config.and_then(|config| config.tty)
     }
 
     /// The host-side address a running container listens on.
@@ -976,10 +964,18 @@ impl Runtime for DockerRuntime {
             // `minato.toml` reaches a running service only this way. Left
             // out, the setting would appear to do nothing until something
             // else happened to recreate the container.
-            let wrong_terminal = self
-                .has_tty(&id)
-                .await
-                .is_some_and(|terminal| terminal != spec.tty);
+            //
+            // Read from the label the listing already carried rather than
+            // by inspecting: this is on the path of every start, including
+            // every wake from scale-to-zero.
+            let has_terminal = existing
+                .labels
+                .as_ref()
+                .and_then(|stamped| stamped.get(labels::TTY))
+                .map(String::as_str)
+                == Some(labels::MANAGED_VALUE);
+
+            let wrong_terminal = has_terminal != spec.tty;
 
             if !wrong_image && !wrong_terminal && existing.state.as_deref() == Some("running") {
                 events.step_skipped(
@@ -1284,18 +1280,13 @@ impl Runtime for DockerRuntime {
                 | LogOutput::StdIn { message } => (OutputStream::Stdout, message),
             };
 
-            // A container with a terminal ends its lines `\r\n`, since
-            // that is what a terminal does. `str::lines` takes the `\n`
-            // and leaves the carriage return sitting at the end of the
-            // text, where it would send the cursor back over the line
-            // Minato prints next.
-            let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+            // Docker can pack several lines into one chunk; the carriage
+            // return a terminal leaves on each is `LogLine::new`'s to take
+            // off.
+            let text = String::from_utf8_lossy(&bytes);
             let lines: Vec<LogLine> = text
                 .lines()
-                .map(|line| LogLine {
-                    stream: stream_kind,
-                    line: line.to_string(),
-                })
+                .map(|line| LogLine::new(stream_kind, line.to_string()))
                 .collect();
 
             futures::stream::iter(lines)

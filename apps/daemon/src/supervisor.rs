@@ -548,20 +548,24 @@ impl Supervisor {
         // said out loud and the plain log stream follows.
         if interactive {
             match self.attachable(&resolved, &targets) {
-                Ok(name) => {
-                    let key = match resolved
-                        .config
-                        .service(&name)
-                        .map_err(ApiError::from)?
-                        .scope
-                    {
+                Ok((name, scope)) => {
+                    let key = match scope {
                         ServiceScope::Workspace => workspace_key.service(&name),
                         ServiceScope::Project => shared_key.service(&name),
                     };
 
-                    return self
+                    match self
                         .attach(runtime.as_ref(), &key, &name, window, from_client, events)
-                        .await;
+                        .await
+                    {
+                        Ok(response) => return Ok(response),
+                        // **A warning, like every other way of declining.**
+                        // The logs were asked for as well, and they can
+                        // still be given: failing outright would answer a
+                        // request for `logs` with nothing but the reason
+                        // the terminal was unavailable.
+                        Err(err) => events.warn(err.message),
+                    }
                 }
                 Err(reason) => events.warn(reason),
             }
@@ -616,7 +620,11 @@ impl Supervisor {
     /// failure. They asked to read logs and will get logs; what they will
     /// not get is to type, and being told why beats a keyboard that
     /// quietly does nothing.
-    fn attachable(&self, resolved: &Resolved, targets: &[String]) -> Result<String, String> {
+    fn attachable(
+        &self,
+        resolved: &Resolved,
+        targets: &[String],
+    ) -> Result<(String, ServiceScope), String> {
         let [name] = targets else {
             return Err("typing needs one service to type at. Name one, as in \
                  `minato logs -f web`"
@@ -636,7 +644,10 @@ impl Supervisor {
             ));
         }
 
-        Ok(name.clone())
+        // The scope comes back with the name: the caller needs it to build
+        // the key, and looking the service up again to get it would mean
+        // handling a failure that has just been ruled out.
+        Ok((name.clone(), service.scope))
     }
 
     /// Hands the client's terminal to a running service, both ways.
@@ -693,7 +704,7 @@ impl Supervisor {
                 _ = in_use.tick() => self.keep_awake(key),
 
                 chunk = output.next() => match chunk {
-                    Some(bytes) => events.bytes(Some(service.to_string()), &bytes),
+                    Some(bytes) => events.bytes(&bytes),
                     // The container's terminal closed. The service
                     // stopped, or was stopped.
                     None => break,

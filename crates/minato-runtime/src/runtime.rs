@@ -34,6 +34,23 @@ pub struct LogLine {
     pub line: String,
 }
 
+impl LogLine {
+    /// One line, with the terminal's carriage return taken off.
+    ///
+    /// **Every backend has to do this and none of them should decide it
+    /// separately.** A container with a terminal ends its lines `\r\n`,
+    /// and reading by line takes the `\n` and leaves the `\r` sitting at
+    /// the end — where it sends the cursor back over whatever is printed
+    /// next.
+    pub fn new(stream: OutputStream, mut line: String) -> Self {
+        if line.ends_with('\r') {
+            line.pop();
+        }
+
+        Self { stream, line }
+    }
+}
+
 /// The size a container's terminal is given when the service starts.
 ///
 /// **A terminal with no size is one a full-screen program will not draw
@@ -270,6 +287,16 @@ pub mod labels {
     /// The port listened on inside the container.
     pub const PORT: &str = "dev.minato.port";
 
+    /// Marks a container created with a terminal. The value is `"1"`.
+    ///
+    /// **A create-time setting, so it has to be readable from outside.**
+    /// Whether a container has a terminal cannot be changed after it is
+    /// made, so `start` compares this against the spec to decide whether
+    /// `tty` was turned on since — and the listing that found the
+    /// container already carries the labels, where asking the runtime
+    /// would be another round trip per service per start.
+    pub const TTY: &str = "dev.minato.tty";
+
     /// Marks a one-off container from `minato exec --fresh`.
     ///
     /// **It carries no `SERVICE` label**, which is what keeps it out of
@@ -356,6 +383,25 @@ pub mod names {
 mod tests {
     use super::*;
     use crate::spec::WorkspaceKey;
+
+    #[test]
+    fn a_terminals_carriage_return_is_taken_off() {
+        // Both backends read logs by line, and a container with a
+        // terminal ends every one of them `\r\n`. Left on, the `\r` sends
+        // the cursor back over whatever Minato prints next.
+        let line = LogLine::new(OutputStream::Stdout, "listening on 3000\r".into());
+        assert_eq!(line.line, "listening on 3000");
+    }
+
+    #[test]
+    fn a_line_without_one_is_left_alone() {
+        // Including the carriage returns a program put *inside* a line on
+        // purpose, which are its own business.
+        for text in ["plain", "", "progress\rredrawn"] {
+            let line = LogLine::new(OutputStream::Stdout, text.to_string());
+            assert_eq!(line.line, text);
+        }
+    }
 
     #[test]
     fn container_names_are_readable() {
