@@ -8,9 +8,10 @@
 //! Exposing them on `0.0.0.0` would put the development environment in
 //! front of everyone else on the LAN.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use bollard::Docker;
@@ -140,6 +141,8 @@ fn exit_code_from(status: &str) -> Option<i64> {
 
 pub struct DockerRuntime {
     docker: Docker,
+    /// The services Minato itself stopped. See [`DockerRuntime::stop`].
+    asked_to_stop: Mutex<HashSet<ServiceKey>>,
 }
 
 impl DockerRuntime {
@@ -155,11 +158,19 @@ impl DockerRuntime {
                 message: err.to_string(),
             })?;
 
-        Ok(Self { docker })
+        Ok(Self::with_client(docker))
     }
 
     pub fn with_client(docker: Docker) -> Self {
-        Self { docker }
+        Self {
+            docker,
+            asked_to_stop: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// The services this runtime stopped and has not started since.
+    fn asked_to_stop(&self) -> HashSet<ServiceKey> {
+        self.asked_to_stop.lock().expect("lock").clone()
     }
 
     fn unavailable(err: impl std::fmt::Display) -> RuntimeError {
@@ -793,12 +804,18 @@ impl DockerRuntime {
         Ok(host_port.map(|p| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), p)))
     }
 
-    fn summary_to_status(summary: &ContainerSummary) -> Option<ServiceStatus> {
+    fn summary_to_status(
+        summary: &ContainerSummary,
+        asked_to_stop: &HashSet<ServiceKey>,
+    ) -> Option<ServiceStatus> {
         let labels_map = summary.labels.as_ref()?;
 
         let project = labels_map.get(labels::PROJECT)?.clone();
         let workspace = labels_map.get(labels::WORKSPACE)?.clone();
         let service = labels_map.get(labels::SERVICE)?.clone();
+
+        let stopped_by_us =
+            asked_to_stop.contains(&WorkspaceKey::new(&project, &workspace).service(&service));
 
         let scope = match labels_map.get(labels::SCOPE).map(String::as_str) {
             Some("project") => ServiceScope::Project,
@@ -813,6 +830,13 @@ impl DockerRuntime {
         let state = match summary.state.as_deref() {
             Some("running") => ServiceState::Ready,
             Some("created" | "restarting") => ServiceState::Starting,
+            // A stop Minato asked for is a stop whatever the process made
+            // of the signal. `turbo` and `next` catch SIGTERM and exit 1
+            // themselves, which is indistinguishable from a crash by the
+            // exit code alone — and leaves an idle-stopped service sitting
+            // in `failed` until someone reads the logs to find out that
+            // nothing is wrong.
+            Some("exited") if stopped_by_us => ServiceState::Stopped,
             Some("exited") => match crash_code(summary.status.as_deref()) {
                 Some(code) => ServiceState::failed(format!(
                     "the container exited with code {code}. \
@@ -896,6 +920,9 @@ impl Runtime for DockerRuntime {
 
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
         let name = names::container(&spec.key);
+
+        // Whatever it exits with next is nothing to do with the last stop.
+        self.asked_to_stop.lock().expect("lock").remove(&spec.key);
 
         // Already running: do nothing. `minato up` gives the same result
         // however many times it is run.
@@ -1051,6 +1078,12 @@ impl Runtime for DockerRuntime {
             .await
             .map_err(|e| RuntimeError::failed(format!("stopping container {id}"), e))?;
 
+        // Remembered so the exit code it produced is not read as a crash.
+        // Only for as long as this runtime lives: after a daemon restart
+        // nothing knows who stopped what, and the exit code is all there
+        // is to go on again.
+        self.asked_to_stop.lock().expect("lock").insert(key.clone());
+
         events.step_done("stop", format!("stopping {}", key.service));
         events.service_state(&key.service, ServiceState::Stopped);
         Ok(())
@@ -1074,6 +1107,9 @@ impl Runtime for DockerRuntime {
             )
             .await
             .map_err(|e| RuntimeError::failed(format!("removing container {id}"), e))?;
+
+        // There is no longer a container whose exit code needs explaining.
+        self.asked_to_stop.lock().expect("lock").remove(key);
 
         events.step_done("remove", format!("removing {}", key.service));
         Ok(())
@@ -1130,7 +1166,7 @@ impl Runtime for DockerRuntime {
 
     async fn inspect(&self, key: &ServiceKey) -> Result<ServiceStatus> {
         match self.find_container(key).await? {
-            Some(summary) => Ok(Self::summary_to_status(&summary)
+            Some(summary) => Ok(Self::summary_to_status(&summary, &self.asked_to_stop())
                 .unwrap_or_else(|| ServiceStatus::stopped(key.clone(), ServiceScope::Workspace))),
             None => Ok(ServiceStatus::stopped(key.clone(), ServiceScope::Workspace)),
         }
@@ -1339,9 +1375,11 @@ impl Runtime for DockerRuntime {
             .await
             .map_err(Self::unavailable)?;
 
+        let asked_to_stop = self.asked_to_stop();
+
         Ok(containers
             .iter()
-            .filter_map(Self::summary_to_status)
+            .filter_map(|summary| Self::summary_to_status(summary, &asked_to_stop))
             .collect())
     }
 }
@@ -1418,6 +1456,11 @@ mod tests {
         }
     }
 
+    /// No service has been stopped by us, which is every case but one.
+    fn not_stopped() -> HashSet<ServiceKey> {
+        HashSet::new()
+    }
+
     fn minato_labels() -> HashMap<String, String> {
         HashMap::from([
             (labels::MANAGED.to_string(), "1".to_string()),
@@ -1433,8 +1476,11 @@ mod tests {
     fn reconstructs_state_from_labels() {
         // A daemon restart has nothing but this to recover its state
         // from.
-        let status = DockerRuntime::summary_to_status(&summary_with(minato_labels(), "running"))
-            .expect("recovers when the Minato labels are all there");
+        let status = DockerRuntime::summary_to_status(
+            &summary_with(minato_labels(), "running"),
+            &not_stopped(),
+        )
+        .expect("recovers when the Minato labels are all there");
 
         assert_eq!(status.key.workspace.project, "myapp");
         assert_eq!(status.key.workspace.workspace, "feat-1");
@@ -1454,7 +1500,8 @@ mod tests {
         foreign.insert("com.example.app".to_string(), "other".to_string());
 
         assert!(
-            DockerRuntime::summary_to_status(&summary_with(foreign, "running")).is_none(),
+            DockerRuntime::summary_to_status(&summary_with(foreign, "running"), &not_stopped())
+                .is_none(),
             "someone else's container must not be picked up"
         );
     }
@@ -1469,9 +1516,11 @@ mod tests {
         ];
 
         for (docker_state, expected) in cases {
-            let status =
-                DockerRuntime::summary_to_status(&summary_with(minato_labels(), docker_state))
-                    .expect("recovers");
+            let status = DockerRuntime::summary_to_status(
+                &summary_with(minato_labels(), docker_state),
+                &not_stopped(),
+            )
+            .expect("recovers");
             assert_eq!(status.state, expected, "docker state = {docker_state}");
         }
     }
@@ -1488,8 +1537,11 @@ mod tests {
     fn a_container_that_fell_over_is_failed_not_stopped() {
         // The reason SKILL.md promises. Without it a start-up script that
         // died looks exactly like a service nobody started.
-        let status = DockerRuntime::summary_to_status(&exited_with("Exited (127) 2 seconds ago"))
-            .expect("recovers");
+        let status = DockerRuntime::summary_to_status(
+            &exited_with("Exited (127) 2 seconds ago"),
+            &not_stopped(),
+        )
+        .expect("recovers");
 
         let ServiceState::Failed { reason } = &status.state else {
             panic!("expected a failure, got {:?}", status.state);
@@ -1503,8 +1555,11 @@ mod tests {
 
     #[test]
     fn a_dead_container_is_failed_too() {
-        let status = DockerRuntime::summary_to_status(&summary_with(minato_labels(), "dead"))
-            .expect("recovers");
+        let status = DockerRuntime::summary_to_status(
+            &summary_with(minato_labels(), "dead"),
+            &not_stopped(),
+        )
+        .expect("recovers");
 
         let ServiceState::Failed { reason } = &status.state else {
             panic!("expected a failure, got {:?}", status.state);
@@ -1523,13 +1578,48 @@ mod tests {
             "Exited (137) 1 second ago",
             "Exited (oops) 1 second ago",
         ] {
-            let status = DockerRuntime::summary_to_status(&exited_with(line)).expect("recovers");
+            let status = DockerRuntime::summary_to_status(&exited_with(line), &not_stopped())
+                .expect("recovers");
             assert_eq!(status.state, ServiceState::Stopped, "{line}");
         }
 
-        let no_status =
-            DockerRuntime::summary_to_status(&summary_with(minato_labels(), "exited")).expect("ok");
+        let no_status = DockerRuntime::summary_to_status(
+            &summary_with(minato_labels(), "exited"),
+            &not_stopped(),
+        )
+        .expect("ok");
         assert_eq!(no_status.state, ServiceState::Stopped, "no status line");
+    }
+
+    #[test]
+    fn a_stop_we_asked_for_is_not_a_crash_whatever_the_exit_code() {
+        // The idle reaper stops a service, `turbo` catches the SIGTERM and
+        // exits 1 of its own accord, and the workspace is left reporting a
+        // failure nobody caused.
+        let stopped = HashSet::from([WorkspaceKey::new("myapp", "feat-1").service("web")]);
+
+        let status =
+            DockerRuntime::summary_to_status(&exited_with("Exited (1) 30 minutes ago"), &stopped)
+                .expect("recovers");
+
+        assert_eq!(status.state, ServiceState::Stopped);
+    }
+
+    #[test]
+    fn a_crash_after_a_stop_of_a_different_service_is_still_a_crash() {
+        // The record is per service, so one stopped service must not
+        // excuse another one falling over.
+        let stopped = HashSet::from([WorkspaceKey::new("myapp", "feat-1").service("api")]);
+
+        let status =
+            DockerRuntime::summary_to_status(&exited_with("Exited (1) 2 seconds ago"), &stopped)
+                .expect("recovers");
+
+        assert!(
+            matches!(status.state, ServiceState::Failed { .. }),
+            "got {:?}",
+            status.state
+        );
     }
 
     #[test]
@@ -1554,7 +1644,8 @@ mod tests {
         shared.insert(labels::WORKSPACE.to_string(), "_shared".to_string());
 
         let status =
-            DockerRuntime::summary_to_status(&summary_with(shared, "running")).expect("recovers");
+            DockerRuntime::summary_to_status(&summary_with(shared, "running"), &not_stopped())
+                .expect("recovers");
 
         assert_eq!(status.scope, ServiceScope::Project);
         assert!(status.key.workspace.is_shared());
@@ -1568,7 +1659,7 @@ mod tests {
         let mut summary = summary_with(no_port, "running");
         summary.ports = None;
 
-        let status = DockerRuntime::summary_to_status(&summary).expect("recovers");
+        let status = DockerRuntime::summary_to_status(&summary, &not_stopped()).expect("recovers");
         assert_eq!(status.port, None);
         assert_eq!(status.endpoint, None);
     }
