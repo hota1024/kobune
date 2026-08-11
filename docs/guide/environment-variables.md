@@ -64,18 +64,21 @@ volume Minato manages, mounted into every service.
 
 ```toml
 [services.web.env]
-npm_config_store_dir = "/var/cache/minato/pnpm"
-CARGO_HOME = "/var/cache/minato/cargo"
+npm_config_store_dir = "${MINATO_CACHE_DIR}/pnpm"
+CARGO_HOME = "${MINATO_CACHE_DIR}/cargo"
 ```
 
-::: warning `$VAR` is not expanded in `env`
-Values are passed to the container as written — nothing interpolates them, and
-neither does Docker. `npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` makes a
-directory *called* `$MINATO_CACHE_DIR` relative to the workdir, which is the
-worktree: the gigabyte-in-the-repository this exists to prevent.
+::: warning The braces are not optional
+`${MINATO_CACHE_DIR}` is [a reference](#referring-to-another-variable) and
+Minato expands it. `$MINATO_CACHE_DIR` without them is passed through as
+written, and Docker does not expand it either, so
+`npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` makes a directory *called*
+`$MINATO_CACHE_DIR` relative to the workdir, which is the worktree: the
+gigabyte-in-the-repository this exists to prevent. `minato up` warns when a
+value does this.
 
-Write the path out here. `$MINATO_CACHE_DIR` is for where a shell expands it —
-a `command`, or a start-up script:
+Braces are not needed where a shell does the expanding — a `command`, or a
+start-up script:
 
 ```toml
 command = "sh -c 'pnpm config set store-dir $MINATO_CACHE_DIR/pnpm && pnpm dev'"
@@ -131,6 +134,48 @@ services with no proxy, and `minato doctor` says how to get one.
 
 On Apple Container there is also `MINATO_HOST_<SERVICE>`, carrying a peer's IP
 address. See [Runtimes](./runtimes).
+
+## Referring to another variable
+
+`${NAME}` in a value is replaced with whatever `NAME` resolves to.
+
+```toml
+[services.web.env]
+NEXT_PUBLIC_WEB_URL = "${MINATO_URL_WEB}"
+NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
+FILE_BASE_URL       = "${MINATO_URL_API}/dev/r2"
+```
+
+**This is what puts a per-worktree URL under the name your application already
+reads.** `MINATO_URL_API` arrives under Minato's name for it; without a way to
+say this, every project ends up with a start-up script whose whole job is to
+copy one variable onto another.
+
+A reference resolves to the value the container is given, from whichever layer
+won — so overriding `MINATO_URL_API` in `.minato/env.local` overrides
+everything built out of it too. References may chain. `minato env ls` shows
+what they came to, since a listing of unexpanded values would be a listing of
+something nothing runs with.
+
+- **`$NAME` without braces is left alone.** These values have always been
+  passed through as written, and expanding them now would change what existing
+  configurations mean. Where the name is one that exists, `minato up` says so
+  rather than leaving you to find out from the symptom.
+- **`$$` is a literal `$`**, so `$${A}` passes `${A}` through untouched.
+- **What is not a variable name is not a reference.** `${PORT:-3000}` is shell
+  syntax and reaches the shell unchanged.
+- **A name nothing sets is an error**, not an empty string — the same reason
+  `MINATO_URL_<SERVICE>` is left unset when there is no proxy.
+
+::: warning A secret cannot be built into another value
+`DATABASE_URL = "postgres://user:${PASSWORD}@db/app"` is refused when
+`PASSWORD` is a `op://` or `keychain://` reference. Those are resolved in
+memory when the container starts, and expanding one here would put the secret
+into `minato env ls` and into anything written out of it.
+
+Store the composed value as the secret, or give the application the two
+variables and let it join them.
+:::
 
 ## Secrets
 

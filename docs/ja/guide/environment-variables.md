@@ -65,19 +65,19 @@ MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 
 ```toml
 [services.web.env]
-npm_config_store_dir = "/var/cache/minato/pnpm"
-CARGO_HOME = "/var/cache/minato/cargo"
+npm_config_store_dir = "${MINATO_CACHE_DIR}/pnpm"
+CARGO_HOME = "${MINATO_CACHE_DIR}/cargo"
 ```
 
-::: warning `env` の値で `$VAR` は展開されません
-値は書いたままコンテナに渡されます。Minato も Docker も展開しません。
+::: warning 波括弧は省略できません
+`${MINATO_CACHE_DIR}` は[参照](#他の変数を参照する)であり、Minato が展開します。
+波括弧の無い `$MINATO_CACHE_DIR` は書いたまま渡され、Docker も展開しません。
 `npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` と書くと、workdir すなわち
 worktree からの相対パスとして `$MINATO_CACHE_DIR` という名前のディレクトリが
 作られます。これはまさに、この仕組みが防ごうとしている「リポジトリ内に数 GB」
-そのものです。
+そのものです。この書き方をした値には `minato up` が警告します。
 
-ここではパスをそのまま書いてください。`$MINATO_CACHE_DIR` はシェルが展開する
-場所——`command` や起動スクリプト——で使います。
+シェルが展開する場所——`command` や起動スクリプト——では波括弧は不要です。
 
 ```toml
 command = "sh -c 'pnpm config set store-dir $MINATO_CACHE_DIR/pnpm && pnpm dev'"
@@ -136,6 +136,47 @@ const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
 Apple Container では、これに加えて他サービスの IP アドレスを保持する
 `MINATO_HOST_<SERVICE>` が注入されます。[ランタイム](./runtimes) を参照して
 ください。
+
+## 他の変数を参照する
+
+値の中の `${NAME}` は、`NAME` の解決結果に置き換えられます。
+
+```toml
+[services.web.env]
+NEXT_PUBLIC_WEB_URL = "${MINATO_URL_WEB}"
+NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
+FILE_BASE_URL       = "${MINATO_URL_API}/dev/r2"
+```
+
+**worktree ごとに変わる URL を、アプリケーションが既に読んでいる名前で渡すため
+の仕組みです。** `MINATO_URL_API` は Minato の名前で届くため、これを書けないと、
+変数を別の変数に写すためだけの起動スクリプトがどのプロジェクトにも生まれます。
+
+参照が解決するのは、どの層が優先されたかを問わず、コンテナに実際に渡る値です。
+したがって `.minato/env.local` で `MINATO_URL_API` を上書きすれば、そこから
+組み立てられる値もまとめて変わります。参照は連鎖できます。展開後の値は
+`minato env ls` にも表示されます。展開前の値の一覧は、どこでも動いていない
+ものの一覧だからです。
+
+- **波括弧の無い `$NAME` は展開されません。** これらの値はこれまで書いたまま
+  渡されてきたため、いま展開を始めると既存の設定の意味が変わってしまいます。
+  存在する変数名がこの形で書かれている場合は `minato up` が警告するので、
+  症状から探し当てる必要はありません。
+- **`$$` は `$` そのものです。** `$${A}` は `${A}` のまま渡ります。
+- **変数名でないものは参照ではありません。** `${PORT:-3000}` はシェルの記法
+  として、そのままシェルに届きます。
+- **どこにも定義の無い名前はエラーです。** 空文字にはしません。プロキシが無い
+  ときに `MINATO_URL_<SERVICE>` を未設定のままにするのと同じ理由です。
+
+::: warning シークレットを他の値に埋め込むことはできません
+`PASSWORD` が `op://` や `keychain://` の参照である場合、
+`DATABASE_URL = "postgres://user:${PASSWORD}@db/app"` は拒否されます。これらは
+コンテナ起動時にメモリ上で解決される値であり、ここで展開すると `minato env ls`
+や、そこから書き出されるあらゆる出力に平文が載ってしまいます。
+
+組み立て済みの値をシークレットとして保存するか、2 つの変数のままアプリケー
+ションに渡して、そちらで結合してください。
+:::
 
 ## シークレット
 

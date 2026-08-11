@@ -311,7 +311,11 @@ mod tests {
         .expect("builds");
 
         assert!(
-            !shared.resolve().iter().any(|entry| entry.key == "ONLY_WEB"),
+            !shared
+                .resolve()
+                .expect("resolves")
+                .iter()
+                .any(|entry| entry.key == "ONLY_WEB"),
             "one service's own env is not everyone's"
         );
 
@@ -328,6 +332,7 @@ mod tests {
 
         let own = web
             .resolve()
+            .expect("resolves")
             .into_iter()
             .find(|entry| entry.key == "ONLY_WEB")
             .expect("asked about web, it is web's that matter");
@@ -338,6 +343,45 @@ mod tests {
             "labelling it `project` sends someone to edit .minato/env for a \
              value the service overrides"
         );
+    }
+
+    #[test]
+    fn a_service_can_put_its_url_under_the_name_its_app_reads() {
+        // The whole point of expansion: no start-up script in between.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+            [services.api]
+            image = "node:22"
+            port = 8080
+        "#,
+        );
+
+        let layers = layers_for_service(
+            &config,
+            "myapp",
+            &record("feat-1", false),
+            std::path::Path::new("/repo"),
+            Some("web"),
+            &Paths::with_root(std::path::PathBuf::from("/nowhere")),
+            &Gateway::with_ports(Some(80), Some(443)),
+        )
+        .expect("builds");
+
+        let value = layers
+            .resolve()
+            .expect("resolves")
+            .into_iter()
+            .find(|entry| entry.key == "NEXT_PUBLIC_API_URL")
+            .expect("present")
+            .raw;
+
+        assert_eq!(value, "https://api.feat-1.myapp.localhost");
     }
 
     #[test]

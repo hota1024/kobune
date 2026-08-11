@@ -100,8 +100,8 @@ command = "sh -c 'echo minato ready; sleep infinity'"
 # For caches there is nothing to declare: every service is given
 # MINATO_CACHE_DIR=/var/cache/minato, a volume shared by the project's
 # worktrees. Point package managers at it so they stop writing into the
-# repository. `env` values are not interpolated, so write the path out.
-# env = {{ npm_config_store_dir = "/var/cache/minato/pnpm" }}
+# repository. `${{...}}` refers to another variable; a bare $NAME does not.
+# env = {{ npm_config_store_dir = "${{MINATO_CACHE_DIR}}/pnpm" }}
 # env = {{ POSTGRES_PASSWORD = "postgres" }}
 "#
     )

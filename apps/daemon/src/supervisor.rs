@@ -812,6 +812,7 @@ impl Supervisor {
 
         let entries = layers
             .resolve()
+            .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?
             .into_iter()
             .map(|entry| {
                 let secret = entry.secret_ref();
@@ -931,7 +932,28 @@ impl Supervisor {
         )
         .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?;
 
-        let entries = layers.resolve();
+        let entries = layers
+            .resolve()
+            .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?;
+
+        // `$NAME` is passed through as written — right for a value on its
+        // way to a shell, a mistake everywhere else. Saying so where the
+        // name is one Minato has costs a line and saves an afternoon:
+        // otherwise a directory called `$MINATO_CACHE_DIR` appears in the
+        // worktree and nothing connects it back to here.
+        for entry in &entries {
+            for name in minato_core::env::bare_references(&entry.raw)
+                .into_iter()
+                .filter(|name| entries.iter().any(|other| other.key == *name))
+            {
+                let message = format!(
+                    "{}: {} contains ${name}, which is not expanded. Write ${{{name}}} to refer to it",
+                    service, entry.key
+                );
+                events.warn(message.clone());
+                tracing::warn!("{message}");
+            }
+        }
 
         // Split references from plain values.
         let mut values = BTreeMap::new();
