@@ -794,7 +794,7 @@ impl Supervisor {
             &resolved.project,
             &resolved.workspace.label,
             &resolved.workspace.path,
-            &envs,
+            &env_values(&envs),
             &env::workspace_context(&resolved.config, &resolved.workspace, &self.gateway),
         )?;
 
@@ -838,10 +838,16 @@ impl Supervisor {
         )
         .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?;
 
-        let entries = layers
-            .resolve()
-            .map_err(env::resolution_error)?
-            .into_iter()
+        // **A listing that cannot settle still lists.** This is the tool
+        // someone reaches for to find the value that will not settle, and
+        // one bad `${...}` taking the whole listing with it leaves them
+        // with the error alone and nowhere to look. Only the values at
+        // fault are marked, so the rest are not left under suspicion.
+        let settled = layers.settle();
+
+        let entries = settled
+            .entries
+            .iter()
             .map(|entry| {
                 let secret = entry.secret_ref();
 
@@ -850,7 +856,7 @@ impl Supervisor {
                 let injected = entry.scope == minato_core::EnvScope::Injected;
 
                 EnvInfo {
-                    key: entry.key,
+                    key: entry.key.clone(),
                     value: if reveal || injected || secret.is_some() {
                         // A secret stays a reference even under --reveal.
                         // Showing the value would mean resolving it, and
@@ -862,6 +868,9 @@ impl Supervisor {
                     scope: entry.scope,
                     secret: secret.is_some(),
                     source: secret.map(|reference| reference.describe()),
+                    unsettled: settled
+                        .reason_for(&entry.key)
+                        .and_then(|err| env::unsettled(err, service.as_deref(), &resolved.config)),
                 }
             })
             .collect();
@@ -940,6 +949,10 @@ impl Supervisor {
     /// Stacks the layers and resolves secret references. **A resolved
     /// value never touches disk**, here or anywhere after; it exists only
     /// to be handed to the container.
+    ///
+    /// **Settling only.** Writing an `env_file` belongs to starting a
+    /// service, not to working out what its environment would be — this
+    /// is asked about services nobody is starting.
     async fn service_env(
         &self,
         config: &MinatoConfig,
@@ -948,7 +961,7 @@ impl Supervisor {
         project_root: &std::path::Path,
         service: &str,
         events: &EventSink,
-    ) -> Result<BTreeMap<String, String>, ApiError> {
+    ) -> Result<ServiceEnv, ApiError> {
         let layers = env::layers_for_service(
             config,
             project,
@@ -986,33 +999,21 @@ impl Supervisor {
             }
         }
 
-        // Written before the service starts, and from the same values it
-        // is about to be given: a file that disagreed with the process's
-        // own environment would be worse than no file.
-        if let Some(relative) = &config.service(service).map_err(ApiError::from)?.env_file {
-            let note = format!("service: {service}  workspace: {}", record.label);
-            let contents = minato_core::env::render(&entries, &note);
-
-            if let Some(path) = env::write_env_file(&record.path, relative, &contents)? {
-                tracing::debug!("{service}: wrote {}", path.display());
-            }
-        }
-
         // Split references from plain values.
         let mut values = BTreeMap::new();
         let mut references = Vec::new();
 
-        for entry in entries {
+        for entry in &entries {
             match entry.secret_ref() {
-                Some(reference) => references.push((entry.key, reference)),
+                Some(reference) => references.push((entry.key.clone(), reference)),
                 None => {
-                    values.insert(entry.key, entry.raw);
+                    values.insert(entry.key.clone(), entry.raw.clone());
                 }
             }
         }
 
         if references.is_empty() {
-            return Ok(values);
+            return Ok(ServiceEnv { values, entries });
         }
 
         let resolved = secrets::resolve(&references).await;
@@ -1026,7 +1027,7 @@ impl Supervisor {
             tracing::warn!("{service}: cannot resolve the secret for {key}: {reason}");
         }
 
-        Ok(values)
+        Ok(ServiceEnv { values, entries })
     }
 
     /// The environments for every service in a workspace.
@@ -1037,14 +1038,14 @@ impl Supervisor {
         record: &WorkspaceRecord,
         project_root: &std::path::Path,
         events: &EventSink,
-    ) -> Result<BTreeMap<String, BTreeMap<String, String>>, ApiError> {
+    ) -> Result<BTreeMap<String, ServiceEnv>, ApiError> {
         let mut envs = BTreeMap::new();
 
         for name in config.services.keys() {
-            let values = self
+            let settled = self
                 .service_env(config, project, record, project_root, name, events)
                 .await?;
-            envs.insert(name.clone(), values);
+            envs.insert(name.clone(), settled);
         }
 
         Ok(envs)
@@ -1495,13 +1496,17 @@ impl Supervisor {
             )
             .await?;
 
+        // Woken by a request, so this one is starting: its file is
+        // written, and nobody else's.
+        write_env_file_for(&config, &record, &route.service, &service_env)?;
+
         let service_spec = spec::build_service_spec(
             service_config,
             &route.service,
             &route.project,
             &record.label,
             &record.path,
-            service_env,
+            service_env.values,
             &env::workspace_context(&config, &record, &self.gateway),
         )?;
 
@@ -2220,7 +2225,7 @@ impl Supervisor {
             &resolved.project,
             &resolved.workspace.label,
             &resolved.workspace.path,
-            &envs,
+            &env_values(&envs),
             &env::workspace_context(&resolved.config, &resolved.workspace, &self.gateway),
         )?;
 
@@ -2240,6 +2245,13 @@ impl Supervisor {
                 "there is nothing to start".to_string(),
             ));
         }
+
+        // **Before anything is prepared**, so a file that cannot be
+        // written stops the start rather than being discovered by a
+        // container that read the old one. Only the selected services:
+        // `minato up web` has no business failing over what `api` asks
+        // for, or writing into a path `api` alone was pointed at.
+        write_env_files(&resolved.config, &resolved.workspace, &envs, &selected)?;
 
         let prepare_spec = minato_runtime::WorkspaceSpec {
             key: workspace_spec.key.clone(),
@@ -2630,6 +2642,75 @@ fn default_worktree_path(main_root: &std::path::Path, branch: &str) -> PathBuf {
     let label = minato_core::naming::sanitize_label(branch);
 
     parent.join(format!("{repo_name}.wt")).join(label)
+}
+
+/// Writes the `env_file` of each service that is about to run.
+///
+/// **Only the ones being started.** Every service's file used to be
+/// written whenever any environment was settled, so `minato up web`
+/// failed over `api`'s `env_file` pointing somewhere it may not write
+/// — a service nobody asked to start — and `minato exec` left files
+/// behind as a side effect of running a command.
+///
+/// From the same values the container is about to be given, so the
+/// file and the process cannot disagree.
+fn write_env_files(
+    config: &MinatoConfig,
+    record: &WorkspaceRecord,
+    envs: &BTreeMap<String, ServiceEnv>,
+    starting: &[String],
+) -> Result<(), ApiError> {
+    for service in starting {
+        if let Some(settled) = envs.get(service) {
+            write_env_file_for(config, record, service, settled)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// The same for one service.
+fn write_env_file_for(
+    config: &MinatoConfig,
+    record: &WorkspaceRecord,
+    service: &str,
+    settled: &ServiceEnv,
+) -> Result<(), ApiError> {
+    let Ok(service_config) = config.service(service) else {
+        return Ok(());
+    };
+
+    let Some(relative) = &service_config.env_file else {
+        return Ok(());
+    };
+
+    let note = format!("service: {service}  workspace: {}", record.label);
+    let contents = minato_core::env::render(&settled.entries, &note);
+
+    if let Some(path) = env::write_env_file(&record.path, relative, &contents)? {
+        tracing::debug!("{service}: wrote {}", path.display());
+    }
+
+    Ok(())
+}
+
+/// One service's settled environment.
+///
+/// Two views of the same thing. `values` is what the container is given,
+/// with secrets resolved; `entries` is what it was before that, which is
+/// what an `env_file` is written from — **so the file cannot say anything
+/// the process was not given**, and a resolved secret still never reaches
+/// disk.
+struct ServiceEnv {
+    values: BTreeMap<String, String>,
+    entries: Vec<minato_core::env::EnvEntry>,
+}
+
+/// Just the values, for building a spec.
+fn env_values(envs: &BTreeMap<String, ServiceEnv>) -> BTreeMap<String, BTreeMap<String, String>> {
+    envs.iter()
+        .map(|(name, settled)| (name.clone(), settled.values.clone()))
+        .collect()
 }
 
 /// What `minato new` was asked for, beyond the target.
@@ -3198,6 +3279,112 @@ mod tests {
             created_at: chrono::Utc::now(),
             setup_done: Default::default(),
         }
+    }
+
+    /// A workspace record rooted somewhere that can actually be written.
+    fn record_at(path: &std::path::Path) -> minato_core::WorkspaceRecord {
+        minato_core::WorkspaceRecord {
+            path: path.to_path_buf(),
+            ..record("feat-1", false)
+        }
+    }
+
+    fn settled(pairs: &[(&str, &str)]) -> ServiceEnv {
+        ServiceEnv {
+            values: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            entries: pairs
+                .iter()
+                .map(|(k, v)| minato_core::env::EnvEntry {
+                    key: k.to_string(),
+                    raw: v.to_string(),
+                    scope: minato_core::EnvScope::Service,
+                })
+                .collect(),
+        }
+    }
+
+    const TWO_ENV_FILES: &str = r#"
+        [project]
+        name = "myapp"
+        [services.web]
+        image = "node:22"
+        port = 3000
+        env_file = ".minato/env.web"
+        [services.api]
+        image = "node:22"
+        port = 8080
+        env_file = ".minato/env.api"
+    "#;
+
+    #[test]
+    fn only_the_services_being_started_get_their_file() {
+        // `minato up web` has no business writing into a path `api` alone
+        // was pointed at — nor failing over one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let record = record_at(dir.path());
+
+        let envs = BTreeMap::from([
+            ("web".to_string(), settled(&[("A", "1")])),
+            ("api".to_string(), settled(&[("B", "2")])),
+        ]);
+
+        write_env_files(&config(TWO_ENV_FILES), &record, &envs, &["web".to_string()])
+            .expect("writes");
+
+        assert!(dir.path().join(".minato/env.web").exists());
+        assert!(
+            !dir.path().join(".minato/env.api").exists(),
+            "api was not asked to start"
+        );
+    }
+
+    #[test]
+    fn another_services_env_file_cannot_fail_this_start() {
+        // The whole point: `api` pointing at a file Minato may not write
+        // used to take `minato up web` down with it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".minato")).expect("creates");
+        std::fs::write(dir.path().join(".minato/env.api"), "MINE=1\n").expect("writes");
+
+        let record = record_at(dir.path());
+        let envs = BTreeMap::from([
+            ("web".to_string(), settled(&[("A", "1")])),
+            ("api".to_string(), settled(&[("B", "2")])),
+        ]);
+
+        let config = config(TWO_ENV_FILES);
+
+        write_env_files(&config, &record, &envs, &["web".to_string()]).expect("web still starts");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".minato/env.api")).expect("reads"),
+            "MINE=1\n",
+            "and api's file is left exactly as it was"
+        );
+
+        // Starting `api` itself is a different matter: that one is asked
+        // for, so the refusal belongs to it.
+        assert!(
+            write_env_files(&config, &record, &envs, &["api".to_string()]).is_err(),
+            "the service that was asked for still answers for its own file"
+        );
+    }
+
+    #[test]
+    fn a_service_without_env_file_writes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let record = record_at(dir.path());
+        let envs = BTreeMap::from([("web".to_string(), settled(&[("A", "1")]))]);
+
+        write_env_files(&config(SAMPLE), &record, &envs, &["web".to_string()]).expect("writes");
+
+        assert!(
+            !dir.path().join(".minato").exists(),
+            "nothing asked for, nothing made"
+        );
     }
 
     #[test]

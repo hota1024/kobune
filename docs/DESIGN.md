@@ -664,6 +664,10 @@ env_file = ".minato/env.api"
 - **Written before the start and on every wake**, from the same values the
   container is given — a file that disagreed with the process's environment
   would be worse than no file
+- **Only for the services being started.** Settling an environment and writing
+  a file are different jobs, and conflating them made `minato up web` answer
+  for `api`'s `env_file` and left `minato exec` writing files as a side effect
+  of running a command
 - **Unchanged is not a write.** A dev server watching the file would otherwise
   restart every time scale-to-zero woke the service
 - **Anywhere in the worktree**, because the tools that need this read paths of
@@ -686,6 +690,22 @@ env_file = ".minato/env.api"
   means nobody is signed in to 1Password, and letting that keep the whole
   environment from starting is the worse outcome. It comes back as a warning,
   and only that key is dropped
+- **A listing that cannot settle still lists.** Where starting a service
+  refuses over a `${...}` nothing sets, `env ls` marks that value and says why
+  underneath: it is the tool for finding the one at fault, and the error alone
+  leaves nowhere to look. `env get` does refuse, since it prints a value for a
+  script to use
+- **Per value, not per listing.** Failing the lot over one bad reference would
+  show thirty settled values as unexpanded too, and nothing would tell them
+  apart — which is also what made the client guess at `${` to decide whether a
+  value was usable
+- A listing of no particular service is missing `MINATO_SERVICE` and every
+  service's own `env` by design, so a value built from one cannot settle there
+  even though the service starts. The reason says that, and names the service
+  whose listing does have it — only that one settles it. "Nothing sets it"
+  would send someone after a bug that is not there
+- The reason travels as **structured data**, not a sentence: which name, and
+  which of a handful of causes. The CLI turns it into English, as §3 requires
 
 ## 9. Cloudflare Tunnel
 

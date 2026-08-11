@@ -1625,8 +1625,17 @@ fn present_url(
 
 /// What `minato env get` prints: the value, on one line.
 fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCode, CliError> {
-    let Response::Env { entries, .. } = response else {
+    let Response::Env {
+        entries, service, ..
+    } = response
+    else {
         return Err(CliError::Local("cannot read the environment".to_string()));
+    };
+
+    // Whichever listing this came from is the one to send someone back to.
+    let listing = match service {
+        Some(name) => format!("minato env ls --service {name}"),
+        None => "minato env ls".to_string(),
     };
 
     let entry = entries
@@ -1638,6 +1647,25 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCo
                  or `minato env ls --service <name>` for one service's own"
             ))
         })?;
+
+    // **This one prints the real value, for a script to use.** A value
+    // that did not settle is shown as written, and handing one over as
+    // though it had would put `${...}` into whatever read it. Refused as
+    // a configuration problem, so a script sees the same exit code it
+    // would have got from `minato up`.
+    if let Some(unsettled) = &entry.unsettled {
+        let mut err = minato_api::ApiError::new(
+            minato_api::ErrorCode::InvalidConfig,
+            format!("`{key}` {}", ui::unsettled_reason(unsettled)),
+        );
+
+        err = match ui::unsettled_remedy(unsettled) {
+            Some(remedy) => err.with_hint(remedy),
+            None => err.with_hint(format!("`{listing}` shows the rest")),
+        };
+
+        return Err(CliError::Client(ClientError::Api(err)));
+    }
 
     if cli.json {
         output::print_json(entry);

@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
-use minato_api::{ApiError, ErrorCode};
+use minato_api::{ApiError, ErrorCode, Unsettled, UnsettledReason};
 use minato_core::{EnvLayers, EnvScope, MinatoConfig, Paths, WorkspaceRecord, env};
 
 use crate::gateway::Gateway;
@@ -168,8 +168,90 @@ pub fn resolution_error(err: env::EnvError) -> ApiError {
 }
 
 /// Whether a name is one Minato injects per service.
+///
+/// **The one place that decides it.** Both an error on the way to
+/// starting and a reason on a listing turn on this, and the two would
+/// otherwise drift into disagreeing about what a missing
+/// `MINATO_URL_<SERVICE>` means.
 fn is_per_service(name: &str) -> bool {
     name.starts_with("MINATO_URL_") || name.starts_with("MINATO_HOSTNAME_")
+}
+
+/// What stood in the way of expanding a value, for a client to say in its
+/// own words.
+///
+/// `service` is the one being listed, if any: a listing of no particular
+/// service is missing things **on purpose**, and what is missing on
+/// purpose is not something to go and fix.
+pub fn unsettled(
+    err: &env::EnvError,
+    service: Option<&str>,
+    config: &MinatoConfig,
+) -> Option<Unsettled> {
+    match err {
+        env::EnvError::CyclicReference { chain } => Some(Unsettled {
+            reference: None,
+            reason: UnsettledReason::Cycle {
+                chain: chain.clone(),
+            },
+        }),
+
+        env::EnvError::SecretReference { name, .. } => Some(Unsettled {
+            reference: Some(name.clone()),
+            reason: UnsettledReason::Secret,
+        }),
+
+        env::EnvError::UndefinedReference { name, .. } => Some(Unsettled {
+            reference: Some(name.clone()),
+            reason: undefined_because(name, service, config),
+        }),
+
+        // Reading or parsing a file never reaches a single value: the
+        // layers do not stack at all, and that is an error long before
+        // anything is expanded.
+        _ => None,
+    }
+}
+
+/// Why a name nothing sets is missing.
+fn undefined_because(name: &str, service: Option<&str>, config: &MinatoConfig) -> UnsettledReason {
+    // **A listing of no particular service leaves out `MINATO_SERVICE`
+    // and every service's own `env`**, since presenting one service's
+    // variables as everyone's would be worse. A value referring to one is
+    // right, and starting the service settles it — it is the listing that
+    // cannot, and "nothing sets it" would send someone hunting a bug that
+    // is not there.
+    //
+    // **Named, not "some service".** Only the service that defines the
+    // name settles it, so pointing at any other would send someone to a
+    // command that fails the same way.
+    if service.is_none()
+        && let Some(name) = service_defining(name, config)
+    {
+        return UnsettledReason::OnlyWithService { service: name };
+    }
+
+    if is_per_service(name) {
+        return UnsettledReason::NeedsProxy;
+    }
+
+    UnsettledReason::Undefined
+}
+
+/// A service whose own `env` would supply `name`.
+///
+/// `MINATO_SERVICE` is every service's, so the first will do; anything
+/// else belongs to whichever service declared it.
+fn service_defining(name: &str, config: &MinatoConfig) -> Option<String> {
+    if name == "MINATO_SERVICE" {
+        return config.services.keys().next().cloned();
+    }
+
+    config
+        .services
+        .iter()
+        .find(|(_, service)| service.env.contains_key(name))
+        .map(|(name, _)| name.clone())
 }
 
 /// Turns a service name into a variable name.
@@ -910,6 +992,163 @@ mod tests {
         assert!(
             error.hint.is_some_and(|hint| hint.contains("proxy")),
             "name the proxy, not the config"
+        );
+    }
+
+    /// The error from settling a listing, with `project` as its project
+    /// layer — the one a listing of no particular service does have.
+    fn listing_failure(
+        toml: &str,
+        project: &str,
+        service: Option<&str>,
+    ) -> (env::EnvError, MinatoConfig, tempfile::TempDir) {
+        let config = config(toml);
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = env::project_env_path(root.path());
+        std::fs::create_dir_all(path.parent().expect("has a parent")).expect("creates");
+        std::fs::write(&path, project).expect("writes");
+
+        let layers = layers_for_service(
+            &config,
+            "myapp",
+            &record("feat-1", false),
+            root.path(),
+            service,
+            &Paths::with_root(std::path::PathBuf::from("/nowhere")),
+            &Gateway::inert(),
+        )
+        .expect("builds");
+
+        let err = layers.resolve().expect_err("does not settle");
+        (err, config, root)
+    }
+
+    #[test]
+    fn a_listing_of_no_service_says_that_is_why() {
+        // `MINATO_SERVICE` is left out of a shared listing on purpose, so
+        // a value referring to it is right and it is the listing that
+        // cannot settle. "Nothing sets it" would send someone hunting a
+        // bug that is not there.
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+        "#,
+            "LOG_TAG=${MINATO_SERVICE}\n",
+            None,
+        );
+
+        let reason = unsettled(&err, None, &config).expect("has a reason");
+
+        assert_eq!(
+            reason.reason,
+            UnsettledReason::OnlyWithService {
+                service: "web".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_value_only_one_service_defines_names_that_service() {
+        // **Named, not "some service".** Only the one that defines it
+        // settles it, so pointing anywhere else sends someone to a
+        // command that fails the same way.
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.api]
+            image = "node:22"
+            port = 8080
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { OWN = "1" }
+        "#,
+            "DERIVED=${OWN}\n",
+            None,
+        );
+
+        let reason = unsettled(&err, None, &config).expect("has a reason");
+
+        assert_eq!(
+            reason.reason,
+            UnsettledReason::OnlyWithService {
+                service: "web".into()
+            },
+            "api does not define OWN, so sending anyone there would fail again"
+        );
+    }
+
+    #[test]
+    fn a_listing_about_one_service_gets_no_such_excuse() {
+        // Asked about `web`, `MINATO_SERVICE` is there — so a name that
+        // does not settle really is missing, and saying "this listing has
+        // no service" would be a lie.
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+        "#,
+            "DERIVED=${NOWHERE}\n",
+            Some("web"),
+        );
+
+        let reason = unsettled(&err, Some("web"), &config).expect("has a reason");
+
+        assert_eq!(reason.reason, UnsettledReason::Undefined);
+        assert_eq!(reason.reference.as_deref(), Some("NOWHERE"));
+    }
+
+    #[test]
+    fn a_missing_url_is_the_proxy_being_down() {
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { API_URL = "${MINATO_URL_WEB}" }
+        "#,
+            "",
+            Some("web"),
+        );
+
+        let reason = unsettled(&err, Some("web"), &config).expect("has a reason");
+        assert_eq!(reason.reason, UnsettledReason::NeedsProxy);
+    }
+
+    #[test]
+    fn a_loop_carries_the_loop() {
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+        "#,
+            "A=${B}\nB=${A}\n",
+            Some("web"),
+        );
+
+        let reason = unsettled(&err, Some("web"), &config).expect("has a reason");
+
+        assert!(
+            matches!(reason.reason, UnsettledReason::Cycle { ref chain } if chain.len() >= 3),
+            "{reason:?}"
+        );
+        assert!(
+            reason.reference.is_none(),
+            "a loop has no single name to blame"
         );
     }
 

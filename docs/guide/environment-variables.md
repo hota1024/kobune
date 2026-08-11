@@ -241,6 +241,20 @@ something nothing runs with.
   down, rather than start with the variable missing; `minato doctor` says how
   to get one back.
 
+`minato env ls` still lists when something in it will not settle. **Only the
+value at fault is shown as written**, with the reason under the listing — this
+is the tool for finding it, and it can only be found by looking at the values.
+Everything that does settle is shown settled, so the two can be told apart.
+
+A listing of no particular service leaves out `MINATO_SERVICE` and every
+service's own `env`, so a value built from one of those cannot settle *here*
+even though the service starts fine. It says so, and names the service whose
+listing can settle it — only that one will.
+
+In `--json`, a value that did not settle carries an `unsettled` object with
+the name it refers to and a reason (`undefined`, `only_with_service`,
+`needs_proxy`, `secret`, `cycle`). A value that settled has no such field.
+
 ::: warning Values written before this existed
 `${...}` and `$$` now mean something they did not. A value already holding one
 changes: `$$` becomes a single `$`, and `${NAME}` naming a variable that does
@@ -278,6 +292,12 @@ The path is relative to the worktree, and the file is written before the
 service starts — on `minato up` and again whenever scale-to-zero wakes it. It
 is left in place afterwards, so `pnpm dev` run from the worktree by hand reads
 the same values.
+
+**Only for the services being started.** `minato up web` writes `web`'s file
+and whatever its `depends_on` pulls in, not `api`'s — so a service nobody
+asked to start cannot fail the ones that were asked for, and a path only `api`
+was pointed at is only written when `api` runs. `minato exec` writes nothing:
+it runs a command, it does not start a service.
 
 **Rewriting it unchanged is not a write**, so a dev server watching the file
 does not restart every time the service wakes.
@@ -343,6 +363,10 @@ postgres://db:5432/app
 
 One line, no decoration, for scripts. Unlike `env ls` this prints the real
 value — you asked for it specifically.
+
+**It fails rather than printing an unsettled one.** Where `env ls` falls back
+to showing `${...}` as written, handing that to a script would put the braces
+into whatever read it.
 
 ## Files, if you prefer
 
