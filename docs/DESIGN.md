@@ -598,6 +598,8 @@ MINATO_WORKSPACE     = feat-1
 MINATO_SERVICE       = web
 MINATO_URL_WEB       = https://web.feat-1.myapp.localhost
 MINATO_URL_API       = https://api.feat-1.myapp.localhost
+MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
+MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
 MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
 ```
 

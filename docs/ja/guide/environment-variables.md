@@ -56,6 +56,8 @@ MINATO_SERVICE      = web
 MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
+MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
+MINATO_HOSTNAME_API = api.feature-user-auth.myapp.localhost
 ```
 
 ### `MINATO_CACHE_DIR`
@@ -133,9 +135,29 @@ const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
 が示します。
 :::
 
-Apple Container では、これに加えて他サービスの IP アドレスを保持する
-`MINATO_HOST_<SERVICE>` が注入されます。[ランタイム](./runtimes) を参照して
-ください。
+### `MINATO_HOSTNAME_<SERVICE>`
+
+同じホストを、周りに何も付けずに渡します。スキームもポートも末尾のスラッシュも
+ありません。
+
+```toml
+[services.web.env]
+NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
+COOKIE_DOMAIN           = "${MINATO_HOSTNAME_API}"
+```
+
+**CORS の origin、`allowedDevOrigins`、cookie の domain はいずれも URL ではなく
+これを要求します。** この変数が無いと、`MINATO_URL_<SERVICE>` から `sed` で
+スキームを削ぎ落とす処理がプロジェクト側に生まれます。
+
+注入される条件は URL と同じです。プロキシが待ち受けている間、かつ URL を公開
+しているサービスに限ります。応答しないホスト名を渡すのは、URL 側で避けている
+「値はあるのに繋がらない」と同じ状態だからです。
+
+::: warning `MINATO_HOST_<SERVICE>` とは別物です
+そちらは Apple Container のもので、他サービスの IP アドレスを保持します。
+[ランタイム](./runtimes) を参照してください。
+:::
 
 ## 他の変数を参照する
 

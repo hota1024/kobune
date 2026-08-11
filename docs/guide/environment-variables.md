@@ -55,6 +55,8 @@ MINATO_SERVICE      = web
 MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
+MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
+MINATO_HOSTNAME_API = api.feature-user-auth.myapp.localhost
 ```
 
 ### `MINATO_CACHE_DIR`
@@ -132,8 +134,28 @@ which names nothing that leads back here. `minato up` warns when it starts
 services with no proxy, and `minato doctor` says how to get one.
 :::
 
-On Apple Container there is also `MINATO_HOST_<SERVICE>`, carrying a peer's IP
-address. See [Runtimes](./runtimes).
+### `MINATO_HOSTNAME_<SERVICE>`
+
+The same host with nothing around it — no scheme, no port, no trailing slash.
+
+```toml
+[services.web.env]
+NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
+COOKIE_DOMAIN           = "${MINATO_HOSTNAME_API}"
+```
+
+**A CORS origin, `allowedDevOrigins` and a cookie domain all want this rather
+than a URL**, and cutting the scheme off `MINATO_URL_<SERVICE>` with `sed` is
+what a project ends up doing without it.
+
+It appears under the same condition as the URL: while the proxy is listening,
+and only for a service that publishes one. A hostname nothing answers on would
+be the same "set, but broken" the URL avoids.
+
+::: warning Not `MINATO_HOST_<SERVICE>`
+That name is Apple Container's, and it carries a peer's IP address — a
+different thing entirely. See [Runtimes](./runtimes).
+:::
 
 ## Referring to another variable
 
