@@ -10,8 +10,11 @@ assets/logo/
   minato-icon-square.svg  the same on an unrounded square
 ```
 
-All three are 1024×1024 exports and hold the same drawing; they differ only
-in what is behind it. `#0092FA` on `#020202`.
+All three are 512×512 and hold the same drawing; they differ only in what
+is behind it and in what colour it is drawn. The two icons put a `#B1CEF1`
+anchor on a `#00B4DB`→`#003357` radial; the mark, which has no tile to sit
+on, is drawn in `#00B4DB` so that it reads on a white page as well as a
+dark one.
 
 ## Which one to use
 
@@ -52,13 +55,18 @@ already installs rather than committed here.
 
 ## Replacing the logo
 
-Overwrite the three files, keeping the names. Nothing else needs editing:
-the README links to them directly, the docs copy whatever is here, and the
-social card is drawn from it on the next build.
+Overwrite the three files, keeping the names. Nothing else here needs
+editing: the README links to them directly, the docs copy whatever is
+here, and the social card is drawn from it on the next build. The one
+thing outside this directory that follows the logo is the brand blue,
+spelled out in `docs/.vitepress/config.ts` and `docs/scripts/og.mjs`.
 
-They are exports and are **not edited by hand** — a tightened viewBox or a
-tidied path would have to be redone after every re-export, and would be
-forgotten once. Size and position them where they are used instead.
+`minato-icon.svg` is the export, and the other two are it with the tile
+changed: the square drops the corner radius, and the mark drops the tile
+altogether and recolours the anchor. Redo them the same way rather than
+tidying any of the three by hand — a straightened path would have to be
+straightened again after the next export, and would be forgotten once.
+Size and position them where they are used instead.
 
 `.github/workflows/docs.yml` watches `assets/**`, so a logo change on its
 own still deploys the site. `release.yml` ignores it, because a logo has

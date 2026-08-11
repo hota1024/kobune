@@ -23,7 +23,7 @@ const WIDTH = 1200
 const HEIGHT = 630
 
 const BACKGROUND = '#020202'
-const BRAND = '#0092FA'
+const BRAND = '#00B4DB'
 const TEXT = '#ffffff'
 const MUTED = '#8b949e'
 
