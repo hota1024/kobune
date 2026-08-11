@@ -38,7 +38,7 @@ const DEFAULT_DOMAIN_SUFFIX: &str = "localhost";
 #[command(
     name = "minato",
     version = version(),
-    about = "A development environment manager for AI agents",
+    about = "A development environment manager built around git worktrees",
     long_about = "Manages a preview environment per git worktree.\n\
                   Every command supports --json, and the exit code says what kind of failure it was."
 )]

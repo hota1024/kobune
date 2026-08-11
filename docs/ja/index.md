@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Minato
   text: git worktree ごとのプレビュー環境
-  tagline: ブランチを切れば、環境はすでに動いています。AI エージェントが操作することを前提に設計しました。
+  tagline: ブランチを切れば、環境はすでに動いています。人からもエージェントからも同じように扱えます。
   image:
     src: /logo/minato-mark.svg
     alt: Minato

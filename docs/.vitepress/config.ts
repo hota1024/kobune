@@ -36,7 +36,7 @@ type Lang = 'en' | 'ja'
 const TEXT = {
   en: {
     label: 'English',
-    description: 'A development environment manager for AI agents',
+    description: 'A development environment manager built around git worktrees. Agent-friendly by design.',
     tagline: 'Create a git worktree, and its preview environment is up',
     guide: 'Guide',
     reference: 'Reference',
@@ -55,7 +55,7 @@ const TEXT = {
   },
   ja: {
     label: '日本語',
-    description: 'AI エージェント向けの開発環境管理ツール',
+    description: 'git worktree を軸にした開発環境管理ツール。エージェントから扱いやすい設計です。',
     tagline: 'git worktree を作れば、プレビュー環境が立ち上がっている',
     guide: 'ガイド',
     reference: 'リファレンス',
