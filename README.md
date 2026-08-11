@@ -253,4 +253,7 @@ reviewed by reading the rendered page.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Everything published before this — the commits, and the nightly builds made
+from them — went out under MIT, and that grant stands.
