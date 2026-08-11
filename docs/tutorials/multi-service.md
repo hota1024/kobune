@@ -71,12 +71,17 @@ For a call that has no reason to leave the network you can still use the
 service name directly on Docker (`http://api:8080`), which skips the proxy.
 That does not work on Apple Container; see [Runtimes](../guide/runtimes).
 
-::: warning The certificate is not trusted inside a container
-`minato setup` puts Minato's CA in the host's keychain, which covers the
-browser. A container has its own trust store and does not get it, so an HTTPS
-call from inside one fails to verify. Until the CA is mounted in, tell the
-client not to check: `NODE_TLS_REJECT_UNAUTHORIZED=0` for Node, `curl -k`.
-:::
+The certificate can verify in there too. Minato's CA is mounted into every
+service and named as `MINATO_CA_FILE`; point your stack's own variable at it
+and nothing has to turn verification off:
+
+```toml
+[services.web.env]
+NODE_EXTRA_CA_CERTS = "${MINATO_CA_FILE}"
+```
+
+See [`MINATO_CA_FILE`](../guide/environment-variables#minato-ca-file) for other
+stacks, and for why Minato leaves that line to you.
 
 ## Adding a database
 

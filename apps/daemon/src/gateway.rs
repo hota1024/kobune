@@ -712,6 +712,19 @@ impl Gateway {
         !self.http_addrs.is_empty() || !self.https_addrs.is_empty()
     }
 
+    /// The CA a container has to trust, when there is HTTPS to verify.
+    ///
+    /// **Not the same question as "is there a CA on disk".** The
+    /// certificate loads whether or not the HTTPS listener came up, and
+    /// with 443 taken by something else `url_for` hands out `http://`
+    /// URLs — nothing a container could verify. Mounting the file and
+    /// naming it then would be arranging trust for a connection that is
+    /// never made.
+    pub fn trusted_ca(&self) -> Option<&std::path::Path> {
+        self.https_port()?;
+        self.ca_path()
+    }
+
     /// The URL for a hostname, or `None` when the proxy is not running.
     ///
     /// HTTPS wins: browsers apply mixed-content and Secure-cookie rules to

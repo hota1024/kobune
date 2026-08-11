@@ -52,6 +52,19 @@ pub const CACHE_VOLUME: &str = "_cache";
 /// every service as `MINATO_CA_FILE`.
 pub const CA_TARGET: &str = "/etc/minato/ca.crt";
 
+/// The paths Minato mounts itself, and what to say when one is taken.
+///
+/// A table rather than a branch each: the next `MINATO_*` path should cost
+/// a line here, not another eight-line copy of the same check.
+const RESERVED_MOUNTS: [(&str, &str, &str); 2] = [
+    (
+        CACHE_TARGET,
+        "MINATO_CACHE_DIR",
+        "Write under $MINATO_CACHE_DIR, or mount yours somewhere else",
+    ),
+    (CA_TARGET, "MINATO_CA_FILE", "Mount yours somewhere else"),
+];
+
 /// The default when `idle_timeout` is omitted.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -614,29 +627,25 @@ impl MinatoConfig {
             )));
         }
 
-        // The name cannot be taken — `_cache` is not a valid volume name —
-        // but the place it is mounted can be. Two mounts on one target is
-        // an error from the container engine, several steps away from the
-        // line that caused it.
+        // The names cannot be taken — `_cache` is not a valid volume name,
+        // and the CA is not a named volume at all — but the places they
+        // are mounted can be. Two mounts on one target is an error from
+        // the container engine, several steps away from the line that
+        // caused it.
         for volume in &svc.volumes {
             let mut parts = volume.split(':');
             let _source = parts.next();
             let target = parts.next();
 
-            if target == Some(CACHE_TARGET) {
-                return Err(Error::ConfigInvalid(format!(
-                    "service `{name}`: {CACHE_TARGET} is where MINATO_CACHE_DIR \
-                     is already mounted, so `{volume}` would be a second mount \
-                     on the same path. Write under $MINATO_CACHE_DIR, or mount \
-                     yours somewhere else"
-                )));
-            }
+            for (reserved, variable, way_out) in RESERVED_MOUNTS {
+                if target != Some(reserved) {
+                    continue;
+                }
 
-            if target == Some(CA_TARGET) {
                 return Err(Error::ConfigInvalid(format!(
-                    "service `{name}`: {CA_TARGET} is where MINATO_CA_FILE is \
-                     already mounted, so `{volume}` would be a second mount on \
-                     the same path. Mount yours somewhere else"
+                    "service `{name}`: {reserved} is where {variable} is \
+                     already mounted, so `{volume}` would be a second mount \
+                     on the same path. {way_out}"
                 )));
             }
         }

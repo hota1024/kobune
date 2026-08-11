@@ -53,11 +53,56 @@ MINATO_PROJECT      = myapp
 MINATO_WORKSPACE    = feature-user-auth
 MINATO_SERVICE      = web
 MINATO_CACHE_DIR    = /var/cache/minato
+MINATO_CA_FILE      = /etc/minato/ca.crt
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
 MINATO_HOSTNAME_API = api.feature-user-auth.myapp.localhost
 ```
+
+### `MINATO_CA_FILE`
+
+Minato's own CA certificate, mounted read-only into every service, so a
+service can call `MINATO_URL_<SERVICE>` over HTTPS and have it verify.
+
+The browser trusts that certificate because `minato setup` put it in the
+host's keychain. A container has its own trust store and does not get it, so
+without this the URL connects and then fails on the certificate — and the way
+out everyone finds is turning verification off for the whole process.
+
+Point your stack's own variable at it. For Node that is one line:
+
+```toml
+[services.web.env]
+NODE_EXTRA_CA_CERTS = "${MINATO_CA_FILE}"
+```
+
+**`NODE_EXTRA_CA_CERTS` adds to the trust store; `SSL_CERT_FILE`,
+`CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE` replace it.** A container told to
+trust Minato through one of those trusts nothing else, so an outbound HTTPS
+call to anywhere but Minato stops working. Prefer the additive one where your
+stack has it.
+
+Minato does not set `NODE_EXTRA_CA_CERTS` for you, deliberately. It takes one
+file, so an image that already points it at a corporate bundle would silently
+lose that bundle — and it would be written into [`env_file`](#env-file), which
+is read on the *host*, where `/etc/minato/ca.crt` does not exist and Node warns
+about it on every start.
+
+For a stack that reads the system trust store instead, add the certificate to
+it at start:
+
+```toml
+[services.api]
+command = "sh -c 'cp $MINATO_CA_FILE /usr/local/share/ca-certificates/ && update-ca-certificates && ./serve'"
+```
+
+It is absent while there is no HTTPS to verify — no proxy on 443, no
+certificate to trust. Like every other value here, a container that is already
+running does not pick it up: `minato down && minato up`.
+
+`/etc/minato/ca.crt` is Minato's own mount, so a `volumes` entry on that exact
+path is refused the way `/var/cache/minato` is.
 
 ### `MINATO_CACHE_DIR`
 

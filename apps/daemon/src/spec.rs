@@ -21,8 +21,7 @@ pub fn build_workspace_spec(
     workspace: &str,
     worktree_path: &Path,
     envs: &BTreeMap<String, BTreeMap<String, String>>,
-    gateway_hosts: &[String],
-    ca_file: Option<&Path>,
+    context: &WorkspaceContext,
 ) -> Result<WorkspaceSpec, ApiError> {
     let key = WorkspaceKey::new(project, workspace);
 
@@ -30,12 +29,6 @@ pub fn build_workspace_spec(
     // this order.
     let ordered = config.startup_order();
     let mut services = Vec::with_capacity(ordered.len());
-
-    let context = WorkspaceContext {
-        services: config.services.keys().cloned().collect(),
-        gateway_hosts: gateway_hosts.to_vec(),
-        ca_file: ca_file.map(Path::to_path_buf),
-    };
 
     for name in ordered {
         let service_config = config
@@ -50,7 +43,7 @@ pub fn build_workspace_spec(
             workspace,
             worktree_path,
             envs.get(name).cloned().unwrap_or_default(),
-            context.clone(),
+            context,
         )?);
     }
 
@@ -209,7 +202,7 @@ pub fn build_service_spec(
     workspace: &str,
     worktree_path: &Path,
     env: BTreeMap<String, String>,
-    context: WorkspaceContext,
+    context: &WorkspaceContext,
 ) -> Result<ServiceSpec, ApiError> {
     // Either a prebuilt image to pull, or a context to build. The
     // configuration has already rejected both and neither.
@@ -267,7 +260,8 @@ pub fn build_service_spec(
     // inside the repository — and a package store turns into a gigabyte of
     // untracked files. Project-scoped, because sharing a package store
     // across worktrees is the point of it.
-    let mut volumes = Vec::with_capacity(service.volumes.len() + 1);
+    // The cache volume and, when there is HTTPS to verify, the CA.
+    let mut volumes = Vec::with_capacity(service.volumes.len() + 2);
     volumes.push(VolumeMount::Named {
         name: minato_core::config::CACHE_VOLUME.to_string(),
         target: minato_core::config::CACHE_TARGET.to_string(),
@@ -278,7 +272,12 @@ pub fn build_service_spec(
     // **Read-only, and the certificate alone.** The key beside it on disk
     // is what makes the CA able to sign anything at all, and it has no
     // business in a container.
-    if let Some(ca_file) = &context.ca_file {
+    //
+    // Checked here rather than trusted from the daemon's start: the file
+    // can be removed under a running daemon (`minato setup` undone, the
+    // directory cleared), and Docker answers a bind of a missing source by
+    // creating an empty *directory* at the host path and mounting that.
+    if let Some(ca_file) = context.ca_file.as_ref().filter(|path| path.is_file()) {
         volumes.push(VolumeMount::Bind {
             source: ca_file.clone(),
             target: minato_core::config::CA_TARGET.to_string(),
@@ -299,8 +298,9 @@ pub fn build_service_spec(
     // runtime's job.
     let peers: Vec<String> = context
         .services
-        .into_iter()
-        .filter(|other| other != name)
+        .iter()
+        .filter(|other| *other != name)
+        .cloned()
         .collect();
 
     Ok(ServiceSpec {
@@ -318,7 +318,7 @@ pub fn build_service_spec(
         volumes,
         source_mount,
         peers,
-        gateway_hosts: context.gateway_hosts,
+        gateway_hosts: context.gateway_hosts.clone(),
     })
 }
 
@@ -352,6 +352,16 @@ mod tests {
         volumes = ["pgdata:/var/lib/postgresql/data"]
     "#;
 
+    /// What every service in the workspace is told about the rest of it.
+    /// Most tests care about none of it.
+    fn context(config: &MinatoConfig) -> WorkspaceContext {
+        WorkspaceContext {
+            services: config.services.keys().cloned().collect(),
+            gateway_hosts: vec![],
+            ca_file: None,
+        }
+    }
+
     /// The environment layers are beside the point here, so they go in
     /// empty. Stacking them is `crate::env`'s job.
     fn no_envs() -> BTreeMap<String, BTreeMap<String, String>> {
@@ -365,8 +375,7 @@ mod tests {
             "feat-1",
             Path::new("/repo/wt/feat-1"),
             &no_envs(),
-            &[],
-            None,
+            &context(&config(SAMPLE)),
         )
         .expect("builds")
     }
@@ -396,8 +405,7 @@ mod tests {
             "feat-1",
             Path::new("/repo"),
             &no_envs(),
-            &[],
-            None,
+            &context(&config),
         )
         .expect("builds");
 
@@ -442,16 +450,29 @@ mod tests {
         );
     }
 
+    /// A context carrying a CA that is actually on disk, as production's
+    /// is: the mount is skipped for a path that is not a file.
+    fn ca_context(ca: &Path) -> WorkspaceContext {
+        WorkspaceContext {
+            ca_file: Some(ca.to_path_buf()),
+            ..context(&config(SAMPLE))
+        }
+    }
+
     #[test]
     fn mounts_the_certificate_read_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The name `LocalCa::certificate_path` really writes.
+        let ca = dir.path().join("minato-ca.crt");
+        std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").expect("writes");
+
         let spec = build_workspace_spec(
             &config(SAMPLE),
             "myapp",
             "feat-1",
             Path::new("/repo/wt/feat-1"),
             &no_envs(),
-            &[],
-            Some(Path::new("/home/me/.minato/ca/ca.crt")),
+            &ca_context(&ca),
         )
         .expect("builds");
 
@@ -468,8 +489,35 @@ mod tests {
             "a container has no business writing to it"
         );
         assert!(
-            matches!(mounted, VolumeMount::Bind { source, .. } if source.ends_with("ca.crt")),
+            matches!(mounted, VolumeMount::Bind { source, .. } if *source == ca),
             "the certificate itself, never the key beside it: {mounted:?}"
+        );
+    }
+
+    #[test]
+    fn mounts_no_certificate_that_is_not_there() {
+        // The path is settled when the daemon starts and the file can go
+        // afterwards. Docker answers a bind of a missing source by making
+        // an empty directory at the host path and mounting that.
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let spec = build_workspace_spec(
+            &config(SAMPLE),
+            "myapp",
+            "feat-1",
+            Path::new("/repo/wt/feat-1"),
+            &no_envs(),
+            &ca_context(&dir.path().join("gone.crt")),
+        )
+        .expect("builds");
+
+        assert!(
+            !spec
+                .service("web")
+                .expect("web")
+                .volumes
+                .iter()
+                .any(|volume| volume.target() == minato_core::config::CA_TARGET)
         );
     }
 
@@ -483,8 +531,7 @@ mod tests {
             "feat-1",
             Path::new("/repo/wt/feat-1"),
             &no_envs(),
-            &[],
-            None,
+            &context(&config(SAMPLE)),
         )
         .expect("builds");
 
@@ -576,7 +623,14 @@ mod tests {
     }
 
     fn built(dir: &Path, toml: &str) -> Result<WorkspaceSpec, ApiError> {
-        build_workspace_spec(&config(toml), "myapp", "feat-1", dir, &no_envs(), &[], None)
+        build_workspace_spec(
+            &config(toml),
+            "myapp",
+            "feat-1",
+            dir,
+            &no_envs(),
+            &context(&config(toml)),
+        )
     }
 
     const BUILDS: &str = r#"
@@ -759,8 +813,7 @@ mod tests {
             "feat-1",
             Path::new("/repo"),
             &no_envs(),
-            &[],
-            None,
+            &context(&config),
         )
         .unwrap_err();
         assert_eq!(err.code, minato_api::ErrorCode::InvalidConfig);

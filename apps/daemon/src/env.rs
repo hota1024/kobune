@@ -47,19 +47,23 @@ pub fn injected(
     );
 
     // **The certificate the proxy presents, so a container can check
-    // it.** Without this the URL above resolves, connects, and then fails
+    // it.** Without this the URL below resolves, connects, and then fails
     // to verify — and every project reaches for
     // `NODE_TLS_REJECT_UNAUTHORIZED=0`, which turns verification off for
-    // the whole process, not just for Minato.
+    // the whole process rather than for Minato.
     //
-    // `NODE_EXTRA_CA_CERTS` *adds* to the trust store rather than
-    // replacing it, which is why it is safe to set for everyone.
-    // `SSL_CERT_FILE` and friends replace it, and a container that trusted
-    // Minato and nothing else would lose the internet.
-    if gateway.ca_path().is_some() {
-        let target = minato_core::config::CA_TARGET.to_string();
-        values.insert("MINATO_CA_FILE".to_string(), target.clone());
-        values.insert("NODE_EXTRA_CA_CERTS".to_string(), target);
+    // **The path only.** `NODE_EXTRA_CA_CERTS` was set here at first, and
+    // it takes one file: an image that already points it at a corporate
+    // bundle would have lost that bundle, since container env beats image
+    // `ENV`. It would also be rendered into `env_file`, which is read on
+    // the host, where this path does not exist and Node warns about it on
+    // every start. So Minato names the file and the service wires it in,
+    // the way `MINATO_CACHE_DIR` already works.
+    if gateway.trusted_ca().is_some() {
+        values.insert(
+            "MINATO_CA_FILE".to_string(),
+            minato_core::config::CA_TARGET.to_string(),
+        );
     }
 
     for (name, host, url) in exposed_urls(config, record, gateway) {
@@ -94,6 +98,23 @@ pub fn service_hosts(
         .into_iter()
         .map(|(_, host, _)| host)
         .collect()
+}
+
+/// What every service in a workspace is told about the one around it.
+///
+/// **Built here, from the gateway, once.** The hostnames and the CA are
+/// both answers to "what is the proxy serving right now", and three call
+/// sites deriving them separately is three chances for them to disagree.
+pub fn workspace_context(
+    config: &MinatoConfig,
+    record: &WorkspaceRecord,
+    gateway: &Gateway,
+) -> crate::spec::WorkspaceContext {
+    crate::spec::WorkspaceContext {
+        services: config.services.keys().cloned().collect(),
+        gateway_hosts: service_hosts(config, record, gateway),
+        ca_file: gateway.trusted_ca().map(std::path::Path::to_path_buf),
+    }
 }
 
 /// Every exposed service, as `(name, hostname, URL)`.
@@ -505,11 +526,35 @@ mod tests {
             Some(minato_core::config::CA_TARGET),
             "the path inside the container, not the one on the host"
         );
-        assert_eq!(
-            values.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
-            Some(minato_core::config::CA_TARGET),
-            "additive, so the rest of the trust store survives"
+        assert!(
+            !values.contains_key("NODE_EXTRA_CA_CERTS"),
+            "Node's variable takes one file, so setting it would drop \
+             whatever the image already pointed it at — and it is rendered \
+             into env_file, which is read on the host where this path does \
+             not exist"
         );
+    }
+
+    #[test]
+    fn names_no_certificate_when_https_is_not_being_served() {
+        // The CA loads whether or not :443 could be held. With HTTPS down
+        // the URLs are http://, so there is nothing for a container to
+        // verify — and the file would still be mounted for it.
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &Gateway::with_ports(Some(80), None).with_ca("/home/me/.minato/ca/minato-ca.crt"),
+        );
+
+        assert!(
+            values
+                .get("MINATO_URL_WEB")
+                .is_some_and(|url| url.starts_with("http://")),
+            "the state under test is HTTP-only"
+        );
+        assert!(!values.contains_key("MINATO_CA_FILE"));
     }
 
     #[test]
