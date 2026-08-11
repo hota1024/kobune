@@ -100,6 +100,51 @@ fn is_per_service(name: &str) -> bool {
     name.starts_with("MINATO_URL_") || name.starts_with("MINATO_HOSTNAME_")
 }
 
+/// Why a listing is showing values as written.
+///
+/// **A listing degrades rather than failing**, so this says what went
+/// wrong where an error would have. `service` is the one being listed, if
+/// any: a listing of no particular service is missing things on purpose,
+/// and what is missing on purpose is not something to go and fix.
+pub fn listing_note(err: &env::EnvError, service: Option<&str>, config: &MinatoConfig) -> String {
+    let note = format!("{err}. Values are shown as written");
+
+    let env::EnvError::UndefinedReference { name, .. } = err else {
+        return note;
+    };
+
+    // **A listing of no particular service leaves out `MINATO_SERVICE`
+    // and every service's own `env`**, since presenting one service's
+    // variables as everyone's would be worse. A value referring to one is
+    // right, and starting the service settles it — it is the listing that
+    // cannot, and "nothing sets it" would send someone hunting a bug that
+    // is not there.
+    if service.is_none() && only_a_service_has(name, config) {
+        return format!(
+            "{note}. This listing names no service, so {name} is not part of it — \
+             `minato env ls --service <name>` settles it"
+        );
+    }
+
+    if is_per_service(name) {
+        return format!(
+            "{note}. {name} exists only while the proxy is listening, and only for a \
+             service with `expose = true`. Run `minato doctor`"
+        );
+    }
+
+    note
+}
+
+/// Whether `name` is something only a listing about one service holds.
+fn only_a_service_has(name: &str, config: &MinatoConfig) -> bool {
+    name == "MINATO_SERVICE"
+        || config
+            .services
+            .values()
+            .any(|service| service.env.contains_key(name))
+}
+
 /// Turns a service name into a variable name.
 ///
 /// `cache-store` becomes `MINATO_URL_CACHE_STORE`. A hyphen is not valid
@@ -731,6 +776,123 @@ mod tests {
             error.hint.is_some_and(|hint| hint.contains("proxy")),
             "name the proxy, not the config"
         );
+    }
+
+    /// The error from settling a listing, with `project` as its project
+    /// layer — the one a listing of no particular service does have.
+    fn listing_failure(
+        toml: &str,
+        project: &str,
+        service: Option<&str>,
+    ) -> (env::EnvError, MinatoConfig, tempfile::TempDir) {
+        let config = config(toml);
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = env::project_env_path(root.path());
+        std::fs::create_dir_all(path.parent().expect("has a parent")).expect("creates");
+        std::fs::write(&path, project).expect("writes");
+
+        let layers = layers_for_service(
+            &config,
+            "myapp",
+            &record("feat-1", false),
+            root.path(),
+            service,
+            &Paths::with_root(std::path::PathBuf::from("/nowhere")),
+            &Gateway::inert(),
+        )
+        .expect("builds");
+
+        let err = layers.resolve().expect_err("does not settle");
+        (err, config, root)
+    }
+
+    #[test]
+    fn a_listing_of_no_service_says_that_is_why() {
+        // `MINATO_SERVICE` is left out of a shared listing on purpose, so
+        // a value referring to it is right and it is the listing that
+        // cannot settle. "Nothing sets it" would send someone hunting a
+        // bug that is not there.
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+        "#,
+            "LOG_TAG=${MINATO_SERVICE}\n",
+            None,
+        );
+
+        let note = listing_note(&err, None, &config);
+
+        assert!(note.contains("names no service"), "{note}");
+        assert!(note.contains("--service"), "say how to settle it: {note}");
+    }
+
+    #[test]
+    fn a_value_only_one_service_defines_is_the_same_story() {
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { OWN = "1" }
+        "#,
+            "DERIVED=${OWN}\n",
+            None,
+        );
+
+        let note = listing_note(&err, None, &config);
+        assert!(note.contains("names no service"), "{note}");
+    }
+
+    #[test]
+    fn a_listing_about_one_service_gets_no_such_excuse() {
+        // Asked about `web`, `MINATO_SERVICE` is there — so a name that
+        // does not settle really is missing, and saying "this listing has
+        // no service" would be a lie.
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+        "#,
+            "DERIVED=${NOWHERE}\n",
+            Some("web"),
+        );
+
+        let note = listing_note(&err, Some("web"), &config);
+
+        assert!(!note.contains("names no service"), "{note}");
+        assert!(note.contains("NOWHERE"), "{note}");
+        assert!(note.contains("shown as written"), "{note}");
+    }
+
+    #[test]
+    fn a_missing_url_still_names_the_proxy_in_a_listing() {
+        // The listing does not raise the error, so the hint that comes
+        // with the error would never be seen without this.
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { API_URL = "${MINATO_URL_WEB}" }
+        "#,
+            "",
+            Some("web"),
+        );
+
+        let note = listing_note(&err, Some("web"), &config);
+        assert!(note.contains("proxy"), "{note}");
     }
 
     /// A worktree with nothing in it, and no git.

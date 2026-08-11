@@ -810,9 +810,23 @@ impl Supervisor {
         )
         .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?;
 
-        let entries = layers
-            .resolve()
-            .map_err(env::resolution_error)?
+        // **A listing that cannot settle still lists.** This is the tool
+        // someone reaches for to find the value that will not settle, and
+        // one bad `${...}` taking the whole listing with it leaves them
+        // with the error alone and nowhere to look.
+        let (settled, unresolved) = match layers.resolve() {
+            Ok(settled) => (settled, None),
+            Err(err) => (
+                layers.unexpanded(),
+                Some(env::listing_note(
+                    &err,
+                    service.as_deref(),
+                    &resolved.config,
+                )),
+            ),
+        };
+
+        let entries = settled
             .into_iter()
             .map(|entry| {
                 let secret = entry.secret_ref();
@@ -838,7 +852,11 @@ impl Supervisor {
             })
             .collect();
 
-        Ok(Response::Env { entries, service })
+        Ok(Response::Env {
+            entries,
+            service,
+            unresolved,
+        })
     }
 
     async fn env_set(

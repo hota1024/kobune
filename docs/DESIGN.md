@@ -678,6 +678,15 @@ env_file = ".minato/env.api"
   means nobody is signed in to 1Password, and letting that keep the whole
   environment from starting is the worse outcome. It comes back as a warning,
   and only that key is dropped
+- **A listing that cannot settle still lists.** Where starting a service
+  refuses over a `${...}` nothing sets, `env ls` shows the values as written
+  and says why underneath: it is the tool for finding the one at fault, and
+  the error alone leaves nowhere to look. `env get` does refuse, since it
+  prints a value for a script to use
+- A listing of no particular service is missing `MINATO_SERVICE` and every
+  service's own `env` by design, so a value built from one cannot settle there
+  even though the service starts. The note says that rather than "nothing sets
+  it", which would send someone after a bug that is not there
 
 ## 9. Cloudflare Tunnel
 

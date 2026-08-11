@@ -113,8 +113,10 @@ pub fn setup_done(
 }
 
 /// `env ls`, and what `env set` / `env unset` leave behind.
-pub fn env(entries: &[EnvInfo]) {
-    Surface::stdout().print(|decor| views::env(entries, decor));
+///
+/// `unresolved` says why the values are as written, when they are.
+pub fn env(entries: &[EnvInfo], unresolved: Option<&str>) {
+    Surface::stdout().print(|decor| views::env(entries, unresolved, decor));
 }
 
 /// `tunnel status`, `tunnel enable`, `tunnel disable`.

@@ -448,7 +448,7 @@ fn count(n: usize, noun: &str) -> String {
 /// **Each value says which layer defined it.** With three layers, not
 /// seeing that an unintended one is winning makes the cause impossible to
 /// find.
-pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
+pub fn env(entries: &[EnvInfo], unresolved: Option<&str>, decor: Decor) -> Panel {
     if entries.is_empty() {
         return Panel::new(decor, "environment")
             .line(Span::styled("nothing is defined", theme::muted()));
@@ -478,7 +478,16 @@ pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
         ]);
     }
 
-    Panel::new(decor, "environment").grid(grid)
+    let panel = Panel::new(decor, "environment").grid(grid);
+
+    // **Said with the listing, not instead of it.** The reason a value
+    // will not settle is only findable by looking at the values, so the
+    // listing has to arrive — but reading it as settled when it is not
+    // would be worse than not having it.
+    match unresolved {
+        Some(note) => panel.line(Line::styled(note.to_string(), theme::warn())),
+        None => panel,
+    }
 }
 
 /// `minato tunnel status`, and where `enable` and `disable` leave things.
@@ -1223,12 +1232,39 @@ mod tests {
             },
         ];
 
-        let text = render(&env(&entries, Decor::PLAIN));
+        let text = render(&env(&entries, None, Decor::PLAIN));
 
         assert!(text.contains("injected"), "got:\n{text}");
         assert!(text.contains("workspace"), "got:\n{text}");
         // The reference, never the value behind it.
         assert!(text.contains("1password://vault/item"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_listing_that_could_not_settle_still_lists() {
+        // This is the tool for finding the value at fault, so it has to
+        // arrive — saying so alongside, not instead.
+        let entries = vec![EnvInfo {
+            key: "API_URL".into(),
+            value: "${MINATO_URL_API}".into(),
+            scope: EnvScope::Service,
+            secret: false,
+            source: None,
+        }];
+
+        let text = render(&env(
+            &entries,
+            Some(
+                "API_URL refers to ${MINATO_URL_API}, which nothing sets. Values are shown as written",
+            ),
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("API_URL"), "the listing arrives:\n{text}");
+        assert!(
+            text.contains("shown as written"),
+            "and says it is not settled:\n{text}"
+        );
     }
 
     #[test]

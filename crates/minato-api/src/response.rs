@@ -33,6 +33,14 @@ pub enum Response {
         /// storing or comparing them cannot tell whose environment it kept.
         #[serde(default)]
         service: Option<String>,
+        /// Why the values are as written rather than as they resolve.
+        ///
+        /// **Present means the listing is degraded**: something in it
+        /// refers to a name that cannot be settled, so every `${...}` is
+        /// shown unexpanded. The listing still arrives, because this is
+        /// the tool for finding the value at fault.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unresolved: Option<String>,
     },
     /// The result of a command. Its output arrives as [`crate::Event::Output`].
     Exec {

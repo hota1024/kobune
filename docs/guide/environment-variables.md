@@ -196,6 +196,27 @@ something nothing runs with.
   down, rather than start with the variable missing; `minato doctor` says how
   to get one back.
 
+`minato env ls` still lists when something in it will not settle. It shows the
+values as written and says why underneath — this is the tool for finding the
+one at fault, and it can only be found by looking at them.
+
+```console
+$ minato env ls
+╭ environment ──────────────────────────────────────────────────────╮
+│ KEY      SCOPE    VALUE                                           │
+│ API_URL  service  ${MINATO_URL_API}                               │
+│                                                                   │
+│ API_URL refers to ${MINATO_URL_API}, which nothing sets. Values   │
+│ are shown as written. MINATO_URL_API exists only while the proxy  │
+│ is listening…                                                     │
+╰───────────────────────────────────────────────────────────────────╯
+```
+
+A listing of no particular service leaves out `MINATO_SERVICE` and every
+service's own `env`, so a value built from one of those cannot settle *here*
+even though the service starts fine. It says so, and names
+`minato env ls --service <name>` as the listing that can.
+
 ::: warning Values written before this existed
 `${...}` and `$$` now mean something they did not. A value already holding one
 changes: `$$` becomes a single `$`, and `${NAME}` naming a variable that does
@@ -298,6 +319,10 @@ postgres://db:5432/app
 
 One line, no decoration, for scripts. Unlike `env ls` this prints the real
 value — you asked for it specifically.
+
+**It fails rather than printing an unsettled one.** Where `env ls` falls back
+to showing `${...}` as written, handing that to a script would put the braces
+into whatever read it.
 
 ## Files, if you prefer
 

@@ -1544,8 +1544,12 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
         Response::Pong(pong) => ui::daemon(pong, None),
         Response::Workspaces { workspaces } => ui::workspaces(workspaces),
         Response::Diagnostics(diagnostics) => ui::diagnostics(diagnostics),
-        Response::Env { entries, .. } => {
-            ui::env(entries);
+        Response::Env {
+            entries,
+            unresolved,
+            ..
+        } => {
+            ui::env(entries, unresolved.as_deref());
 
             // A change does not reach containers that are already
             // running. Left unsaid, that reads as "I set it and nothing
@@ -1625,7 +1629,12 @@ fn present_url(
 
 /// What `minato env get` prints: the value, on one line.
 fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCode, CliError> {
-    let Response::Env { entries, .. } = response else {
+    let Response::Env {
+        entries,
+        unresolved,
+        ..
+    } = response
+    else {
         return Err(CliError::Local("cannot read the environment".to_string()));
     };
 
@@ -1638,6 +1647,18 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCo
                  or `minato env ls --service <name>` for one service's own"
             ))
         })?;
+
+    // **This one prints the real value, for a script to use.** A listing
+    // that could not settle shows values as written, and handing one of
+    // those over as though it had settled would put `${...}` into whatever
+    // read it. A value with nothing left to expand is still itself.
+    if let Some(note) = unresolved
+        && entry.value.contains("${")
+    {
+        return Err(CliError::Local(format!(
+            "`{key}` cannot be settled: {note}. `minato env ls` shows the rest"
+        )));
+    }
 
     if cli.json {
         output::print_json(entry);

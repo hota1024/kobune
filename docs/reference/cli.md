@@ -309,6 +309,11 @@ one value for piping.
 a service's own `env` belongs to that service, and there is no
 `MINATO_SERVICE` because no service is being named. `get` takes it too.
 
+When a `${...}` in the listing will not settle, `ls` shows the values as
+written and says why underneath rather than refusing — the value at fault can
+only be found by looking at them. `--json` carries the reason as `unresolved`.
+`get` does refuse in that case, since what it prints is meant to be used.
+
 The layer column names five of them, innermost winning: `injected`, `global`,
 `project`, `service`, `workspace`. `service` is a service's own `env` in
 `minato.toml` — it has its own name because reading it as `project` would
