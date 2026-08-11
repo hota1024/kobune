@@ -199,6 +199,8 @@ pub fn write_env_file(
         })?;
     }
 
+    sweep_stale_temporaries(&path);
+
     // Written beside the target and renamed over it, so a service reading
     // the file never sees half of one.
     let temporary = temporary_beside(&path);
@@ -250,11 +252,6 @@ fn temporary_beside(path: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "env".to_string());
-
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_nanos())
@@ -263,9 +260,66 @@ fn temporary_beside(path: &Path) -> PathBuf {
 
     let directory = path.parent().unwrap_or(Path::new("."));
     directory.join(format!(
-        ".{name}.{}-{nonce}-{count}.minato-tmp",
+        "{}{}-{nonce}-{count}{TEMPORARY_SUFFIX}",
+        temporary_prefix(path),
         std::process::id()
     ))
+}
+
+/// What every temporary for `path` starts with.
+fn temporary_prefix(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "env".to_string());
+
+    format!(".{name}.")
+}
+
+/// What every temporary ends with.
+const TEMPORARY_SUFFIX: &str = ".minato-tmp";
+
+/// Removes temporaries an earlier run left behind.
+///
+/// **Both failure paths clean up after themselves; a daemon that is killed
+/// between the write and the rename cannot.** With a fresh name each time,
+/// what it leaves never gets reused — it just accumulates in the worktree,
+/// one file per crash, next to a file people do look at.
+///
+/// Only what some *other* process wrote: one of this daemon's own may
+/// belong to a write happening right now, and deleting it would leave that
+/// write renaming a file that is no longer there.
+///
+/// Best effort throughout. Failing a service's start over a leftover would
+/// be worse than the leftover.
+fn sweep_stale_temporaries(path: &Path) {
+    let Some(directory) = path.parent() else {
+        return;
+    };
+
+    let prefix = temporary_prefix(path);
+    let mine = format!("{}{}-", prefix, std::process::id());
+
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+
+        if !name.starts_with(&prefix) || !name.ends_with(TEMPORARY_SUFFIX) {
+            continue;
+        }
+
+        if name.starts_with(&mine) {
+            continue;
+        }
+
+        if std::fs::remove_file(entry.path()).is_ok() {
+            tracing::debug!("removed a stale {}", entry.path().display());
+        }
+    }
 }
 
 /// Stacks one service's layers, lowest priority first.
@@ -808,6 +862,55 @@ mod tests {
             "untouched",
             "the environment never went there"
         );
+    }
+
+    #[test]
+    fn sweeps_temporaries_an_earlier_run_left_behind() {
+        // A daemon killed between the write and the rename cannot clean up
+        // after itself, and the next name is a different one — so without
+        // this they gather in the worktree, one per crash.
+        let dir = worktree();
+        std::fs::create_dir(dir.path().join(".minato")).expect("creates");
+
+        let stale = dir.path().join(".minato").join(format!(
+            ".env.api.{}-1-0.minato-tmp",
+            std::process::id() + 1
+        ));
+        std::fs::write(&stale, "half a file").expect("writes");
+
+        write_env_file(
+            dir.path(),
+            ".minato/env.api",
+            &env::render(&[], "service: api"),
+        )
+        .expect("writes");
+
+        assert!(!stale.exists(), "the leftover is gone");
+        assert!(dir.path().join(".minato/env.api").exists());
+    }
+
+    #[test]
+    fn leaves_a_temporary_of_its_own_alone() {
+        // One of this process's own may belong to a write happening right
+        // now, and removing it would leave that write renaming a file that
+        // is no longer there.
+        let dir = worktree();
+        std::fs::create_dir(dir.path().join(".minato")).expect("creates");
+
+        let in_flight = dir
+            .path()
+            .join(".minato")
+            .join(format!(".env.api.{}-1-0.minato-tmp", std::process::id()));
+        std::fs::write(&in_flight, "being written").expect("writes");
+
+        write_env_file(
+            dir.path(),
+            ".minato/env.api",
+            &env::render(&[], "service: api"),
+        )
+        .expect("writes");
+
+        assert!(in_flight.exists(), "not this process's to take");
     }
 
     #[test]
