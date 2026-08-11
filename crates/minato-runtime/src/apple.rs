@@ -36,8 +36,8 @@ use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{
-    Attachment, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Throwaway,
-    labels, names,
+    Attachment, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Sizing,
+    Throwaway, labels, names,
 };
 use crate::spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
@@ -57,8 +57,15 @@ const PROGRAM: &str = "container";
 /// a cold `container` daemon can take a few seconds to answer.
 const TERMINAL_START_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How often to ask whether it is up yet.
+/// How soon to ask whether it is up yet, and the longest that wait grows
+/// to.
+///
+/// Each answer costs a `container ls` — a process, the whole listing, and
+/// parsing it — so a fixed 100ms would spend hundreds of them on a start
+/// that takes seconds. Doubling reaches a second after five tries and
+/// leaves a fast start still noticing in a tenth of one.
 const TERMINAL_START_POLL: Duration = Duration::from_millis(100);
+const TERMINAL_START_POLL_MAX: Duration = Duration::from_secs(1);
 
 pub struct AppleContainerRuntime {
     program: String,
@@ -171,6 +178,11 @@ impl AppleContainerRuntime {
                     == Some(labels::MANAGED_VALUE)
             })
             .collect())
+    }
+
+    /// Lets go of a service's terminal. Its container has gone.
+    fn forget_terminal(&self, key: &ServiceKey) {
+        self.terminals.lock().expect("lock").remove(key);
     }
 
     async fn find_container(&self, key: &ServiceKey) -> Result<Option<AppleContainerRecord>> {
@@ -474,6 +486,8 @@ impl AppleContainerRuntime {
             .insert(spec.key.clone(), terminal);
 
         let deadline = std::time::Instant::now() + TERMINAL_START_TIMEOUT;
+        let mut wait = TERMINAL_START_POLL;
+
         loop {
             if self
                 .find_container(&spec.key)
@@ -494,7 +508,7 @@ impl AppleContainerRuntime {
                 .is_some_and(Terminal::is_open);
 
             if gone || std::time::Instant::now() >= deadline {
-                self.terminals.lock().expect("lock").remove(&spec.key);
+                self.forget_terminal(&spec.key);
                 return Err(RuntimeError::failed(
                     format!("starting {}", spec.name()),
                     if gone {
@@ -506,7 +520,8 @@ impl AppleContainerRuntime {
                 ));
             }
 
-            tokio::time::sleep(TERMINAL_START_POLL).await;
+            tokio::time::sleep(wait).await;
+            wait = (wait * 2).min(TERMINAL_START_POLL_MAX);
         }
     }
 
@@ -875,7 +890,7 @@ impl Runtime for AppleContainerRuntime {
 
         // The terminal belonged to the container that has just gone. The
         // next start opens another one.
-        self.terminals.lock().expect("lock").remove(key);
+        self.forget_terminal(key);
 
         events.step_done("stop", format!("stopping {}", key.service));
         events.service_state(&key.service, ServiceState::Stopped);
@@ -883,15 +898,15 @@ impl Runtime for AppleContainerRuntime {
     }
 
     async fn remove(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        self.forget_terminal(key);
+
         if self.find_container(key).await?.is_none() {
-            self.terminals.lock().expect("lock").remove(key);
             return Ok(());
         }
 
         events.step_started("remove", format!("removing {}", key.service));
         self.run(&["delete", "--force", &names::container(key)])
             .await?;
-        self.terminals.lock().expect("lock").remove(key);
         events.step_done("remove", format!("removing {}", key.service));
         Ok(())
     }
@@ -1044,23 +1059,8 @@ impl Runtime for AppleContainerRuntime {
             // Measured, not assumed: a resize on this side reaches
             // `container start` and goes no further, so the program inside
             // keeps the size the terminal was opened with.
-            fixed_size: Some(crate::runtime::DEFAULT_WINDOW),
+            sizing: Sizing::Fixed(crate::runtime::DEFAULT_WINDOW),
         })
-    }
-
-    async fn resize(&self, key: &ServiceKey, cols: u16, rows: u16) -> Result<()> {
-        let terminals = self.terminals.lock().expect("lock");
-        let Some(terminal) = terminals.get(key) else {
-            // Nothing to resize is not a failure: the terminal closed
-            // between the last keystroke and this window being dragged.
-            return Ok(());
-        };
-
-        if let Err(err) = terminal.resize(cols, rows) {
-            tracing::debug!("cannot resize {}'s terminal: {err}", key.service);
-        }
-
-        Ok(())
     }
 
     async fn exec(

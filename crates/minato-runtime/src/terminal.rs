@@ -17,6 +17,7 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::process::Stdio;
 
+use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{broadcast, mpsc};
 
@@ -39,9 +40,6 @@ use crate::runtime::DEFAULT_WINDOW;
 
 /// A pseudo-terminal with a process attached to its far end.
 pub(crate) struct Terminal {
-    /// A copy of the near end, kept for resizing.
-    master: OwnedFd,
-
     /// What has been typed, on its way to the far end.
     input: mpsc::UnboundedSender<Vec<u8>>,
 
@@ -74,7 +72,6 @@ impl Terminal {
         // would wait for an end that never came.
         drop(command);
 
-        let for_resize = master.try_clone()?;
         set_nonblocking(&master)?;
 
         let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
@@ -121,11 +118,7 @@ impl Terminal {
             let _ = child.wait().await;
         });
 
-        Ok(Self {
-            master: for_resize,
-            input,
-            output,
-        })
+        Ok(Self { input, output })
     }
 
     /// The output from now on. Nothing already written is replayed.
@@ -143,31 +136,6 @@ impl Terminal {
     /// Whether the far end is still there.
     pub(crate) fn is_open(&self) -> bool {
         !self.input.is_closed()
-    }
-
-    /// Tells the terminal how big the window is.
-    ///
-    /// The size reaches `container start` and stops there, on the version
-    /// this was measured against — see [`DEFAULT_WINDOW`]. Done anyway,
-    /// because it costs one `ioctl` and it is what a version that does
-    /// pass the size on will need.
-    pub(crate) fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
-        let size = libc::winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-
-        // SAFETY: the descriptor is owned by this struct and open for as
-        // long as the call, and TIOCSWINSZ reads one `winsize` through the
-        // pointer given.
-        let result = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &size) };
-        if result != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        Ok(())
     }
 }
 
@@ -265,56 +233,51 @@ fn set_nonblocking(fd: &OwnedFd) -> std::io::Result<()> {
 }
 
 /// Reads whatever is there, waiting for something to be.
+///
+/// `async_io` is what retries a descriptor that said it was ready and
+/// then was not — the loop this would otherwise be.
 async fn read_some(fd: &AsyncFd<OwnedFd>, buffer: &mut [u8]) -> std::io::Result<usize> {
-    loop {
-        let mut ready = fd.readable().await?;
-        match ready.try_io(|inner| {
-            // SAFETY: the buffer is borrowed for the length passed, and
-            // the descriptor is owned by the caller.
-            let count = unsafe {
-                libc::read(
-                    inner.as_raw_fd(),
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len() as libc::size_t,
-                )
-            };
+    fd.async_io(Interest::READABLE, |inner| {
+        // SAFETY: the buffer is borrowed for the length passed, and the
+        // descriptor is owned by the caller.
+        let count = unsafe {
+            libc::read(
+                inner.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as libc::size_t,
+            )
+        };
 
-            if count < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(count as usize)
-            }
-        }) {
-            Ok(result) => return result,
-            // Something else got there first; wait again.
-            Err(_would_block) => continue,
+        if count < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(count as usize)
         }
-    }
+    })
+    .await
 }
 
 /// Writes every byte, or gives up on the first real failure.
 async fn write_all(fd: &AsyncFd<OwnedFd>, mut bytes: &[u8]) -> std::io::Result<()> {
     while !bytes.is_empty() {
-        let mut ready = fd.writable().await?;
-        let written = match ready.try_io(|inner| {
-            // SAFETY: as in `read_some`, for a borrow that only reads.
-            let count = unsafe {
-                libc::write(
-                    inner.as_raw_fd(),
-                    bytes.as_ptr().cast(),
-                    bytes.len() as libc::size_t,
-                )
-            };
+        let written = fd
+            .async_io(Interest::WRITABLE, |inner| {
+                // SAFETY: as in `read_some`, for a borrow that only reads.
+                let count = unsafe {
+                    libc::write(
+                        inner.as_raw_fd(),
+                        bytes.as_ptr().cast(),
+                        bytes.len() as libc::size_t,
+                    )
+                };
 
-            if count < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(count as usize)
-            }
-        }) {
-            Ok(result) => result?,
-            Err(_would_block) => continue,
-        };
+                if count < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(count as usize)
+                }
+            })
+            .await?;
 
         bytes = &bytes[written..];
     }

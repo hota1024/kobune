@@ -162,21 +162,19 @@ pub enum Request {
         /// How many lines to take from the end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail: Option<usize>,
-        /// How big the client's terminal is, when it has one.
-        ///
-        /// Sent with the request rather than after it, so the program's
-        /// first frame is drawn to the right size. A resize that arrived
-        /// afterwards would be a redraw everyone could see.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        window: Option<Window>,
-        /// The client can hand its terminal over, if the service has one.
+        /// The terminal the client is offering, and how big it is.
         ///
         /// **An offer, not an instruction.** Only a service configured
         /// with `tty` has a terminal to attach to; asked for one that has
         /// not, the daemon says so and streams the logs as usual. The
         /// client learns which it got from [`crate::Event::Attached`].
-        #[serde(default)]
-        interactive: bool,
+        ///
+        /// One field rather than a flag and a size, which could disagree.
+        /// The size travels with the request rather than after it so the
+        /// program's first frame is drawn to the right shape — a resize
+        /// arriving later is a redraw everyone can see.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attach: Option<Window>,
     },
 
     /// Runs a command inside a container.

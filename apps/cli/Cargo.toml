@@ -22,7 +22,7 @@ ratatui.workspace = true
 # ratatui's own backends count columns with it for the same reason.
 unicode-width = "0.2"
 serde_json.workspace = true
-libc = "0.2"
+libc.workspace = true
 dirs.workspace = true
 reqwest.workspace = true
 sha2.workspace = true

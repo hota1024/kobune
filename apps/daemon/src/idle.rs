@@ -24,6 +24,15 @@ pub struct IdleTracker {
     /// Hosts currently starting. Keeps concurrent requests for the same
     /// host from starting it twice.
     starting: Mutex<HashMap<String, ()>>,
+    /// Services someone is sitting at, and how many sessions each has.
+    ///
+    /// **Not a time, unlike everything else here.** Being attached to a
+    /// service's terminal is not a moment of access to be measured
+    /// against a timeout — it is a state that lasts, and lasts precisely
+    /// as long as the session does. A count rather than a flag, because
+    /// two people may watch one service and the first to leave must not
+    /// take the second's claim with them.
+    in_use: Mutex<HashMap<String, usize>>,
 }
 
 impl IdleTracker {
@@ -78,6 +87,54 @@ impl IdleTracker {
             guard.remove(key);
         }
     }
+
+    /// Says a service is being used by something that sends no requests.
+    ///
+    /// For an attached terminal. The sweep reads times, and someone
+    /// watching a task runner produces none — so without this,
+    /// scale-to-zero would stop the service out from under an open
+    /// session after `idle_timeout` of deliberate use.
+    ///
+    /// The claim lasts until the returned guard is dropped.
+    pub fn begin_use(&self, service: impl Into<String>) -> UseGuard<'_> {
+        let key = service.into();
+
+        if let Ok(mut guard) = self.in_use.lock() {
+            *guard.entry(key.clone()).or_insert(0) += 1;
+        }
+
+        UseGuard { tracker: self, key }
+    }
+
+    /// Whether anyone is sitting at this service.
+    pub fn is_in_use(&self, service: &str) -> bool {
+        self.in_use
+            .lock()
+            .is_ok_and(|guard| guard.contains_key(service))
+    }
+
+    fn end_use(&self, key: &str) {
+        if let Ok(mut guard) = self.in_use.lock()
+            && let Some(count) = guard.get_mut(key)
+        {
+            *count -= 1;
+            if *count == 0 {
+                guard.remove(key);
+            }
+        }
+    }
+}
+
+/// Marks a service as in use. Releases on drop.
+pub struct UseGuard<'a> {
+    tracker: &'a IdleTracker,
+    key: String,
+}
+
+impl Drop for UseGuard<'_> {
+    fn drop(&mut self) {
+        self.tracker.end_use(&self.key);
+    }
 }
 
 /// Marks a host as starting. Releases on drop.
@@ -95,6 +152,39 @@ impl Drop for StartGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_holds_a_service_open() {
+        // The sweep asks this instead of a last-access time, because
+        // someone typing at a task runner produces no requests to time.
+        let tracker = IdleTracker::new();
+        let key = "myapp/feat-1/dev";
+
+        assert!(!tracker.is_in_use(key));
+
+        let session = tracker.begin_use(key);
+        assert!(tracker.is_in_use(key));
+
+        drop(session);
+        assert!(!tracker.is_in_use(key), "leaving gives it back");
+    }
+
+    #[test]
+    fn one_person_leaving_does_not_evict_the_other() {
+        // Two attachments to one service are allowed — they share the
+        // terminal — so the claim has to be counted, not set.
+        let tracker = IdleTracker::new();
+        let key = "myapp/feat-1/dev";
+
+        let first = tracker.begin_use(key);
+        let second = tracker.begin_use(key);
+
+        drop(first);
+        assert!(tracker.is_in_use(key), "the second is still there");
+
+        drop(second);
+        assert!(!tracker.is_in_use(key));
+    }
 
     #[test]
     fn records_and_reports_idle_time() {

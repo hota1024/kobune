@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use minato_api::{Event, Request, Response, Target};
+use minato_api::{Event, Request, Response, Target, Window};
 use minato_client::{Client, ClientError, DaemonStart};
 
 /// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
@@ -695,7 +695,7 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     if matches!(
         &request,
         Request::Logs {
-            interactive: true,
+            attach: Some(_),
             ..
         }
     ) {
@@ -796,9 +796,7 @@ async fn run_attached(
                         None => {}
                     }
                 }
-                Event::Bytes { data, .. } => {
-                    attach::Session::show(&minato_api::decode_bytes(&data))
-                }
+                Event::Bytes { data } => attach::show(&minato_api::decode_bytes(&data)),
                 other => output::print_output_event(&other),
             },
             keys,
@@ -838,14 +836,18 @@ async fn run_attached(
 /// Whether the service *has* a terminal is the daemon's to say. Only it
 /// has read `minato.toml`, and it answers by attaching or by explaining
 /// why it did not.
-fn wants_to_type(
+fn terminal_to_offer(
     cli: &Cli,
     services: &[String],
     follow: bool,
     no_input: bool,
-    terminal: bool,
-) -> bool {
-    follow && !no_input && !cli.json && services.len() == 1 && terminal
+    terminal: Option<Window>,
+) -> Option<Window> {
+    if !follow || no_input || cli.json || services.len() != 1 {
+        return None;
+    }
+
+    terminal
 }
 
 fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
@@ -894,8 +896,7 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             services: services.clone(),
             follow: *follow,
             tail: *tail,
-            window: ui::window(),
-            interactive: wants_to_type(cli, services, *follow, *no_input, attach::is_a_terminal()),
+            attach: terminal_to_offer(cli, services, *follow, *no_input, attach::offered_window()),
         },
         Command::Exec {
             fresh,
@@ -2005,7 +2006,8 @@ mod tests {
             panic!("not a logs command");
         };
 
-        wants_to_type(&cli, services, *follow, *no_input, terminal)
+        let window = terminal.then(|| Window::new(120, 40));
+        terminal_to_offer(&cli, services, *follow, *no_input, window).is_some()
     }
 
     #[test]

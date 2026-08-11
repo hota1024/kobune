@@ -70,6 +70,32 @@ pub const DEFAULT_WINDOW: Window = Window {
     rows: 40,
 };
 
+/// Changes the size of a terminal that has already been opened.
+///
+/// A handle rather than a method on [`Runtime`]: resizing belongs to one
+/// live terminal, and a backend asked to resize "a service" would have to
+/// find its container again on every message a window drag produces.
+#[async_trait]
+pub trait Resize: Send + Sync {
+    async fn resize(&self, window: Window) -> Result<()>;
+}
+
+/// Whether an attachment's terminal follows the window.
+///
+/// **Not a flag beside a method that might do nothing.** Apple Container
+/// reads a terminal's size once, when the service starts, and ignores it
+/// afterwards; Docker changes it on demand. Saying which as a choice of
+/// two means a backend cannot claim a resize succeeded when it could not
+/// have, and the caller has something to pass on to whoever is wondering
+/// why the display is the wrong shape.
+pub enum Sizing {
+    /// The terminal follows the window. Tell it whenever that changes.
+    Follows(Box<dyn Resize>),
+
+    /// The size was settled when the service started and cannot change.
+    Fixed(Window),
+}
+
 /// A live terminal on a running service.
 ///
 /// Only a service started with `tty` has one. The two halves are
@@ -86,14 +112,8 @@ pub struct Attachment {
     /// Where keystrokes go.
     pub input: Pin<Box<dyn AsyncWrite + Send>>,
 
-    /// The size this terminal is stuck at, when it cannot be resized.
-    ///
-    /// `None` means [`Runtime::resize`] works. Apple Container reads the
-    /// size once, when the service starts, so what it says here is what a
-    /// full-screen program will see however large the window really is —
-    /// and the caller passes that on rather than letting someone wonder
-    /// why the display is the wrong shape.
-    pub fixed_size: Option<Window>,
+    /// What can be done about the size of it.
+    pub sizing: Sizing,
 }
 
 impl std::fmt::Debug for Attachment {
@@ -226,12 +246,6 @@ pub trait Runtime: Send + Sync {
     /// same terminal, exactly as two `docker attach`es do. Nothing here
     /// arbitrates between them.
     async fn attach(&self, key: &ServiceKey) -> Result<Attachment>;
-
-    /// Tells the container's terminal how big the window is.
-    ///
-    /// A full-screen program asks its terminal for the size and draws to
-    /// it. Without this it would draw to the 80×24 the runtime invented.
-    async fn resize(&self, key: &ServiceKey, cols: u16, rows: u16) -> Result<()>;
 
     /// Runs a command inside the container.
     ///
