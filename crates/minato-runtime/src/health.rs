@@ -6,7 +6,7 @@
 //! "the server is broken".
 //!
 //! Follows `health` from `minato.toml` when it is set; otherwise all that
-//! matters is whether a TCP connection can be made.
+//! matters is whether the endpoint holds a connection open.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -30,6 +30,14 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How long a single check may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long a connection has to stay open to count as an app answering.
+///
+/// See [`probe_tcp`]. Measured against Docker, the hang-up arrives within
+/// about a millisecond and a real dev server holds the connection open
+/// indefinitely, so anything in between works. This is the readiness
+/// check's whole cost once a service is up, which is why it is not larger.
+const SETTLE: Duration = Duration::from_millis(100);
+
 /// Runs a health command inside the service's container.
 ///
 /// Narrower than [`crate::Runtime::exec`] on purpose: that one streams the
@@ -48,7 +56,7 @@ pub trait CommandProbe: Send + Sync {
 
 /// Checks once.
 ///
-/// A `health` of `None` means "can a TCP connection be made".
+/// A `health` of `None` means [`probe_tcp`] — is anything listening.
 ///
 /// `exec` is what runs a `cmd:` check. Without one — nothing to run it
 /// through — such a check is reported as unsupported rather than silently
@@ -91,11 +99,39 @@ async fn probe_cmd(command: &str, exec: &dyn CommandProbe) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether a TCP connection can be made.
+/// Whether the endpoint belongs to something that is actually listening.
+///
+/// **Connecting is not enough.** A published Docker port is held by the
+/// runtime, not by the app: the connection is accepted and then closed
+/// again the moment the dial into the container fails. A probe that only
+/// connects therefore passes the instant the container exists, the service
+/// is called ready before the dev server has bound its port, and the first
+/// request through the proxy comes back as `connection closed before
+/// message completed`.
+///
+/// So the connection is held for a moment instead. Nothing is sent — which
+/// keeps this usable for a service that speaks no HTTP — and the peer
+/// hanging up unprompted is what says nobody is home.
 async fn probe_tcp(endpoint: SocketAddr) -> bool {
-    tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect(endpoint))
-        .await
-        .is_ok_and(|result| result.is_ok())
+    let Ok(Ok(stream)) =
+        tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect(endpoint)).await
+    else {
+        return false;
+    };
+
+    // Peeked rather than read: a server that opens with a banner keeps it
+    // for whoever connects next.
+    let mut first = [0u8; 1];
+
+    match tokio::time::timeout(SETTLE, stream.peek(&mut first)).await {
+        // Still open with nothing to say, which is how a server waiting
+        // for a request behaves.
+        Err(_) => true,
+        // Hung up on us, or reset the connection.
+        Ok(Ok(0)) | Ok(Err(_)) => false,
+        // Spoke first (SSH, SMTP, a database greeting).
+        Ok(Ok(_)) => true,
+    }
 }
 
 /// Whether an HTTP request comes back 2xx or 3xx.
@@ -318,6 +354,23 @@ mod tests {
         addr
     }
 
+    /// Accepts and hangs up without a word, the way a published Docker
+    /// port behaves while the container has nothing behind it.
+    async fn spawn_accept_then_close() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+
+        addr
+    }
+
     async fn closed_port() -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -341,6 +394,54 @@ mod tests {
             !probe(closed_port().await, None, None)
                 .await
                 .expect("can decide")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_is_dropped_at_once_is_not_ready() {
+        // The bug this exists for: Docker accepts on a published port
+        // whether or not anything inside the container is listening, so a
+        // probe that stops at "connected" calls every container ready the
+        // moment it is created.
+        assert!(
+            !probe(spawn_accept_then_close().await, None, None)
+                .await
+                .expect("can decide")
+        );
+
+        // Explicit `tcp:` is the same check and has the same problem.
+        let health = HealthCheck::Tcp("localhost:5432".into());
+        assert!(
+            !probe(spawn_accept_then_close().await, Some(&health), None)
+                .await
+                .expect("can decide")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_speaks_first_is_ready() {
+        // Not everything waits to be asked. A greeting is as good an
+        // answer as staying open, and it is peeked so the next connection
+        // still gets it.
+        let addr = spawn_http("200 OK").await;
+        assert!(probe(addr, None, None).await.expect("can decide"));
+    }
+
+    #[tokio::test]
+    async fn waiting_is_bounded_by_the_settle_time() {
+        // The check runs on every poll of a service that is already up,
+        // so it must not turn readiness into a long wait.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let started = std::time::Instant::now();
+        assert!(probe(addr, None, None).await.expect("can decide"));
+        assert!(
+            started.elapsed() < SETTLE * 3,
+            "took {:?}",
+            started.elapsed()
         );
     }
 
@@ -375,7 +476,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tcp_health_only_needs_a_connection() {
+    async fn tcp_health_does_not_need_http() {
         // With a TCP check, a service that speaks no HTTP is still ready.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
