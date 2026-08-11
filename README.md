@@ -182,6 +182,15 @@ $ cargo build --workspace
 $ cargo test --workspace
 ```
 
+Some tests drive the daemon against a real Docker. They are `#[ignore]`d, so
+the line above does not run them and needs nothing installed:
+
+```console
+$ cargo test --workspace -- --ignored --test-threads=1
+```
+
+One at a time — they share a Docker daemon. Without one they say so and skip.
+
 ### A prebuilt binary
 
 ```console

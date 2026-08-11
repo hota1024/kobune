@@ -550,8 +550,15 @@ impl Gateway {
     }
 
     /// A gateway listening on nothing — the same as every bind failing.
-    #[cfg(test)]
-    pub(crate) fn inert() -> Self {
+    ///
+    /// **Routes are still registered and still read.** Waking a service
+    /// and sweeping an idle one both go through the table and never
+    /// through a listener, so this is all the gateway `tests/` needs —
+    /// and it means those tests hold no ports and race nothing.
+    ///
+    /// Public rather than `pub(crate)` because a binary crate's
+    /// integration tests cannot reach the latter.
+    pub fn inert() -> Self {
         Self {
             routes: Routes::new(),
             http_addrs: Vec::new(),

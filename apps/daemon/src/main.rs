@@ -4,20 +4,6 @@
 //! something to stay running, hence a daemon. At M0 there was only the
 //! supervisor; every milestone since has added to this.
 
-mod activation;
-mod activator;
-mod carry;
-mod env;
-mod gateway;
-mod idle;
-mod paths;
-mod resolve;
-mod secrets;
-mod server;
-mod spec;
-mod supervisor;
-mod tunnel;
-
 use std::sync::Arc;
 
 use clap::Parser;
@@ -25,11 +11,12 @@ use minato_core::Paths;
 use tokio::sync::Notify;
 use tracing_subscriber::EnvFilter;
 
-use crate::activator::{DeferredActivator, SupervisorActivator};
-use crate::gateway::{Gateway, GatewaySettings};
-use crate::server::Server;
-use crate::supervisor::Supervisor;
-use crate::tunnel::TunnelHandle;
+use minatod::activator::{DeferredActivator, SupervisorActivator};
+use minatod::gateway::{Gateway, GatewaySettings};
+use minatod::idle;
+use minatod::server::Server;
+use minatod::supervisor::Supervisor;
+use minatod::tunnel::TunnelHandle;
 
 /// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
 /// is what tells one build from another.

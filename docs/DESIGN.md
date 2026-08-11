@@ -410,6 +410,40 @@ back as the container's own `192.168.64.x:port`, the proxy forwards to it
 without knowing which runtime produced it, and scale-to-zero wakes an Apple
 Container service in about two seconds.
 
+### Tests that need a runtime
+
+The lesson above is not "write better fixtures". A fixture is only ever as
+good as somebody's belief about what the runtime returns, and the whole
+failure was that the belief and the test came from one source. **So some
+tests have to run against a real runtime**, and the Docker backend — as
+many lines as the Apple one, and the default — had none.
+
+`apps/daemon/tests/` holds them. Three decisions shape it.
+
+**`#[ignore]`, not a feature flag or an environment variable.** `cargo test`
+stays exactly as fast as it was and needs nothing installed;
+`cargo test -- --ignored` runs them. CI gives them their own job, on ubuntu,
+where Docker is already there. Not a required check to begin with — the
+value is in the signal, and a container runtime in CI is a new way for a
+pull request to be blocked by something that is nobody's fault.
+
+**A missing Docker is reported and skipped, never quietly passed.** A suite
+that does nothing reads as coverage, which is worse than not having one.
+
+**The daemon is driven, not the CLI.** `apps/daemon/src/lib.rs` exists for
+this: a binary crate cannot have integration tests, because `tests/` has
+nothing to import. Tests build a `Supervisor` over an inert
+[`Gateway`](#3-architecture) — waking and sweeping both go through the
+routing table and never through a listener — and ask it for the same things
+the proxy does. That leaves out the HTTP half, which `minato-proxy`'s own
+end-to-end tests already cover against a stub; what it covers is the part
+nothing else could.
+
+The harness clears up after itself in `Drop`, through the `docker` CLI
+rather than the runtime under test. The run that most needs cleaning up
+after is the one that panicked half-way, and a cleanup that fails for the
+same reason the test did is not one.
+
 ### Firecracker
 
 Still unimplemented, and not for lack of interest: it needs KVM and cannot run
