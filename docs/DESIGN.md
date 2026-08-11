@@ -598,6 +598,8 @@ MINATO_WORKSPACE     = feat-1
 MINATO_SERVICE       = web
 MINATO_URL_WEB       = https://web.feat-1.myapp.localhost
 MINATO_URL_API       = https://api.feat-1.myapp.localhost
+MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
+MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
 MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
 ```
 
@@ -607,8 +609,9 @@ A `-` in a service name becomes `_` (`api-server` →
 **Injection is the bottom layer**, so the user can override it. The other way
 round, Minato's conveniences would erase the user's settings.
 
-**No URL is injected while the proxy is down.** An empty string would leave it
-"set, but unreachable", and the cause is hard to see.
+**No URL is injected while the proxy is down**, and no hostname either — the
+two go together. An empty string would leave it "set, but unreachable", and the
+cause is hard to see.
 
 ### Referring to another variable
 

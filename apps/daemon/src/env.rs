@@ -60,6 +60,15 @@ pub fn injected(
         };
 
         values.insert(url_variable(name), url);
+
+        // **A CORS origin, `allowedDevOrigins` and a cookie domain want
+        // the host, not the URL.** Cutting the scheme off `MINATO_URL_*`
+        // with `sed` is what every project does otherwise, and it is a
+        // name Minato has already worked out to build the URL.
+        //
+        // Under the same condition as the URL on purpose: a hostname
+        // nothing answers on is the "set, but broken" this avoids.
+        values.insert(hostname_variable(name), host);
     }
 
     values
@@ -71,18 +80,24 @@ pub fn injected(
 /// not a mistake in the configuration: the variable is only injected while
 /// the gateway is listening, and only for an exposed service. Saying no
 /// more than "nothing sets it" sends someone to edit a `minato.toml` that
-/// is already right.
+/// is already right. `MINATO_HOSTNAME_<SERVICE>` goes the same way, for
+/// the same reason.
 pub fn resolution_error(err: env::EnvError) -> ApiError {
     let error = ApiError::new(ErrorCode::InvalidConfig, err.to_string());
 
     match &err {
-        env::EnvError::UndefinedReference { name, .. } if name.starts_with("MINATO_URL_") => error
-            .with_hint(
-                "MINATO_URL_<SERVICE> exists only while the proxy is listening, and only \
-                 for a service with `expose = true`. Run `minato doctor`",
-            ),
+        env::EnvError::UndefinedReference { name, .. } if is_per_service(name) => error.with_hint(
+            "MINATO_URL_<SERVICE> and MINATO_HOSTNAME_<SERVICE> exist only while the \
+             proxy is listening, and only for a service with `expose = true`. Run \
+             `minato doctor`",
+        ),
         _ => error,
     }
+}
+
+/// Whether a name is one Minato injects per service.
+fn is_per_service(name: &str) -> bool {
+    name.starts_with("MINATO_URL_") || name.starts_with("MINATO_HOSTNAME_")
 }
 
 /// Turns a service name into a variable name.
@@ -91,6 +106,18 @@ pub fn resolution_error(err: env::EnvError) -> ApiError {
 /// in a variable name, so it becomes an underscore.
 pub fn url_variable(service: &str) -> String {
     format!("MINATO_URL_{}", service.to_uppercase().replace('-', "_"))
+}
+
+/// The name carrying a service's hostname.
+///
+/// `MINATO_HOSTNAME_<SERVICE>`, and not `MINATO_HOST_`: that one is taken
+/// by Apple Container, where it carries a peer's IP address. Two names a
+/// letter apart meaning different things is worse than a longer one.
+pub fn hostname_variable(service: &str) -> String {
+    format!(
+        "MINATO_HOSTNAME_{}",
+        service.to_uppercase().replace('-', "_")
+    )
 }
 
 /// Writes a service's settled environment into its worktree.
@@ -414,6 +441,66 @@ mod tests {
         );
 
         assert!(!values.keys().any(|key| key.starts_with("MINATO_URL_")));
+        assert!(
+            !values.keys().any(|key| key.starts_with("MINATO_HOSTNAME_")),
+            "a hostname nothing answers on is the same trap"
+        );
+    }
+
+    #[test]
+    fn injects_the_hostname_beside_the_url() {
+        // A CORS origin, `allowedDevOrigins` and a cookie domain want the
+        // host on its own. Cutting the scheme off the URL with `sed` is
+        // what every project does without this.
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &Gateway::with_ports(Some(80), Some(443)),
+        );
+
+        assert_eq!(
+            values.get("MINATO_HOSTNAME_WEB").map(String::as_str),
+            Some("web.feat-1.myapp.localhost"),
+            "no scheme, no port, no trailing slash"
+        );
+        assert_eq!(
+            values.get("MINATO_HOSTNAME_API_SERVER").map(String::as_str),
+            Some("api-server.feat-1.myapp.localhost"),
+            "a hyphen becomes an underscore in the name, not in the host"
+        );
+        assert!(
+            !values.contains_key("MINATO_HOSTNAME_DB"),
+            "a service with expose = false publishes no hostname"
+        );
+    }
+
+    #[test]
+    fn the_hostname_holds_no_port_even_when_the_url_does() {
+        // The port belongs to the URL. Anything asking for a hostname —
+        // `allowedDevOrigins`, a cookie domain — rejects one with a port
+        // in it.
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &Gateway::with_ports(Some(8080), Some(8443)),
+        );
+
+        assert!(
+            values
+                .get("MINATO_URL_WEB")
+                .is_some_and(|url| url.contains("8443")),
+            "the URL carries the port: {:?}",
+            values.get("MINATO_URL_WEB")
+        );
+        assert_eq!(
+            values.get("MINATO_HOSTNAME_WEB").map(String::as_str),
+            Some("web.feat-1.myapp.localhost"),
+            "the hostname does not"
+        );
     }
 
     #[test]

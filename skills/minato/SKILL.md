@@ -177,8 +177,13 @@ To reach the name the application already reads, refer to it from `env` in
 
 ```toml
 [services.web.env]
-NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
+NEXT_PUBLIC_API_URL     = "${MINATO_URL_API}"
+NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
 ```
+
+`MINATO_HOSTNAME_<SERVICE>` is the host with no scheme or port — what a CORS
+origin, `allowedDevOrigins` and a cookie domain want. (`MINATO_HOST_<SERVICE>`
+is a different thing: Apple Container's peer IP.)
 
 For a tool that reads a file rather than its own environment (`wrangler dev`,
 Vite, dotenvx), `env_file` writes the settled values into the worktree before
