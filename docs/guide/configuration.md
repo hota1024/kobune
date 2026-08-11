@@ -117,9 +117,17 @@ How long a service goes without a request before it stops itself. The default
 is 30 minutes. Set it longer for something slow to start, shorter if you make
 a lot of worktrees.
 
-Time is measured from the last request through the proxy. Traffic between
-containers does not count, so a service only other services talk to will stop
-even while they are running — give those a longer timeout, or none.
+Time is measured from the last request through the proxy, so traffic between
+containers does not count.
+
+A service with no URL of its own — `expose = false`, which a database usually
+is — has no request to measure. It follows the exposed services that name it in
+`depends_on` instead: it stops once every one of them has gone quiet, and a
+request that wakes one of them starts it back up first.
+
+**So name it in `depends_on`.** With nothing pointing at it there is neither a
+signal to stop on nor a way back up, and it stays running for as long as the
+daemon does.
 
 ## Volumes
 

@@ -4,7 +4,7 @@
 //! [`EventSink`], and how to show it is the CLI's and the GUI's own
 //! decision (`docs/DESIGN.md` §3).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1473,7 +1473,20 @@ impl Supervisor {
         }
     }
 
-    /// Starts the one service behind a host.
+    /// Starts the service behind a host, and everything it depends on.
+    ///
+    /// **The dependencies come too.** A request is what wakes a service,
+    /// and only a service with a URL can be woken that way — so a `db`
+    /// behind `expose = false` has no request of its own to arrive.
+    /// Starting the one service named by the host would hand the app a
+    /// dependency that is not there, which is the failure `depends_on`
+    /// exists to prevent. `up` has always done this; the wake path used
+    /// to be the one way in that did not.
+    ///
+    /// Under Apple Container it decides more than ordering:
+    /// `MINATO_HOST_<SERVICE>` carries a peer's address, read after the
+    /// peer has started, so a service woken on its own gets no variable
+    /// at all.
     async fn start_for_host(
         &self,
         host: &str,
@@ -1481,54 +1494,69 @@ impl Supervisor {
     ) -> Result<Option<SocketAddr>, ApiError> {
         let (config, record) = self.locate(&route.project, &route.workspace).await?;
 
-        let service_config = config.service(&route.service).map_err(ApiError::from)?;
         let events = EventSink::discard();
-
         let project_root = self.project_root(&route.project).await?;
-        let service_env = self
-            .service_env(
-                &config,
+        let context = env::workspace_context(&config, &record, &self.gateway);
+
+        // Dependencies first, so a peer is up before whatever needs it.
+        let starting = wake_order(&config, &route.service)?;
+
+        let mut specs = Vec::with_capacity(starting.len());
+        for name in &starting {
+            let service_config = config.service(name).map_err(ApiError::from)?;
+            let service_env = self
+                .service_env(
+                    &config,
+                    &route.project,
+                    &record,
+                    &project_root,
+                    name,
+                    &events,
+                )
+                .await?;
+
+            // Only what is starting, exactly as `up` does it.
+            write_env_file_for(&config, &record, name, &service_env)?;
+
+            specs.push(spec::build_service_spec(
+                service_config,
+                name,
                 &route.project,
-                &record,
-                &project_root,
-                &route.service,
-                &events,
-            )
-            .await?;
-
-        // Woken by a request, so this one is starting: its file is
-        // written, and nobody else's.
-        write_env_file_for(&config, &record, &route.service, &service_env)?;
-
-        let service_spec = spec::build_service_spec(
-            service_config,
-            &route.service,
-            &route.project,
-            &record.label,
-            &record.path,
-            service_env.values,
-            &env::workspace_context(&config, &record, &self.gateway),
-        )?;
+                &record.label,
+                &record.path,
+                service_env.values,
+                &context,
+            )?);
+        }
 
         let runtime = self.runtime(&config.runtime.default).await?;
 
-        // start fails without the image, so prepare it as a service of
-        // one.
+        // start fails without the image, so prepare them all first.
         let workspace_spec = minato_runtime::WorkspaceSpec {
             key: WorkspaceKey::new(&route.project, &record.label),
             worktree_path: record.path.clone(),
-            services: vec![service_spec.clone()],
+            services: specs.clone(),
         };
         // Never a forced rebuild: this sits in the path of the request
         // that woke the service, and the fingerprint in the tag already
         // means an existing image was built from these inputs.
         runtime.prepare(&workspace_spec, false, &events).await?;
 
-        tracing::info!("a request to {host} is starting {}", route.service);
-        let running = runtime.start(&service_spec, &events).await?;
+        tracing::info!("a request to {host} is starting {}", starting.join(", "));
+
+        let mut endpoint = None;
+        for spec in &specs {
+            let running = runtime.start(spec, &events).await?;
+
+            // The host was asked for one service. The rest are here to
+            // stand behind it.
+            if spec.name() == route.service {
+                endpoint = running.endpoint;
+            }
+        }
 
         self.refresh(&route.project, &config).await?;
-        Ok(running.endpoint)
+        Ok(endpoint)
     }
 
     /// The configuration and registration for a project and workspace
@@ -1624,6 +1652,10 @@ impl Supervisor {
         // A shared service is referenced from several workspaces, and one
         // of them still using it is enough to keep it up, so the decision
         // is made per service.
+        //
+        // Only exposed services get this far: [`Route`] is the only thing
+        // read here, and an unexposed service has none. They are swept
+        // separately, by [`Self::sweep_internal`].
         let mut by_service: BTreeMap<ServiceKeyRef, Vec<&(String, Route)>> = BTreeMap::new();
         for entry in routes {
             let (_, route) = entry;
@@ -1646,6 +1678,10 @@ impl Supervisor {
         }
 
         let mut stopped = 0;
+        // The hosts this sweep took down, which the snapshot it started
+        // from still calls running.
+        let mut just_stopped: BTreeSet<String> = BTreeSet::new();
+
         for ((workspace, service), entries) in by_service {
             let Ok(service_config) = config.service(&service) else {
                 continue;
@@ -1685,12 +1721,100 @@ impl Supervisor {
 
             for (host, _) in entries {
                 self.idle.forget(host);
+                just_stopped.insert(host.clone());
             }
             stopped += 1;
         }
 
+        // **After the exposed ones**, and told what they were. A service
+        // stopped a moment ago is stopped, whatever the snapshot this
+        // sweep started from says — and without saying so, an internal
+        // service would wait another whole sweep to follow its last
+        // dependent down.
+        let settled: Vec<(String, Route)> = routes
+            .iter()
+            .map(|(host, route)| {
+                let route = if just_stopped.contains(host) {
+                    Route::stopped(&route.project, &route.workspace, &route.service)
+                } else {
+                    route.clone()
+                };
+
+                (host.clone(), route)
+            })
+            .collect();
+
+        stopped += self
+            .sweep_internal(project, &config, runtime.as_ref(), &settled, &events)
+            .await?;
+
         if stopped > 0 {
             self.refresh(project, &config).await?;
+        }
+
+        Ok(stopped)
+    }
+
+    /// Stops the internal services nothing is reaching for any more.
+    ///
+    /// A service with `expose = false` has no URL, so no request ever
+    /// names it and it has no last access of its own to measure. Left at
+    /// that it was never a candidate at all, and a database started once
+    /// stayed up for as long as the daemon did — which is the opposite of
+    /// what makes a worktree cheap to create.
+    ///
+    /// It reads its exposed dependents instead. One that is stopped is
+    /// plainly not using it; one that is running is judged on its own
+    /// last access.
+    ///
+    /// **With no exposed dependent it is left alone.** Waking follows
+    /// `depends_on` outwards from a service a request can reach
+    /// ([`Self::start_for_host`]), so an internal service nothing depends
+    /// on has no way back up, and stopping it would be one-way.
+    async fn sweep_internal(
+        &self,
+        project: &str,
+        config: &MinatoConfig,
+        runtime: &dyn Runtime,
+        routes: &[(String, Route)],
+        events: &EventSink,
+    ) -> Result<usize, ApiError> {
+        let candidates =
+            unreached_internal_services(project, config, routes, &|host| self.idle.idle_for(host));
+
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+
+        // An internal service has no route, so the runtime is the only
+        // place its state can come from. Asked for only once something
+        // looks worth stopping, so a project without any stays free.
+        let statuses = runtime.list_project(project).await?;
+
+        let mut stopped = 0;
+        for service_key in candidates {
+            let running = statuses
+                .iter()
+                .any(|status| status.key == service_key && status.state.is_running());
+
+            if !running {
+                continue;
+            }
+
+            // As for an exposed service: an open terminal sends no
+            // requests, and is the one kind of use nothing else sees.
+            if self.idle.is_in_use(&service_key.to_string()) {
+                continue;
+            }
+
+            tracing::info!("stopping {service_key} (nothing that depends on it is in use)");
+
+            if let Err(err) = runtime.stop(&service_key, events).await {
+                tracing::warn!("cannot stop {service_key}: {err}");
+                continue;
+            }
+
+            stopped += 1;
         }
 
         Ok(stopped)
@@ -2584,6 +2708,111 @@ fn bind_fix(failure: Option<BindFailure>, port_env: &str, launchd_installed: boo
     }
 }
 
+/// What waking `service` has to start, dependencies first.
+///
+/// [`select_with_dependencies`] answers *which*; `startup_order` answers
+/// *in what order*. `up` gets the second for free by filtering a spec that
+/// is already ordered, and the wake path has no such spec to filter.
+fn wake_order(config: &MinatoConfig, service: &str) -> Result<Vec<String>, ApiError> {
+    let needed = select_with_dependencies(config, std::slice::from_ref(&service.to_string()))?;
+
+    Ok(config
+        .startup_order()
+        .into_iter()
+        .filter(|name| needed.iter().any(|needed| needed == name))
+        .map(str::to_string)
+        .collect())
+}
+
+/// The internal services nothing has reached for within their timeout.
+///
+/// Pure, and so testable without a runtime to ask. Whether one of these
+/// is actually up is a separate question, and the only one that needs
+/// the runtime — see [`Supervisor::sweep_internal`].
+///
+/// A dependent that is stopped counts as idle rather than as unknown.
+/// It is not sending requests by definition, and its last access was
+/// forgotten when it stopped, so reading the absence of a time as "still
+/// in use" is what would keep a database up behind a whole workspace
+/// that has already gone quiet.
+fn unreached_internal_services(
+    project: &str,
+    config: &MinatoConfig,
+    routes: &[(String, Route)],
+    idle_for: &dyn Fn(&str) -> Option<Duration>,
+) -> Vec<minato_runtime::ServiceKey> {
+    let internal: Vec<&str> = config
+        .services
+        .iter()
+        .filter(|(_, service)| !service.exposed())
+        .map(|(name, _)| name.as_str())
+        .collect();
+
+    if internal.is_empty() {
+        return Vec::new();
+    }
+
+    // What each exposed service pulls up with it, worked out once rather
+    // than once per pairing.
+    let mut needs: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (_, route) in routes {
+        if needs.contains_key(route.service.as_str()) {
+            continue;
+        }
+
+        if let Ok(order) = wake_order(config, &route.service) {
+            needs.insert(route.service.as_str(), order);
+        }
+    }
+
+    let mut unreached = Vec::new();
+    for name in internal {
+        let Ok(service_config) = config.service(name) else {
+            continue;
+        };
+        let timeout = service_config.idle_timeout();
+
+        // Grouped the way the service is keyed: one instance per
+        // workspace, or one shared by the whole project.
+        let mut dependents: BTreeMap<String, Vec<&(String, Route)>> = BTreeMap::new();
+        for entry in routes {
+            let (_, route) = entry;
+
+            if !needs
+                .get(route.service.as_str())
+                .is_some_and(|needed| needed.iter().any(|needed| needed == name))
+            {
+                continue;
+            }
+
+            let key = match service_config.scope {
+                ServiceScope::Workspace => route.workspace.clone(),
+                ServiceScope::Project => String::new(),
+            };
+
+            dependents.entry(key).or_default().push(entry);
+        }
+
+        for (workspace, entries) in dependents {
+            // One dependent still in use is enough to keep it up.
+            let all_idle = entries.iter().all(|(host, route)| {
+                !route.is_running() || idle_for(host).is_some_and(|idle| idle >= timeout)
+            });
+
+            if !all_idle {
+                continue;
+            }
+
+            unreached.push(match service_config.scope {
+                ServiceScope::Workspace => WorkspaceKey::new(project, &workspace).service(name),
+                ServiceScope::Project => WorkspaceKey::shared(project).service(name),
+            });
+        }
+    }
+
+    unreached
+}
+
 /// The named services, plus everything they depend on.
 fn select_with_dependencies(
     config: &MinatoConfig,
@@ -3256,6 +3485,198 @@ mod tests {
         assert_eq!(err.code, ErrorCode::NotFound);
         let hint = err.hint.expect("has a hint");
         assert!(hint.contains("web") && hint.contains("api"), "got: {hint}");
+    }
+
+    #[test]
+    fn waking_a_service_starts_its_dependencies_first() {
+        // A request is what wakes a service, and only an exposed one has
+        // a URL for a request to name. Starting `web` alone would hand it
+        // an `api` and a `db` that are not there.
+        let config = config(SAMPLE);
+        let order = wake_order(&config, "web").expect("resolves");
+
+        assert_eq!(order, vec!["db", "api", "web"]);
+    }
+
+    #[test]
+    fn waking_a_service_leaves_out_what_it_does_not_need() {
+        // The cold-start path sits in front of somebody's request, so it
+        // starts what the host needs and nothing else.
+        let config = config(SAMPLE);
+        let order = wake_order(&config, "api").expect("resolves");
+
+        assert_eq!(
+            order,
+            vec!["db", "api"],
+            "`web` depends on api, not the other way"
+        );
+    }
+
+    /// An exposed route, running or not.
+    fn route_for(workspace: &str, service: &str, running: bool) -> (String, Route) {
+        let host = format!("{service}.{workspace}.myapp.localhost");
+        let route = if running {
+            Route::new(
+                SocketAddr::from(([127, 0, 0, 1], 3000)),
+                "myapp",
+                workspace,
+                service,
+            )
+        } else {
+            Route::stopped("myapp", workspace, service)
+        };
+
+        (host, route)
+    }
+
+    /// Every host answered as idle for this long.
+    fn idle_by(seconds: u64) -> impl Fn(&str) -> Option<Duration> {
+        move |_| Some(Duration::from_secs(seconds))
+    }
+
+    #[test]
+    fn an_internal_service_stops_once_its_dependents_go_quiet() {
+        // `db` has no URL, so no request ever names it and it has no last
+        // access of its own. Read literally that made it a candidate
+        // never — one database per worktree, up for as long as the daemon
+        // was.
+        let config = config(SAMPLE);
+        let routes = vec![
+            route_for("feat-1", "web", true),
+            route_for("feat-1", "api", true),
+        ];
+
+        let unreached = unreached_internal_services(
+            "myapp",
+            &config,
+            &routes,
+            &idle_by(31 * 60), // past the 30m default
+        );
+
+        assert_eq!(
+            unreached,
+            vec![WorkspaceKey::shared("myapp").service("db")],
+            "db is shared, so it is keyed to the project"
+        );
+    }
+
+    #[test]
+    fn one_busy_dependent_keeps_an_internal_service_up() {
+        let config = config(SAMPLE);
+        let routes = vec![
+            route_for("feat-1", "web", true),
+            route_for("feat-1", "api", true),
+        ];
+
+        let unreached = unreached_internal_services("myapp", &config, &routes, &|host| {
+            // `api` is still being called; `web` has gone quiet.
+            Some(Duration::from_secs(if host.starts_with("api.") {
+                5
+            } else {
+                31 * 60
+            }))
+        });
+
+        assert!(
+            unreached.is_empty(),
+            "a database is shared, and one caller is enough to need it"
+        );
+    }
+
+    #[test]
+    fn a_stopped_dependent_counts_as_idle_rather_than_unknown() {
+        // Its last access was forgotten when it stopped, so there is no
+        // time to read. Treating that as "still in use" is exactly what
+        // kept the database up behind a workspace that had gone.
+        let config = config(SAMPLE);
+        let routes = vec![
+            route_for("feat-1", "web", false),
+            route_for("feat-1", "api", false),
+        ];
+
+        let unreached = unreached_internal_services("myapp", &config, &routes, &|_| None);
+
+        assert_eq!(unreached, vec![WorkspaceKey::shared("myapp").service("db")]);
+    }
+
+    #[test]
+    fn an_internal_service_nothing_depends_on_is_left_alone() {
+        // Waking follows `depends_on` outwards from a service a request
+        // can reach. With nothing pointing at it there is no way back up,
+        // so stopping it would be one-way.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            [services.db]
+            image = "postgres:16"
+            port = 5432
+            expose = false
+        "#,
+        );
+
+        let routes = vec![route_for("feat-1", "web", true)];
+        let unreached = unreached_internal_services("myapp", &config, &routes, &idle_by(31 * 60));
+
+        assert!(unreached.is_empty(), "nothing would ever start it again");
+    }
+
+    #[test]
+    fn a_workspace_scoped_internal_service_is_decided_per_worktree() {
+        // Unlike the shared one, each worktree has its own — so one
+        // worktree still working must not keep the other's up.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            depends_on = ["db"]
+            [services.db]
+            image = "postgres:16"
+            port = 5432
+            expose = false
+        "#,
+        );
+
+        let routes = vec![
+            route_for("feat-1", "web", true),
+            route_for("feat-2", "web", true),
+        ];
+
+        let unreached = unreached_internal_services("myapp", &config, &routes, &|host| {
+            Some(Duration::from_secs(if host.contains("feat-2") {
+                5
+            } else {
+                31 * 60
+            }))
+        });
+
+        assert_eq!(
+            unreached,
+            vec![WorkspaceKey::new("myapp", "feat-1").service("db")],
+            "only the quiet worktree's database"
+        );
+    }
+
+    #[test]
+    fn an_exposed_service_is_not_swept_twice() {
+        // The exposed half of the sweep already owns these, and stopping
+        // one from both places would ask the runtime twice and count it
+        // twice.
+        let config = config(SAMPLE);
+        let routes = vec![route_for("feat-1", "web", true)];
+
+        let unreached = unreached_internal_services("myapp", &config, &routes, &idle_by(31 * 60));
+
+        assert!(
+            unreached.iter().all(|key| key.service == "db"),
+            "got: {unreached:?}"
+        );
     }
 
     #[test]

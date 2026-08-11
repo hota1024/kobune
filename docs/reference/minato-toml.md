@@ -161,7 +161,7 @@ Not to be confused with `minato setup`, which is the privileged host setup.
 | Key | Type | | |
 | --- | --- | --- | --- |
 | `port` | integer | — | The port the app listens on **inside** the container |
-| `expose` | boolean | `true` when `port` is set | Whether to give it a URL |
+| `expose` | boolean | `true` when `port` is set | Whether to give it a URL. Without one it is reached and stopped through `depends_on` |
 
 There is no host port to configure. Docker forwards to a port it chooses; Apple
 Container gives the container its own IP.
@@ -231,8 +231,8 @@ broken — the URL still works once it comes up, because reaching for it waits
 
 | Key | Type | | |
 | --- | --- | --- | --- |
-| `idle_timeout` | duration | `"30m"` | Time without a request before it stops itself |
-| `depends_on` | array | `[]` | Services to start first |
+| `idle_timeout` | duration | `"30m"` | Time without a request before it stops itself. Without a URL of its own, it follows the services that `depends_on` it |
+| `depends_on` | array | `[]` | Services to start first, whether by `minato up` or by a request waking this one |
 | `scope` | string | `"workspace"` | `"workspace"` or `"project"` |
 
 Durations are `humantime`: `"30s"`, `"10m"`, `"2h"`.
