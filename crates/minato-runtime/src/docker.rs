@@ -36,8 +36,8 @@ use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{
-    Attachment, DEFAULT_WINDOW, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime,
-    RuntimeInfo, Throwaway, labels, names,
+    Attachment, DEFAULT_WINDOW, ExecOptions, ExecOutcome, LogLine, LogOptions, Resize, Runtime,
+    RuntimeInfo, Sizing, Throwaway, labels, names,
 };
 use crate::spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
@@ -92,6 +92,30 @@ impl crate::health::CommandProbe for DockerCommandProbe {
             .ok()
             .and_then(|inspected| inspected.exit_code)
             .is_some_and(|code| code == 0)
+    }
+}
+
+/// One container's terminal, for as long as someone is attached to it.
+struct DockerTerminal {
+    docker: Docker,
+    container: String,
+    /// Only for what a failure says. The id would mean nothing to anyone.
+    service: String,
+}
+
+#[async_trait]
+impl Resize for DockerTerminal {
+    async fn resize(&self, window: minato_api::Window) -> Result<()> {
+        self.docker
+            .resize_container_tty(
+                &self.container,
+                ResizeContainerTtyOptions {
+                    width: window.cols,
+                    height: window.rows,
+                },
+            )
+            .await
+            .map_err(|e| RuntimeError::failed(format!("resizing {}'s terminal", self.service), e))
     }
 }
 
@@ -1341,10 +1365,10 @@ impl Runtime for DockerRuntime {
         // dropped.
         let output = attached.output.filter_map(|item| async move {
             match item {
-                Ok(LogOutput::Console { message })
-                | Ok(LogOutput::StdOut { message })
-                | Ok(LogOutput::StdErr { message })
-                | Ok(LogOutput::StdIn { message }) => Some(message.to_vec()),
+                // Which of Docker's streams a chunk came from does not
+                // matter here: with a terminal there is only one, and a
+                // screen is not something to sort by stream anyway.
+                Ok(chunk) => Some(chunk.into_bytes().to_vec()),
                 Err(err) => {
                     tracing::debug!("the attachment ended: {err}");
                     None
@@ -1355,29 +1379,14 @@ impl Runtime for DockerRuntime {
         Ok(Attachment {
             output: Box::pin(output),
             input: attached.input,
-            // Docker resizes a running container's terminal on demand.
-            fixed_size: None,
+            // The container this was opened on, kept: a window drag then
+            // costs one call each rather than a lookup and a call.
+            sizing: Sizing::Follows(Box::new(DockerTerminal {
+                docker: self.docker.clone(),
+                container: id,
+                service: key.service.clone(),
+            })),
         })
-    }
-
-    async fn resize(&self, key: &ServiceKey, cols: u16, rows: u16) -> Result<()> {
-        let container = self.find_container(key).await?.ok_or_else(|| {
-            RuntimeError::failed(
-                format!("resizing {}'s terminal", key.service),
-                "there is no container",
-            )
-        })?;
-
-        self.docker
-            .resize_container_tty(
-                &container.id.unwrap_or_default(),
-                ResizeContainerTtyOptions {
-                    width: cols,
-                    height: rows,
-                },
-            )
-            .await
-            .map_err(|e| RuntimeError::failed(format!("resizing {}'s terminal", key.service), e))
     }
 
     async fn exec(

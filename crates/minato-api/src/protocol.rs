@@ -15,7 +15,7 @@ use crate::response::Response;
 ///
 /// Bumped on every breaking change. Clients compare it during the initial
 /// [`Request::Ping`] and ask for a daemon restart on mismatch.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -55,15 +55,26 @@ pub enum ClientMessage {
     },
 
     /// The client's terminal changed size.
-    ///
-    /// Sent once when attaching too, since the container's terminal starts
-    /// at whatever size the runtime picked — 80×24 — and a full-screen UI
-    /// drawn to that size in a wider window is the first thing anyone
-    /// notices.
     Resize {
         id: RequestId,
         window: crate::request::Window,
     },
+}
+
+/// What an attached client sends while its request runs.
+///
+/// **The one shape both ends use.** It was worth saying twice on the wire
+/// — `Input` and `Resize` carry a request id, since one connection
+/// multiplexes several — and not worth saying twice anywhere else: the
+/// client turns this into a message, the daemon turns a message back into
+/// this, and a third kind of thing to send should mean one addition
+/// rather than three.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Typed {
+    /// Bytes read from the client's terminal, passed on as they came.
+    Keys(Vec<u8>),
+    /// The client's window changed size.
+    Resize(crate::request::Window),
 }
 
 impl ClientMessage {
@@ -72,6 +83,39 @@ impl ClientMessage {
         Self::Input {
             id,
             data: crate::event::encode_bytes(bytes),
+        }
+    }
+
+    /// Puts what was typed on the wire, under the request it belongs to.
+    pub fn typed(id: RequestId, typed: &Typed) -> Self {
+        match typed {
+            Typed::Keys(bytes) => Self::input(id, bytes),
+            Typed::Resize(window) => Self::Resize {
+                id,
+                window: *window,
+            },
+        }
+    }
+
+    /// Which request this belongs to.
+    pub fn request_id(&self) -> RequestId {
+        match self {
+            Self::Request { id, .. }
+            | Self::Cancel { id }
+            | Self::Input { id, .. }
+            | Self::Resize { id, .. } => *id,
+        }
+    }
+
+    /// What an attached request should make of this message, if anything.
+    ///
+    /// `None` for everything that is not a client typing: those are the
+    /// connection's business, not a running request's.
+    pub fn as_typed(&self) -> Option<Typed> {
+        match self {
+            Self::Input { data, .. } => Some(Typed::Keys(crate::event::decode_bytes(data))),
+            Self::Resize { window, .. } => Some(Typed::Resize(*window)),
+            Self::Request { .. } | Self::Cancel { .. } => None,
         }
     }
 }

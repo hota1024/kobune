@@ -20,7 +20,8 @@ pub use error::{Result, RuntimeError};
 pub use event::EventSink;
 pub use health::{DEFAULT_READINESS_TIMEOUT, await_service, probe, wait_until_ready};
 pub use runtime::{
-    Attachment, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names,
+    Attachment, ExecOptions, ExecOutcome, LogLine, LogOptions, Resize, Runtime, RuntimeInfo,
+    Sizing, labels, names,
 };
 pub use spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,

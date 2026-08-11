@@ -12,8 +12,8 @@
 
 use std::io::{IsTerminal, Read, Write};
 
-use minato_client::Typed;
-use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use minato_api::{Typed, Window};
+use ratatui::crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
@@ -31,6 +31,18 @@ const DETACH: [u8; 2] = [0x10, 0x11];
 /// out — must not be given a full-screen program's drawing.
 pub fn is_a_terminal() -> bool {
     std::io::stdin().is_terminal() && crate::ui::is_interactive()
+}
+
+/// The terminal this session could lend, and how big it is.
+///
+/// One answer rather than two, so "a terminal, of no particular size"
+/// cannot be expressed: a size is what the far end will draw to.
+pub fn offered_window() -> Option<Window> {
+    if !is_a_terminal() {
+        return None;
+    }
+
+    crate::ui::window()
 }
 
 /// What to say before the program takes the screen.
@@ -53,9 +65,11 @@ pub fn announce(service: &str) {
 /// screen and showing the cursor is what a terminal multiplexer does when
 /// a pane goes, and on a program that used neither it costs nothing.
 pub fn restore() {
-    let mut out = std::io::stdout().lock();
-    let _ = out.write_all(b"\x1b[?1049l\x1b[?25h");
-    let _ = out.flush();
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        ratatui::crossterm::cursor::Show
+    );
 }
 
 /// The terminal, for as long as a service has it.
@@ -82,17 +96,20 @@ impl Session {
             resizes: tokio::spawn(pass_on_resizes(typed)),
         })
     }
+}
 
-    /// Writes what the service's terminal produced, byte for byte.
-    ///
-    /// Flushed every time. A full-screen program's output only makes sense
-    /// at the moment it arrives — a cursor move held back in a buffer is a
-    /// screen drawn in the wrong order.
-    pub fn show(bytes: &[u8]) {
-        let mut out = std::io::stdout().lock();
-        let _ = out.write_all(bytes);
-        let _ = out.flush();
-    }
+/// Writes what the service's terminal produced, byte for byte.
+///
+/// Flushed every time. A full-screen program's output only makes sense at
+/// the moment it arrives — a cursor move held back in a buffer is a screen
+/// drawn in the wrong order.
+///
+/// Not a method: it writes to standard output, and needs nothing a
+/// [`Session`] holds.
+pub fn show(bytes: &[u8]) {
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(bytes);
+    let _ = out.flush();
 }
 
 impl Drop for Session {

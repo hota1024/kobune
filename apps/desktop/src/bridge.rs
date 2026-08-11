@@ -298,8 +298,7 @@ async fn follow_logs(state: SharedState, cwd: PathBuf, notifier: Notifier, works
         follow: true,
         tail: Some(200),
         // A log pane has no terminal to lend and nothing to type with.
-        window: None,
-        interactive: false,
+        attach: None,
     };
 
     let outcome = connection

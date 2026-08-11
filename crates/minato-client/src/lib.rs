@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use minato_api::{
     ApiError, ClientMessage, Event, MessageStream, PROTOCOL_VERSION, Pong, Request, RequestId,
-    Response, ServerMessage, Window, write_message,
+    Response, ServerMessage, Typed, write_message,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpStream, UnixStream};
@@ -106,15 +106,6 @@ impl ClientError {
             _ => None,
         }
     }
-}
-
-/// What an attached client sends while its request runs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Typed {
-    /// Bytes read from the client's terminal, passed on as they came.
-    Keys(Vec<u8>),
-    /// The client's window changed size.
-    Resize(Window),
 }
 
 /// How an attached session ended.
@@ -402,26 +393,8 @@ impl Connection {
                 }
             };
 
-            match message {
-                ServerMessage::Event {
-                    id: event_id,
-                    event,
-                } => {
-                    // Events for other requests are not the caller's business.
-                    if event_id == id {
-                        on_event(event);
-                    }
-                }
-                ServerMessage::Response {
-                    id: response_id,
-                    outcome,
-                } if response_id == id => {
-                    return outcome.into_result().map_err(ClientError::Api);
-                }
-                ServerMessage::Response { .. } => {}
-                ServerMessage::Fatal { message } => {
-                    return Err(ClientError::Protocol(message));
-                }
+            if let Some(outcome) = dispatch(message, id, &mut on_event)? {
+                return outcome.map_err(ClientError::Api);
             }
         }
     }
@@ -453,30 +426,15 @@ impl Connection {
                 // is not overtaken by a keystroke that arrived with it.
                 biased;
 
-                message = self.reader.recv() => match as_message(message)? {
-                    ServerMessage::Event { id: event_id, event } => {
-                        if event_id == id {
-                            on_event(event);
-                        }
-                    }
-                    ServerMessage::Response { id: response_id, outcome } if response_id == id => {
-                        return outcome.into_result()
-                            .map(Attached::Finished)
-                            .map_err(ClientError::Api);
-                    }
-                    ServerMessage::Response { .. } => {}
-                    ServerMessage::Fatal { message } => {
-                        return Err(ClientError::Protocol(message));
+                message = self.reader.recv() => {
+                    if let Some(outcome) = dispatch(as_message(message)?, id, &mut on_event)? {
+                        return outcome.map(Attached::Finished).map_err(ClientError::Api);
                     }
                 },
 
                 keys = typed.recv() => match keys {
-                    Some(Typed::Keys(bytes)) => {
-                        write_message(&mut self.writer, &ClientMessage::input(id, &bytes)).await?;
-                    }
-                    Some(Typed::Resize(window)) => {
-                        write_message(&mut self.writer, &ClientMessage::Resize { id, window })
-                            .await?;
+                    Some(typed) => {
+                        write_message(&mut self.writer, &ClientMessage::typed(id, &typed)).await?;
                     }
                     // The keyboard was put down: the person detached.
                     None => return Ok(Attached::Detached),
@@ -508,6 +466,42 @@ impl Connection {
         }
 
         Ok(pong)
+    }
+}
+
+/// Folds one server message into a call in progress.
+///
+/// `Some` when it ends the call, `None` when there is more to come. Both
+/// loops above run the same rules — which id an event belongs to, which
+/// response terminates, what a fatal message means — and a protocol whose
+/// client-side reading lived in two places would only stay in step by
+/// luck.
+fn dispatch<F>(
+    message: ServerMessage,
+    id: RequestId,
+    on_event: &mut F,
+) -> Result<Option<Result<Response, ApiError>>, ClientError>
+where
+    F: FnMut(Event),
+{
+    match message {
+        ServerMessage::Event {
+            id: event_id,
+            event,
+        } => {
+            // Events for other requests are not the caller's business.
+            if event_id == id {
+                on_event(event);
+            }
+
+            Ok(None)
+        }
+        ServerMessage::Response {
+            id: response_id,
+            outcome,
+        } if response_id == id => Ok(Some(outcome.into_result())),
+        ServerMessage::Response { .. } => Ok(None),
+        ServerMessage::Fatal { message } => Err(ClientError::Protocol(message)),
     }
 }
 

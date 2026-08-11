@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use minato_api::{
-    ApiError, ClientMessage, MessageStream, Request, RequestId, ServerMessage, write_message,
+    ApiError, ClientMessage, MessageStream, Request, RequestId, ServerMessage, Typed, write_message,
 };
 use minato_runtime::EventSink;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify, mpsc};
 
-use crate::supervisor::{ClientStream, FromClient, Supervisor};
+use crate::supervisor::{ClientStream, Supervisor};
 
 pub struct Server {
     socket: PathBuf,
@@ -95,6 +95,14 @@ fn bind(socket: &Path) -> anyhow::Result<Option<UnixListener>> {
     Ok(Some(UnixListener::bind(socket)?))
 }
 
+/// A request that is still running, and the keyboard that reaches it.
+struct InFlight {
+    task: tokio::task::JoinHandle<()>,
+    /// Where what the client types goes. Read only by an attached
+    /// request; every other one lets it fill and drops it at the end.
+    keys: mpsc::UnboundedSender<Typed>,
+}
+
 /// Handles one connection.
 ///
 /// Each request runs in its own task, and the read loop keeps going. That
@@ -111,18 +119,26 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
 
     // The event pumps and the final responses share one writer.
     let writer = Arc::new(Mutex::new(write_half));
-    let mut running: HashMap<RequestId, tokio::task::JoinHandle<()>> = HashMap::new();
-
-    // Where keystrokes and window sizes go, per request. Only an
-    // interactive `logs` reads from its channel; for every other request
-    // nothing is ever sent and the end of it is dropped below.
-    let mut typing: HashMap<RequestId, mpsc::UnboundedSender<FromClient>> = HashMap::new();
+    let mut running: HashMap<RequestId, InFlight> = HashMap::new();
 
     while let Some(message) = reader.recv::<ClientMessage>().await? {
         // Finished work is cleared out here rather than by the tasks
-        // themselves, which would mean sharing the map across them.
-        running.retain(|_, handle| !handle.is_finished());
-        typing.retain(|id, _| running.contains_key(id));
+        // themselves, which would mean sharing the map across them. The
+        // keyboard goes with the task it belonged to.
+        running.retain(|_, request| !request.task.is_finished());
+
+        // Keystrokes and window sizes reach the request they name, if it
+        // is still there and reading. One that is not attached never
+        // reads its channel, and one that has finished is not in the map
+        // at all: a key pressed a moment after the program exited is
+        // nobody's mistake, and ends here quietly.
+        if let Some(typed) = message.as_typed() {
+            if let Some(request) = running.get(&message.request_id()) {
+                let _ = request.keys.send(typed);
+            }
+
+            continue;
+        }
 
         match message {
             ClientMessage::Request { id, request } => {
@@ -130,32 +146,19 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
                 let writer = writer.clone();
 
                 let (keys, from_client) = mpsc::unbounded_channel();
-                typing.insert(id, keys);
 
                 running.insert(
                     id,
-                    tokio::spawn(async move {
-                        serve(id, request, supervisor, writer, from_client).await
-                    }),
+                    InFlight {
+                        task: tokio::spawn(async move {
+                            serve(id, request, supervisor, writer, from_client).await
+                        }),
+                        keys,
+                    },
                 );
             }
-            ClientMessage::Input { id, data } => {
-                // A key pressed after the program exited is nobody's
-                // mistake, and neither is one for a request that was never
-                // attached. Both end here, quietly.
-                if let Some(keys) = typing.get(&id) {
-                    let _ = keys.send(FromClient::Keys(minato_api::decode_bytes(&data)));
-                }
-            }
-            ClientMessage::Resize { id, window } => {
-                if let Some(keys) = typing.get(&id) {
-                    let _ = keys.send(FromClient::Resize(window));
-                }
-            }
             ClientMessage::Cancel { id } => {
-                typing.remove(&id);
-
-                let Some(handle) = running.remove(&id) else {
+                let Some(request) = running.remove(&id) else {
                     // Already finished, or never started. Its response has
                     // gone out either way, so sending another would leave
                     // two for one id.
@@ -163,7 +166,7 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
                     continue;
                 };
 
-                handle.abort();
+                request.task.abort();
 
                 // Aborting drops the task wherever it was, so a container
                 // that was half-created stays half-created. `up` and `rm`
@@ -175,6 +178,8 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
                 let response = ServerMessage::err(id, ApiError::cancelled());
                 let _ = write_message(&mut *guard, &response).await;
             }
+            // Answered above, by whichever request they name.
+            ClientMessage::Input { .. } | ClientMessage::Resize { .. } => {}
         }
     }
 
