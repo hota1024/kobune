@@ -157,7 +157,7 @@ command = "sh -c 'pnpm dev'"
 | キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
 | `port` | integer | — | アプリケーションが**コンテナ内で**待ち受けるポート |
-| `expose` | boolean | `port` があれば `true` | URL を割り当てるかどうか |
+| `expose` | boolean | `port` があれば `true` | URL を割り当てるかどうか。割り当てない場合、起動と停止は `depends_on` 経由になる |
 
 ホスト側のポートを設定する項目はありません。Docker は自動的に選択したポートへ
 フォワードし、Apple Container はコンテナに専用の IP アドレスを割り当てます。
@@ -224,8 +224,8 @@ health = "cmd:pg_isready -U postgres"      # コンテナ内で実行
 
 | キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| `idle_timeout` | duration | `"30m"` | リクエストが来ない状態が続いたとき、自動停止するまでの時間 |
-| `depends_on` | array | `[]` | 先に起動するサービス |
+| `idle_timeout` | duration | `"30m"` | リクエストが来ない状態が続いたとき、自動停止するまでの時間。URL を持たないサービスは `depends_on` で参照している側に従う |
+| `depends_on` | array | `[]` | 先に起動するサービス。`minato up` でも、リクエストによる起動でも先に起動する |
 | `scope` | string | `"workspace"` | `"workspace"` または `"project"` |
 
 時間は `humantime` 形式で指定します。`"30s"`、`"10m"`、`"2h"` など。

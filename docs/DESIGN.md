@@ -436,6 +436,34 @@ Stopped ──(a request arrives)──> Starting ──(health OK)──> Ready
                                  └────(still no access)──────┘
 ```
 
+### A request is the only way in, so it has to carry the dependencies
+
+A service is woken by a request naming it, which means **only a service with a
+URL can be woken at all**. `expose = false` — what a database is — leaves one
+with no name for a request to carry, and that one fact decides both halves of
+this section.
+
+**Waking starts the whole `depends_on` closure**, in `startup_order`. Starting
+the single service the host named would hand the app a dependency that is not
+there, and no request would ever arrive to fix it. `up` had always done this;
+the wake path was the one way in that did not, so it worked under `minato up`
+and failed only once scale-to-zero had stopped something. Under Apple Container
+it decides more than ordering: `MINATO_HOST_<SERVICE>` carries a peer's address
+read after that peer has started, so a service woken on its own gets no
+variable at all.
+
+**Stopping reads the same edges backwards.** An internal service has no
+last-access time of its own — nothing ever requests it — so the idle sweep, which
+walks the routing table, never saw it and it stayed up for as long as the daemon
+did. One database per worktree, running for ever, is the opposite of what makes
+a worktree cheap to create. It now follows the exposed services that depend on
+it: stopped ones are not using it, running ones are judged on their own last
+access.
+
+**With no exposed dependent it is left alone.** There is then no signal to stop
+on and no way back up, and stopping it would be one-way. The configuration
+reference says to name it in `depends_on` for exactly this reason.
+
 ### Waiting for a start
 
 The first request waits somewhere between seconds and tens of seconds. What
