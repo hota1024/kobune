@@ -231,6 +231,51 @@ pub struct EnvInfo {
     /// A description of the reference. Never the value itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Why this value is shown as written, when it is.
+    ///
+    /// **Per value rather than per listing**, so that one bad reference
+    /// does not put every other value under suspicion. `None` means the
+    /// value is what the container would be given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsettled: Option<Unsettled>,
+}
+
+/// Why a value could not be expanded.
+///
+/// Structured, not a sentence: the CLI and the GUI say it their own way
+/// (`docs/DESIGN.md` §3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unsettled {
+    /// The name it refers to. Absent for a loop, which has no single one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    pub reason: UnsettledReason,
+}
+
+/// What stood in the way of expanding a value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnsettledReason {
+    /// Nothing in this environment sets the name.
+    Undefined,
+    /// Only a listing about one service holds it — `MINATO_SERVICE`, or a
+    /// service's own `env`. The environment itself is fine; this listing
+    /// is the one that cannot settle it.
+    OnlyWithService {
+        /// A service that does have it.
+        service: String,
+    },
+    /// Injected only while the proxy is listening, and only for a service
+    /// that publishes a URL.
+    NeedsProxy,
+    /// A secret resolves in memory at start-up, so it cannot be built into
+    /// another value.
+    Secret,
+    /// The references form a loop.
+    Cycle {
+        /// The loop, in the order it was walked.
+        chain: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

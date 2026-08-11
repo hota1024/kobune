@@ -117,6 +117,9 @@ pub fn env(entries: &[EnvInfo]) {
     Surface::stdout().print(|decor| views::env(entries, decor));
 }
 
+/// Why a value is shown as written, in words.
+pub use views::{unsettled_reason, unsettled_remedy};
+
 /// `tunnel status`, `tunnel enable`, `tunnel disable`.
 pub fn tunnel(info: &TunnelInfo) {
     Surface::stdout().print(|decor| views::tunnel(info, decor));
@@ -251,7 +254,15 @@ pub mod test_support {
     /// Draws a view and returns what would reach a terminal that cannot
     /// show colour — which is what the assertions are about.
     pub fn render<V: View>(view: &V) -> String {
-        let width = view.preferred_width().max(1);
+        render_at(view, view.preferred_width().max(1))
+    }
+
+    /// The same, at a width the view did not choose.
+    ///
+    /// **What a narrow terminal does to it.** At its preferred width
+    /// nothing ever wraps, so an assertion made there cannot fail for the
+    /// thing a person on 80 columns actually sees.
+    pub fn render_at<V: View>(view: &V, width: u16) -> String {
         let height = view.height(width).max(1);
 
         let area = Rect::new(0, 0, width, height);

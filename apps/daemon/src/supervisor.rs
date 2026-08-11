@@ -838,10 +838,16 @@ impl Supervisor {
         )
         .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?;
 
-        let entries = layers
-            .resolve()
-            .map_err(env::resolution_error)?
-            .into_iter()
+        // **A listing that cannot settle still lists.** This is the tool
+        // someone reaches for to find the value that will not settle, and
+        // one bad `${...}` taking the whole listing with it leaves them
+        // with the error alone and nowhere to look. Only the values at
+        // fault are marked, so the rest are not left under suspicion.
+        let settled = layers.settle();
+
+        let entries = settled
+            .entries
+            .iter()
             .map(|entry| {
                 let secret = entry.secret_ref();
 
@@ -850,7 +856,7 @@ impl Supervisor {
                 let injected = entry.scope == minato_core::EnvScope::Injected;
 
                 EnvInfo {
-                    key: entry.key,
+                    key: entry.key.clone(),
                     value: if reveal || injected || secret.is_some() {
                         // A secret stays a reference even under --reveal.
                         // Showing the value would mean resolving it, and
@@ -862,6 +868,9 @@ impl Supervisor {
                     scope: entry.scope,
                     secret: secret.is_some(),
                     source: secret.map(|reference| reference.describe()),
+                    unsettled: settled
+                        .reason_for(&entry.key)
+                        .and_then(|err| env::unsettled(err, service.as_deref(), &resolved.config)),
                 }
             })
             .collect();

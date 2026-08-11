@@ -159,8 +159,27 @@ impl EnvLayers {
     /// `minato env ls` shows is what the container is given. A listing of
     /// unexpanded values would be a listing of something nothing ever runs
     /// with.
+    ///
+    /// **Every value or none.** Starting a service with one of them left
+    /// as `${...}` is the "set, but broken" this exists to avoid.
     pub fn resolve(&self) -> Result<Vec<EnvEntry>, EnvError> {
-        expand_all(self.merge())
+        let settled = self.settle();
+
+        match settled.unsettled.into_iter().next() {
+            Some(first) => Err(first.error),
+            None => Ok(settled.entries),
+        }
+    }
+
+    /// The same, but with the ones that will not settle marked rather than
+    /// refused.
+    ///
+    /// **A value that settles still settles.** Failing the lot over one
+    /// bad reference would leave a listing where nothing can be told apart
+    /// — which of thirty values is the one at fault, and which merely look
+    /// unexpanded because everything does.
+    pub fn settle(&self) -> Settled {
+        settle_all(self.merge())
     }
 
     /// The merged result with every value still as it was written.
@@ -199,6 +218,33 @@ impl EnvLayers {
     }
 }
 
+/// A merged set with its `${...}` expanded as far as they go.
+#[derive(Debug)]
+pub struct Settled {
+    /// Every key, expanded where it could be, as written where it could
+    /// not.
+    pub entries: Vec<EnvEntry>,
+    /// The ones that could not be, in key order.
+    pub unsettled: Vec<Unsettled>,
+}
+
+impl Settled {
+    /// Why `key` did not settle, if it did not.
+    pub fn reason_for(&self, key: &str) -> Option<&EnvError> {
+        self.unsettled
+            .iter()
+            .find(|failure| failure.key == key)
+            .map(|failure| &failure.error)
+    }
+}
+
+/// One value that could not be expanded, and why.
+#[derive(Debug)]
+pub struct Unsettled {
+    pub key: String,
+    pub error: EnvError,
+}
+
 /// Expands `${...}` throughout the merged set.
 ///
 /// **What a reference resolves to is the value the container will see**,
@@ -206,14 +252,24 @@ impl EnvLayers {
 /// overrides `MINATO_URL_API` overrides it for everything built out of it
 /// too; the other way round, the override would apply everywhere except
 /// where it was being used.
-fn expand_all(merged: BTreeMap<String, EnvEntry>) -> Result<Vec<EnvEntry>, EnvError> {
+///
+/// A key that cannot be expanded keeps its value as written and is
+/// recorded. So does one that refers to it: the reason travels, naming the
+/// value that actually went wrong rather than the one that trusted it.
+fn settle_all(merged: BTreeMap<String, EnvEntry>) -> Settled {
     let mut expanded: BTreeMap<String, String> = BTreeMap::new();
+    let mut unsettled = Vec::new();
 
     for key in merged.keys() {
-        expand_key(key, &merged, &mut expanded, &mut Vec::new())?;
+        if let Err(error) = expand_key(key, &merged, &mut expanded, &mut Vec::new()) {
+            unsettled.push(Unsettled {
+                key: key.clone(),
+                error,
+            });
+        }
     }
 
-    Ok(merged
+    let entries = merged
         .into_values()
         .map(|entry| EnvEntry {
             raw: expanded
@@ -221,7 +277,9 @@ fn expand_all(merged: BTreeMap<String, EnvEntry>) -> Result<Vec<EnvEntry>, EnvEr
                 .unwrap_or_else(|| entry.raw.clone()),
             ..entry
         })
-        .collect())
+        .collect();
+
+    Settled { entries, unsettled }
 }
 
 /// Expands one key, and whatever it refers to, first.
@@ -971,6 +1029,73 @@ ESCAPED="line1\nline2"
         let err = layers.resolve().unwrap_err().to_string();
         assert!(err.contains("API_URL"), "name the value: {err}");
         assert!(err.contains("NOT_SET"), "name the reference: {err}");
+    }
+
+    #[test]
+    fn settling_keeps_the_values_that_settle() {
+        // One bad reference used to take every other value with it, which
+        // left a listing where nothing could be told apart.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[
+                ("BASE", "https://api"),
+                ("GOOD", "${BASE}/v1"),
+                ("BAD", "${NOWHERE}"),
+            ]),
+        );
+
+        let settled = layers.settle();
+        let value = |key: &str| {
+            settled
+                .entries
+                .iter()
+                .find(|entry| entry.key == key)
+                .expect("present")
+                .raw
+                .clone()
+        };
+
+        assert_eq!(value("GOOD"), "https://api/v1", "this one was fine");
+        assert_eq!(value("BAD"), "${NOWHERE}", "and this one is as written");
+
+        assert!(settled.reason_for("GOOD").is_none());
+        assert!(settled.reason_for("BAD").is_some());
+    }
+
+    #[test]
+    fn a_value_built_on_one_that_will_not_settle_says_so_too() {
+        // Both are unusable, and the reason names the one that actually
+        // went wrong rather than the one that trusted it.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[("BAD", "${NOWHERE}"), ("DERIVED", "${BAD}/x")]),
+        );
+
+        let settled = layers.settle();
+
+        assert_eq!(settled.unsettled.len(), 2, "{:?}", settled.unsettled);
+        assert!(
+            settled
+                .reason_for("DERIVED")
+                .is_some_and(|err| err.to_string().contains("NOWHERE")),
+            "point at the root: {:?}",
+            settled.reason_for("DERIVED")
+        );
+    }
+
+    #[test]
+    fn starting_still_wants_all_of_them() {
+        // A container given one value still holding `${...}` is the "set,
+        // but broken" the whole thing exists to avoid.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[("GOOD", "1"), ("BAD", "${NOWHERE}")]),
+        );
+
+        assert!(layers.resolve().is_err(), "every value or none");
     }
 
     #[test]
