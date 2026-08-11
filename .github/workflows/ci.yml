@@ -55,6 +55,52 @@ jobs:
       - name: Tests
         run: cargo test --workspace --exclude minato-desktop
 
+  # The tests that need a container runtime, which is why they are their
+  # own job: every one of them is `#[ignore]`d, so the job above never
+  # runs them and stays as fast as it was.
+  #
+  # Ubuntu because Docker is already installed there. The macOS runners
+  # have no container runtime at all, and nothing in these tests is
+  # platform-specific — the runtime is reached through its API.
+  #
+  # This is where the gap `docs/DESIGN.md` §6 describes gets closed: the
+  # Docker backend is most of two thousand lines whose only other tests
+  # parse fixtures written by hand, which is exactly the arrangement that
+  # let M0's Apple Container backend be wholly broken while its tests
+  # passed.
+  runtime:
+    name: Runtime (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Pulled here rather than inside a test, so a slow registry shows up
+      # as a slow step instead of a start that looks like it hung.
+      - name: Fetch the image the tests run
+        run: docker pull busybox:latest
+
+      # One at a time: they share a Docker daemon, and each names its
+      # containers after the project in its own `minato.toml`.
+      - name: Tests
+        run: cargo test --workspace --exclude minato-desktop -- --ignored --test-threads=1
+
+      # A container left behind would be found by the next run and read as
+      # state that belongs to it. The harness clears up after itself even
+      # when a test panics; this is the answer if that ever stops being
+      # true, and it says so rather than passing quietly.
+      - name: Nothing left behind
+        run: |
+          left="$(docker ps -aq --filter 'label=dev.minato.managed=1')"
+          if [ -n "$left" ]; then
+            echo "containers survived the run:" >&2
+            docker ps -a --filter 'label=dev.minato.managed=1' >&2
+            exit 1
+          fi
+
   # The GUI, on its own because of the GPUI dependency. Slow on a cold
   # cache — the Zed checkout alone is large.
   desktop:
