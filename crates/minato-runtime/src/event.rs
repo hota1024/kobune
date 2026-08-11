@@ -111,6 +111,18 @@ impl EventSink {
         });
     }
 
+    /// Says that the client's terminal now belongs to a service.
+    pub fn attached(&self, service: impl Into<String>) {
+        self.send(Event::Attached {
+            service: service.into(),
+        });
+    }
+
+    /// Passes terminal output along, byte for byte.
+    pub fn bytes(&self, service: Option<String>, bytes: &[u8]) {
+        self.send(Event::bytes(service, bytes));
+    }
+
     pub fn output(&self, service: Option<String>, stream: OutputStream, line: impl Into<String>) {
         self.send(Event::Output {
             service,

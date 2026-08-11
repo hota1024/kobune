@@ -44,10 +44,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 indexmap = { version = "2", features = ["serde"] }
+# Terminal traffic is bytes, and the wire format is one JSON document per
+# line. Base64 is what carries the one inside the other.
+base64 = "0.22"
 humantime-serde = "1"
 humantime = "2"
 
 # Utilities
+libc = "0.2"
 sha2 = "0.10"
 shell-words = "1"
 dirs = "5"

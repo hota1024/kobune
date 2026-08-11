@@ -12,6 +12,7 @@ pub mod event;
 pub mod health;
 pub mod runtime;
 pub mod spec;
+mod terminal;
 
 pub use apple::AppleContainerRuntime;
 pub use docker::DockerRuntime;
@@ -19,7 +20,7 @@ pub use error::{Result, RuntimeError};
 pub use event::EventSink;
 pub use health::{DEFAULT_READINESS_TIMEOUT, await_service, probe, wait_until_ready};
 pub use runtime::{
-    ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names,
+    Attachment, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, labels, names,
 };
 pub use spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,

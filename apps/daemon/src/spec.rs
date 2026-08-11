@@ -263,6 +263,7 @@ pub fn build_service_spec(
         command,
         workdir: service.workdir().to_string(),
         env,
+        tty: service.tty,
         port: service.port,
         health: service.health.clone(),
         scope: service.scope,

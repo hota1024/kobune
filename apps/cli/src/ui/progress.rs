@@ -146,6 +146,11 @@ impl Progress {
                 Span::styled("  │ ", theme::muted()),
                 Span::raw(line.clone()),
             ])),
+            // Only an interactive `logs` produces these, and that runs
+            // without a progress display: the service owns the screen, and
+            // a spinner drawn over it would be one more thing fighting for
+            // the same lines.
+            Event::Attached { .. } | Event::Bytes { .. } => {}
         }
     }
 

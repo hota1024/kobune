@@ -25,6 +25,7 @@ URL is. So `minato status | grep web` reads the same as it always did.
 | `TERM=dumb` | Treated as a pipe throughout |
 | `minato url`, `minato env get` | One bare line, always. They exist to be substituted into other commands |
 | `minato logs`, `minato exec` | Passed through verbatim, stdout and stderr kept apart |
+| `minato logs -f <service>` | With `tty`, the terminal is the service's — see [Typing at a service](#typing-at-a-service) |
 
 ## Setting up
 
@@ -194,14 +195,48 @@ The URL works while the service is stopped — a request starts it.
 $ minato logs
 $ minato logs web -n 100
 $ minato logs web -f
+$ minato logs -f dev          # a service with `tty`: type at it
 ```
 
 | Flag | |
 | --- | --- |
 | `-f, --follow` | Keep streaming |
 | `-n, --tail <n>` | Lines from the end |
+| `--no-input` | Read only, never take the terminal |
 
 Undecorated, with stdout and stderr kept separate.
+
+#### Typing at a service
+
+A service configured with [`tty`](./minato-toml#tty) has a terminal, and
+`minato logs -f` lends it this one: colour comes through, a full-screen
+interface draws itself, and keys reach the program. This is how turborepo's
+task switcher, a watching test runner and anything else interactive works
+under Minato.
+
+It happens on its own when it can hardly mean anything else — following
+**one named service**, from a terminal, without `--json`. A pipeline, an
+agent, and `minato logs -f` with no service named all get the plain stream
+they always did. `--no-input` turns it off for the times you want to watch
+without being able to type by accident.
+
+| | |
+| --- | --- |
+| Ctrl-P Ctrl-Q | Detach. The service keeps running |
+| Anything else | Goes to the program, Ctrl-C included |
+
+Ctrl-C belongs to the program: in a task runner it usually means "quit",
+which stops the service. Ctrl-P Ctrl-Q is how you leave without stopping
+anything — the sequence `docker attach` uses.
+
+Asking for a service that has no terminal is not an error. Minato says so,
+in one line, and streams the logs as usual.
+
+::: warning Apple Container fixes the size at start-up
+Its terminal takes its size when the service starts and cannot be resized
+afterwards, so a full-screen program draws to 120×40 however big the window
+is. Minato says so when you attach. Docker follows the window.
+:::
 
 ### `minato exec <service> -- <command>`
 
@@ -250,7 +285,9 @@ CLI where it stands. The exit code is 130.
 Work already done is not undone: a cancelled `up` can leave a container
 running, which `minato status` shows and `minato down` clears.
 
-`minato logs -f` is the exception — Ctrl-C is simply how you leave it.
+`minato logs -f` is the exception — Ctrl-C is simply how you leave it. Where
+it has [taken the terminal](#typing-at-a-service), Ctrl-C is the program's,
+and Ctrl-P Ctrl-Q leaves.
 
 ## Environment variables
 

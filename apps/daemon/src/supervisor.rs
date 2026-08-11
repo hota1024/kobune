@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use minato_api::{
     ApiError, Check, Diagnostics, EnvInfo, ErrorCode, Pong, PurgeProject, PurgeReport,
-    PurgeWorkspace, Request, Response, ServiceInfo, Target, TunnelState, WorkspaceInfo,
+    PurgeWorkspace, Request, Response, ServiceInfo, Target, TunnelState, Window, WorkspaceInfo,
 };
 use minato_core::{
     HealthCheck, MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, TunnelRecord,
@@ -24,7 +24,37 @@ use minato_runtime::{EventSink, Runtime, ServiceStatus, WorkspaceKey};
 
 /// How the idle sweep groups services: (workspace, service).
 type ServiceKeyRef = (String, String);
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+
+/// What a client sends while a request of its own is still running.
+///
+/// Only interactive `logs` reads any of this. The connection puts it on a
+/// channel per request; see `server.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FromClient {
+    /// Bytes typed at the client's terminal.
+    Keys(Vec<u8>),
+    /// The client's terminal changed size.
+    Resize(Window),
+}
+
+/// Where a request reads [`FromClient`] from.
+pub type ClientStream = tokio::sync::mpsc::UnboundedReceiver<FromClient>;
+
+/// How often an attached session says it is still there.
+///
+/// Far below any sensible `idle_timeout`, and one map lookup per minute
+/// per session, so there is nothing to be gained by being cleverer.
+const KEEP_AWAKE_EVERY: Duration = Duration::from_secs(60);
+
+/// The shape of a `logs` request, once the target has been taken off it.
+struct LogRequest {
+    follow: bool,
+    tail: Option<usize>,
+    window: Option<Window>,
+    interactive: bool,
+}
 
 use crate::env;
 use crate::gateway::{BindFailure, Gateway};
@@ -79,7 +109,18 @@ impl Supervisor {
         }
     }
 
-    pub async fn handle(&self, request: Request, events: &EventSink) -> Result<Response, ApiError> {
+    /// Runs a request.
+    ///
+    /// `from_client` carries what the client sends *while* the request
+    /// runs: keystrokes and window sizes. Only interactive `logs` reads
+    /// any of it; every other request leaves it unread, and it is dropped
+    /// when the request finishes.
+    pub async fn handle(
+        &self,
+        request: Request,
+        events: &EventSink,
+        from_client: ClientStream,
+    ) -> Result<Response, ApiError> {
         match request {
             Request::Ping => self.ping().await,
             Request::Shutdown => {
@@ -130,7 +171,23 @@ impl Supervisor {
                 services,
                 follow,
                 tail,
-            } => self.logs(target, services, follow, tail, events).await,
+                window,
+                interactive,
+            } => {
+                self.logs(
+                    target,
+                    services,
+                    LogRequest {
+                        follow,
+                        tail,
+                        window,
+                        interactive,
+                    },
+                    from_client,
+                    events,
+                )
+                .await
+            }
             Request::Exec {
                 target,
                 service,
@@ -461,14 +518,21 @@ impl Supervisor {
         &self,
         target: Target,
         services: Vec<String>,
-        follow: bool,
-        tail: Option<usize>,
+        options: LogRequest,
+        from_client: ClientStream,
         events: &EventSink,
     ) -> Result<Response, ApiError> {
+        let LogRequest {
+            follow,
+            tail,
+            window,
+            interactive,
+        } = options;
+
         let resolved = self.resolve(&target).await?;
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
 
-        let targets = if services.is_empty() {
+        let targets: Vec<String> = if services.is_empty() {
             resolved.config.services.keys().cloned().collect()
         } else {
             validate_service_names(&resolved.config, &services)?;
@@ -477,6 +541,31 @@ impl Supervisor {
 
         let workspace_key = WorkspaceKey::new(&resolved.project, &resolved.workspace.label);
         let shared_key = WorkspaceKey::shared(&resolved.project);
+
+        // The client offered its terminal. Whether that is taken up
+        // depends on there being exactly one service and that service
+        // having a terminal to offer back; when it is not, the reason is
+        // said out loud and the plain log stream follows.
+        if interactive {
+            match self.attachable(&resolved, &targets) {
+                Ok(name) => {
+                    let key = match resolved
+                        .config
+                        .service(&name)
+                        .map_err(ApiError::from)?
+                        .scope
+                    {
+                        ServiceScope::Workspace => workspace_key.service(&name),
+                        ServiceScope::Project => shared_key.service(&name),
+                    };
+
+                    return self
+                        .attach(runtime.as_ref(), &key, &name, window, from_client, events)
+                        .await;
+                }
+                Err(reason) => events.warn(reason),
+            }
+        }
 
         let mut streams = Vec::new();
         for name in &targets {
@@ -519,6 +608,138 @@ impl Supervisor {
         }
 
         Ok(Response::Empty)
+    }
+
+    /// Which service `logs` may hand the client's terminal to.
+    ///
+    /// The `Err` is what to tell the person instead — a warning, not a
+    /// failure. They asked to read logs and will get logs; what they will
+    /// not get is to type, and being told why beats a keyboard that
+    /// quietly does nothing.
+    fn attachable(&self, resolved: &Resolved, targets: &[String]) -> Result<String, String> {
+        let [name] = targets else {
+            return Err("typing needs one service to type at. Name one, as in \
+                 `minato logs -f web`"
+                .to_string());
+        };
+
+        let service = resolved
+            .config
+            .service(name)
+            .map_err(|err| err.to_string())?;
+
+        if !service.tty {
+            return Err(format!(
+                "{name} has no terminal, so it cannot take input. Add \
+                 `tty = true` under [services.{name}] in minato.toml, then \
+                 `minato down && minato up`"
+            ));
+        }
+
+        Ok(name.clone())
+    }
+
+    /// Hands the client's terminal to a running service, both ways.
+    ///
+    /// Ends when the service's terminal closes — the container stopped —
+    /// or when the client goes away. Neither is a failure: leaving is how
+    /// this is meant to end.
+    async fn attach(
+        &self,
+        runtime: &dyn Runtime,
+        key: &minato_runtime::ServiceKey,
+        service: &str,
+        window: Option<Window>,
+        mut from_client: ClientStream,
+        events: &EventSink,
+    ) -> Result<Response, ApiError> {
+        let attachment = runtime.attach(key).await?;
+        let minato_runtime::Attachment {
+            mut output,
+            mut input,
+            fixed_size,
+        } = attachment;
+
+        match (fixed_size, window) {
+            // **Said before the screen is handed over.** After that the
+            // program owns the display, and a warning printed into it
+            // would be drawn over and lost.
+            (Some(fixed), Some(asked)) if fixed != asked => events.warn(format!(
+                "this runtime fixes a container's terminal at {fixed} when \
+                 the service starts and cannot resize it, so {service} will \
+                 draw to {fixed} rather than to your {asked} window"
+            )),
+            // Sized before the first frame, rather than left to the
+            // resize that a client sends on the way in.
+            (None, Some(asked)) => {
+                if let Err(err) = runtime.resize(key, asked.cols, asked.rows).await {
+                    events.debug(format!("cannot size {service}'s terminal: {err}"));
+                }
+            }
+            _ => {}
+        }
+
+        events.attached(service);
+
+        // **Being typed at counts as being used.** The idle sweep reads
+        // one thing — how long since a request last reached the service's
+        // URL — and someone watching a task runner sends none. Without
+        // this, scale-to-zero would stop the service out from under an
+        // open session after `idle_timeout` of deliberate use.
+        let mut in_use = tokio::time::interval(KEEP_AWAKE_EVERY);
+
+        loop {
+            tokio::select! {
+                _ = in_use.tick() => self.keep_awake(key),
+
+                chunk = output.next() => match chunk {
+                    Some(bytes) => events.bytes(Some(service.to_string()), &bytes),
+                    // The container's terminal closed. The service
+                    // stopped, or was stopped.
+                    None => break,
+                },
+                message = from_client.recv() => match message {
+                    Some(FromClient::Keys(keys)) => {
+                        if input.write_all(&keys).await.is_err() {
+                            break;
+                        }
+                        // Flushed per keystroke. A terminal that answered
+                        // in batches would not be one.
+                        let _ = input.flush().await;
+                    }
+                    Some(FromClient::Resize(window)) => {
+                        if let Err(err) = runtime.resize(key, window.cols, window.rows).await {
+                            events.debug(format!("cannot resize {service}'s terminal: {err}"));
+                        }
+                    }
+                    // The client hung up.
+                    None => break,
+                },
+            }
+        }
+
+        Ok(Response::Empty)
+    }
+
+    /// Marks a service as in use, so the idle sweep leaves it alone.
+    ///
+    /// Every host that routes to it, since one is enough to keep it up and
+    /// which one a person would have opened is not knowable from here. A
+    /// service with no route — one that publishes no port — has nothing to
+    /// touch and nothing to sweep either.
+    fn keep_awake(&self, key: &minato_runtime::ServiceKey) {
+        let shared = key.workspace.is_shared();
+
+        for (host, route) in self.gateway.routes().snapshot() {
+            let same_service =
+                route.project == key.workspace.project && route.service == key.service;
+
+            // A shared service is reached through whichever workspace
+            // asked for it, so its own key names none of them.
+            if same_service && (shared || route.workspace == key.workspace.workspace) {
+                self.idle.touch(&host);
+            }
+        }
     }
 
     /// Runs a command inside a container.
@@ -2637,6 +2858,127 @@ mod tests {
         scope = "project"
         expose = false
     "#;
+
+    /// A route to one service of one workspace.
+    fn route_to(project: &str, workspace: &str, service: &str) -> Route {
+        Route::new(
+            SocketAddr::from(([127, 0, 0, 1], 3000)),
+            project,
+            workspace,
+            service,
+        )
+    }
+
+    #[test]
+    fn an_attached_session_keeps_its_service_awake() {
+        // Scale-to-zero reads one thing: how long since a request last
+        // reached the service. Someone typing at a task runner sends
+        // none, and stopping the environment under an open session is the
+        // opposite of what they asked for.
+        let gateway = Gateway::inert();
+        gateway.routes().replace_project(
+            "myapp",
+            vec![(
+                "dev.feat-1.myapp.localhost".to_string(),
+                route_to("myapp", "feat-1", "dev"),
+            )],
+        );
+
+        let supervisor = supervisor(gateway);
+        let key = WorkspaceKey::new("myapp", "feat-1").service("dev");
+
+        assert!(
+            supervisor
+                .idle
+                .idle_for("dev.feat-1.myapp.localhost")
+                .is_none(),
+            "nothing has touched it yet"
+        );
+
+        supervisor.keep_awake(&key);
+
+        assert!(
+            supervisor
+                .idle
+                .idle_for("dev.feat-1.myapp.localhost")
+                .is_some(),
+            "being attached counts as being used"
+        );
+    }
+
+    #[test]
+    fn keeping_one_service_awake_leaves_the_others_alone() {
+        // Touching every host would keep a whole project up for as long
+        // as anyone had one terminal open anywhere in it.
+        let gateway = Gateway::inert();
+        gateway.routes().replace_project(
+            "myapp",
+            vec![
+                (
+                    "dev.feat-1.myapp.localhost".to_string(),
+                    route_to("myapp", "feat-1", "dev"),
+                ),
+                (
+                    "web.feat-1.myapp.localhost".to_string(),
+                    route_to("myapp", "feat-1", "web"),
+                ),
+                (
+                    "dev.feat-2.myapp.localhost".to_string(),
+                    route_to("myapp", "feat-2", "dev"),
+                ),
+            ],
+        );
+
+        let supervisor = supervisor(gateway);
+        supervisor.keep_awake(&WorkspaceKey::new("myapp", "feat-1").service("dev"));
+
+        assert!(
+            supervisor
+                .idle
+                .idle_for("dev.feat-1.myapp.localhost")
+                .is_some()
+        );
+        assert!(
+            supervisor
+                .idle
+                .idle_for("web.feat-1.myapp.localhost")
+                .is_none(),
+            "a different service in the same workspace"
+        );
+        assert!(
+            supervisor
+                .idle
+                .idle_for("dev.feat-2.myapp.localhost")
+                .is_none(),
+            "the same service in a different workspace"
+        );
+    }
+
+    #[test]
+    fn a_shared_service_is_kept_awake_through_any_workspace() {
+        // Its own key names no workspace — `_shared` stands in — while
+        // every route to it names the workspace that asked for it. Matching
+        // those would never match, and the sweep would stop a database
+        // someone was sitting in.
+        let gateway = Gateway::inert();
+        gateway.routes().replace_project(
+            "myapp",
+            vec![(
+                "db.feat-1.myapp.localhost".to_string(),
+                route_to("myapp", "feat-1", "db"),
+            )],
+        );
+
+        let supervisor = supervisor(gateway);
+        supervisor.keep_awake(&WorkspaceKey::shared("myapp").service("db"));
+
+        assert!(
+            supervisor
+                .idle
+                .idle_for("db.feat-1.myapp.localhost")
+                .is_some()
+        );
+    }
 
     #[test]
     fn a_port_in_use_under_launchd_points_at_launchd() {

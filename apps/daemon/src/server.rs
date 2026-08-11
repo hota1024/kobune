@@ -9,9 +9,9 @@ use minato_api::{
 };
 use minato_runtime::EventSink;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc};
 
-use crate::supervisor::Supervisor;
+use crate::supervisor::{ClientStream, FromClient, Supervisor};
 
 pub struct Server {
     socket: PathBuf,
@@ -113,22 +113,48 @@ async fn handle_connection(stream: UnixStream, supervisor: Arc<Supervisor>) -> a
     let writer = Arc::new(Mutex::new(write_half));
     let mut running: HashMap<RequestId, tokio::task::JoinHandle<()>> = HashMap::new();
 
+    // Where keystrokes and window sizes go, per request. Only an
+    // interactive `logs` reads from its channel; for every other request
+    // nothing is ever sent and the end of it is dropped below.
+    let mut typing: HashMap<RequestId, mpsc::UnboundedSender<FromClient>> = HashMap::new();
+
     while let Some(message) = reader.recv::<ClientMessage>().await? {
         // Finished work is cleared out here rather than by the tasks
         // themselves, which would mean sharing the map across them.
         running.retain(|_, handle| !handle.is_finished());
+        typing.retain(|id, _| running.contains_key(id));
 
         match message {
             ClientMessage::Request { id, request } => {
                 let supervisor = supervisor.clone();
                 let writer = writer.clone();
 
+                let (keys, from_client) = mpsc::unbounded_channel();
+                typing.insert(id, keys);
+
                 running.insert(
                     id,
-                    tokio::spawn(async move { serve(id, request, supervisor, writer).await }),
+                    tokio::spawn(async move {
+                        serve(id, request, supervisor, writer, from_client).await
+                    }),
                 );
             }
+            ClientMessage::Input { id, data } => {
+                // A key pressed after the program exited is nobody's
+                // mistake, and neither is one for a request that was never
+                // attached. Both end here, quietly.
+                if let Some(keys) = typing.get(&id) {
+                    let _ = keys.send(FromClient::Keys(minato_api::decode_bytes(&data)));
+                }
+            }
+            ClientMessage::Resize { id, window } => {
+                if let Some(keys) = typing.get(&id) {
+                    let _ = keys.send(FromClient::Resize(window));
+                }
+            }
             ClientMessage::Cancel { id } => {
+                typing.remove(&id);
+
                 let Some(handle) = running.remove(&id) else {
                     // Already finished, or never started. Its response has
                     // gone out either way, so sending another would leave
@@ -161,6 +187,7 @@ async fn serve(
     request: Request,
     supervisor: Arc<Supervisor>,
     writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    from_client: ClientStream,
 ) {
     let (sink, mut receiver) = EventSink::channel();
 
@@ -179,7 +206,7 @@ async fn serve(
         }
     });
 
-    let outcome = supervisor.handle(request, &sink).await;
+    let outcome = supervisor.handle(request, &sink, from_client).await;
 
     // Dropping the sink closes the channel and ends the pump.
     drop(sink);

@@ -15,9 +15,9 @@ pub mod response;
 pub use codec::{CodecError, MessageStream, write_message};
 pub use diagnostics::{Check, CheckStatus, Diagnostics};
 pub use error::{ApiError, ErrorCode};
-pub use event::{Event, LogLevel, OutputStream, StepStatus};
+pub use event::{Event, LogLevel, OutputStream, StepStatus, decode_bytes, encode_bytes};
 pub use protocol::{ClientMessage, Outcome, PROTOCOL_VERSION, RequestId, ServerMessage};
-pub use request::{Request, Target};
+pub use request::{Request, Target, Window};
 pub use response::{
     EnvInfo, Pong, PurgeFailure, PurgeProject, PurgeReport, PurgeWorkspace, Response, ServiceInfo,
     TunnelInfo, TunnelLeftover, TunnelState, WorkspaceInfo,

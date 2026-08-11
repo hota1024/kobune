@@ -33,6 +33,25 @@ impl Target {
     }
 }
 
+/// How big a terminal is, in characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Window {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl Window {
+    pub fn new(cols: u16, rows: u16) -> Self {
+        Self { cols, rows }
+    }
+}
+
+impl std::fmt::Display for Window {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}×{}", self.cols, self.rows)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -143,6 +162,21 @@ pub enum Request {
         /// How many lines to take from the end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail: Option<usize>,
+        /// How big the client's terminal is, when it has one.
+        ///
+        /// Sent with the request rather than after it, so the program's
+        /// first frame is drawn to the right size. A resize that arrived
+        /// afterwards would be a redraw everyone could see.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<Window>,
+        /// The client can hand its terminal over, if the service has one.
+        ///
+        /// **An offer, not an instruction.** Only a service configured
+        /// with `tty` has a terminal to attach to; asked for one that has
+        /// not, the daemon says so and streams the logs as usual. The
+        /// client learns which it got from [`crate::Event::Attached`].
+        #[serde(default)]
+        interactive: bool,
     },
 
     /// Runs a command inside a container.

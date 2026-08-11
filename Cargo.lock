@@ -4661,6 +4661,7 @@ dependencies = [
 name = "minato-api"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "minato-core",
  "serde",
  "serde_json",
@@ -4757,6 +4758,7 @@ dependencies = [
  "async-trait",
  "bollard",
  "futures",
+ "libc",
  "minato-api",
  "minato-core",
  "serde",
@@ -8380,6 +8382,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
