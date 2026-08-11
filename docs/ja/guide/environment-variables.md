@@ -113,9 +113,11 @@ lockfile が異なる `node_modules` など）には
 `MINATO_SERVICE` とサービス固有の `env` は
 `minato env ls --service <name>` で確認してください。
 
-とくに重要なのが `MINATO_URL_<SERVICE>` です。URL はブランチごとに異なるため、
-フロントエンドは API の URL をハードコードできません。worktree ごとの環境が
-成立するのは、この変数があるためです。
+### `MINATO_URL_<SERVICE>`
+
+**とくに重要な変数です。** URL はブランチごとに異なるため、フロントエンドは
+API の URL をハードコードできません。worktree ごとの環境が成立するのは、この
+変数があるためです。
 
 ```js
 const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
@@ -143,7 +145,9 @@ const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
 ```toml
 [services.web.env]
 NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
-COOKIE_DOMAIN           = "${MINATO_HOSTNAME_API}"
+
+[services.api.env]
+COOKIE_DOMAIN = "${MINATO_HOSTNAME_API}"
 ```
 
 **CORS の origin、`allowedDevOrigins`、cookie の domain はいずれも URL ではなく

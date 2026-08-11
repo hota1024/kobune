@@ -609,8 +609,9 @@ A `-` in a service name becomes `_` (`api-server` →
 **Injection is the bottom layer**, so the user can override it. The other way
 round, Minato's conveniences would erase the user's settings.
 
-**No URL is injected while the proxy is down.** An empty string would leave it
-"set, but unreachable", and the cause is hard to see.
+**No URL is injected while the proxy is down**, and no hostname either — the
+two go together. An empty string would leave it "set, but unreachable", and the
+cause is hard to see.
 
 ### Referring to another variable
 

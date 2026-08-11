@@ -113,9 +113,11 @@ line that caused it.
 `minato env ls` shows only what every service shares, so `MINATO_SERVICE` and
 a service's own `env` appear under `minato env ls --service <name>`.
 
-`MINATO_URL_<SERVICE>` is the important one. It is what makes a per-worktree
-environment hold together: the frontend cannot hardcode the API's URL, because
-the URL is different on every branch.
+### `MINATO_URL_<SERVICE>`
+
+**The important one.** It is what makes a per-worktree environment hold
+together: the frontend cannot hardcode the API's URL, because the URL is
+different on every branch.
 
 ```js
 const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
@@ -141,7 +143,9 @@ The same host with nothing around it — no scheme, no port, no trailing slash.
 ```toml
 [services.web.env]
 NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
-COOKIE_DOMAIN           = "${MINATO_HOSTNAME_API}"
+
+[services.api.env]
+COOKIE_DOMAIN = "${MINATO_HOSTNAME_API}"
 ```
 
 **A CORS origin, `allowedDevOrigins` and a cookie domain all want this rather
