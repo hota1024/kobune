@@ -331,6 +331,7 @@ Apple Container has no named volumes, so they become bind mounts under
 | Key | Type | | |
 | --- | --- | --- | --- |
 | `env` | table | `{}` | Variables for this service |
+| `env_file` | string | — | Where to write the settled environment, relative to the worktree |
 
 ```toml
 env = { NODE_ENV = "development", PORT = "3000" }
@@ -345,6 +346,17 @@ env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
 
 This is the *project* layer, and it is committed — keep secrets out of it. See
 [Environment variables](../guide/environment-variables).
+
+`env_file` writes the settled result where a tool that reads a file rather
+than its own environment can find it:
+
+```toml
+env_file = ".minato/env.api"
+```
+
+Written before the service starts, secrets left out. A path git tracks is
+refused, a file Minato did not write is never overwritten, and a service with
+`scope = "project"` cannot have one — it is mounted no worktree to write into.
 
 ## Validation
 

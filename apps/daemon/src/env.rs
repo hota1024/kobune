@@ -4,6 +4,8 @@
 //! goes first, so the user's own settings win. The other way round,
 //! Minato's conveniences would quietly erase them.
 
+use std::path::{Path, PathBuf};
+
 use indexmap::IndexMap;
 use minato_api::{ApiError, ErrorCode};
 use minato_core::{EnvLayers, EnvScope, MinatoConfig, Paths, WorkspaceRecord, env};
@@ -89,6 +91,130 @@ pub fn resolution_error(err: env::EnvError) -> ApiError {
 /// in a variable name, so it becomes an underscore.
 pub fn url_variable(service: &str) -> String {
     format!("MINATO_URL_{}", service.to_uppercase().replace('-', "_"))
+}
+
+/// Writes a service's settled environment into its worktree.
+///
+/// **For the tools that read a file rather than their process's
+/// environment.** `wrangler dev` does not pass its own environment to the
+/// Worker, and Vite reads `.env.local` off disk; without this, a project
+/// writes a start-up script that turns variables back into a file.
+///
+/// Returns the path written, or `None` when it already held exactly this.
+/// **Rewriting it unchanged would be a change to anything watching it** —
+/// a dev server restarting itself every time scale-to-zero wakes the
+/// service.
+pub fn write_env_file(
+    worktree: &Path,
+    relative: &str,
+    contents: &str,
+) -> Result<Option<PathBuf>, ApiError> {
+    let refuse = |why: &str| {
+        Err(ApiError::new(
+            ErrorCode::InvalidConfig,
+            format!("env_file `{relative}`: {why}"),
+        ))
+    };
+
+    // A generated file that git watches leaves the worktree permanently
+    // dirty, and committing it would put one branch's URLs into every
+    // other checkout.
+    if minato_core::git::is_tracked(worktree, relative) {
+        return refuse(
+            "git tracks it. Point it somewhere untracked, `.minato/` or a \
+             gitignored path",
+        );
+    }
+
+    let path = worktree.join(relative);
+
+    // Containment is checked against the deepest directory that already
+    // exists, and therefore *before* anything is created: a symlinked
+    // component would otherwise have directories made outside the worktree
+    // on the way to finding out.
+    let anchor = existing_ancestor(&path);
+    let root = worktree.canonicalize().unwrap_or_else(|_| worktree.into());
+
+    match anchor.canonicalize() {
+        Ok(resolved) if !resolved.starts_with(&root) => {
+            return refuse("resolves outside the worktree");
+        }
+        Ok(_) => {}
+        Err(source) => {
+            return Err(ApiError::internal(format!(
+                "env_file `{relative}`: cannot resolve {}: {source}",
+                anchor.display()
+            )));
+        }
+    }
+
+    match std::fs::read_to_string(&path) {
+        // Somebody's own file. Whatever it is for, it is not this.
+        Ok(existing) if !env::is_generated(&existing) => {
+            return refuse(
+                "there is already a file there that Minato did not write. \
+                 Move it aside, or point env_file somewhere else",
+            );
+        }
+        Ok(existing) if existing == contents => return Ok(None),
+        _ => {}
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| {
+            ApiError::internal(format!(
+                "env_file `{relative}`: cannot create {}: {source}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    // Written beside the target and renamed over it, so a service reading
+    // the file never sees half of one.
+    let temporary = temporary_beside(&path);
+    env::write_file(&temporary, contents)
+        .map_err(|err| ApiError::internal(format!("env_file `{relative}`: {err}")))?;
+
+    std::fs::rename(&temporary, &path).map_err(|source| {
+        let _ = std::fs::remove_file(&temporary);
+        ApiError::internal(format!(
+            "env_file `{relative}`: cannot write {}: {source}",
+            path.display()
+        ))
+    })?;
+
+    Ok(Some(path))
+}
+
+/// The nearest ancestor of `path` that exists.
+///
+/// Falls back to the path itself, which cannot escape anything: a
+/// non-existent root has nothing above it either.
+fn existing_ancestor(path: &Path) -> PathBuf {
+    let mut candidate = path.parent();
+
+    while let Some(dir) = candidate {
+        if dir.exists() {
+            return dir.to_path_buf();
+        }
+        candidate = dir.parent();
+    }
+
+    path.to_path_buf()
+}
+
+/// A sibling to write before renaming over the target.
+///
+/// A sibling rather than `/tmp`, because a rename across filesystems is
+/// not atomic — and on macOS `/tmp` regularly is one.
+fn temporary_beside(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "env".to_string());
+
+    let directory = path.parent().unwrap_or(Path::new("."));
+    directory.join(format!(".{name}.minato-tmp"))
 }
 
 /// Stacks one service's layers, lowest priority first.
@@ -440,6 +566,128 @@ mod tests {
             error.hint.is_some_and(|hint| hint.contains("proxy")),
             "name the proxy, not the config"
         );
+    }
+
+    /// A worktree with nothing in it, and no git.
+    fn worktree() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn writes_the_file_and_the_directories_leading_to_it() {
+        let dir = worktree();
+        let contents = env::render(&[], "service: api");
+
+        let written = write_env_file(dir.path(), ".minato/env.api", &contents)
+            .expect("writes")
+            .expect("a new file is a change");
+
+        assert_eq!(written, dir.path().join(".minato/env.api"));
+        assert_eq!(
+            std::fs::read_to_string(&written).expect("reads"),
+            contents,
+            "what was asked for, byte for byte"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&written)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "it carries the environment");
+        }
+    }
+
+    #[test]
+    fn writing_the_same_contents_again_changes_nothing() {
+        // Anything watching the file — a dev server, most of all — would
+        // otherwise restart every time scale-to-zero woke the service.
+        let dir = worktree();
+        let contents = env::render(&[], "service: api");
+
+        write_env_file(dir.path(), ".minato/env.api", &contents).expect("writes");
+        let again = write_env_file(dir.path(), ".minato/env.api", &contents).expect("writes");
+
+        assert!(again.is_none(), "unchanged is not a write");
+    }
+
+    #[test]
+    fn replaces_a_file_it_wrote_itself() {
+        let dir = worktree();
+
+        write_env_file(dir.path(), ".env.minato", &env::render(&[], "old")).expect("writes");
+        let new = env::render(&[], "new");
+        write_env_file(dir.path(), ".env.minato", &new).expect("writes");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".env.minato")).expect("reads"),
+            new
+        );
+    }
+
+    #[test]
+    fn never_overwrites_a_file_somebody_else_wrote() {
+        // The whole risk of writing into a worktree: `.env.local` is a
+        // path a person may already be using.
+        let dir = worktree();
+        let mine = "SECRET=mine\n";
+        std::fs::write(dir.path().join(".env.local"), mine).expect("writes");
+
+        let err = write_env_file(dir.path(), ".env.local", &env::render(&[], "service: web"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("did not write"), "say why: {err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".env.local")).expect("reads"),
+            mine,
+            "and leave it alone"
+        );
+    }
+
+    #[test]
+    fn refuses_a_path_that_leaves_the_worktree_through_a_symlink() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        let dir = worktree();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).expect("links");
+
+        let err = write_env_file(dir.path(), "escape/env", &env::render(&[], "service: web"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("outside the worktree"), "{err}");
+        assert!(
+            !outside.path().join("env").exists(),
+            "and nothing is written there"
+        );
+    }
+
+    #[test]
+    fn refuses_a_path_git_tracks() {
+        // A generated file that git watches leaves the worktree dirty for
+        // good, and committing it spreads one branch's URLs to every other.
+        let dir = worktree();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .output()
+                .expect("git runs")
+        };
+
+        git(&["init", "--quiet"]);
+        std::fs::write(dir.path().join(".env"), "APP_ENV=development\n").expect("writes");
+        git(&["add", ".env"]);
+
+        let err = write_env_file(dir.path(), ".env", &env::render(&[], "service: web"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("git tracks it"), "{err}");
     }
 
     #[test]

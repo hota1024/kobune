@@ -181,6 +181,18 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 
+    /// Where to write this service's settled environment, relative to the
+    /// worktree.
+    ///
+    /// **For the tools that read a file rather than their process's
+    /// environment.** `wrangler dev --env-file`, dotenvx and Vite all do,
+    /// and a variable Minato injects cannot reach them otherwise.
+    ///
+    /// Secrets are left out of it. Written before the service starts, and
+    /// again whenever it is started.
+    #[serde(default)]
+    pub env_file: Option<String>,
+
     #[serde(default)]
     pub depends_on: Vec<String>,
 
@@ -395,6 +407,54 @@ impl MinatoConfig {
         Ok(())
     }
 
+    /// Checks where a service wants its environment written.
+    ///
+    /// Syntax and scope only. Whether the path is one Minato may write —
+    /// tracked by git, or holding a file it did not write — is decided
+    /// against the worktree at start, where those questions can be asked.
+    fn validate_env_file(&self, name: &str, entry: &str, scope: ServiceScope) -> Result<()> {
+        let refuse = |why: &str| {
+            Err(Error::ConfigInvalid(format!(
+                "service `{name}`: env_file `{entry}` {why}. Use a path \
+                 relative to the worktree, like \".minato/env.api\" or \
+                 \"apps/web/.env.local\""
+            )))
+        };
+
+        if entry.trim().is_empty() {
+            return refuse("is empty");
+        }
+
+        let path = Path::new(entry);
+
+        if entry.starts_with('~') {
+            return refuse("starts with ~, which Minato does not expand");
+        }
+
+        if path.is_absolute() {
+            return refuse("is an absolute path");
+        }
+
+        if path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return refuse("leaves the worktree");
+        }
+
+        // A shared service is mounted no worktree, so the file would be
+        // written where that container cannot see it — into whichever
+        // worktree happened to start it.
+        if scope == ServiceScope::Project {
+            return refuse(
+                "is on a service with scope = \"project\", which is mounted \
+                 no worktree to write it into",
+            );
+        }
+
+        Ok(())
+    }
+
     fn validate_service(&self, name: &str, svc: &ServiceConfig) -> Result<()> {
         if !naming::is_valid_label(name) {
             return Err(Error::ConfigInvalid(format!(
@@ -434,6 +494,10 @@ impl MinatoConfig {
             return Err(Error::ConfigInvalid(format!(
                 "service `{name}`: expose = true requires a port"
             )));
+        }
+
+        if let Some(env_file) = &svc.env_file {
+            self.validate_env_file(name, env_file, svc.scope)?;
         }
 
         for dep in &svc.depends_on {
@@ -774,6 +838,75 @@ mod tests {
             assert!(message.contains("carry"), "{entry}: {message}");
             assert!(message.contains(expected), "{entry}: {message}");
         }
+    }
+
+    #[test]
+    fn accepts_an_env_file_anywhere_in_the_worktree() {
+        // Anywhere, because the tools that need this read a path of their
+        // own choosing: `.env.local` beside the app, not `.minato/`.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            env_file = "apps/web/.env.local"
+        "#,
+        )
+        .expect("is valid");
+
+        assert_eq!(
+            config.services["web"].env_file.as_deref(),
+            Some("apps/web/.env.local")
+        );
+    }
+
+    #[test]
+    fn refuses_an_env_file_that_leaves_the_worktree() {
+        let cases = [
+            ("../.env", "leaves the worktree"),
+            ("/etc/environment", "is an absolute path"),
+            ("~/.env", "which Minato does not expand"),
+            ("  ", "is empty"),
+        ];
+
+        for (entry, expected) in cases {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "node:22"
+                env_file = "{entry}"
+            "#
+            ))
+            .unwrap_err();
+
+            let message = err.to_string();
+            assert!(message.contains("env_file"), "{entry}: {message}");
+            assert!(message.contains(expected), "{entry}: {message}");
+        }
+    }
+
+    #[test]
+    fn refuses_an_env_file_on_a_shared_service() {
+        // A shared service is mounted no worktree, so the file would land
+        // where that container cannot see it.
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.db]
+            image = "postgres:16"
+            scope = "project"
+            env_file = ".minato/env.db"
+        "#,
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("env_file"), "{message}");
+        assert!(message.contains("scope"), "{message}");
     }
 
     #[test]

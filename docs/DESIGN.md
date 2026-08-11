@@ -636,6 +636,29 @@ start-up script whose whole job is to copy one variable onto another.
   in `minato env ls`; pasting the reference in would hand the container the
   string `op://…`
 
+### Writing it to a file
+
+Injection reaches the process. `wrangler dev` does not pass its environment to
+the Worker, and Vite reads `.env.local` off disk, so `env_file` writes the
+settled values into the worktree before the service starts.
+
+```toml
+[services.api]
+env_file = ".minato/env.api"
+```
+
+- **Secrets are left out**, named in a comment instead. A resolved secret
+  living only in memory is a guarantee that a file, handed on to whatever
+  reads it, would end
+- **Written before the start and on every wake**, from the same values the
+  container is given — a file that disagreed with the process's environment
+  would be worse than no file
+- **Unchanged is not a write.** A dev server watching the file would otherwise
+  restart every time scale-to-zero woke the service
+- **Anywhere in the worktree**, because the tools that need this read paths of
+  their own choosing. What makes that safe is refusing a path git tracks and
+  never overwriting a file without Minato's header
+
 ### What M3 turned up
 
 - `minato env ls` **says which layer each value came from**. With three layers,
