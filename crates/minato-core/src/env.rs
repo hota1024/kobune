@@ -163,6 +163,17 @@ impl EnvLayers {
         expand_all(self.merge())
     }
 
+    /// The merged result with every value still as it was written.
+    ///
+    /// **For saying something about how a value was written.** Expansion
+    /// has by then turned `$$NAME` into `$NAME` and pasted one value into
+    /// another, so a message built from the settled values would object to
+    /// a deliberate escape, and blame the value that referred to the
+    /// mistake rather than the one that made it.
+    pub fn unexpanded(&self) -> Vec<EnvEntry> {
+        self.merge().into_values().collect()
+    }
+
     /// The merge alone, `${...}` still as written.
     fn merge(&self) -> BTreeMap<String, EnvEntry> {
         let mut merged: BTreeMap<String, EnvEntry> = BTreeMap::new();
@@ -943,6 +954,34 @@ ESCAPED="line1\nline2"
         let err = layers.resolve().unwrap_err().to_string();
         assert!(err.contains("PASSWORD"), "name the secret: {err}");
         assert!(err.contains("secret"), "say why: {err}");
+    }
+
+    #[test]
+    fn what_was_written_survives_for_anything_that_has_to_talk_about_it() {
+        // A warning about how a value was written cannot be read off the
+        // settled ones: `$$A` has become `$A` by then, and `B` is carrying
+        // a copy of the mistake `C` made.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[("A", "1"), ("B", "$${A}"), ("C", "$A"), ("D", "${C}")]),
+        );
+
+        let written = layers.unexpanded();
+        let find = |key: &str| {
+            written
+                .iter()
+                .find(|entry| entry.key == key)
+                .expect("present")
+                .raw
+                .clone()
+        };
+
+        assert_eq!(find("B"), "$${A}", "the escape is still an escape");
+        assert_eq!(find("D"), "${C}", "the mistake stays with C");
+        assert!(bare_references(&find("B")).is_empty());
+        assert!(bare_references(&find("D")).is_empty());
+        assert_eq!(bare_references(&find("C")), vec!["A"]);
     }
 
     #[test]

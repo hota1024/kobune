@@ -165,7 +165,18 @@ something nothing runs with.
 - **What is not a variable name is not a reference.** `${PORT:-3000}` is shell
   syntax and reaches the shell unchanged.
 - **A name nothing sets is an error**, not an empty string — the same reason
-  `MINATO_URL_<SERVICE>` is left unset when there is no proxy.
+  `MINATO_URL_<SERVICE>` is left unset when there is no proxy. So referring to
+  `${MINATO_URL_API}` makes the service refuse to start while the proxy is
+  down, rather than start with the variable missing; `minato doctor` says how
+  to get one back.
+
+::: warning Values written before this existed
+`${...}` and `$$` now mean something they did not. A value already holding one
+changes: `$$` becomes a single `$`, and `${NAME}` naming a variable that does
+not exist stops `minato up` rather than being passed through. Double the
+dollar — `$$` for a literal `$`, `$${` for a literal `${` — for anything meant
+as text.
+:::
 
 ::: warning A secret cannot be built into another value
 `DATABASE_URL = "postgres://user:${PASSWORD}@db/app"` is refused when
