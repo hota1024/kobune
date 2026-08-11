@@ -22,6 +22,7 @@ pub fn build_workspace_spec(
     worktree_path: &Path,
     envs: &BTreeMap<String, BTreeMap<String, String>>,
     gateway_hosts: &[String],
+    ca_file: Option<&Path>,
 ) -> Result<WorkspaceSpec, ApiError> {
     let key = WorkspaceKey::new(project, workspace);
 
@@ -33,6 +34,7 @@ pub fn build_workspace_spec(
     let context = WorkspaceContext {
         services: config.services.keys().cloned().collect(),
         gateway_hosts: gateway_hosts.to_vec(),
+        ca_file: ca_file.map(Path::to_path_buf),
     };
 
     for name in ordered {
@@ -190,6 +192,13 @@ pub struct WorkspaceContext {
     ///
     /// See [`minato_runtime::ServiceSpec::gateway_hosts`].
     pub gateway_hosts: Vec<String>,
+    /// Minato's CA certificate on the host, when HTTPS is being served.
+    ///
+    /// Mounted read-only at [`minato_core::config::CA_TARGET`] so a
+    /// service can verify the certificate the proxy presents, instead of
+    /// being pushed into turning verification off to call the URL it was
+    /// handed. `None` when there is no HTTPS to trust.
+    pub ca_file: Option<PathBuf>,
 }
 
 /// Builds the spec for one service.
@@ -265,6 +274,17 @@ pub fn build_service_spec(
         read_only: false,
         scope: minato_runtime::VolumeScope::Project,
     });
+
+    // **Read-only, and the certificate alone.** The key beside it on disk
+    // is what makes the CA able to sign anything at all, and it has no
+    // business in a container.
+    if let Some(ca_file) = &context.ca_file {
+        volumes.push(VolumeMount::Bind {
+            source: ca_file.clone(),
+            target: minato_core::config::CA_TARGET.to_string(),
+            read_only: true,
+        });
+    }
 
     for raw in &service.volumes {
         volumes.push(VolumeMount::parse(raw, worktree_path).map_err(|message| {
@@ -346,6 +366,7 @@ mod tests {
             Path::new("/repo/wt/feat-1"),
             &no_envs(),
             &[],
+            None,
         )
         .expect("builds")
     }
@@ -376,6 +397,7 @@ mod tests {
             Path::new("/repo"),
             &no_envs(),
             &[],
+            None,
         )
         .expect("builds");
 
@@ -417,6 +439,62 @@ mod tests {
         assert_eq!(
             db.attached_to.workspace, "feat-1",
             "shared or not, it joins the caller's network"
+        );
+    }
+
+    #[test]
+    fn mounts_the_certificate_read_only() {
+        let spec = build_workspace_spec(
+            &config(SAMPLE),
+            "myapp",
+            "feat-1",
+            Path::new("/repo/wt/feat-1"),
+            &no_envs(),
+            &[],
+            Some(Path::new("/home/me/.minato/ca/ca.crt")),
+        )
+        .expect("builds");
+
+        let mounted = spec
+            .service("web")
+            .expect("web")
+            .volumes
+            .iter()
+            .find(|volume| volume.target() == minato_core::config::CA_TARGET)
+            .expect("the CA is mounted");
+
+        assert!(
+            mounted.read_only(),
+            "a container has no business writing to it"
+        );
+        assert!(
+            matches!(mounted, VolumeMount::Bind { source, .. } if source.ends_with("ca.crt")),
+            "the certificate itself, never the key beside it: {mounted:?}"
+        );
+    }
+
+    #[test]
+    fn mounts_nothing_when_there_is_no_certificate() {
+        // No HTTPS, nothing to trust — and a mount of a file that is not
+        // there fails the start rather than degrading it.
+        let spec = build_workspace_spec(
+            &config(SAMPLE),
+            "myapp",
+            "feat-1",
+            Path::new("/repo/wt/feat-1"),
+            &no_envs(),
+            &[],
+            None,
+        )
+        .expect("builds");
+
+        assert!(
+            !spec
+                .service("web")
+                .expect("web")
+                .volumes
+                .iter()
+                .any(|volume| volume.target() == minato_core::config::CA_TARGET)
         );
     }
 
@@ -498,7 +576,7 @@ mod tests {
     }
 
     fn built(dir: &Path, toml: &str) -> Result<WorkspaceSpec, ApiError> {
-        build_workspace_spec(&config(toml), "myapp", "feat-1", dir, &no_envs(), &[])
+        build_workspace_spec(&config(toml), "myapp", "feat-1", dir, &no_envs(), &[], None)
     }
 
     const BUILDS: &str = r#"
@@ -682,6 +760,7 @@ mod tests {
             Path::new("/repo"),
             &no_envs(),
             &[],
+            None,
         )
         .unwrap_err();
         assert_eq!(err.code, minato_api::ErrorCode::InvalidConfig);

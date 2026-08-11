@@ -46,6 +46,22 @@ pub fn injected(
         minato_core::config::CACHE_TARGET.to_string(),
     );
 
+    // **The certificate the proxy presents, so a container can check
+    // it.** Without this the URL above resolves, connects, and then fails
+    // to verify — and every project reaches for
+    // `NODE_TLS_REJECT_UNAUTHORIZED=0`, which turns verification off for
+    // the whole process, not just for Minato.
+    //
+    // `NODE_EXTRA_CA_CERTS` *adds* to the trust store rather than
+    // replacing it, which is why it is safe to set for everyone.
+    // `SSL_CERT_FILE` and friends replace it, and a container that trusted
+    // Minato and nothing else would lose the internet.
+    if gateway.ca_path().is_some() {
+        let target = minato_core::config::CA_TARGET.to_string();
+        values.insert("MINATO_CA_FILE".to_string(), target.clone());
+        values.insert("NODE_EXTRA_CA_CERTS".to_string(), target);
+    }
+
     for (name, host, url) in exposed_urls(config, record, gateway) {
         values.insert(url_variable(&name), url);
 
@@ -470,6 +486,46 @@ mod tests {
             !values.contains_key("MINATO_URL_DB"),
             "a service with expose = false has no URL"
         );
+    }
+
+    #[test]
+    fn tells_a_container_which_certificate_to_trust() {
+        // Without this the URL connects and then fails to verify, and the
+        // way out everyone finds is turning verification off entirely.
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &Gateway::with_ports(Some(80), Some(443)).with_ca("/home/me/.minato/ca/ca.crt"),
+        );
+
+        assert_eq!(
+            values.get("MINATO_CA_FILE").map(String::as_str),
+            Some(minato_core::config::CA_TARGET),
+            "the path inside the container, not the one on the host"
+        );
+        assert_eq!(
+            values.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some(minato_core::config::CA_TARGET),
+            "additive, so the rest of the trust store survives"
+        );
+    }
+
+    #[test]
+    fn names_no_certificate_when_there_is_none() {
+        // A path to a file that is not mounted makes Node warn on every
+        // start, about a certificate that was never the problem.
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &Gateway::inert(),
+        );
+
+        assert!(!values.contains_key("MINATO_CA_FILE"));
+        assert!(!values.contains_key("NODE_EXTRA_CA_CERTS"));
     }
 
     #[test]

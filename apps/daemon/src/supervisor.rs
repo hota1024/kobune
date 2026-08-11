@@ -796,6 +796,7 @@ impl Supervisor {
             &resolved.workspace.path,
             &envs,
             &env::service_hosts(&resolved.config, &resolved.workspace, &self.gateway),
+            self.gateway.ca_path(),
         )?;
 
         workspace_spec
@@ -1505,6 +1506,7 @@ impl Supervisor {
             spec::WorkspaceContext {
                 services: config.services.keys().cloned().collect(),
                 gateway_hosts: env::service_hosts(&config, &record, &self.gateway),
+                ca_file: self.gateway.ca_path().map(std::path::Path::to_path_buf),
             },
         )?;
 
@@ -2225,6 +2227,7 @@ impl Supervisor {
             &resolved.workspace.path,
             &envs,
             &env::service_hosts(&resolved.config, &resolved.workspace, &self.gateway),
+            self.gateway.ca_path(),
         )?;
 
         // Even a narrowed selection has to bring its dependencies up.

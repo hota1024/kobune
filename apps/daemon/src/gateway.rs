@@ -597,6 +597,14 @@ impl Gateway {
         }
     }
 
+    /// The same gateway, with a CA to hand out. For testing what a
+    /// container is told to trust.
+    #[cfg(test)]
+    pub(crate) fn with_ca(mut self, path: &str) -> Self {
+        self.ca_path = Some(PathBuf::from(path));
+        self
+    }
+
     pub fn routes(&self) -> &Routes {
         &self.routes
     }
