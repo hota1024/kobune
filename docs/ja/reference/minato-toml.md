@@ -346,7 +346,8 @@ env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
 env_file = ".minato/env.api"
 ```
 
-書き込まれるのはサービスの起動直前で、シークレットは含まれません。git が追跡
+書き込まれるのは起動するサービスの分だけで、そのサービスの起動直前です。
+シークレットは含まれません。git が追跡
 しているパスは拒否され、Minato が書いたのでないファイルは上書きされません。
 Minato 自身が層として読む `.minato/env` と `.minato/env.local`、および他の
 サービスが既に使っているパスも拒否されます。また `scope = "project"` の

@@ -248,6 +248,12 @@ service starts — on `minato up` and again whenever scale-to-zero wakes it. It
 is left in place afterwards, so `pnpm dev` run from the worktree by hand reads
 the same values.
 
+**Only for the services being started.** `minato up web` writes `web`'s file
+and whatever its `depends_on` pulls in, not `api`'s — so a service nobody
+asked to start cannot fail the ones that were asked for, and a path only `api`
+was pointed at is only written when `api` runs. `minato exec` writes nothing:
+it runs a command, it does not start a service.
+
 **Rewriting it unchanged is not a write**, so a dev server watching the file
 does not restart every time the service wakes.
 

@@ -656,6 +656,10 @@ env_file = ".minato/env.api"
 - **Written before the start and on every wake**, from the same values the
   container is given — a file that disagreed with the process's environment
   would be worse than no file
+- **Only for the services being started.** Settling an environment and writing
+  a file are different jobs, and conflating them made `minato up web` answer
+  for `api`'s `env_file` and left `minato exec` writing files as a side effect
+  of running a command
 - **Unchanged is not a write.** A dev server watching the file would otherwise
   restart every time scale-to-zero woke the service
 - **Anywhere in the worktree**, because the tools that need this read paths of
