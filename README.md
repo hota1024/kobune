@@ -248,8 +248,9 @@ The listening ports come from `MINATO_HTTP_PORT`, `MINATO_HTTPS_PORT` and
 macOS and Linux, plus the desktop app — has to pass. Merging replaces the
 `nightly` build.
 
-A pull request that touches `docs/` gets its own preview URL, so prose can be
-reviewed by reading the rendered page.
+Commits are signed off (`git commit -s`), which certifies you had the right to
+submit the work. [CONTRIBUTING.md](CONTRIBUTING.md) has the details, and what
+to do when you forget.
 
 ## License
 

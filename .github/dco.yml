@@ -1,0 +1,10 @@
+# A contributor who forgets `-s` can say so in a follow-up commit instead of
+# rebasing a branch that already has review comments on it. `thirdParty` covers
+# the case where they have gone quiet and a maintainer signs on their behalf.
+#
+# `require: members: false` is deliberately absent. It would exempt the
+# repository owner, and the owner is who most of the commits belong to — the
+# record is worth having only if it has no hole in the middle.
+allowRemediationCommits:
+  individual: true
+  thirdParty: true
