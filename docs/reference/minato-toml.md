@@ -85,8 +85,36 @@ letters, digits and `-`.
 | `command` | string | image default | Replaces the image's command. Parsed shell-style, so quotes group arguments |
 | `setup` | string | — | Run once before the service first starts. Parsed shell-style |
 | `workdir` | string | `/workspace` | Working directory inside the container |
+| `tty` | bool | `false` | Run the process on a terminal, with its stdin left open |
 
 Your worktree is mounted at `/workspace`, which is why that is the default.
+
+#### `tty`
+
+```toml
+[services.dev]
+image = "node:24-bookworm-slim"
+command = "npx turbo run dev"
+tty = true
+```
+
+What a program looks for before it draws anything. Turborepo, Vitest and the
+rest ask whether they are talking to a terminal and settle for plain
+scrolling text when they are not — which is what a container gives them
+without this. With it, colour comes through and
+[`minato logs -f dev`](./cli#logs) becomes that terminal: what you type
+reaches the program.
+
+::: warning A terminal changes what the logs are
+The two output streams become one, so nothing tells stderr from stdout any
+more, and lines arrive ending `\r\n`. That is what a terminal is, not
+something Minato adds. Leave `tty` off for a service whose logs get piped
+into something.
+:::
+
+Whether a container has a terminal is fixed when it is created, so turning
+this on for a service that is already running recreates it — a restart, on
+the next `minato up`.
 
 #### `setup`
 

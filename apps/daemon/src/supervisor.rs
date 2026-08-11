@@ -42,6 +42,12 @@ pub enum FromClient {
 /// Where a request reads [`FromClient`] from.
 pub type ClientStream = tokio::sync::mpsc::UnboundedReceiver<FromClient>;
 
+/// How often an attached session says it is still there.
+///
+/// Far below any sensible `idle_timeout`, and one map lookup per minute
+/// per session, so there is nothing to be gained by being cleverer.
+const KEEP_AWAKE_EVERY: Duration = Duration::from_secs(60);
+
 /// The shape of a `logs` request, once the target has been taken off it.
 struct LogRequest {
     follow: bool,
@@ -675,8 +681,17 @@ impl Supervisor {
 
         events.attached(service);
 
+        // **Being typed at counts as being used.** The idle sweep reads
+        // one thing — how long since a request last reached the service's
+        // URL — and someone watching a task runner sends none. Without
+        // this, scale-to-zero would stop the service out from under an
+        // open session after `idle_timeout` of deliberate use.
+        let mut in_use = tokio::time::interval(KEEP_AWAKE_EVERY);
+
         loop {
             tokio::select! {
+                _ = in_use.tick() => self.keep_awake(key),
+
                 chunk = output.next() => match chunk {
                     Some(bytes) => events.bytes(Some(service.to_string()), &bytes),
                     // The container's terminal closed. The service
@@ -704,6 +719,27 @@ impl Supervisor {
         }
 
         Ok(Response::Empty)
+    }
+
+    /// Marks a service as in use, so the idle sweep leaves it alone.
+    ///
+    /// Every host that routes to it, since one is enough to keep it up and
+    /// which one a person would have opened is not knowable from here. A
+    /// service with no route — one that publishes no port — has nothing to
+    /// touch and nothing to sweep either.
+    fn keep_awake(&self, key: &minato_runtime::ServiceKey) {
+        let shared = key.workspace.is_shared();
+
+        for (host, route) in self.gateway.routes().snapshot() {
+            let same_service =
+                route.project == key.workspace.project && route.service == key.service;
+
+            // A shared service is reached through whichever workspace
+            // asked for it, so its own key names none of them.
+            if same_service && (shared || route.workspace == key.workspace.workspace) {
+                self.idle.touch(&host);
+            }
+        }
     }
 
     /// Runs a command inside a container.
@@ -2822,6 +2858,127 @@ mod tests {
         scope = "project"
         expose = false
     "#;
+
+    /// A route to one service of one workspace.
+    fn route_to(project: &str, workspace: &str, service: &str) -> Route {
+        Route::new(
+            SocketAddr::from(([127, 0, 0, 1], 3000)),
+            project,
+            workspace,
+            service,
+        )
+    }
+
+    #[test]
+    fn an_attached_session_keeps_its_service_awake() {
+        // Scale-to-zero reads one thing: how long since a request last
+        // reached the service. Someone typing at a task runner sends
+        // none, and stopping the environment under an open session is the
+        // opposite of what they asked for.
+        let gateway = Gateway::inert();
+        gateway.routes().replace_project(
+            "myapp",
+            vec![(
+                "dev.feat-1.myapp.localhost".to_string(),
+                route_to("myapp", "feat-1", "dev"),
+            )],
+        );
+
+        let supervisor = supervisor(gateway);
+        let key = WorkspaceKey::new("myapp", "feat-1").service("dev");
+
+        assert!(
+            supervisor
+                .idle
+                .idle_for("dev.feat-1.myapp.localhost")
+                .is_none(),
+            "nothing has touched it yet"
+        );
+
+        supervisor.keep_awake(&key);
+
+        assert!(
+            supervisor
+                .idle
+                .idle_for("dev.feat-1.myapp.localhost")
+                .is_some(),
+            "being attached counts as being used"
+        );
+    }
+
+    #[test]
+    fn keeping_one_service_awake_leaves_the_others_alone() {
+        // Touching every host would keep a whole project up for as long
+        // as anyone had one terminal open anywhere in it.
+        let gateway = Gateway::inert();
+        gateway.routes().replace_project(
+            "myapp",
+            vec![
+                (
+                    "dev.feat-1.myapp.localhost".to_string(),
+                    route_to("myapp", "feat-1", "dev"),
+                ),
+                (
+                    "web.feat-1.myapp.localhost".to_string(),
+                    route_to("myapp", "feat-1", "web"),
+                ),
+                (
+                    "dev.feat-2.myapp.localhost".to_string(),
+                    route_to("myapp", "feat-2", "dev"),
+                ),
+            ],
+        );
+
+        let supervisor = supervisor(gateway);
+        supervisor.keep_awake(&WorkspaceKey::new("myapp", "feat-1").service("dev"));
+
+        assert!(
+            supervisor
+                .idle
+                .idle_for("dev.feat-1.myapp.localhost")
+                .is_some()
+        );
+        assert!(
+            supervisor
+                .idle
+                .idle_for("web.feat-1.myapp.localhost")
+                .is_none(),
+            "a different service in the same workspace"
+        );
+        assert!(
+            supervisor
+                .idle
+                .idle_for("dev.feat-2.myapp.localhost")
+                .is_none(),
+            "the same service in a different workspace"
+        );
+    }
+
+    #[test]
+    fn a_shared_service_is_kept_awake_through_any_workspace() {
+        // Its own key names no workspace — `_shared` stands in — while
+        // every route to it names the workspace that asked for it. Matching
+        // those would never match, and the sweep would stop a database
+        // someone was sitting in.
+        let gateway = Gateway::inert();
+        gateway.routes().replace_project(
+            "myapp",
+            vec![(
+                "db.feat-1.myapp.localhost".to_string(),
+                route_to("myapp", "feat-1", "db"),
+            )],
+        );
+
+        let supervisor = supervisor(gateway);
+        supervisor.keep_awake(&WorkspaceKey::shared("myapp").service("db"));
+
+        assert!(
+            supervisor
+                .idle
+                .idle_for("db.feat-1.myapp.localhost")
+                .is_some()
+        );
+    }
 
     #[test]
     fn a_port_in_use_under_launchd_points_at_launchd() {

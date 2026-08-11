@@ -34,6 +34,7 @@ $ minato new feature/user-auth
 - **Scale-to-zero** — an untouched environment stops itself and wakes on the next request, so create as many worktrees as you like
 - **Reachable remotely** — share with a phone or an outside reviewer over Cloudflare Tunnel
 - **Usable by agents** — every command speaks `--json`, and `minato skill install` drops in the Skill
+- **Interactive where it matters** — `tty = true` gives a service a terminal, and `minato logs -f` lends it yours: turborepo's task switcher, colour and all
 - **Prebuilt or built** — pull an image, or point `build` at a Dockerfile
 - **Your choice of virtualisation** — Docker and Apple Container behind one Runtime abstraction, switched with `[runtime] default`
 

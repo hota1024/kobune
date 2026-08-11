@@ -124,6 +124,12 @@ minato logs web -n 50       # the last 50 lines of web
 minato logs web -f          # keep streaming (stop it yourself)
 ```
 
+A service configured with `tty = true` has a terminal, and following it from
+a real terminal hands that terminal over — colour, cursor movement, the lot.
+That is for a person, not for reading: **pass `--no-input` when the output is
+going to be parsed**, and it stays the plain stream. Nothing to do when you
+have no terminal anyway, which is the usual case.
+
 ### Run a command in a container
 
 ```bash

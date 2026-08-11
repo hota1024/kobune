@@ -36,8 +36,8 @@ use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{
-    Attachment, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Throwaway,
-    labels, names,
+    Attachment, DEFAULT_WINDOW, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime,
+    RuntimeInfo, Throwaway, labels, names,
 };
 use crate::spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
@@ -1053,6 +1053,31 @@ impl Runtime for DockerRuntime {
                 events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
                 RuntimeError::failed(format!("starting container {name}"), e)
             })?;
+
+        // **A terminal Docker has just created has no size at all**, and
+        // gets one only when a client attaches. A program that draws a
+        // full-screen interface asks at start-up, long before that, and
+        // one that cannot be told falls back to plain scrolling output for
+        // the rest of its life. So the size is given now rather than left
+        // to whoever attaches later — see [`DEFAULT_WINDOW`].
+        if spec.tty
+            && let Err(err) = self
+                .docker
+                .resize_container_tty(
+                    &id,
+                    ResizeContainerTtyOptions {
+                        width: DEFAULT_WINDOW.cols,
+                        height: DEFAULT_WINDOW.rows,
+                    },
+                )
+                .await
+        {
+            events.debug(format!(
+                "cannot size {}'s terminal: {err}. A full-screen program \
+                 may fall back to plain output",
+                spec.name()
+            ));
+        }
 
         let endpoint = self.resolve_endpoint(&id, spec.port).await?;
 

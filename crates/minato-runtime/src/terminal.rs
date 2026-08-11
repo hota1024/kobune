@@ -28,15 +28,14 @@ use tokio::sync::{broadcast, mpsc};
 /// client that stopped reading.
 const OUTPUT_BACKLOG: usize = 512;
 
-/// The size the container's terminal starts at.
+/// The size to open the terminal at.
 ///
-/// **Apple Container reads the size once**, when the process is attached,
-/// and ignores later changes: measured against `container` 0.5, where a
-/// resize on this side never reached the program inside. So this is the
-/// size a full-screen program will see for its whole life, and a common
-/// terminal is a better guess than the 80×24 of tradition.
-pub(crate) const DEFAULT_COLS: u16 = 120;
-pub(crate) const DEFAULT_ROWS: u16 = 40;
+/// **Apple Container reads it once**, when the process is attached, and
+/// ignores later changes: measured against `container` 1.2, where a
+/// resize on this side never reached the program inside. So what
+/// [`crate::runtime::DEFAULT_WINDOW`] says here is the size a full-screen
+/// program will see for its whole life.
+use crate::runtime::DEFAULT_WINDOW;
 
 /// A pseudo-terminal with a process attached to its far end.
 pub(crate) struct Terminal {
@@ -59,7 +58,7 @@ impl Terminal {
     /// undrained terminal fills up, and a program writing into a full one
     /// stops dead.
     pub(crate) fn open(mut command: tokio::process::Command) -> std::io::Result<Self> {
-        let (master, slave) = open_pty(DEFAULT_COLS, DEFAULT_ROWS)?;
+        let (master, slave) = open_pty(DEFAULT_WINDOW.cols, DEFAULT_WINDOW.rows)?;
 
         let stdin = slave.try_clone()?;
         let stdout = slave.try_clone()?;
@@ -149,7 +148,7 @@ impl Terminal {
     /// Tells the terminal how big the window is.
     ///
     /// The size reaches `container start` and stops there, on the version
-    /// this was measured against — see [`DEFAULT_COLS`]. Done anyway,
+    /// this was measured against — see [`DEFAULT_WINDOW`]. Done anyway,
     /// because it costs one `ioctl` and it is what a version that does
     /// pass the size on will need.
     pub(crate) fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
@@ -408,7 +407,7 @@ mod tests {
         let text = String::from_utf8_lossy(&chunk).trim().to_string();
         assert_eq!(
             text,
-            format!("{DEFAULT_ROWS} {DEFAULT_COLS}"),
+            format!("{} {}", DEFAULT_WINDOW.rows, DEFAULT_WINDOW.cols),
             "got: {text}"
         );
     }

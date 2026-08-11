@@ -26,7 +26,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use minato_api::{OutputStream, Window};
+use minato_api::OutputStream;
 use minato_core::{ServiceScope, ServiceState};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1043,10 +1043,7 @@ impl Runtime for AppleContainerRuntime {
             // Measured, not assumed: a resize on this side reaches
             // `container start` and goes no further, so the program inside
             // keeps the size the terminal was opened with.
-            fixed_size: Some(Window::new(
-                crate::terminal::DEFAULT_COLS,
-                crate::terminal::DEFAULT_ROWS,
-            )),
+            fixed_size: Some(crate::runtime::DEFAULT_WINDOW),
         })
     }
 

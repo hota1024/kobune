@@ -815,6 +815,14 @@ async fn run_attached(
         attach::restore();
     }
 
+    // **Detaching says nothing**, because whoever pressed the keys knows
+    // what they did. The terminal closing on its own does: the last frame
+    // is still on screen, and without a word it reads as the session
+    // having frozen rather than the service having gone.
+    if was_attached && matches!(outcome, Ok(minato_client::Attached::Finished(_))) {
+        eprintln!("the service's terminal closed. `minato status` says why");
+    }
+
     outcome?;
     Ok(ExitCode::SUCCESS)
 }

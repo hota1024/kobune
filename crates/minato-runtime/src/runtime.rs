@@ -34,6 +34,25 @@ pub struct LogLine {
     pub line: String,
 }
 
+/// The size a container's terminal is given when the service starts.
+///
+/// **A terminal with no size is one a full-screen program will not draw
+/// to.** Nobody is attached when a service starts, and a terminal nobody
+/// has attached to has no window: measured against Docker, where `stty
+/// size` inside a container started with a terminal fails outright until
+/// something resizes it. Turborepo asks its terminal how big it is,
+/// cannot be told, and settles for scrolling prefixed lines — the display
+/// this whole path exists to avoid. It decides that once, at start-up, so
+/// a size that only arrived when someone attached would be too late.
+///
+/// The value is a common terminal rather than the 80×24 of tradition.
+/// Docker replaces it the moment a client attaches; Apple Container is
+/// stuck with it, so it is worth it being a usable shape.
+pub const DEFAULT_WINDOW: Window = Window {
+    cols: 120,
+    rows: 40,
+};
+
 /// A live terminal on a running service.
 ///
 /// Only a service started with `tty` has one. The two halves are
