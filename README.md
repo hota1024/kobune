@@ -251,6 +251,11 @@ macOS and Linux, plus the desktop app — has to pass. Merging replaces the
 A pull request that touches `docs/` gets its own preview URL, so prose can be
 reviewed by reading the rendered page.
 
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
+The subject says what changed; the body says why, where the diff does not
+already make that plain. History before `chore: install caveman-commit skill`
+predates the rule and is not worth matching.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
