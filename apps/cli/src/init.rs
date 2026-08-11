@@ -84,9 +84,19 @@ command = "sh -c 'echo minato ready; sleep infinity'"
 # How long without a request before it stops itself.
 # idle_timeout = "30m"
 
+# Every service is told the others' URLs as MINATO_URL_<SERVICE>, and the
+# hostname on its own — no scheme, no port — as MINATO_HOSTNAME_<SERVICE>,
+# which is what a CORS origin or a cookie domain wants. `${{...}}` puts one
+# under the name the app already reads; a bare $NAME does not.
+# env = {{ NEXT_PUBLIC_API_URL = "${{MINATO_URL_API}}" }}
+
+# For a tool that reads a file rather than its own environment — wrangler
+# dev, Vite, dotenvx — the same values, written before the service starts.
+# Secrets are left out of it, and a path git tracks is refused.
+# env_file = ".minato/env.app"
+
 # A second service. `depends_on` starts db first and waits for it to be
-# ready. Each one gets its own URL, and every service is told the others'
-# as MINATO_URL_<SERVICE> — MINATO_URL_DB here.
+# ready. Each one gets its own URL — MINATO_URL_DB here.
 # [services.db]
 # image = "postgres:16"
 # port = 5432
