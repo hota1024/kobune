@@ -1,6 +1,16 @@
 //! Listening on the Unix socket, and handling one connection's messages.
+//!
+//! **The socket is the whole API, and it asks for nothing.** Whatever
+//! reaches it can start containers, read logs and run commands inside
+//! them — and `minato exec <service> -- env` prints the secrets
+//! `crate::secrets` resolved from 1Password and the Keychain. Keeping
+//! those out of files buys nothing if anyone with an account on the
+//! machine can ask for them down a socket, so who may connect is decided
+//! here, in two places that back each other up: the mode on the directory
+//! holding the socket, and the uid on the other end of each connection.
 
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -49,6 +59,14 @@ impl Server {
                 accepted = listener.accept() => {
                     match accepted {
                         Ok((stream, _)) => {
+                            if !is_ours(&stream) {
+                                // Dropping it is the refusal. Answering
+                                // would say what is here to somebody who
+                                // is not entitled to know.
+                                tracing::warn!("refused a connection from another account");
+                                continue;
+                            }
+
                             let supervisor = supervisor.clone();
                             tokio::spawn(async move {
                                 if let Err(err) = handle_connection(stream, supervisor).await {
@@ -88,11 +106,108 @@ fn bind(socket: &Path) -> anyhow::Result<Option<UnixListener>> {
         std::fs::remove_file(socket)?;
     }
 
+    // **Before the bind, every time.** A directory nobody else may
+    // traverse cannot be reached at all, which is the one guarantee that
+    // also covers the instant between creating the socket and setting its
+    // mode below. Applied to a directory that is already there as much as
+    // to a new one: an installation that predates this would otherwise
+    // stay open for as long as it lives.
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)?;
+        restrict(parent, HOME_MODE)?;
     }
 
-    Ok(Some(UnixListener::bind(socket)?))
+    let listener = UnixListener::bind(socket)?;
+
+    // Belt and braces, and the only thing left if `MINATO_HOME` names a
+    // directory somebody else's account can reach.
+    restrict(socket, SOCKET_MODE)?;
+
+    Ok(Some(listener))
+}
+
+/// The mode kept on the directory holding the socket.
+const HOME_MODE: u32 = 0o700;
+
+/// The mode kept on the socket itself.
+const SOCKET_MODE: u32 = 0o600;
+
+/// Narrows `path` to `mode`, saying so when that was a change.
+///
+/// Reported rather than done quietly: a directory that has been readable
+/// since it was created was readable to somebody, and finding that out
+/// afterwards is worth a line in the log.
+fn restrict(path: &Path, mode: u32) -> std::io::Result<()> {
+    let current = std::fs::metadata(path)?.permissions().mode() & 0o777;
+    if current == mode {
+        return Ok(());
+    }
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    tracing::info!(
+        "narrowed {} from {current:04o} to {mode:04o}",
+        path.display()
+    );
+
+    Ok(())
+}
+
+/// Whether the other end is the account the daemon runs as.
+///
+/// The directory mode already keeps everyone else out of the path, so
+/// this is the second answer rather than the first. It is what covers a
+/// `MINATO_HOME` pointed somewhere shared.
+fn is_ours(stream: &UnixStream) -> bool {
+    match peer_uid(stream) {
+        Some(uid) => uid == unsafe { libc::geteuid() },
+        // Nothing came back to compare. The directory is the guarantee
+        // that matters, and refusing every connection because one
+        // syscall did not answer would take the daemon out entirely.
+        None => true,
+    }
+}
+
+/// The uid on the other end of a connected socket.
+///
+/// Linux has no `getpeereid`; the same answer comes from `SO_PEERCRED`.
+#[cfg(target_os = "linux")]
+fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+
+    // SAFETY: the descriptor is a connected socket this process owns, and
+    // `length` describes the buffer being written into.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &mut length,
+        )
+    };
+
+    (result == 0).then_some(credentials.uid)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+
+    // SAFETY: the descriptor is a connected socket this process owns;
+    // both out parameters are writable.
+    let result = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+
+    (result == 0).then_some(uid)
 }
 
 /// A request that is still running, and the keyboard that reaches it.
@@ -262,5 +377,69 @@ mod tests {
         let listener = bind(&socket).expect("creates the parent too");
         assert!(socket.exists());
         drop(listener);
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[tokio::test]
+    async fn the_socket_and_its_directory_are_the_owner_s_alone() {
+        // Nothing on the other side of this socket asks who is calling,
+        // and `minato exec -- env` prints resolved secrets. Under the
+        // default umask the bind alone leaves it 0755.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let socket = home.join("minatod.sock");
+
+        let listener = bind(&socket).expect("binds").expect("is ours");
+
+        assert_eq!(mode_of(&socket), SOCKET_MODE, "the socket");
+        assert_eq!(mode_of(&home), HOME_MODE, "the directory holding it");
+
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn a_directory_that_predates_this_is_narrowed_too() {
+        // Every existing installation has a 0755 ~/.minato. Tightening
+        // only what this creates would leave all of them open.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("creates");
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let listener = bind(&home.join("minatod.sock")).expect("binds");
+
+        assert_eq!(mode_of(&home), HOME_MODE);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn a_connection_from_this_account_is_recognised() {
+        // As far as one process can go: a second account to be refused
+        // is not something a test can arrange. What is checked is that
+        // the answer arrives at all — a `peer_uid` returning `None`
+        // everywhere would let everything through and still pass a test
+        // that only asserted acceptance.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("minatod.sock");
+
+        let listener = bind(&socket).expect("binds").expect("is ours");
+        let client = UnixStream::connect(&socket).await.expect("connects");
+        let (accepted, _) = listener.accept().await.expect("accepts");
+
+        assert_eq!(
+            peer_uid(&accepted),
+            Some(unsafe { libc::geteuid() }),
+            "the uid has to actually come back, or the check is a no-op"
+        );
+        assert!(is_ours(&accepted));
+
+        drop(client);
     }
 }
