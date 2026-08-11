@@ -9,12 +9,22 @@
 //! the plist's `Sockets`.
 
 use std::os::fd::{FromRawFd, RawFd};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The keys written under `Sockets` in the plist.
 pub const HTTP_SOCKET: &str = "http";
 pub const HTTPS_SOCKET: &str = "https";
 pub const DNS_TCP_SOCKET: &str = "dns-tcp";
 pub const DNS_UDP_SOCKET: &str = "dns-udp";
+
+/// Set once launchd has handed anything over.
+///
+/// **launchd answers for a socket name once.** Every call after the first
+/// gets `EALREADY` and no descriptors, which is indistinguishable from
+/// never having been launchd's at all. Startup spends that one answer, so
+/// whatever asks later has to read what startup found rather than ask
+/// again.
+static ACTIVATED: AtomicBool = AtomicBool::new(false);
 
 /// The TCP listeners launchd handed over.
 ///
@@ -58,9 +68,14 @@ pub fn udp_sockets(name: &str) -> Vec<std::net::UdpSocket> {
         .collect()
 }
 
-/// Whether launchd started this process.
+/// Whether launchd handed this process any of its sockets.
+///
+/// Reports what the descriptors already taken say, so it stays true for
+/// the life of the daemon. Asking launchd here instead would answer
+/// `EALREADY` and read as a plain start — the state that sends people
+/// after a socket nothing else holds.
 pub fn is_active() -> bool {
-    !raw_fds(HTTP_SOCKET).is_empty() || !raw_fds(HTTPS_SOCKET).is_empty()
+    ACTIVATED.load(Ordering::Relaxed)
 }
 
 #[cfg(target_os = "macos")]
@@ -90,12 +105,14 @@ fn raw_fds(name: &str) -> Vec<RawFd> {
     let result = unsafe { launch_activate_socket(key.as_ptr(), &mut fds, &mut count) };
 
     if result != 0 {
-        // ESRCH (3) means "not managed by launchd", which is normal for
-        // a standalone start.
-        if result == 3 {
-            tracing::debug!("not started by launchd (no socket `{name}`)");
-        } else {
-            tracing::debug!("cannot get socket `{name}` (errno {result})");
+        match result {
+            // Normal for a standalone start: nothing here is launchd's.
+            libc::ESRCH => tracing::debug!("not started by launchd (no socket `{name}`)"),
+            // Asked twice. The descriptors went to the first caller and
+            // are not repeated, so this says nothing about whether the
+            // process is launchd's — read ACTIVATED for that.
+            libc::EALREADY => tracing::debug!("socket `{name}` was already taken from launchd"),
+            errno => tracing::debug!("cannot get socket `{name}` (errno {errno})"),
         }
         return Vec::new();
     }
@@ -110,6 +127,10 @@ fn raw_fds(name: &str) -> Vec<RawFd> {
 
     // SAFETY: freeing what launch_activate_socket malloc'd.
     unsafe { libc::free(fds as *mut libc::c_void) };
+
+    // The one place descriptors ever arrive, so the one place that can
+    // record it before the answer is spent.
+    ACTIVATED.store(true, Ordering::Relaxed);
 
     tracing::info!(
         "took {} descriptor(s) for socket `{name}` from launchd",
@@ -138,7 +159,23 @@ mod tests {
         // through the ordinary bind.
         assert!(tcp_listeners(HTTP_SOCKET).is_empty());
         assert!(udp_sockets(DNS_UDP_SOCKET).is_empty());
-        assert!(!is_active());
+    }
+
+    // Owns ACTIVATED for the whole suite: it is process-wide, so no other
+    // test may assert on `is_active` alongside this one.
+    #[test]
+    fn activation_outlives_launchd_answering() {
+        assert!(!is_active(), "nothing here was handed over");
+
+        // A daemon that did get descriptors spent launchd's one answer
+        // getting them, so from then on asking comes back empty. Reading
+        // that as a plain start is what sent `doctor` after a socket
+        // nothing else was holding.
+        ACTIVATED.store(true, Ordering::Relaxed);
+        assert!(tcp_listeners(HTTP_SOCKET).is_empty());
+        assert!(is_active());
+
+        ACTIVATED.store(false, Ordering::Relaxed);
     }
 
     #[test]
