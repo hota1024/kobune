@@ -600,6 +600,7 @@ MINATO_URL_WEB       = https://web.feat-1.myapp.localhost
 MINATO_URL_API       = https://api.feat-1.myapp.localhost
 MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
 MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
+MINATO_CA_FILE       = /etc/minato/ca.crt                      # while HTTPS is served
 MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
 ```
 
@@ -608,6 +609,13 @@ A `-` in a service name becomes `_` (`api-server` →
 
 **Injection is the bottom layer**, so the user can override it. The other way
 round, Minato's conveniences would erase the user's settings.
+
+**`MINATO_CA_FILE` names a certificate, and does not wire it in.** The CA is
+mounted read-only so a service can verify the URL it was handed rather than
+turning verification off, but `NODE_EXTRA_CA_CERTS` and its equivalents are
+left to the service: Node's takes one file, so setting it would drop whatever
+an image already pointed it at, and it would be rendered into `env_file`, which
+is read on the host where that path does not exist.
 
 **No URL is injected while the proxy is down**, and no hostname either — the
 two go together. An empty string would leave it "set, but unreachable", and the

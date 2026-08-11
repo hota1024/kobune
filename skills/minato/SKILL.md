@@ -177,6 +177,15 @@ it too: the hostnames are pointed at Minato's gateway in every container of the
 workspace. One Host and one Origin for both halves of an app is what keeps
 cookies and CORS from having to know about two.
 
+**Do not reach for `NODE_TLS_REJECT_UNAUTHORIZED=0`.** Minato's CA is mounted
+into every service and named as `MINATO_CA_FILE`; wire it into the stack's own
+variable instead, and verification keeps working for everything else too.
+
+```toml
+[services.web.env]
+NODE_EXTRA_CA_CERTS = "${MINATO_CA_FILE}"
+```
+
 To reach the name the application already reads, refer to it from `env` in
 `minato.toml`. `${NAME}` is expanded; a bare `$NAME` is not.
 

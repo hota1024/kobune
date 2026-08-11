@@ -38,6 +38,33 @@ pub const CACHE_TARGET: &str = "/var/cache/minato";
 /// sort of migration nobody notices until the data looks gone.
 pub const CACHE_VOLUME: &str = "_cache";
 
+/// Where Minato's own CA certificate is mounted, read-only.
+///
+/// **The browser trusts it and a container does not.** `minato setup`
+/// puts the CA in the host's keychain, which is what makes
+/// `https://api.myapp.localhost` load without a warning — but a container
+/// carries its own trust store, so the same URL called from inside one
+/// fails to verify. Mounting the certificate is what lets a service call
+/// the URL it was handed instead of turning verification off.
+///
+/// Not under [`MOUNT_TARGET`]: it is not the worktree's, and a file that
+/// appeared in the repository would be committed by somebody. Handed to
+/// every service as `MINATO_CA_FILE`.
+pub const CA_TARGET: &str = "/etc/minato/ca.crt";
+
+/// The paths Minato mounts itself, and what to say when one is taken.
+///
+/// A table rather than a branch each: the next `MINATO_*` path should cost
+/// a line here, not another eight-line copy of the same check.
+const RESERVED_MOUNTS: [(&str, &str, &str); 2] = [
+    (
+        CACHE_TARGET,
+        "MINATO_CACHE_DIR",
+        "Write under $MINATO_CACHE_DIR, or mount yours somewhere else",
+    ),
+    (CA_TARGET, "MINATO_CA_FILE", "Mount yours somewhere else"),
+];
+
 /// The default when `idle_timeout` is omitted.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -600,20 +627,25 @@ impl MinatoConfig {
             )));
         }
 
-        // The name cannot be taken — `_cache` is not a valid volume name —
-        // but the place it is mounted can be. Two mounts on one target is
-        // an error from the container engine, several steps away from the
-        // line that caused it.
+        // The names cannot be taken — `_cache` is not a valid volume name,
+        // and the CA is not a named volume at all — but the places they
+        // are mounted can be. Two mounts on one target is an error from
+        // the container engine, several steps away from the line that
+        // caused it.
         for volume in &svc.volumes {
             let mut parts = volume.split(':');
             let _source = parts.next();
+            let target = parts.next();
 
-            if parts.next() == Some(CACHE_TARGET) {
+            for (reserved, variable, way_out) in RESERVED_MOUNTS {
+                if target != Some(reserved) {
+                    continue;
+                }
+
                 return Err(Error::ConfigInvalid(format!(
-                    "service `{name}`: {CACHE_TARGET} is where MINATO_CACHE_DIR \
-                     is already mounted, so `{volume}` would be a second mount \
-                     on the same path. Write under $MINATO_CACHE_DIR, or mount \
-                     yours somewhere else"
+                    "service `{name}`: {reserved} is where {variable} is \
+                     already mounted, so `{volume}` would be a second mount \
+                     on the same path. {way_out}"
                 )));
             }
         }
@@ -1185,6 +1217,26 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("MINATO_CACHE_DIR"), "{message}");
         assert!(!message.contains("  "), "run-together spacing: {message}");
+    }
+
+    #[test]
+    fn a_second_mount_on_the_certificate_path_is_refused() {
+        // Same reason as the cache path, and the same failure without it:
+        // the engine refuses the container and names neither the file nor
+        // the line that asked for it.
+        let err = parse(&format!(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["mine:{CA_TARGET}"]
+        "#
+        ))
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("MINATO_CA_FILE"), "{message}");
     }
 
     #[test]

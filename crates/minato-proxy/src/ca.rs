@@ -170,10 +170,7 @@ impl LocalCa {
         let key_path = dir.join(CA_KEY_FILE);
         let pem = certificate.pem();
 
-        std::fs::write(&cert_path, &pem).map_err(|source| CaError::Write {
-            path: cert_path,
-            source,
-        })?;
+        write_public(&cert_path, pem.as_bytes())?;
 
         // Only the owner may read the private key.
         write_private(&key_path, key_pair.serialize_pem().as_bytes())?;
@@ -230,6 +227,45 @@ impl LocalCa {
             signing_key,
         ))
     }
+}
+
+/// Writes the certificate so that anyone may read it.
+///
+/// **Explicitly, rather than by umask.** The certificate is public by
+/// nature — it is what everything is asked to trust — and it is mounted
+/// into containers that run as their own users. Under a hardened umask it
+/// would land 0600 owned by the host user, and a service running as
+/// `node` or `nobody` would fail to read it through a read-only mount it
+/// cannot change, with an error naming a path that exists nowhere on the
+/// host.
+#[cfg(unix)]
+fn write_public(path: &Path, contents: &[u8]) -> Result<(), CaError> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o644)
+        .open(path)
+        .map_err(|source| CaError::Write {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    file.write_all(contents).map_err(|source| CaError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+#[cfg(not(unix))]
+fn write_public(path: &Path, contents: &[u8]) -> Result<(), CaError> {
+    std::fs::write(path, contents).map_err(|source| CaError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 #[cfg(unix)]
@@ -385,6 +421,20 @@ mod tests {
                 mode & 0o777,
                 0o600,
                 "only the owner may read the private key"
+            );
+
+            // The certificate is the other half of that rule: it is
+            // mounted into containers running as their own users, and a
+            // umask-dependent 0600 would leave them unable to read a
+            // read-only mount they cannot change.
+            let mode = std::fs::metadata(ca.certificate_path())
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o644,
+                "anyone may read the certificate; that is what it is for"
             );
         }
     }

@@ -54,11 +54,54 @@ MINATO_PROJECT      = myapp
 MINATO_WORKSPACE    = feature-user-auth
 MINATO_SERVICE      = web
 MINATO_CACHE_DIR    = /var/cache/minato
+MINATO_CA_FILE      = /etc/minato/ca.crt
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
 MINATO_HOSTNAME_API = api.feature-user-auth.myapp.localhost
 ```
+
+### `MINATO_CA_FILE`
+
+Minato 自身の CA 証明書です。すべてのサービスに読み取り専用でマウントされ、
+`MINATO_URL_<SERVICE>` への HTTPS 通信を検証付きで通せるようにします。
+
+ブラウザがこの証明書を信頼しているのは `minato setup` がホストのキーチェーンに
+入れたからで、コンテナは自前のトラストストアを持つため何も知りません。これが
+無いと URL には到達するのに証明書で落ち、結局プロセス全体の検証を切ることに
+なります。
+
+利用しているスタック側の変数から参照してください。Node なら 1 行です。
+
+```toml
+[services.web.env]
+NODE_EXTRA_CA_CERTS = "${MINATO_CA_FILE}"
+```
+
+**`NODE_EXTRA_CA_CERTS` は追加、`SSL_CERT_FILE` / `CURL_CA_BUNDLE` /
+`REQUESTS_CA_BUNDLE` は置き換えです。** 後者で Minato を信頼させたコンテナは
+他のどこも信頼しなくなり、Minato 以外への HTTPS 通信が止まります。追加型が
+あるならそちらを使ってください。
+
+`NODE_EXTRA_CA_CERTS` を Minato が設定しないのは意図的です。この変数は
+ファイルを 1 つしか取れないため、企業の CA バンドルを指しているイメージでは
+それを黙って失わせてしまいます。また [`env_file`](#env-file) にも書き出され、
+そちらは*ホスト*で読まれるので、`/etc/minato/ca.crt` が存在せず Node が起動の
+たびに警告を出します。
+
+システムのトラストストアを読むスタックでは、起動時に追加してください。
+
+```toml
+[services.api]
+command = "sh -c 'cp $MINATO_CA_FILE /usr/local/share/ca-certificates/ && update-ca-certificates && ./serve'"
+```
+
+検証すべき HTTPS が無いとき（443 を保持できていないなど）は設定されません。
+他の値と同じく、すでに稼働中のコンテナには反映されません
+（`minato down && minato up`）。
+
+`/etc/minato/ca.crt` は Minato 自身のマウント先なので、そのパスちょうどへの
+`volumes` は `/var/cache/minato` と同様に拒否されます。
 
 ### `MINATO_CACHE_DIR`
 

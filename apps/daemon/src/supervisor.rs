@@ -795,7 +795,7 @@ impl Supervisor {
             &resolved.workspace.label,
             &resolved.workspace.path,
             &env_values(&envs),
-            &env::service_hosts(&resolved.config, &resolved.workspace, &self.gateway),
+            &env::workspace_context(&resolved.config, &resolved.workspace, &self.gateway),
         )?;
 
         workspace_spec
@@ -1507,10 +1507,7 @@ impl Supervisor {
             &record.label,
             &record.path,
             service_env.values,
-            spec::WorkspaceContext {
-                services: config.services.keys().cloned().collect(),
-                gateway_hosts: env::service_hosts(&config, &record, &self.gateway),
-            },
+            &env::workspace_context(&config, &record, &self.gateway),
         )?;
 
         let runtime = self.runtime(&config.runtime.default).await?;
@@ -2229,7 +2226,7 @@ impl Supervisor {
             &resolved.workspace.label,
             &resolved.workspace.path,
             &env_values(&envs),
-            &env::service_hosts(&resolved.config, &resolved.workspace, &self.gateway),
+            &env::workspace_context(&resolved.config, &resolved.workspace, &self.gateway),
         )?;
 
         // Even a narrowed selection has to bring its dependencies up.
