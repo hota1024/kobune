@@ -41,6 +41,12 @@ pub const DEFAULT_DNS_PORT: u16 = 53;
 pub const FALLBACK_HTTP_PORT: u16 = 18080;
 pub const FALLBACK_HTTPS_PORT: u16 = 18443;
 
+/// How long to wait for Apple Container to say where its network is.
+///
+/// Generous enough for a cold CLI, short enough that a daemon start is not
+/// noticeably held up by a runtime this machine may not even use.
+const CONTAINER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Why a listener could not be held.
 ///
 /// **Worth keeping, not just logging.** "Needs privileges" and "something
@@ -166,10 +172,23 @@ impl GatewaySettings {
     /// Asks Apple Container for its network gateway. Nothing to add when
     /// it is not installed or not running, which is the common case and
     /// costs one failed process spawn to find out.
-    pub fn with_container_gateway(mut self) -> Self {
-        let listed = std::process::Command::new(minato_core::apple::PROGRAM)
+    ///
+    /// **Bounded.** This runs before anything is listening, so a CLI that
+    /// takes its time — the service is starting, the VM is waking — would
+    /// hold up the whole daemon. Giving up costs the addresses in
+    /// containers and nothing else, and `minato doctor` says so.
+    pub async fn with_container_gateway(mut self) -> Self {
+        let asked = tokio::process::Command::new(minato_core::apple::PROGRAM)
             .args(minato_core::apple::LIST_ARGS)
             .output();
+
+        let Ok(listed) = tokio::time::timeout(CONTAINER_PROBE_TIMEOUT, asked).await else {
+            tracing::debug!(
+                "`{} network list` did not answer in {CONTAINER_PROBE_TIMEOUT:?}",
+                minato_core::apple::PROGRAM
+            );
+            return self;
+        };
 
         let Ok(output) = listed else {
             return self;
@@ -600,6 +619,11 @@ impl Gateway {
     /// the case that matters: HTTPS losing `[::1]` while HTTP holds it
     /// leaves every check green and half the HTTPS traffic going to a
     /// stranger.
+    ///
+    /// The extra addresses are left out of the comparison. Apple
+    /// Container's gateway is IPv4, and counting it would report IPv4 as
+    /// held while `127.0.0.1` went to another process — which is the exact
+    /// blind spot this exists to close.
     pub fn missing_families(&self) -> Vec<(&'static str, IpAddr)> {
         let mut missing = Vec::new();
 
@@ -607,8 +631,14 @@ impl Gateway {
             ("the HTTP proxy", &self.http_addrs),
             ("the HTTPS proxy", &self.https_addrs),
         ] {
+            let loopback: Vec<SocketAddr> = bound
+                .iter()
+                .filter(|addr| !self.extra_wanted.contains(&addr.ip()))
+                .copied()
+                .collect();
+
             missing.extend(
-                missing_from(bound, &self.wanted)
+                missing_from(&loopback, &self.wanted)
                     .into_iter()
                     .map(|family| (protocol, family)),
             );
@@ -1210,6 +1240,23 @@ mod tests {
         assert!(
             gateway.unreachable_from_containers().is_empty(),
             "listening there is the whole requirement"
+        );
+    }
+
+    #[test]
+    fn an_extra_address_does_not_stand_in_for_a_lost_family() {
+        // Apple Container's gateway is IPv4. Counting it as "IPv4 is held"
+        // would show a healthy proxy while 127.0.0.1 went to another
+        // process — the case `missing_families` exists to catch.
+        let apple = IpAddr::V4(Ipv4Addr::new(192, 168, 64, 1));
+
+        let mut gateway = bound(vec![], vec![SocketAddr::new(apple, 443), v6(443)]);
+        gateway.extra_wanted = vec![apple];
+
+        assert_eq!(
+            gateway.missing_families(),
+            vec![("the HTTPS proxy", IpAddr::V4(Ipv4Addr::LOCALHOST))],
+            "127.0.0.1 is unattended and has to be reported"
         );
     }
 

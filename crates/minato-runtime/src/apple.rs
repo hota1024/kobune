@@ -502,17 +502,20 @@ impl AppleContainerRuntime {
     /// otherwise carry is not known until the container has started, which
     /// is after this is needed.
     ///
+    /// **One file per service, not per container.** A throwaway is named
+    /// for the instant it was created, so keying on that would leave a
+    /// file behind for every `minato exec` ever run, with nothing to sweep
+    /// them: the workspace's own prefix does not match them. The contents
+    /// are the same either way.
+    ///
+    /// It is moved into place rather than written in place, so a service
+    /// container holding the file mounted cannot read a half-written one
+    /// while an `exec` beside it rewrites the same path.
+    ///
     /// `None` when there is nothing to map, which leaves the image's own
     /// file alone.
-    fn write_hosts_file(
-        &self,
-        spec: &ServiceSpec,
-        name: &str,
-        gateway: Option<Ipv4Addr>,
-    ) -> Result<Option<PathBuf>> {
-        let (Some(gateway), false) = (gateway, spec.gateway_hosts.is_empty()) else {
-            return Ok(None);
-        };
+    fn write_hosts_file(&self, spec: &ServiceSpec, gateway: Ipv4Addr) -> Result<PathBuf> {
+        let name = names::container(&spec.key);
 
         let dir = self.hosts_root();
         std::fs::create_dir_all(&dir)
@@ -530,11 +533,15 @@ impl AppleContainerRuntime {
             contents.push_str(&format!("{gateway}\t{host}\n"));
         }
 
-        let path = dir.join(name);
-        std::fs::write(&path, contents)
+        let path = dir.join(&name);
+        let staged = dir.join(format!(".{name}.{}", std::process::id()));
+
+        std::fs::write(&staged, contents)
+            .map_err(|err| RuntimeError::failed(format!("writing {}", staged.display()), err))?;
+        std::fs::rename(&staged, &path)
             .map_err(|err| RuntimeError::failed(format!("writing {}", path.display()), err))?;
 
-        Ok(Some(path))
+        Ok(path)
     }
 
     /// Where the generated `/etc/hosts` files are kept.
@@ -690,7 +697,12 @@ impl AppleContainerRuntime {
         // service is poked at by hand, and a curl that works in the service
         // but not in the shell beside it is the confusing kind of
         // difference.
-        if let Some(hosts) = self.write_hosts_file(spec, &name, gateway)? {
+        //
+        // Nothing to point anywhere means the image's own `/etc/hosts` is
+        // left alone: a file with only `localhost` in it would be a
+        // downgrade, not a no-op.
+        if let (Some(gateway), false) = (gateway, spec.gateway_hosts.is_empty()) {
+            let hosts = self.write_hosts_file(spec, gateway)?;
             args.push("--volume".into());
             args.push(format!("{}:/etc/hosts", hosts.display()));
         }
@@ -1830,13 +1842,14 @@ mod tests {
         spec.gateway_hosts = vec!["api.feat-1.myapp.localhost".into()];
 
         let mine = runtime
-            .write_hosts_file(&spec, "minato-myapp-feat-1-api", Some(Ipv4Addr::LOCALHOST))
-            .expect("writes")
-            .expect("a file");
+            .write_hosts_file(&spec, Ipv4Addr::LOCALHOST)
+            .expect("writes");
+
+        let mut neighbour_spec = spec.clone();
+        neighbour_spec.key = WorkspaceKey::new("myapp", "feat-2").service("api");
         let neighbour = runtime
-            .write_hosts_file(&spec, "minato-myapp-feat-2-api", Some(Ipv4Addr::LOCALHOST))
-            .expect("writes")
-            .expect("a file");
+            .write_hosts_file(&neighbour_spec, Ipv4Addr::LOCALHOST)
+            .expect("writes");
 
         runtime.remove_workspace_hosts_files(
             &WorkspaceKey::new("myapp", "feat-1"),

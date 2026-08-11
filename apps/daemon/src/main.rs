@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     // `with_container_gateway` adds the address Apple Container's
     // containers reach the host at, so a service URL works from inside one
     // as well as from the browser.
-    let settings = GatewaySettings::from_env().with_container_gateway();
+    let settings = GatewaySettings::from_env().with_container_gateway().await;
 
     // The gateway needs somewhere to send wake requests, and the
     // supervisor needs the gateway to issue URLs. Supplying the real
