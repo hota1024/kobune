@@ -309,10 +309,13 @@ one value for piping.
 a service's own `env` belongs to that service, and there is no
 `MINATO_SERVICE` because no service is being named. `get` takes it too.
 
-When a `${...}` in the listing will not settle, `ls` shows the values as
-written and says why underneath rather than refusing — the value at fault can
-only be found by looking at them. `--json` carries the reason as `unresolved`.
-`get` does refuse in that case, since what it prints is meant to be used.
+When a `${...}` will not settle, `ls` shows *that* value as written and says
+why underneath rather than refusing — the one at fault can only be found by
+looking at the values, and the ones that settled are still shown settled. In
+`--json` such a value carries an `unsettled` object (`reference`, and a
+`reason` of `undefined`, `only_with_service`, `needs_proxy`, `secret` or
+`cycle`); a value that settled has no such field. `get` does refuse, with exit
+code 7, since what it prints is meant to be used.
 
 The layer column names five of them, innermost winning: `injected`, `global`,
 `project`, `service`, `workspace`. `service` is a service's own `env` in

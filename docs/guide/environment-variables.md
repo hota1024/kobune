@@ -196,26 +196,19 @@ something nothing runs with.
   down, rather than start with the variable missing; `minato doctor` says how
   to get one back.
 
-`minato env ls` still lists when something in it will not settle. It shows the
-values as written and says why underneath — this is the tool for finding the
-one at fault, and it can only be found by looking at them.
-
-```console
-$ minato env ls
-╭ environment ──────────────────────────────────────────────────────╮
-│ KEY      SCOPE    VALUE                                           │
-│ API_URL  service  ${MINATO_URL_API}                               │
-│                                                                   │
-│ API_URL refers to ${MINATO_URL_API}, which nothing sets. Values   │
-│ are shown as written. MINATO_URL_API exists only while the proxy  │
-│ is listening…                                                     │
-╰───────────────────────────────────────────────────────────────────╯
-```
+`minato env ls` still lists when something in it will not settle. **Only the
+value at fault is shown as written**, with the reason under the listing — this
+is the tool for finding it, and it can only be found by looking at the values.
+Everything that does settle is shown settled, so the two can be told apart.
 
 A listing of no particular service leaves out `MINATO_SERVICE` and every
 service's own `env`, so a value built from one of those cannot settle *here*
-even though the service starts fine. It says so, and names
-`minato env ls --service <name>` as the listing that can.
+even though the service starts fine. It says so, and names the service whose
+listing can settle it — only that one will.
+
+In `--json`, a value that did not settle carries an `unsettled` object with
+the name it refers to and a reason (`undefined`, `only_with_service`,
+`needs_proxy`, `secret`, `cycle`). A value that settled has no such field.
 
 ::: warning Values written before this existed
 `${...}` and `$$` now mean something they did not. A value already holding one

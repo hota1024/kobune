@@ -235,8 +235,9 @@ Removes the worktree and its environment. The branch stays.
 3. `minato env ls --service <name>` — what that container is actually given,
    and which layer each value came from. Check here before concluding a
    variable is wrong; without `--service` you get only what every service
-   shares. When a `${...}` will not settle the listing still arrives, with
-   the values as written and the reason underneath (`unresolved` in `--json`)
+   shares. When a `${...}` will not settle the listing still arrives: that
+   value is shown as written and carries `unsettled` in `--json`, with the
+   name it refers to and why
 4. `minato doctor` — problems with the environment. **The fix is in `fix`**
 
 ### Common symptoms

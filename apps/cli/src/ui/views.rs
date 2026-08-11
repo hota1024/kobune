@@ -9,7 +9,8 @@
 use std::path::Path;
 
 use minato_api::{
-    Check, Diagnostics, EnvInfo, Pong, ServiceInfo, TunnelInfo, TunnelState, WorkspaceInfo,
+    Check, Diagnostics, EnvInfo, Pong, ServiceInfo, TunnelInfo, TunnelState, Unsettled,
+    UnsettledReason, WorkspaceInfo,
 };
 use minato_core::ServiceState;
 use ratatui::text::{Line, Span};
@@ -448,7 +449,42 @@ fn count(n: usize, noun: &str) -> String {
 /// **Each value says which layer defined it.** With three layers, not
 /// seeing that an unintended one is winning makes the cause impossible to
 /// find.
-pub fn env(entries: &[EnvInfo], unresolved: Option<&str>, decor: Decor) -> Panel {
+/// Why a value is shown as written, in words.
+///
+/// **The daemon sends the reason, not the sentence** (`docs/DESIGN.md`
+/// §3), so this is where it becomes English.
+pub fn unsettled_reason(unsettled: &Unsettled) -> String {
+    let name = unsettled.reference.as_deref().unwrap_or("");
+
+    match &unsettled.reason {
+        UnsettledReason::Undefined => format!("refers to ${{{name}}}, which nothing sets"),
+        UnsettledReason::OnlyWithService { .. } => {
+            format!("refers to ${{{name}}}, which this listing does not have")
+        }
+        UnsettledReason::NeedsProxy => {
+            format!("refers to ${{{name}}}, and the proxy is not listening")
+        }
+        UnsettledReason::Secret => {
+            format!("refers to ${{{name}}}, a secret — those resolve at start-up only")
+        }
+        UnsettledReason::Cycle { chain } => {
+            format!("is part of a loop: {}", chain.join(" → "))
+        }
+    }
+}
+
+/// What to do about it, when there is something to do.
+pub fn unsettled_remedy(unsettled: &Unsettled) -> Option<String> {
+    match &unsettled.reason {
+        UnsettledReason::OnlyWithService { service } => {
+            Some(format!("minato env ls --service {service}"))
+        }
+        UnsettledReason::NeedsProxy => Some("minato doctor".to_string()),
+        _ => None,
+    }
+}
+
+pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
     if entries.is_empty() {
         return Panel::new(decor, "environment")
             .line(Span::styled("nothing is defined", theme::muted()));
@@ -459,7 +495,7 @@ pub fn env(entries: &[EnvInfo], unresolved: Option<&str>, decor: Decor) -> Panel
     for entry in entries {
         let mut value = vec![Span::styled(
             entry.value.clone(),
-            if entry.secret {
+            if entry.secret || entry.unsettled.is_some() {
                 theme::warn()
             } else {
                 Default::default()
@@ -478,16 +514,32 @@ pub fn env(entries: &[EnvInfo], unresolved: Option<&str>, decor: Decor) -> Panel
         ]);
     }
 
-    let panel = Panel::new(decor, "environment").grid(grid);
+    let mut panel = Panel::new(decor, "environment").grid(grid);
 
-    // **Said with the listing, not instead of it.** The reason a value
-    // will not settle is only findable by looking at the values, so the
-    // listing has to arrive — but reading it as settled when it is not
-    // would be worse than not having it.
-    match unresolved {
-        Some(note) => panel.line(Line::styled(note.to_string(), theme::warn())),
-        None => panel,
+    // **Said with the listing, not instead of it.** The value at fault is
+    // only findable by looking at the values, so the listing has to
+    // arrive — but reading one as settled when it is not would be worse
+    // than not having it at all.
+    //
+    // A line per value rather than one long one: a single sentence would
+    // set the panel's preferred width and stretch the frame away from the
+    // three short columns it is really made of.
+    for entry in entries {
+        let Some(unsettled) = &entry.unsettled else {
+            continue;
+        };
+
+        panel = panel.line(Line::from(vec![
+            Span::styled(format!("{} ", entry.key), theme::subject()),
+            Span::styled(unsettled_reason(unsettled), theme::warn()),
+        ]));
+
+        if let Some(remedy) = unsettled_remedy(unsettled) {
+            panel = panel.line(hint("  settled by", &remedy));
+        }
     }
+
+    panel
 }
 
 /// `minato tunnel status`, and where `enable` and `disable` leave things.
@@ -1222,6 +1274,7 @@ mod tests {
                 scope: EnvScope::Injected,
                 secret: false,
                 source: None,
+                unsettled: None,
             },
             EnvInfo {
                 key: "API_KEY".into(),
@@ -1229,10 +1282,11 @@ mod tests {
                 scope: EnvScope::Workspace,
                 secret: true,
                 source: Some("1password://vault/item".into()),
+                unsettled: None,
             },
         ];
 
-        let text = render(&env(&entries, None, Decor::PLAIN));
+        let text = render(&env(&entries, Decor::PLAIN));
 
         assert!(text.contains("injected"), "got:\n{text}");
         assert!(text.contains("workspace"), "got:\n{text}");
@@ -1240,30 +1294,94 @@ mod tests {
         assert!(text.contains("1password://vault/item"), "got:\n{text}");
     }
 
+    /// One settled value and one that is not.
+    fn mixed_entries() -> Vec<EnvInfo> {
+        vec![
+            EnvInfo {
+                key: "SETTLED".into(),
+                value: "https://api.feat-1.myapp.localhost".into(),
+                scope: EnvScope::Service,
+                secret: false,
+                source: None,
+                unsettled: None,
+            },
+            EnvInfo {
+                key: "API_URL".into(),
+                value: "${MINATO_URL_API}".into(),
+                scope: EnvScope::Service,
+                secret: false,
+                source: None,
+                unsettled: Some(Unsettled {
+                    reference: Some("MINATO_URL_API".into()),
+                    reason: UnsettledReason::NeedsProxy,
+                }),
+            },
+        ]
+    }
+
     #[test]
     fn a_listing_that_could_not_settle_still_lists() {
         // This is the tool for finding the value at fault, so it has to
-        // arrive — saying so alongside, not instead.
-        let entries = vec![EnvInfo {
-            key: "API_URL".into(),
-            value: "${MINATO_URL_API}".into(),
-            scope: EnvScope::Service,
-            secret: false,
-            source: None,
-        }];
-
-        let text = render(&env(
-            &entries,
-            Some(
-                "API_URL refers to ${MINATO_URL_API}, which nothing sets. Values are shown as written",
-            ),
-            Decor::PLAIN,
-        ));
+        // arrive — saying so alongside, not instead of it.
+        let text = render(&env(&mixed_entries(), Decor::PLAIN));
 
         assert!(text.contains("API_URL"), "the listing arrives:\n{text}");
         assert!(
-            text.contains("shown as written"),
-            "and says it is not settled:\n{text}"
+            text.contains("the proxy is not listening"),
+            "and says what is wrong:\n{text}"
+        );
+        assert!(
+            text.contains("minato doctor"),
+            "and what to do about it:\n{text}"
+        );
+    }
+
+    #[test]
+    fn only_the_value_at_fault_is_spoken_for() {
+        // One bad reference used to put every other value under
+        // suspicion, which left nothing to tell them apart by.
+        let text = render(&env(&mixed_entries(), Decor::PLAIN));
+
+        assert!(
+            text.contains("https://api.feat-1.myapp.localhost"),
+            "the settled one settled:\n{text}"
+        );
+        assert!(
+            !text.contains("SETTLED refers"),
+            "and is not accused of anything:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_reason_survives_a_narrow_terminal() {
+        // At its preferred width nothing wraps, so asserting there says
+        // nothing about the 80 columns someone actually has.
+        let text = super::super::test_support::render_at(&env(&mixed_entries(), Decor::PLAIN), 40);
+
+        assert!(text.contains("API_URL"), "got:\n{text}");
+        assert!(text.contains("proxy"), "got:\n{text}");
+    }
+
+    #[test]
+    fn one_long_reason_does_not_stretch_the_frame() {
+        use super::super::View;
+
+        // The note is a line like any other, and `preferred_width` takes
+        // the widest — so a sentence left whole would drag the frame away
+        // from the three short columns the listing is made of.
+        let narrow = env(&mixed_entries(), Decor::PLAIN).preferred_width();
+
+        let mut chained = mixed_entries();
+        chained[1].unsettled = Some(Unsettled {
+            reference: None,
+            reason: UnsettledReason::Cycle {
+                chain: vec!["A".into(), "B".into(), "A".into()],
+            },
+        });
+
+        assert!(
+            env(&chained, Decor::PLAIN).preferred_width() <= narrow + 8,
+            "a reason should not decide the width of the listing"
         );
     }
 

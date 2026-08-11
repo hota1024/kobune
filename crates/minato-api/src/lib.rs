@@ -20,7 +20,7 @@ pub use protocol::{ClientMessage, Outcome, PROTOCOL_VERSION, RequestId, ServerMe
 pub use request::{Request, Target, Window};
 pub use response::{
     EnvInfo, Pong, PurgeFailure, PurgeProject, PurgeReport, PurgeWorkspace, Response, ServiceInfo,
-    TunnelInfo, TunnelLeftover, TunnelState, WorkspaceInfo,
+    TunnelInfo, TunnelLeftover, TunnelState, Unsettled, UnsettledReason, WorkspaceInfo,
 };
 
 /// Re-exported for convenience, so clients need not pull in `minato-core`.

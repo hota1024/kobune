@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
-use minato_api::{ApiError, ErrorCode};
+use minato_api::{ApiError, ErrorCode, Unsettled, UnsettledReason};
 use minato_core::{EnvLayers, EnvScope, MinatoConfig, Paths, WorkspaceRecord, env};
 
 use crate::gateway::Gateway;
@@ -96,53 +96,90 @@ pub fn resolution_error(err: env::EnvError) -> ApiError {
 }
 
 /// Whether a name is one Minato injects per service.
+///
+/// **The one place that decides it.** Both an error on the way to
+/// starting and a reason on a listing turn on this, and the two would
+/// otherwise drift into disagreeing about what a missing
+/// `MINATO_URL_<SERVICE>` means.
 fn is_per_service(name: &str) -> bool {
     name.starts_with("MINATO_URL_") || name.starts_with("MINATO_HOSTNAME_")
 }
 
-/// Why a listing is showing values as written.
+/// What stood in the way of expanding a value, for a client to say in its
+/// own words.
 ///
-/// **A listing degrades rather than failing**, so this says what went
-/// wrong where an error would have. `service` is the one being listed, if
-/// any: a listing of no particular service is missing things on purpose,
-/// and what is missing on purpose is not something to go and fix.
-pub fn listing_note(err: &env::EnvError, service: Option<&str>, config: &MinatoConfig) -> String {
-    let note = format!("{err}. Values are shown as written");
+/// `service` is the one being listed, if any: a listing of no particular
+/// service is missing things **on purpose**, and what is missing on
+/// purpose is not something to go and fix.
+pub fn unsettled(
+    err: &env::EnvError,
+    service: Option<&str>,
+    config: &MinatoConfig,
+) -> Option<Unsettled> {
+    match err {
+        env::EnvError::CyclicReference { chain } => Some(Unsettled {
+            reference: None,
+            reason: UnsettledReason::Cycle {
+                chain: chain.clone(),
+            },
+        }),
 
-    let env::EnvError::UndefinedReference { name, .. } = err else {
-        return note;
-    };
+        env::EnvError::SecretReference { name, .. } => Some(Unsettled {
+            reference: Some(name.clone()),
+            reason: UnsettledReason::Secret,
+        }),
 
+        env::EnvError::UndefinedReference { name, .. } => Some(Unsettled {
+            reference: Some(name.clone()),
+            reason: undefined_because(name, service, config),
+        }),
+
+        // Reading or parsing a file never reaches a single value: the
+        // layers do not stack at all, and that is an error long before
+        // anything is expanded.
+        _ => None,
+    }
+}
+
+/// Why a name nothing sets is missing.
+fn undefined_because(name: &str, service: Option<&str>, config: &MinatoConfig) -> UnsettledReason {
     // **A listing of no particular service leaves out `MINATO_SERVICE`
     // and every service's own `env`**, since presenting one service's
     // variables as everyone's would be worse. A value referring to one is
     // right, and starting the service settles it — it is the listing that
     // cannot, and "nothing sets it" would send someone hunting a bug that
     // is not there.
-    if service.is_none() && only_a_service_has(name, config) {
-        return format!(
-            "{note}. This listing names no service, so {name} is not part of it — \
-             `minato env ls --service <name>` settles it"
-        );
+    //
+    // **Named, not "some service".** Only the service that defines the
+    // name settles it, so pointing at any other would send someone to a
+    // command that fails the same way.
+    if service.is_none()
+        && let Some(name) = service_defining(name, config)
+    {
+        return UnsettledReason::OnlyWithService { service: name };
     }
 
     if is_per_service(name) {
-        return format!(
-            "{note}. {name} exists only while the proxy is listening, and only for a \
-             service with `expose = true`. Run `minato doctor`"
-        );
+        return UnsettledReason::NeedsProxy;
     }
 
-    note
+    UnsettledReason::Undefined
 }
 
-/// Whether `name` is something only a listing about one service holds.
-fn only_a_service_has(name: &str, config: &MinatoConfig) -> bool {
-    name == "MINATO_SERVICE"
-        || config
-            .services
-            .values()
-            .any(|service| service.env.contains_key(name))
+/// A service whose own `env` would supply `name`.
+///
+/// `MINATO_SERVICE` is every service's, so the first will do; anything
+/// else belongs to whichever service declared it.
+fn service_defining(name: &str, config: &MinatoConfig) -> Option<String> {
+    if name == "MINATO_SERVICE" {
+        return config.services.keys().next().cloned();
+    }
+
+    config
+        .services
+        .iter()
+        .find(|(_, service)| service.env.contains_key(name))
+        .map(|(name, _)| name.clone())
 }
 
 /// Turns a service name into a variable name.
@@ -825,18 +862,28 @@ mod tests {
             None,
         );
 
-        let note = listing_note(&err, None, &config);
+        let reason = unsettled(&err, None, &config).expect("has a reason");
 
-        assert!(note.contains("names no service"), "{note}");
-        assert!(note.contains("--service"), "say how to settle it: {note}");
+        assert_eq!(
+            reason.reason,
+            UnsettledReason::OnlyWithService {
+                service: "web".into()
+            }
+        );
     }
 
     #[test]
-    fn a_value_only_one_service_defines_is_the_same_story() {
+    fn a_value_only_one_service_defines_names_that_service() {
+        // **Named, not "some service".** Only the one that defines it
+        // settles it, so pointing anywhere else sends someone to a
+        // command that fails the same way.
         let (err, config, _root) = listing_failure(
             r#"
             [project]
             name = "myapp"
+            [services.api]
+            image = "node:22"
+            port = 8080
             [services.web]
             image = "node:22"
             port = 3000
@@ -846,8 +893,15 @@ mod tests {
             None,
         );
 
-        let note = listing_note(&err, None, &config);
-        assert!(note.contains("names no service"), "{note}");
+        let reason = unsettled(&err, None, &config).expect("has a reason");
+
+        assert_eq!(
+            reason.reason,
+            UnsettledReason::OnlyWithService {
+                service: "web".into()
+            },
+            "api does not define OWN, so sending anyone there would fail again"
+        );
     }
 
     #[test]
@@ -867,17 +921,14 @@ mod tests {
             Some("web"),
         );
 
-        let note = listing_note(&err, Some("web"), &config);
+        let reason = unsettled(&err, Some("web"), &config).expect("has a reason");
 
-        assert!(!note.contains("names no service"), "{note}");
-        assert!(note.contains("NOWHERE"), "{note}");
-        assert!(note.contains("shown as written"), "{note}");
+        assert_eq!(reason.reason, UnsettledReason::Undefined);
+        assert_eq!(reason.reference.as_deref(), Some("NOWHERE"));
     }
 
     #[test]
-    fn a_missing_url_still_names_the_proxy_in_a_listing() {
-        // The listing does not raise the error, so the hint that comes
-        // with the error would never be seen without this.
+    fn a_missing_url_is_the_proxy_being_down() {
         let (err, config, _root) = listing_failure(
             r#"
             [project]
@@ -891,8 +942,34 @@ mod tests {
             Some("web"),
         );
 
-        let note = listing_note(&err, Some("web"), &config);
-        assert!(note.contains("proxy"), "{note}");
+        let reason = unsettled(&err, Some("web"), &config).expect("has a reason");
+        assert_eq!(reason.reason, UnsettledReason::NeedsProxy);
+    }
+
+    #[test]
+    fn a_loop_carries_the_loop() {
+        let (err, config, _root) = listing_failure(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+        "#,
+            "A=${B}\nB=${A}\n",
+            Some("web"),
+        );
+
+        let reason = unsettled(&err, Some("web"), &config).expect("has a reason");
+
+        assert!(
+            matches!(reason.reason, UnsettledReason::Cycle { ref chain } if chain.len() >= 3),
+            "{reason:?}"
+        );
+        assert!(
+            reason.reference.is_none(),
+            "a loop has no single name to blame"
+        );
     }
 
     /// A worktree with nothing in it, and no git.
