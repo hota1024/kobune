@@ -354,7 +354,8 @@ than its own environment can find it:
 env_file = ".minato/env.api"
 ```
 
-Written before the service starts, secrets left out. A path git tracks is
+Written before the service starts and only for the ones being started, secrets
+left out. A path git tracks is
 refused, a file Minato did not write is never overwritten, and so are
 `.minato/env` and `.minato/env.local` — Minato reads those as layers of its
 own — and any path another service already claims. A service with
