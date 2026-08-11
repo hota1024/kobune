@@ -239,6 +239,21 @@ fn terminal_width() -> u16 {
     }
 }
 
+/// The window's size, where the terminal knows it.
+///
+/// `None` in the cases [`terminal_width`] guesses its way out of. This
+/// answer is not a layout to fall back on: it is handed to a program that
+/// will draw to exactly what it is told, and a terminal reported as 0×0
+/// would have it draw to nothing.
+pub fn window() -> Option<minato_api::Window> {
+    match ratatui::crossterm::terminal::size() {
+        Ok((columns, rows)) if columns >= MIN_WIDTH && rows > 0 => {
+            Some(minato_api::Window::new(columns, rows))
+        }
+        _ => None,
+    }
+}
+
 fn no_color() -> bool {
     // https://no-color.org: set to anything at all, and nothing coloured.
     std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())

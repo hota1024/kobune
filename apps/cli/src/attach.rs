@@ -10,12 +10,10 @@
 //! ctrl-c belongs to the program, so there has to be something else that
 //! means "give me my terminal back".
 
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 
-use minato_api::Window;
 use minato_client::Typed;
-use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
-use tokio::io::AsyncReadExt;
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
@@ -27,15 +25,12 @@ const DETACH: [u8; 2] = [0x10, 0x11];
 
 /// Whether this terminal is one that can be handed over.
 ///
-/// Both halves matter: output redirected to a file must not be given
-/// escape sequences, and input from a pipe cannot be put into raw mode.
+/// Both halves matter: input from a pipe cannot be put into raw mode, and
+/// output that is redirected — or on a terminal that shows escape
+/// sequences as text, which is what [`crate::ui::is_interactive`] rules
+/// out — must not be given a full-screen program's drawing.
 pub fn is_a_terminal() -> bool {
-    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
-}
-
-/// How big this window is, when that can be told.
-pub fn window() -> Option<Window> {
-    size().ok().map(|(cols, rows)| Window::new(cols, rows))
+    std::io::stdin().is_terminal() && crate::ui::is_interactive()
 }
 
 /// What to say before the program takes the screen.
@@ -68,7 +63,9 @@ pub fn restore() {
 /// Raw mode is entered when this is built and left when it is dropped, so
 /// an error on any path still gives the terminal back.
 pub struct Session {
-    pumps: Vec<JoinHandle<()>>,
+    /// The keyboard is read on a thread that nothing waits for, so only
+    /// this one is held.
+    resizes: JoinHandle<()>,
 }
 
 impl Session {
@@ -76,11 +73,13 @@ impl Session {
     pub fn start(typed: UnboundedSender<Typed>) -> std::io::Result<Self> {
         enable_raw_mode()?;
 
-        let keys = tokio::spawn(pass_on_keys(typed.clone()));
-        let sizes = tokio::spawn(pass_on_resizes(typed));
+        std::thread::spawn({
+            let typed = typed.clone();
+            move || pass_on_keys(typed)
+        });
 
         Ok(Self {
-            pumps: vec![keys, sizes],
+            resizes: tokio::spawn(pass_on_resizes(typed)),
         })
     }
 
@@ -98,10 +97,7 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        for pump in &self.pumps {
-            pump.abort();
-        }
-
+        self.resizes.abort();
         let _ = disable_raw_mode();
     }
 }
@@ -170,13 +166,20 @@ impl Keys {
 ///
 /// Returning drops the sender, which is how the rest of the program is
 /// told that the person has left.
-async fn pass_on_keys(typed: UnboundedSender<Typed>) {
-    let mut stdin = tokio::io::stdin();
+///
+/// **A thread of its own, not a task.** A read of standard input cannot
+/// be cancelled once it has started, so on a task this would sit parked
+/// in the middle of one when the session ended from the other side — and
+/// the runtime waits for its blocking work before the process may exit.
+/// The command would appear to hang until someone pressed a key. Nothing
+/// waits for a thread.
+fn pass_on_keys(typed: UnboundedSender<Typed>) {
+    let mut stdin = std::io::stdin().lock();
     let mut buffer = [0u8; 1024];
     let mut keys = Keys::default();
 
     loop {
-        let Ok(count) = stdin.read(&mut buffer).await else {
+        let Ok(count) = stdin.read(&mut buffer) else {
             return;
         };
 
@@ -208,10 +211,20 @@ async fn pass_on_resizes(typed: UnboundedSender<Typed>) {
             Err(_) => return,
         };
 
+    // Dragging a window emits a stream of signals, and most of them
+    // report the size the last one did. Each one that goes on costs a
+    // message, a hop through the daemon and a call into the runtime.
+    let mut last = crate::ui::window();
+
     while resized.recv().await.is_some() {
-        let Some(window) = window() else {
+        let Some(window) = crate::ui::window() else {
             continue;
         };
+
+        if last == Some(window) {
+            continue;
+        }
+        last = Some(window);
 
         if typed.send(Typed::Resize(window)).is_err() {
             return;

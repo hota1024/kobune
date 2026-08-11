@@ -119,8 +119,8 @@ impl EventSink {
     }
 
     /// Passes terminal output along, byte for byte.
-    pub fn bytes(&self, service: Option<String>, bytes: &[u8]) {
-        self.send(Event::bytes(service, bytes));
+    pub fn bytes(&self, bytes: &[u8]) {
+        self.send(Event::bytes(bytes));
     }
 
     pub fn output(&self, service: Option<String>, stream: OutputStream, line: impl Into<String>) {

@@ -55,11 +55,12 @@ pub enum Event {
     /// lines and handing back the pieces destroys it.
     ///
     /// Base64, for the reason [`crate::ClientMessage::Input`] is.
-    Bytes {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        service: Option<String>,
-        data: String,
-    },
+    ///
+    /// **No service name, unlike [`Self::Output`].** A terminal is lent
+    /// to exactly one service — there is only one screen — so naming it
+    /// on every chunk would be a string allocated thousands of times to
+    /// say what [`Self::Attached`] already said once.
+    Bytes { data: String },
 }
 
 /// Encodes bytes for a JSONL wire.
@@ -102,9 +103,8 @@ impl Event {
     }
 
     /// Terminal output, encoded for the wire.
-    pub fn bytes(service: Option<String>, bytes: &[u8]) -> Self {
+    pub fn bytes(bytes: &[u8]) -> Self {
         Self::Bytes {
-            service,
             data: encode_bytes(bytes),
         }
     }
@@ -242,7 +242,7 @@ mod tests {
             Event::Attached {
                 service: "web".into(),
             },
-            Event::bytes(Some("web".into()), b"\x1b[2J\x1b[H"),
+            Event::bytes(b"\x1b[2J\x1b[H"),
         ];
 
         for event in events {
@@ -272,7 +272,7 @@ mod tests {
         // split multi-byte character, and the odd raw byte. None of it
         // survives being treated as a string.
         let raw = vec![0x1b, b'[', b'A', 0xff, 0x00, 0xe3];
-        let event = Event::bytes(None, &raw);
+        let event = Event::bytes(&raw);
 
         let json = serde_json::to_string(&event).expect("serializes");
         let back: Event = serde_json::from_str(&json).expect("deserializes");
