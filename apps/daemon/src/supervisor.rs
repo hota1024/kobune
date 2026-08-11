@@ -310,6 +310,33 @@ impl Supervisor {
             }
         });
 
+        // Apple Container's containers reach the host at their network's
+        // gateway and nowhere else, so a proxy that is not listening there
+        // is one no container can call. Only worth saying where that is
+        // the runtime in use: the address exists on any machine with Apple
+        // Container installed, and a Docker project never goes near it.
+        let unreachable = self.gateway.unreachable_from_containers();
+        if !unreachable.is_empty() && minato_runtime::display_name(&configured) == "Apple Container"
+        {
+            checks.push(
+                Check::warn(
+                    "container-reach",
+                    "reachable from containers",
+                    format!(
+                        "the proxy is not listening on {}, where containers                          reach the host, so a MINATO_URL_<SERVICE> resolves                          to nothing from inside one",
+                        unreachable
+                            .iter()
+                            .map(|ip| bracketed(*ip))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+                .with_fix(
+                    "run `minato setup` again: the launchd job holds the                      privileged ports, and its plist names the addresses it                      holds them on",
+                ),
+            );
+        }
+
         checks.push(match self.gateway.dns_port() {
             Some(port) => Check::ok("dns", "DNS server", format!("127.0.0.1:{port}")),
             None => {
@@ -768,6 +795,7 @@ impl Supervisor {
             &resolved.workspace.label,
             &resolved.workspace.path,
             &envs,
+            &env::service_hosts(&resolved.config, &resolved.workspace, &self.gateway),
         )?;
 
         workspace_spec
@@ -1437,7 +1465,10 @@ impl Supervisor {
             &record.label,
             &record.path,
             service_env,
-            config.services.keys().cloned().collect(),
+            spec::WorkspaceContext {
+                services: config.services.keys().cloned().collect(),
+                gateway_hosts: env::service_hosts(&config, &record, &self.gateway),
+            },
         )?;
 
         let runtime = self.runtime(&config.runtime.default).await?;
@@ -2156,6 +2187,7 @@ impl Supervisor {
             &resolved.workspace.label,
             &resolved.workspace.path,
             &envs,
+            &env::service_hosts(&resolved.config, &resolved.workspace, &self.gateway),
         )?;
 
         // Even a narrowed selection has to bring its dependencies up.

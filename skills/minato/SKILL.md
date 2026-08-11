@@ -172,6 +172,11 @@ Every service receives the other services' URLs as `MINATO_URL_<SERVICE>`
 (`MINATO_URL_API` for a service named `api`). Use those when the frontend calls
 the API — hardcoding breaks from one worktree to the next.
 
+**The same URL works from inside the container**, so server-to-server calls use
+it too: the hostnames are pointed at Minato's gateway in every container of the
+workspace. One Host and one Origin for both halves of an app is what keeps
+cookies and CORS from having to know about two.
+
 **They are only there while the proxy is listening.** With no proxy there is
 no URL to hand out, so the variable is left unset rather than set to
 something that does not work, and a start-up script reading it fails with

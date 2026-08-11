@@ -43,23 +43,57 @@ pub fn injected(
         minato_core::config::CACHE_TARGET.to_string(),
     );
 
-    let domain = config.domain();
-    for (name, service_config) in &config.services {
-        if !service_config.exposed() {
-            continue;
-        }
-
-        let host = minato_core::naming::service_host_in(name, record.url_label(), &domain);
-        let Some(url) = gateway.url_for(&host) else {
-            // With no proxy running there is no URL. An empty string
-            // would leave it "set, but broken".
-            continue;
-        };
-
-        values.insert(url_variable(name), url);
+    for (name, _, url) in exposed_urls(config, record, gateway) {
+        values.insert(url_variable(&name), url);
     }
 
     values
+}
+
+/// The hostnames the workspace's services answer to.
+///
+/// What a container has to be able to resolve for the URL it was handed to
+/// work from inside one — see `ServiceSpec::gateway_hosts`. The same names
+/// `MINATO_URL_<SERVICE>` is built from, under the same condition: no
+/// proxy, no URL, and so nothing to point anywhere.
+pub fn service_hosts(
+    config: &MinatoConfig,
+    record: &WorkspaceRecord,
+    gateway: &Gateway,
+) -> Vec<String> {
+    exposed_urls(config, record, gateway)
+        .into_iter()
+        .map(|(_, host, _)| host)
+        .collect()
+}
+
+/// Every exposed service, as `(name, hostname, URL)`.
+///
+/// **The one place that decides which services have a URL at all.** The
+/// variables and the hostnames a container resolves have to agree on that
+/// set; a name pointed at the proxy for a service the proxy does not route
+/// resolves to a 404 rather than to nothing.
+fn exposed_urls(
+    config: &MinatoConfig,
+    record: &WorkspaceRecord,
+    gateway: &Gateway,
+) -> Vec<(String, String, String)> {
+    let domain = config.domain();
+
+    config
+        .services
+        .iter()
+        .filter(|(_, service)| service.exposed())
+        .filter_map(|(name, _)| {
+            let host = minato_core::naming::service_host_in(name, record.url_label(), &domain);
+
+            // With no proxy running there is no URL. An empty string would
+            // leave it "set, but broken".
+            let url = gateway.url_for(&host)?;
+
+            Some((name.clone(), host, url))
+        })
+        .collect()
 }
 
 /// Turns a service name into a variable name.
@@ -182,6 +216,50 @@ mod tests {
         assert!(
             !values.contains_key("MINATO_URL_DB"),
             "a service with expose = false has no URL"
+        );
+    }
+
+    #[test]
+    fn lists_the_hostnames_a_container_has_to_resolve() {
+        // The same names the URLs are built from: a container calling the
+        // URL it was handed has to reach the proxy, not NXDOMAIN.
+        let hosts = service_hosts(
+            &config(SAMPLE),
+            &record("feat-1", false),
+            &Gateway::with_ports(Some(80), Some(443)),
+        );
+
+        assert_eq!(
+            hosts,
+            vec![
+                "web.feat-1.myapp.localhost".to_string(),
+                "api-server.feat-1.myapp.localhost".to_string(),
+            ],
+            "every exposed service, and `db` is not one"
+        );
+    }
+
+    #[test]
+    fn the_main_worktree_keeps_its_hostnames_short() {
+        let hosts = service_hosts(
+            &config(SAMPLE),
+            &record("main", true),
+            &Gateway::with_ports(Some(80), Some(443)),
+        );
+
+        assert!(
+            hosts.contains(&"web.myapp.localhost".to_string()),
+            "no workspace label on the main worktree: {hosts:?}"
+        );
+    }
+
+    #[test]
+    fn no_proxy_means_no_hostnames_to_point_anywhere() {
+        // Pointing a name at a proxy that is not running would turn a
+        // clean NXDOMAIN into a connection refused, which reads as the
+        // service being broken rather than absent.
+        assert!(
+            service_hosts(&config(SAMPLE), &record("feat-1", false), &Gateway::inert()).is_empty()
         );
     }
 

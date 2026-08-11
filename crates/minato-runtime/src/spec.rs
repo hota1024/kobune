@@ -132,6 +132,23 @@ pub struct ServiceSpec {
     /// it uses this list to inject `MINATO_HOST_<SERVICE>` and tell the app
     /// what to call its neighbours.
     pub peers: Vec<String>,
+
+    /// The hostnames from `MINATO_URL_<SERVICE>`, to be pointed at the
+    /// gateway from inside the container.
+    ///
+    /// **A URL that only works in the browser is half a URL.** The same
+    /// `https://api.myapp.localhost` is what the frontend's server side
+    /// calls, and without this it resolves on the host alone: inside a
+    /// container the name is NXDOMAIN, and the app has to fall back to
+    /// `http://api:8080` — a different Host and Origin than the browser
+    /// sends, which is where cookie domains and CORS start disagreeing
+    /// between the two halves of one app.
+    ///
+    /// Every runtime maps these to wherever it reaches the host; a
+    /// `depends_on` is not required, since it is the gateway that answers
+    /// and it is always up. Empty when no proxy is running, because then
+    /// there is nothing behind the names — see `Gateway::url_for`.
+    pub gateway_hosts: Vec<String>,
 }
 
 impl ServiceSpec {
@@ -589,6 +606,7 @@ mod tests {
             volumes: vec![],
             source_mount: None,
             peers: vec![],
+            gateway_hosts: vec![],
         };
 
         // A BTreeMap keeps the order stable, which is what makes the

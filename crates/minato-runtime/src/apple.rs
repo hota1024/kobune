@@ -48,7 +48,12 @@ use crate::terminal::Terminal;
 const RUNTIME_ID: &str = "apple";
 
 /// The CLI to invoke.
-const PROGRAM: &str = "container";
+const PROGRAM: &str = minato_core::apple::PROGRAM;
+
+/// Where the generated `/etc/hosts` files live, under the volume storage.
+///
+/// A leading `_` is not a valid label, so no project can take this name.
+const HOSTS_DIR: &str = "_hosts";
 
 /// How long to wait for a container started on a terminal to come up.
 ///
@@ -440,6 +445,77 @@ impl AppleContainerRuntime {
         env
     }
 
+    /// Where a container reaches the host, if the network can say.
+    ///
+    /// The gateway of the network everything is attached to. There is no
+    /// `host.docker.internal` here and nothing forwards the host's
+    /// loopback, so this is the only address a container can find the
+    /// proxy at.
+    async fn network_gateway(&self) -> Option<Ipv4Addr> {
+        let listed = self.run(&minato_core::apple::LIST_ARGS).await.ok()?;
+
+        minato_core::apple::parse_gateway(&listed, minato_core::apple::DEFAULT_NETWORK)
+    }
+
+    /// Writes the `/etc/hosts` this container gets, and says where it is.
+    ///
+    /// **Apple Container has no `--add-host`.** `container run --help` in
+    /// 1.2.1 offers `--dns` and nothing else, and pointing the whole
+    /// resolver at Minato's DNS would answer NXDOMAIN for every name
+    /// outside `.localhost` — the container would lose the internet to
+    /// gain an internal URL. Mounting the file Docker's flag writes for
+    /// itself is the same thing without that cost.
+    ///
+    /// The file is written whole, since a mount replaces what the image
+    /// had. `localhost` has to stay, and the container's own name is
+    /// pointed at loopback the way Debian does it — the address it would
+    /// otherwise carry is not known until the container has started, which
+    /// is after this is needed.
+    ///
+    /// `None` when there is nothing to map, which leaves the image's own
+    /// file alone.
+    fn write_hosts_file(
+        &self,
+        spec: &ServiceSpec,
+        name: &str,
+        gateway: Option<Ipv4Addr>,
+    ) -> Result<Option<PathBuf>> {
+        let (Some(gateway), false) = (gateway, spec.gateway_hosts.is_empty()) else {
+            return Ok(None);
+        };
+
+        let dir = self.hosts_root();
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| RuntimeError::failed(format!("creating {}", dir.display()), err))?;
+
+        let mut contents = String::from(
+            "# Written by Minato. The gateway is the host, where the proxy\n\
+             # listens, so MINATO_URL_<SERVICE> reaches it from in here too.\n\
+             127.0.0.1\tlocalhost\n\
+             ::1\tlocalhost ip6-localhost ip6-loopback\n",
+        );
+        contents.push_str(&format!("127.0.1.1\t{name}\n"));
+
+        for host in &spec.gateway_hosts {
+            contents.push_str(&format!("{gateway}\t{host}\n"));
+        }
+
+        let path = dir.join(name);
+        std::fs::write(&path, contents)
+            .map_err(|err| RuntimeError::failed(format!("writing {}", path.display()), err))?;
+
+        Ok(Some(path))
+    }
+
+    /// Where the generated `/etc/hosts` files are kept.
+    ///
+    /// Beside the volume storage, under a name no project can take: a
+    /// leading `_` is not a valid label, which is the same argument
+    /// [`crate::spec::SHARED_WORKSPACE`] makes for itself.
+    fn hosts_root(&self) -> PathBuf {
+        self.volume_root.join(HOSTS_DIR)
+    }
+
     /// The addresses of this service's peers that are already running.
     async fn peer_addresses(&self, spec: &ServiceSpec) -> Result<BTreeMap<String, Ipv4Addr>> {
         if spec.peers.is_empty() {
@@ -530,6 +606,7 @@ impl AppleContainerRuntime {
         spec: &ServiceSpec,
         network: Option<&str>,
         peer_addresses: &BTreeMap<String, Ipv4Addr>,
+        gateway: Option<Ipv4Addr>,
         throwaway: Option<&Throwaway<'_>>,
     ) -> Result<Vec<String>> {
         let name = match throwaway {
@@ -540,8 +617,8 @@ impl AppleContainerRuntime {
         // A throwaway is run rather than created, and removed the moment
         // it exits. Nothing here should outlive the command.
         let mut args: Vec<String> = match throwaway {
-            Some(_) => vec!["run".into(), "--rm".into(), "--name".into(), name],
-            None => vec!["create".into(), "--name".into(), name],
+            Some(_) => vec!["run".into(), "--rm".into(), "--name".into(), name.clone()],
+            None => vec!["create".into(), "--name".into(), name.clone()],
         };
 
         args.push("--workdir".into());
@@ -577,6 +654,15 @@ impl AppleContainerRuntime {
         if let Some(network) = network {
             args.push("--network".into());
             args.push(network.to_string());
+        }
+
+        // **A throwaway gets the hostnames too.** `minato exec` is where a
+        // service is poked at by hand, and a curl that works in the service
+        // but not in the shell beside it is the confusing kind of
+        // difference.
+        if let Some(hosts) = self.write_hosts_file(spec, &name, gateway)? {
+            args.push("--volume".into());
+            args.push(format!("{}:/etc/hosts", hosts.display()));
         }
 
         if let Some(SourceMount { host, target }) = &spec.source_mount {
@@ -794,7 +880,8 @@ impl Runtime for AppleContainerRuntime {
         // Read after the dependencies have started, so their addresses
         // exist to inject.
         let peer_addresses = self.peer_addresses(spec).await?;
-        let args = self.create_args(spec, network.as_deref(), &peer_addresses, None)?;
+        let gateway = self.network_gateway().await;
+        let args = self.create_args(spec, network.as_deref(), &peer_addresses, gateway, None)?;
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
         if let Err(err) = self.run(&arg_refs).await {
@@ -1129,8 +1216,15 @@ impl Runtime for AppleContainerRuntime {
         let network = self.ensure_network(&spec.attached_to, events).await?;
         let peer_addresses = self.peer_addresses(spec).await?;
         let one_off = Throwaway::new(spec, command, options.workdir.as_deref());
+        let gateway = self.network_gateway().await;
 
-        let args = self.create_args(spec, network.as_deref(), &peer_addresses, Some(&one_off))?;
+        let args = self.create_args(
+            spec,
+            network.as_deref(),
+            &peer_addresses,
+            gateway,
+            Some(&one_off),
+        )?;
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
         // `run` blocks until the command exits and `--rm` takes the
@@ -1645,7 +1739,75 @@ mod tests {
             volumes: vec![],
             source_mount: None,
             peers,
+            gateway_hosts: vec![],
         }
+    }
+
+    #[test]
+    fn maps_the_service_urls_to_the_network_gateway() {
+        // There is no `--add-host` here, so the file the flag would have
+        // written is mounted instead.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().to_path_buf());
+
+        let mut spec = spec_with_peers(vec![]);
+        spec.gateway_hosts = vec!["web.myapp.localhost".into(), "api.myapp.localhost".into()];
+
+        let args = runtime
+            .create_args(
+                &spec,
+                None,
+                &BTreeMap::new(),
+                Some(Ipv4Addr::new(192, 168, 64, 1)),
+                None,
+            )
+            .expect("builds the arguments");
+
+        let mounted = args
+            .windows(2)
+            .find(|pair| pair[0] == "--volume" && pair[1].ends_with(":/etc/hosts"))
+            .expect("mounts an /etc/hosts");
+
+        let path = mounted[1]
+            .strip_suffix(":/etc/hosts")
+            .expect("checked above");
+        let contents = std::fs::read_to_string(path).expect("was written");
+
+        assert!(
+            contents.contains("192.168.64.1\tweb.myapp.localhost"),
+            "{contents}"
+        );
+        assert!(
+            contents.contains("192.168.64.1\tapi.myapp.localhost"),
+            "{contents}"
+        );
+        assert!(
+            contents.contains("127.0.0.1\tlocalhost"),
+            "the mount replaces the image's file, so localhost has to be \
+             written back: {contents}"
+        );
+    }
+
+    #[test]
+    fn mounts_no_hosts_file_when_the_network_cannot_be_asked() {
+        // Without a gateway there is nowhere to point the names, and a
+        // half-written /etc/hosts would take the image's own with it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().to_path_buf());
+
+        let mut spec = spec_with_peers(vec![]);
+        spec.gateway_hosts = vec!["web.myapp.localhost".into()];
+
+        let args = runtime
+            .create_args(&spec, None, &BTreeMap::new(), None, None)
+            .expect("builds the arguments");
+
+        assert!(
+            !args.iter().any(|arg| arg.ends_with(":/etc/hosts")),
+            "{args:?}"
+        );
     }
 
     #[test]
@@ -1726,7 +1888,13 @@ mod tests {
         });
 
         let args = runtime
-            .create_args(&spec, Some("minato-myapp-feat-1"), &BTreeMap::new(), None)
+            .create_args(
+                &spec,
+                Some("minato-myapp-feat-1"),
+                &BTreeMap::new(),
+                None,
+                None,
+            )
             .expect("builds");
 
         assert_eq!(args[0], "create");
@@ -1770,7 +1938,7 @@ mod tests {
         let command = vec!["env".to_string()];
         let one_off = Throwaway::new(&spec, &command, None);
         let args = runtime
-            .create_args(&spec, None, &BTreeMap::new(), Some(&one_off))
+            .create_args(&spec, None, &BTreeMap::new(), None, Some(&one_off))
             .expect("builds");
 
         assert_eq!(args[0], "run", "created and left behind is not throwaway");
@@ -1796,13 +1964,13 @@ mod tests {
         let one_off = Throwaway::new(&spec, &command, None);
 
         let args = runtime
-            .create_args(&spec, None, &BTreeMap::new(), Some(&one_off))
+            .create_args(&spec, None, &BTreeMap::new(), None, Some(&one_off))
             .expect("builds");
 
         assert!(!args.iter().any(|arg| arg == "--label"), "{args:?}");
 
         let real = runtime
-            .create_args(&spec, None, &BTreeMap::new(), None)
+            .create_args(&spec, None, &BTreeMap::new(), None, None)
             .expect("builds");
         assert!(
             real.iter().any(|arg| arg == "--label"),
@@ -1821,7 +1989,7 @@ mod tests {
         let one_off = Throwaway::new(&spec, &command, Some("/workspace/apps/api"));
 
         let args = runtime
-            .create_args(&spec, None, &BTreeMap::new(), Some(&one_off))
+            .create_args(&spec, None, &BTreeMap::new(), None, Some(&one_off))
             .expect("builds");
 
         let workdir = args
@@ -1857,7 +2025,7 @@ mod tests {
         }];
 
         let args = runtime
-            .create_args(&spec, None, &BTreeMap::new(), None)
+            .create_args(&spec, None, &BTreeMap::new(), None, None)
             .expect("builds");
         let expected = dir.path().join("myapp").join("pgdata");
 

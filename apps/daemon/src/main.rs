@@ -93,7 +93,10 @@ async fn main() -> anyhow::Result<()> {
     // The proxy and DNS come next. A failed bind does not stop the
     // daemon; it just means no URLs are issued and only the direct
     // endpoints work.
-    let settings = GatewaySettings::from_env();
+    // `with_container_gateway` adds the address Apple Container's
+    // containers reach the host at, so a service URL works from inside one
+    // as well as from the browser.
+    let settings = GatewaySettings::from_env().with_container_gateway();
 
     // The gateway needs somewhere to send wake requests, and the
     // supervisor needs the gateway to issue URLs. Supplying the real
