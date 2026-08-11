@@ -105,6 +105,37 @@ finished steps scroll into the history above it. That display is built from the
 event stream and nothing else — which is the same requirement the GUI is held
 to.
 
+### Who may connect
+
+The socket is the whole API and it asks for nothing — no token, no
+handshake. That is the right shape for something a person's own CLI, GUI and
+agent all speak, and it means **the only access control there is, is who can
+reach the socket at all**.
+
+Which matters more than it looks. `minato exec <service> -- env` prints the
+values [§8's secrets](#secrets) resolved from 1Password and the Keychain, so
+keeping a resolved secret out of every file buys nothing if another account on
+the machine can ask for it.
+
+Two answers, one behind the other.
+
+- **`MINATO_HOME` is `0700` and the socket is `0600`.** The directory is the
+  one that matters: a path nobody else may traverse cannot be reached, which
+  also covers the instant between creating the socket and setting its mode.
+  Narrowed on every daemon start rather than only at creation — an
+  installation made before this rule would otherwise stay open for as long as
+  it lives
+- **The uid on the other end is checked on accept**, with `getpeereid` and,
+  on Linux, `SO_PEERCRED`. This is what is left if `MINATO_HOME` names
+  somewhere shared
+
+A refused connection is dropped rather than answered. An error would say what
+is here to somebody with no business knowing.
+
+The CA certificate stays `0644` inside that directory ([§5](#proxy-and-tls)),
+and is still mounted into containers: the runtime reads it as the user who
+owns the directory, so the mode on the directory changes nothing there.
+
 ### Why a daemon
 
 | Responsibility | Why it has to stay running |
