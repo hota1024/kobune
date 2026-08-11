@@ -8,6 +8,7 @@ use std::time::Duration;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::env;
 use crate::error::{Error, Result};
 use crate::naming;
 
@@ -104,6 +105,19 @@ fn is_workspace_scoped(source: &str) -> bool {
         source.starts_with('/') || source.starts_with('.') || source.starts_with('~');
 
     !is_host_path && source.ends_with("@workspace")
+}
+
+/// An `env_file` entry as the file it names.
+///
+/// **Drops `.` segments**, so that two spellings of one file compare as
+/// one. Refusing `.minato/env.local` while accepting `./.minato/env.local`
+/// would not be much of a refusal, and two services claiming the same file
+/// under different spellings would go on overwriting each other.
+fn env_file_path(entry: &str) -> PathBuf {
+    Path::new(entry)
+        .components()
+        .filter(|part| !matches!(part, std::path::Component::CurDir))
+        .collect()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -359,7 +373,34 @@ impl MinatoConfig {
             self.validate_service(name, svc)?;
         }
 
+        self.validate_env_files_are_distinct()?;
         self.validate_no_dependency_cycle()?;
+        Ok(())
+    }
+
+    /// Checks that no two services want the same file.
+    ///
+    /// **They hold different environments**, so sharing a path means each
+    /// start overwrites the other's — whichever service woke last decides
+    /// what the file says, and "rewriting it unchanged is not a write"
+    /// never holds, so anything watching it restarts every time.
+    fn validate_env_files_are_distinct(&self) -> Result<()> {
+        let mut claimed: BTreeMap<PathBuf, &str> = BTreeMap::new();
+
+        for (name, svc) in &self.services {
+            let Some(entry) = svc.env_file.as_deref() else {
+                continue;
+            };
+
+            if let Some(other) = claimed.insert(env_file_path(entry), name) {
+                return Err(Error::ConfigInvalid(format!(
+                    "services `{other}` and `{name}` both write env_file \
+                     `{entry}`. They hold different environments, so each \
+                     start would overwrite the other — give them one path each"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -425,6 +466,12 @@ impl MinatoConfig {
             return refuse("is empty");
         }
 
+        // Padding is never what was meant, and joining it produces a file
+        // whose name nothing else will ever spell the same way.
+        if entry != entry.trim() {
+            return refuse("has whitespace around it");
+        }
+
         let path = Path::new(entry);
 
         if entry.starts_with('~') {
@@ -440,6 +487,26 @@ impl MinatoConfig {
             .any(|part| matches!(part, std::path::Component::ParentDir))
         {
             return refuse("leaves the worktree");
+        }
+
+        // **Minato reads these two itself**, so writing one would feed the
+        // generated file back in as a layer — and the workspace layer is
+        // the most specific there is. Last run's `MINATO_URL_*` would then
+        // outrank the one being injected now, and a value put there with
+        // `minato env set --workspace` would be overwritten at the next
+        // start, since the header it keeps still reads as generated.
+        let reserved = [
+            Path::new(env::ENV_DIR).join(env::PROJECT_ENV_FILE),
+            Path::new(env::ENV_DIR).join(env::WORKSPACE_ENV_FILE),
+        ];
+
+        // Compared as `./x` and `x` name one file, which a refusal that
+        // spelling could walk around would not be much of a refusal.
+        if reserved.iter().any(|held| env_file_path(entry) == *held) {
+            return refuse(
+                "is a file Minato reads as an environment layer of its own. \
+                 Write beside it instead, like \".minato/env.api\"",
+            );
         }
 
         // A shared service is mounted no worktree, so the file would be
@@ -868,6 +935,7 @@ mod tests {
             ("/etc/environment", "is an absolute path"),
             ("~/.env", "which Minato does not expand"),
             ("  ", "is empty"),
+            (" .env ", "has whitespace around it"),
         ];
 
         for (entry, expected) in cases {
@@ -886,6 +954,55 @@ mod tests {
             assert!(message.contains("env_file"), "{entry}: {message}");
             assert!(message.contains(expected), "{entry}: {message}");
         }
+    }
+
+    #[test]
+    fn refuses_an_env_file_minato_reads_as_a_layer_of_its_own() {
+        // Writing one feeds the generated file back in as input, and the
+        // workspace layer is the most specific there is: last run's
+        // MINATO_URL_* would outrank the one being injected now, and a
+        // `minato env set --workspace` value would be overwritten.
+        for entry in [".minato/env", ".minato/env.local", "./.minato/env.local"] {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "node:22"
+                env_file = "{entry}"
+            "#
+            ))
+            .unwrap_err();
+
+            let message = err.to_string();
+            assert!(message.contains("environment layer"), "{entry}: {message}");
+        }
+    }
+
+    #[test]
+    fn refuses_two_services_writing_the_same_env_file() {
+        // They hold different environments, so each start would overwrite
+        // the other's — and nothing watching the file would ever settle.
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            env_file = ".minato/env.shared"
+            [services.api]
+            image = "node:22"
+            env_file = ".minato/env.shared"
+        "#,
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("env_file"), "{message}");
+        assert!(
+            message.contains("web") && message.contains("api"),
+            "{message}"
+        );
     }
 
     #[test]

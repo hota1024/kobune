@@ -148,16 +148,19 @@ pub fn write_env_file(
         }
     }
 
+    let occupied = "there is already a file there that Minato did not write. \
+                    Move it aside, or point env_file somewhere else";
+
     match std::fs::read_to_string(&path) {
         // Somebody's own file. Whatever it is for, it is not this.
-        Ok(existing) if !env::is_generated(&existing) => {
-            return refuse(
-                "there is already a file there that Minato did not write. \
-                 Move it aside, or point env_file somewhere else",
-            );
-        }
+        Ok(existing) if !env::is_generated(&existing) => return refuse(occupied),
         Ok(existing) if existing == contents => return Ok(None),
-        _ => {}
+        Ok(_) => {}
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        // **Unreadable is not the same as absent.** A file in some other
+        // encoding, or one this user cannot read, is still somebody's —
+        // and the marker cannot say otherwise, so it gets left alone.
+        Err(_) => return refuse(occupied),
     }
 
     if let Some(parent) = path.parent() {
@@ -172,8 +175,10 @@ pub fn write_env_file(
     // Written beside the target and renamed over it, so a service reading
     // the file never sees half of one.
     let temporary = temporary_beside(&path);
-    env::write_file(&temporary, contents)
-        .map_err(|err| ApiError::internal(format!("env_file `{relative}`: {err}")))?;
+    env::write_file(&temporary, contents).map_err(|err| {
+        let _ = std::fs::remove_file(&temporary);
+        ApiError::internal(format!("env_file `{relative}`: {err}"))
+    })?;
 
     std::fs::rename(&temporary, &path).map_err(|source| {
         let _ = std::fs::remove_file(&temporary);
@@ -207,14 +212,33 @@ fn existing_ancestor(path: &Path) -> PathBuf {
 ///
 /// A sibling rather than `/tmp`, because a rename across filesystems is
 /// not atomic — and on macOS `/tmp` regularly is one.
+///
+/// **A fresh name every time.** A fixed one is a file an earlier crash can
+/// leave behind, and the write that follows opens it rather than creating
+/// it: a leftover symlink would be written straight through, out of the
+/// worktree the containment check just held it inside, and a leftover
+/// regular file would keep whatever permissions it had rather than 0600.
+/// Two services writing at once would also rename each other's away.
 fn temporary_beside(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "env".to_string());
 
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or(0);
+    let count = NEXT.fetch_add(1, Ordering::Relaxed);
+
     let directory = path.parent().unwrap_or(Path::new("."));
-    directory.join(format!(".{name}.minato-tmp"))
+    directory.join(format!(
+        ".{name}.{}-{nonce}-{count}.minato-tmp",
+        std::process::id()
+    ))
 }
 
 /// Stacks one service's layers, lowest priority first.
@@ -644,6 +668,58 @@ mod tests {
             std::fs::read_to_string(dir.path().join(".env.local")).expect("reads"),
             mine,
             "and leave it alone"
+        );
+    }
+
+    #[test]
+    fn never_overwrites_a_file_it_cannot_even_read() {
+        // The marker cannot say a file is Minato's when the file will not
+        // read as text at all — an `.env` in UTF-16, say. Unreadable is
+        // still somebody's.
+        let dir = worktree();
+        let mine: &[u8] = &[0xff, 0xfe, b'F', 0x00, b'O', 0x00];
+        std::fs::write(dir.path().join(".env.local"), mine).expect("writes");
+
+        let err = write_env_file(dir.path(), ".env.local", &env::render(&[], "service: web"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("did not write"), "say why: {err}");
+        assert_eq!(
+            std::fs::read(dir.path().join(".env.local")).expect("reads"),
+            mine,
+            "and leave it alone"
+        );
+    }
+
+    #[test]
+    fn does_not_write_through_a_leftover_temporary_file() {
+        // A fixed temporary name is one an earlier crash can leave behind,
+        // and the write opens rather than creates it: a leftover symlink
+        // would carry the environment out of the worktree the containment
+        // check just held it inside.
+        let outside = tempfile::tempdir().expect("tempdir");
+        let target = outside.path().join("stolen");
+        std::fs::write(&target, "untouched").expect("writes");
+
+        let dir = worktree();
+        std::fs::create_dir(dir.path().join(".minato")).expect("creates");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, dir.path().join(".minato/.env.api.minato-tmp"))
+            .expect("links");
+
+        write_env_file(
+            dir.path(),
+            ".minato/env.api",
+            &env::render(&[], "service: api"),
+        )
+        .expect("writes");
+
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("reads"),
+            "untouched",
+            "the environment never went there"
         );
     }
 

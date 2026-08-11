@@ -217,6 +217,11 @@ does not restart every time the service wakes.
 - **A file Minato did not write is never overwritten.** The header line is the
   marker, so an `.env.local` of your own is safe: you get an error naming it,
   not a replacement.
+- **Not `.minato/env` or `.minato/env.local`.** Minato reads those two as
+  layers of its own, so writing one would feed the generated file straight
+  back in — and the workspace layer outranks everything. Write beside them.
+- **One path per service.** Two services sharing a file would overwrite each
+  other's environment at every start.
 - **Not on `scope = "project"`.** A shared service is mounted no worktree, so
   the file would land where that container cannot see it.
 

@@ -355,8 +355,11 @@ env_file = ".minato/env.api"
 ```
 
 Written before the service starts, secrets left out. A path git tracks is
-refused, a file Minato did not write is never overwritten, and a service with
-`scope = "project"` cannot have one — it is mounted no worktree to write into.
+refused, a file Minato did not write is never overwritten, and so are
+`.minato/env` and `.minato/env.local` — Minato reads those as layers of its
+own — and any path another service already claims. A service with
+`scope = "project"` cannot have one either: it is mounted no worktree to write
+into.
 
 ## Validation
 
