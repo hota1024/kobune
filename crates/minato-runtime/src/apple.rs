@@ -408,6 +408,36 @@ impl AppleContainerRuntime {
         }
     }
 
+    /// Removes the generated `/etc/hosts` files of a workspace's services.
+    ///
+    /// They are named after the container, so the workspace's own prefix is
+    /// what tells them from another worktree's. Nothing depends on this —
+    /// each is rewritten on every start — but a destroyed worktree should
+    /// not leave files behind.
+    fn remove_workspace_hosts_files(&self, key: &WorkspaceKey, events: &EventSink) {
+        let prefix = names::container(&key.service(""));
+
+        let Ok(entries) = std::fs::read_dir(self.hosts_root()) else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+
+            if !name.starts_with(&prefix) {
+                continue;
+            }
+
+            let path = entry.path();
+            if let Err(err) = std::fs::remove_file(&path) {
+                events.debug(format!("{} was not removed: {err}", path.display()));
+            }
+        }
+    }
+
     /// The environment for this service, with its peers' addresses added.
     ///
     /// **Addresses, not hostnames.** Apple Container 1.2.1 has no
@@ -1029,6 +1059,7 @@ impl Runtime for AppleContainerRuntime {
         }
 
         self.remove_workspace_volumes(key, events);
+        self.remove_workspace_hosts_files(key, events);
 
         Ok(())
     }
@@ -1787,6 +1818,33 @@ mod tests {
             "the mount replaces the image's file, so localhost has to be \
              written back: {contents}"
         );
+    }
+
+    #[test]
+    fn a_destroyed_worktree_takes_its_hosts_files_with_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().to_path_buf());
+
+        let mut spec = spec_with_peers(vec![]);
+        spec.gateway_hosts = vec!["api.feat-1.myapp.localhost".into()];
+
+        let mine = runtime
+            .write_hosts_file(&spec, "minato-myapp-feat-1-api", Some(Ipv4Addr::LOCALHOST))
+            .expect("writes")
+            .expect("a file");
+        let neighbour = runtime
+            .write_hosts_file(&spec, "minato-myapp-feat-2-api", Some(Ipv4Addr::LOCALHOST))
+            .expect("writes")
+            .expect("a file");
+
+        runtime.remove_workspace_hosts_files(
+            &WorkspaceKey::new("myapp", "feat-1"),
+            &EventSink::discard(),
+        );
+
+        assert!(!mine.exists(), "the destroyed worktree's file stayed");
+        assert!(neighbour.exists(), "another worktree's file was taken");
     }
 
     #[test]
