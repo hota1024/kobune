@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use minato_api::{
     ApiError, ClientMessage, Event, MessageStream, PROTOCOL_VERSION, Pong, Request, RequestId,
-    Response, ServerMessage, write_message,
+    Response, ServerMessage, Window, write_message,
 };
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpStream, UnixStream};
@@ -106,6 +106,24 @@ impl ClientError {
             _ => None,
         }
     }
+}
+
+/// What an attached client sends while its request runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Typed {
+    /// Bytes read from the client's terminal, passed on as they came.
+    Keys(Vec<u8>),
+    /// The client's window changed size.
+    Resize(Window),
+}
+
+/// How an attached session ended.
+#[derive(Debug)]
+pub enum Attached {
+    /// The daemon finished the request: the service's terminal closed.
+    Finished(Response),
+    /// The person detached, leaving the service running.
+    Detached,
 }
 
 /// Creates connections to the daemon.
@@ -404,6 +422,65 @@ impl Connection {
                 ServerMessage::Fatal { message } => {
                     return Err(ClientError::Protocol(message));
                 }
+            }
+        }
+    }
+
+    /// Runs a request while sending what the client's terminal produces.
+    ///
+    /// For interactive `logs`, and nothing else so far. Events arrive as
+    /// they do in [`Self::call`]; what is new is the other direction, and
+    /// that leaving is an outcome rather than an error.
+    ///
+    /// Nothing is sent to the daemon on detaching. It finds out when the
+    /// connection closes, which is the next thing that happens, and asking
+    /// it to cancel would be a race with the response already on its way.
+    pub async fn call_attached<F>(
+        &mut self,
+        request: Request,
+        mut on_event: F,
+        mut typed: tokio::sync::mpsc::UnboundedReceiver<Typed>,
+    ) -> Result<Attached, ClientError>
+    where
+        F: FnMut(Event),
+    {
+        let id = self.take_id();
+        write_message(&mut self.writer, &ClientMessage::Request { id, request }).await?;
+
+        loop {
+            tokio::select! {
+                // Biased towards the daemon: a response already in flight
+                // is not overtaken by a keystroke that arrived with it.
+                biased;
+
+                message = self.reader.recv() => match as_message(message)? {
+                    ServerMessage::Event { id: event_id, event } => {
+                        if event_id == id {
+                            on_event(event);
+                        }
+                    }
+                    ServerMessage::Response { id: response_id, outcome } if response_id == id => {
+                        return outcome.into_result()
+                            .map(Attached::Finished)
+                            .map_err(ClientError::Api);
+                    }
+                    ServerMessage::Response { .. } => {}
+                    ServerMessage::Fatal { message } => {
+                        return Err(ClientError::Protocol(message));
+                    }
+                },
+
+                keys = typed.recv() => match keys {
+                    Some(Typed::Keys(bytes)) => {
+                        write_message(&mut self.writer, &ClientMessage::input(id, &bytes)).await?;
+                    }
+                    Some(Typed::Resize(window)) => {
+                        write_message(&mut self.writer, &ClientMessage::Resize { id, window })
+                            .await?;
+                    }
+                    // The keyboard was put down: the person detached.
+                    None => return Ok(Attached::Detached),
+                },
             }
         }
     }

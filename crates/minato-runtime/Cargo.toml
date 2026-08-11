@@ -11,8 +11,11 @@ minato-core.workspace = true
 minato-api.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "process", "net"] }
-tokio-stream.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "process", "net", "io-util"] }
+tokio-stream = { workspace = true, features = ["sync"] }
+# For `openpty`. Apple Container will only attach to a real terminal, so
+# the daemon has to open one — see `terminal.rs`.
+libc.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 bollard.workspace = true

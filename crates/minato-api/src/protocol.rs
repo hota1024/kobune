@@ -15,7 +15,7 @@ use crate::response::Response;
 ///
 /// Bumped on every breaking change. Clients compare it during the initial
 /// [`Request::Ping`] and ask for a daemon restart on mismatch.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -39,6 +39,41 @@ pub enum ClientMessage {
     Cancel {
         id: RequestId,
     },
+
+    /// What the person at the keyboard typed, for an attached request.
+    ///
+    /// Base64: this is whatever the terminal produced — arrow keys, a
+    /// paste, a mouse report — and not necessarily valid UTF-8, while the
+    /// framing is one JSON document per line.
+    ///
+    /// Ignored when the request named by `id` is not attached, rather than
+    /// being an error. A key pressed a moment after the program exited is
+    /// nobody's mistake.
+    Input {
+        id: RequestId,
+        data: String,
+    },
+
+    /// The client's terminal changed size.
+    ///
+    /// Sent once when attaching too, since the container's terminal starts
+    /// at whatever size the runtime picked — 80×24 — and a full-screen UI
+    /// drawn to that size in a wider window is the first thing anyone
+    /// notices.
+    Resize {
+        id: RequestId,
+        window: crate::request::Window,
+    },
+}
+
+impl ClientMessage {
+    /// Carries typed bytes, encoded for the wire.
+    pub fn input(id: RequestId, bytes: &[u8]) -> Self {
+        Self::Input {
+            id,
+            data: crate::event::encode_bytes(bytes),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +215,11 @@ mod tests {
                 },
             },
             ClientMessage::Cancel { id: RequestId(2) },
+            ClientMessage::input(RequestId(3), b"\x1b[B\r"),
+            ClientMessage::Resize {
+                id: RequestId(3),
+                window: crate::request::Window::new(120, 40),
+            },
         ];
 
         for message in messages {

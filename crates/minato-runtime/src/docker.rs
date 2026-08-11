@@ -17,7 +17,8 @@ use async_trait::async_trait;
 use bollard::Docker;
 use bollard::container::{
     AttachContainerOptions, Config, CreateContainerOptions, ListContainersOptions, LogOutput,
-    LogsOptions, RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
+    LogsOptions, RemoveContainerOptions, ResizeContainerTtyOptions, StartContainerOptions,
+    StopContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::{BuildImageOptions, CreateImageOptions};
@@ -35,7 +36,8 @@ use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{
-    ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Throwaway, labels, names,
+    Attachment, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Throwaway,
+    labels, names,
 };
 use crate::spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
@@ -715,8 +717,24 @@ impl DockerRuntime {
             },
         );
 
+        // **A throwaway never gets one.** `run_throwaway` reads stdout and
+        // stderr apart to report them apart, and a terminal is one stream.
+        // `minato exec` is also how an agent runs a command, and an agent
+        // has no use for a program redrawing itself.
+        let terminal = throwaway.is_none() && spec.tty;
+
         let config = Config {
             image: Some(spec.image.clone()),
+            // Both halves, or neither. A terminal with no stdin is one the
+            // program can draw on but nobody can answer, which is the half
+            // of interactive that looks like a hang.
+            tty: Some(terminal),
+            open_stdin: Some(terminal),
+            // **Off, deliberately.** With it on, Docker closes the
+            // container's stdin as soon as the first attachment leaves,
+            // and the next `minato logs` finds a terminal that takes no
+            // keys — for the rest of the container's life.
+            stdin_once: Some(false),
             cmd: match throwaway {
                 Some(one_off) => Some(one_off.command.to_vec()),
                 None => spec.command.clone(),
@@ -772,6 +790,21 @@ impl DockerRuntime {
             .map_err(|e| RuntimeError::failed(format!("creating container {name}"), e))?;
 
         Ok(created.id)
+    }
+
+    /// Whether the container was created with a terminal.
+    ///
+    /// `None` when there is no telling — the container went away between
+    /// the listing and this call, most likely. Read as "leave it alone":
+    /// recreating a service on the strength of a failed inspect would be a
+    /// restart nobody asked for.
+    async fn has_tty(&self, container_id: &str) -> Option<bool> {
+        let details = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .ok()?;
+        details.config.and_then(|config| config.tty)
     }
 
     /// The host-side address a running container listens on.
@@ -933,12 +966,22 @@ impl Runtime for DockerRuntime {
             // with a fingerprint of its inputs, so an edited Dockerfile
             // produces a new tag — and leaving the old container up would
             // build the new image and then serve the old one.
-            let stale = existing
+            let wrong_image = existing
                 .image
                 .as_deref()
                 .is_some_and(|image| image != spec.image);
 
-            if !stale && existing.state.as_deref() == Some("running") {
+            // Or without the terminal it should have. Whether a container
+            // has one is fixed when it is created, so a `tty` turned on in
+            // `minato.toml` reaches a running service only this way. Left
+            // out, the setting would appear to do nothing until something
+            // else happened to recreate the container.
+            let wrong_terminal = self
+                .has_tty(&id)
+                .await
+                .is_some_and(|terminal| terminal != spec.tty);
+
+            if !wrong_image && !wrong_terminal && existing.state.as_deref() == Some("running") {
                 events.step_skipped(
                     "start",
                     format!("starting {}", spec.name()),
@@ -1216,7 +1259,12 @@ impl Runtime for DockerRuntime {
                 | LogOutput::StdIn { message } => (OutputStream::Stdout, message),
             };
 
-            let text = String::from_utf8_lossy(&bytes).to_string();
+            // A container with a terminal ends its lines `\r\n`, since
+            // that is what a terminal does. `str::lines` takes the `\n`
+            // and leaves the carriage return sitting at the end of the
+            // text, where it would send the cursor back over the line
+            // Minato prints next.
+            let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
             let lines: Vec<LogLine> = text
                 .lines()
                 .map(|line| LogLine {
@@ -1229,6 +1277,91 @@ impl Runtime for DockerRuntime {
         });
 
         Ok(Box::pin(lines))
+    }
+
+    async fn attach(&self, key: &ServiceKey) -> Result<Attachment> {
+        let container = self.find_container(key).await?.ok_or_else(|| {
+            RuntimeError::failed(
+                format!("attaching to {}", key.service),
+                "there is no container. Start it with `minato up`",
+            )
+        })?;
+
+        if container.state.as_deref() != Some("running") {
+            return Err(RuntimeError::failed(
+                format!("attaching to {}", key.service),
+                "the container is not running. Start it with `minato up`",
+            ));
+        }
+
+        let id = container.id.unwrap_or_default();
+        let attached = self
+            .docker
+            .attach_container(
+                &id,
+                Some(AttachContainerOptions::<String> {
+                    stdin: Some(true),
+                    stdout: Some(true),
+                    stderr: Some(true),
+                    stream: Some(true),
+                    // **Nothing replayed.** A full-screen program's past
+                    // output is a record of a screen that no longer
+                    // exists; drawing it again produces a mess, and the
+                    // program redraws in full anyway. Whoever wants the
+                    // history has `minato logs` without `-f`.
+                    logs: Some(false),
+                    // Left to Docker's default, and never triggered:
+                    // detaching is the client's business, and it holds the
+                    // keys before they get this far.
+                    detach_keys: None,
+                }),
+            )
+            .await
+            .map_err(|e| RuntimeError::failed(format!("attaching to {}", key.service), e))?;
+
+        // With a terminal there is one stream, and Docker reports it as
+        // `Console`. The rest are matched so that a container that turns
+        // out not to have one is passed through rather than silently
+        // dropped.
+        let output = attached.output.filter_map(|item| async move {
+            match item {
+                Ok(LogOutput::Console { message })
+                | Ok(LogOutput::StdOut { message })
+                | Ok(LogOutput::StdErr { message })
+                | Ok(LogOutput::StdIn { message }) => Some(message.to_vec()),
+                Err(err) => {
+                    tracing::debug!("the attachment ended: {err}");
+                    None
+                }
+            }
+        });
+
+        Ok(Attachment {
+            output: Box::pin(output),
+            input: attached.input,
+            // Docker resizes a running container's terminal on demand.
+            fixed_size: None,
+        })
+    }
+
+    async fn resize(&self, key: &ServiceKey, cols: u16, rows: u16) -> Result<()> {
+        let container = self.find_container(key).await?.ok_or_else(|| {
+            RuntimeError::failed(
+                format!("resizing {}'s terminal", key.service),
+                "there is no container",
+            )
+        })?;
+
+        self.docker
+            .resize_container_tty(
+                &container.id.unwrap_or_default(),
+                ResizeContainerTtyOptions {
+                    width: cols,
+                    height: rows,
+                },
+            )
+            .await
+            .map_err(|e| RuntimeError::failed(format!("resizing {}'s terminal", key.service), e))
     }
 
     async fn exec(

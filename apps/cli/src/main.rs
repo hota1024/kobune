@@ -3,6 +3,7 @@
 //! No logic lives here. Every decision is the daemon's; the CLI builds
 //! requests and prints results (`docs/DESIGN.md` §3).
 
+mod attach;
 mod init;
 mod launchd;
 mod output;
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use minato_api::{Request, Response, Target};
+use minato_api::{Event, Request, Response, Target};
 use minato_client::{Client, ClientError, DaemonStart};
 
 /// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
@@ -155,6 +156,11 @@ enum Command {
     },
 
     /// Show logs
+    ///
+    /// `-f` on a single service that has `tty = true` hands this terminal
+    /// over: colour comes through and what you type reaches the program,
+    /// which is what turborepo and other full-screen tools want. Ctrl-P
+    /// then Ctrl-Q gives the terminal back, leaving the service running.
     Logs {
         /// Which services. All of them when left out
         services: Vec<String>,
@@ -166,6 +172,13 @@ enum Command {
         /// How many lines to show from the end
         #[arg(long, short = 'n')]
         tail: Option<usize>,
+
+        /// Read only; do not offer this terminal to the service
+        ///
+        /// For watching a service that takes input without being able to
+        /// type at it by accident.
+        #[arg(long)]
+        no_input: bool,
     },
 
     /// Run a command inside a container
@@ -677,6 +690,18 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     let (mut connection, start) = client.connect_or_spawn().await?;
     warn_if_unprivileged(cli, start);
 
+    // An interactive `logs` runs its own way: the terminal goes into raw
+    // mode, and what comes back is not lines but a screen.
+    if matches!(
+        &request,
+        Request::Logs {
+            interactive: true,
+            ..
+        }
+    ) {
+        return run_attached(&mut connection, request).await;
+    }
+
     // JSON output carries no progress — exactly one JSON document comes
     // back. For logs and exec the output *is* the result, so no progress
     // decoration either.
@@ -740,6 +765,81 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     Ok(code)
 }
 
+/// Runs a `logs` that has this terminal lent to it.
+///
+/// The daemon decides whether the offer is taken up. Until [`Event::Attached`]
+/// says it was, this behaves exactly like a plain `logs` — including
+/// printing the reason it was not, which is the whole point of finding out
+/// from an event rather than assuming.
+async fn run_attached(
+    connection: &mut minato_client::Connection,
+    request: Request,
+) -> Result<ExitCode, CliError> {
+    let (typed, keys) = tokio::sync::mpsc::unbounded_channel();
+
+    // **Taken, not cloned.** The last sender going is how the client is
+    // told the person has detached, so this one has to be handed to the
+    // pump rather than kept alive here beside it.
+    let mut typed = Some(typed);
+    let mut session = None;
+
+    let outcome = connection
+        .call_attached(
+            request,
+            |event| match event {
+                Event::Attached { service } => {
+                    attach::announce(&service);
+
+                    match typed.take().map(attach::Session::start) {
+                        Some(Ok(started)) => session = Some(started),
+                        Some(Err(err)) => eprintln!("error: cannot take the terminal: {err}"),
+                        None => {}
+                    }
+                }
+                Event::Bytes { data, .. } => {
+                    attach::Session::show(&minato_api::decode_bytes(&data))
+                }
+                other => output::print_output_event(&other),
+            },
+            keys,
+        )
+        .await;
+
+    // **Before anything else is printed.** Raw mode is still on until the
+    // session is dropped, and a message written under it comes out as a
+    // staircase.
+    let was_attached = session.is_some();
+    drop(session);
+
+    if was_attached {
+        attach::restore();
+    }
+
+    outcome?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Whether `logs` should offer this terminal to the service.
+///
+/// Every condition is about not surprising anyone. Handing the terminal
+/// over is the default where it can hardly mean anything else — someone
+/// following one named service from a terminal — and quietly not the
+/// default anywhere else: a pipeline, an agent reading `--json`, and a
+/// person watching every service at once all want the plain stream.
+///
+/// Whether the service *has* a terminal is the daemon's to say. Only it
+/// has read `minato.toml`, and it answers by attaching or by explaining
+/// why it did not.
+fn wants_to_type(
+    cli: &Cli,
+    services: &[String],
+    follow: bool,
+    no_input: bool,
+    terminal: bool,
+) -> bool {
+    follow && !no_input && !cli.json && services.len() == 1 && terminal
+}
+
 fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
     let request = match &cli.command {
         Command::Ping => Request::Ping,
@@ -780,11 +880,14 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             services,
             follow,
             tail,
+            no_input,
         } => Request::Logs {
             target,
             services: services.clone(),
             follow: *follow,
             tail: *tail,
+            window: attach::window(),
+            interactive: wants_to_type(cli, services, *follow, *no_input, attach::is_a_terminal()),
         },
         Command::Exec {
             fresh,
@@ -1879,6 +1982,62 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    /// Parses a `logs` command line and says whether it would attach.
+    fn would_attach(args: &[&str], terminal: bool) -> bool {
+        let cli = Cli::try_parse_from(args).expect("parses");
+        let Command::Logs {
+            services,
+            follow,
+            no_input,
+            ..
+        } = &cli.command
+        else {
+            panic!("not a logs command");
+        };
+
+        wants_to_type(&cli, services, *follow, *no_input, terminal)
+    }
+
+    #[test]
+    fn following_one_service_from_a_terminal_offers_it() {
+        assert!(would_attach(&["minato", "logs", "-f", "web"], true));
+    }
+
+    #[test]
+    fn nothing_is_offered_without_a_terminal() {
+        // `minato logs -f web | grep ready` and every agent invocation
+        // land here. Raw mode needs a terminal on both sides, and escape
+        // sequences in a pipe are noise.
+        assert!(!would_attach(&["minato", "logs", "-f", "web"], false));
+    }
+
+    #[test]
+    fn watching_every_service_stays_a_read() {
+        // There is no one service to type at, and picking one would be a
+        // guess. `minato logs -f` keeps meaning what it always meant.
+        assert!(!would_attach(&["minato", "logs", "-f"], true));
+        assert!(!would_attach(&["minato", "logs", "-f", "web", "api"], true));
+    }
+
+    #[test]
+    fn a_finite_read_is_never_interactive() {
+        // Without `-f` this prints what there is and stops. Taking the
+        // terminal for that would be a session nobody asked to start.
+        assert!(!would_attach(&["minato", "logs", "web"], true));
+    }
+
+    #[test]
+    fn json_and_no_input_both_opt_out() {
+        assert!(!would_attach(
+            &["minato", "logs", "-f", "web", "--json"],
+            true
+        ));
+        assert!(!would_attach(
+            &["minato", "logs", "-f", "web", "--no-input"],
+            true
+        ));
     }
 
     #[test]

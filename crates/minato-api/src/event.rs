@@ -38,6 +38,47 @@ pub enum Event {
         stream: OutputStream,
         line: String,
     },
+
+    /// The client's terminal now belongs to the container.
+    ///
+    /// Only interactive `logs` sends it, and only once it has actually
+    /// attached. **The client must not go into raw mode before this
+    /// arrives**: asking to attach is not the same as getting to, and a
+    /// client that assumed otherwise would swallow the very message
+    /// explaining why it could not.
+    Attached { service: String },
+
+    /// Terminal output, byte for byte.
+    ///
+    /// What [`Self::Output`] cannot carry. A full-screen program speaks in
+    /// cursor movements and half-finished lines, and splitting that into
+    /// lines and handing back the pieces destroys it.
+    ///
+    /// Base64, for the reason [`crate::ClientMessage::Input`] is.
+    Bytes {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+        data: String,
+    },
+}
+
+/// Encodes bytes for a JSONL wire.
+pub fn encode_bytes(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Decodes what [`encode_bytes`] wrote. Undecodable input yields nothing.
+///
+/// **Silence rather than an error.** The only writer is the peer's own
+/// encoder, so a failure here means a corrupted connection, and there is
+/// nothing useful to do about one byte of terminal traffic in the middle
+/// of a session.
+pub fn decode_bytes(data: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .unwrap_or_default()
 }
 
 impl Event {
@@ -58,6 +99,14 @@ impl Event {
 
     pub fn error(message: impl Into<String>) -> Self {
         Self::log(LogLevel::Error, message)
+    }
+
+    /// Terminal output, encoded for the wire.
+    pub fn bytes(service: Option<String>, bytes: &[u8]) -> Self {
+        Self::Bytes {
+            service,
+            data: encode_bytes(bytes),
+        }
     }
 
     pub fn step_started(id: impl Into<String>, label: impl Into<String>) -> Self {
@@ -190,6 +239,10 @@ mod tests {
                 stream: OutputStream::Stdout,
                 line: "listening on 3000".into(),
             },
+            Event::Attached {
+                service: "web".into(),
+            },
+            Event::bytes(Some("web".into()), b"\x1b[2J\x1b[H"),
         ];
 
         for event in events {
@@ -211,6 +264,36 @@ mod tests {
         assert!(StepStatus::Done.is_terminal());
         assert!(StepStatus::Failed { reason: "x".into() }.is_terminal());
         assert!(StepStatus::Skipped { reason: "x".into() }.is_terminal());
+    }
+
+    #[test]
+    fn carries_bytes_that_are_not_text() {
+        // A terminal produces escape sequences, half-formed UTF-8 from a
+        // split multi-byte character, and the odd raw byte. None of it
+        // survives being treated as a string.
+        let raw = vec![0x1b, b'[', b'A', 0xff, 0x00, 0xe3];
+        let event = Event::bytes(None, &raw);
+
+        let json = serde_json::to_string(&event).expect("serializes");
+        let back: Event = serde_json::from_str(&json).expect("deserializes");
+
+        let Event::Bytes { data, .. } = back else {
+            panic!("expected bytes");
+        };
+        assert_eq!(decode_bytes(&data), raw);
+    }
+
+    #[test]
+    fn encoded_bytes_never_break_the_framing() {
+        // One JSON document per line, so an encoding that could emit a
+        // newline would cut a message in half.
+        let encoded = encode_bytes(&(0u8..=255).collect::<Vec<u8>>());
+        assert!(!encoded.contains('\n'), "got: {encoded}");
+    }
+
+    #[test]
+    fn undecodable_input_yields_nothing() {
+        assert!(decode_bytes("not base64!!").is_empty());
     }
 
     #[test]

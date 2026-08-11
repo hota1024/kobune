@@ -16,14 +16,17 @@
 //! network gateway, which answers NXDOMAIN for every container name. So a
 //! peer's IP address is injected as `MINATO_HOST_<SERVICE>` instead.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use futures::stream::BoxStream;
-use minato_api::OutputStream;
+use minato_api::{OutputStream, Window};
 use minato_core::{ServiceScope, ServiceState};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -33,17 +36,29 @@ use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
 use crate::health::{DEFAULT_READINESS_TIMEOUT, await_service};
 use crate::runtime::{
-    ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Throwaway, labels, names,
+    Attachment, ExecOptions, ExecOutcome, LogLine, LogOptions, Runtime, RuntimeInfo, Throwaway,
+    labels, names,
 };
 use crate::spec::{
     BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
     WorkspaceKey, WorkspaceSpec,
 };
+use crate::terminal::Terminal;
 
 const RUNTIME_ID: &str = "apple";
 
 /// The CLI to invoke.
 const PROGRAM: &str = "container";
+
+/// How long to wait for a container started on a terminal to come up.
+///
+/// The attached start command never returns, so this is what stands in for
+/// its exit code. Generous: the image is already there by this point, but
+/// a cold `container` daemon can take a few seconds to answer.
+const TERMINAL_START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often to ask whether it is up yet.
+const TERMINAL_START_POLL: Duration = Duration::from_millis(100);
 
 pub struct AppleContainerRuntime {
     program: String,
@@ -54,6 +69,14 @@ pub struct AppleContainerRuntime {
     volume_root: PathBuf,
     /// Whether custom networks work. 0 = unknown, 1 = yes, 2 = no.
     network_support: AtomicU8,
+    /// The open terminal of every service started with `tty`.
+    ///
+    /// **Held from the moment the service starts.** There is no `attach`
+    /// in the CLI, so the only way to reach a container's stdin is to be
+    /// the one that started it (`terminal.rs`). A daemon that restarts
+    /// therefore loses the terminals of services it did not start, and
+    /// says so rather than pretending otherwise.
+    terminals: Mutex<HashMap<ServiceKey, Terminal>>,
 }
 
 impl Default for AppleContainerRuntime {
@@ -76,6 +99,7 @@ impl AppleContainerRuntime {
             program,
             volume_root,
             network_support: AtomicU8::new(0),
+            terminals: Mutex::new(HashMap::new()),
         }
     }
 
@@ -431,6 +455,62 @@ impl AppleContainerRuntime {
     }
 
     /// Builds the arguments for `container create`.
+    /// Starts a service that asked for a terminal, and keeps the near end.
+    ///
+    /// `container start --attach --interactive` runs for as long as the
+    /// container does, so unlike the plain `start` there is nothing to
+    /// wait for. It is spawned instead, and the container itself is what
+    /// says whether the start worked.
+    async fn start_on_a_terminal(&self, spec: &ServiceSpec, name: &str) -> Result<()> {
+        let mut command = tokio::process::Command::new(&self.program);
+        command.args(["start", "--attach", "--interactive", name]);
+
+        let terminal = Terminal::open(command).map_err(|err| {
+            RuntimeError::failed(format!("opening a terminal for {}", spec.name()), err)
+        })?;
+
+        self.terminals
+            .lock()
+            .expect("lock")
+            .insert(spec.key.clone(), terminal);
+
+        let deadline = std::time::Instant::now() + TERMINAL_START_TIMEOUT;
+        loop {
+            if self
+                .find_container(&spec.key)
+                .await?
+                .is_some_and(|record| record.is_running())
+            {
+                return Ok(());
+            }
+
+            // The command has gone. Whatever it said went to the terminal
+            // rather than to a pipe this could read, and the container is
+            // not running, so all that is left is to say which it was.
+            let gone = !self
+                .terminals
+                .lock()
+                .expect("lock")
+                .get(&spec.key)
+                .is_some_and(Terminal::is_open);
+
+            if gone || std::time::Instant::now() >= deadline {
+                self.terminals.lock().expect("lock").remove(&spec.key);
+                return Err(RuntimeError::failed(
+                    format!("starting {}", spec.name()),
+                    if gone {
+                        "the start command exited without the container \
+                         coming up"
+                    } else {
+                        "the container did not come up in time"
+                    },
+                ));
+            }
+
+            tokio::time::sleep(TERMINAL_START_POLL).await;
+        }
+    }
+
     fn create_args(
         &self,
         spec: &ServiceSpec,
@@ -456,6 +536,14 @@ impl AppleContainerRuntime {
                 .and_then(|one_off| one_off.workdir.map(str::to_string))
                 .unwrap_or_else(|| spec.workdir.clone()),
         );
+
+        // A terminal, and a stdin that stays open for whoever attaches to
+        // it later. Never for a throwaway, for the reasons the Docker
+        // backend gives where it decides the same thing.
+        if throwaway.is_none() && spec.tty {
+            args.push("--tty".into());
+            args.push("--interactive".into());
+        }
 
         for (key, value) in self.env_with_peers(spec, peer_addresses) {
             args.push("--env".into());
@@ -692,7 +780,13 @@ impl Runtime for AppleContainerRuntime {
             return Err(err);
         }
 
-        if let Err(err) = self.run(&["start", &name]).await {
+        let started = if spec.tty {
+            self.start_on_a_terminal(spec, &name).await
+        } else {
+            self.run(&["start", &name]).await.map(|_| ())
+        };
+
+        if let Err(err) = started {
             events.step_failed(
                 "start",
                 format!("starting {}", spec.name()),
@@ -767,6 +861,11 @@ impl Runtime for AppleContainerRuntime {
 
         events.step_started("stop", format!("stopping {}", key.service));
         self.run(&["stop", &names::container(key)]).await?;
+
+        // The terminal belonged to the container that has just gone. The
+        // next start opens another one.
+        self.terminals.lock().expect("lock").remove(key);
+
         events.step_done("stop", format!("stopping {}", key.service));
         events.service_state(&key.service, ServiceState::Stopped);
         Ok(())
@@ -774,12 +873,14 @@ impl Runtime for AppleContainerRuntime {
 
     async fn remove(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
         if self.find_container(key).await?.is_none() {
+            self.terminals.lock().expect("lock").remove(key);
             return Ok(());
         }
 
         events.step_started("remove", format!("removing {}", key.service));
         self.run(&["delete", "--force", &names::container(key)])
             .await?;
+        self.terminals.lock().expect("lock").remove(key);
         events.step_done("remove", format!("removing {}", key.service));
         Ok(())
     }
@@ -800,6 +901,12 @@ impl Runtime for AppleContainerRuntime {
             self.run(&["delete", "--force", &name]).await?;
         }
         events.step_done("destroy", "removing containers");
+
+        // Every terminal in the workspace went with its container.
+        self.terminals
+            .lock()
+            .expect("lock")
+            .retain(|service, _| &service.workspace != key);
 
         if self.supports_networks().await {
             let network = names::network(key);
@@ -860,7 +967,11 @@ impl Runtime for AppleContainerRuntime {
                     if sender
                         .send(LogLine {
                             stream: OutputStream::Stdout,
-                            line,
+                            // A container with a terminal ends its lines
+                            // `\r\n`. Reading by line takes the newline
+                            // and leaves the carriage return, which would
+                            // put the cursor back over whatever comes next.
+                            line: line.trim_end_matches('\r').to_string(),
                         })
                         .is_err()
                     {
@@ -877,7 +988,7 @@ impl Runtime for AppleContainerRuntime {
                     if sender
                         .send(LogLine {
                             stream: OutputStream::Stderr,
-                            line,
+                            line: line.trim_end_matches('\r').to_string(),
                         })
                         .is_err()
                     {
@@ -896,6 +1007,62 @@ impl Runtime for AppleContainerRuntime {
         Ok(Box::pin(
             tokio_stream::wrappers::UnboundedReceiverStream::new(receiver),
         ))
+    }
+
+    async fn attach(&self, key: &ServiceKey) -> Result<Attachment> {
+        let (output, keyboard) = {
+            let terminals = self.terminals.lock().expect("lock");
+            let terminal = terminals
+                .get(key)
+                .filter(|terminal| terminal.is_open())
+                .ok_or_else(|| {
+                    RuntimeError::failed(
+                        format!("attaching to {}", key.service),
+                        "there is no open terminal for this service. Apple \
+                         Container hands one out only to whoever starts a \
+                         container, so a service that gained `tty` after it \
+                         started — or one started by a daemon that has since \
+                         restarted — needs `minato down && minato up` first",
+                    )
+                })?;
+
+            (terminal.subscribe(), terminal.keyboard())
+        };
+
+        // A subscriber that falls too far behind is told how much it
+        // missed rather than being disconnected. Dropping the gap and
+        // carrying on is right for a terminal: the next redraw repairs the
+        // screen, and there is nothing to be done about bytes that have
+        // already been discarded.
+        let output = tokio_stream::wrappers::BroadcastStream::new(output)
+            .filter_map(|chunk| async move { chunk.ok() });
+
+        Ok(Attachment {
+            output: Box::pin(output),
+            input: Box::pin(keyboard),
+            // Measured, not assumed: a resize on this side reaches
+            // `container start` and goes no further, so the program inside
+            // keeps the size the terminal was opened with.
+            fixed_size: Some(Window::new(
+                crate::terminal::DEFAULT_COLS,
+                crate::terminal::DEFAULT_ROWS,
+            )),
+        })
+    }
+
+    async fn resize(&self, key: &ServiceKey, cols: u16, rows: u16) -> Result<()> {
+        let terminals = self.terminals.lock().expect("lock");
+        let Some(terminal) = terminals.get(key) else {
+            // Nothing to resize is not a failure: the terminal closed
+            // between the last keystroke and this window being dragged.
+            return Ok(());
+        };
+
+        if let Err(err) = terminal.resize(cols, rows) {
+            tracing::debug!("cannot resize {}'s terminal: {err}", key.service);
+        }
+
+        Ok(())
     }
 
     async fn exec(
@@ -1473,6 +1640,7 @@ mod tests {
             command: None,
             workdir: "/workspace".into(),
             env: BTreeMap::new(),
+            tty: false,
             port: Some(8080),
             health: None,
             scope: ServiceScope::Workspace,

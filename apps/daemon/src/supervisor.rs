@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use minato_api::{
     ApiError, Check, Diagnostics, EnvInfo, ErrorCode, Pong, PurgeProject, PurgeReport,
-    PurgeWorkspace, Request, Response, ServiceInfo, Target, TunnelState, WorkspaceInfo,
+    PurgeWorkspace, Request, Response, ServiceInfo, Target, TunnelState, Window, WorkspaceInfo,
 };
 use minato_core::{
     HealthCheck, MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, TunnelRecord,
@@ -24,7 +24,31 @@ use minato_runtime::{EventSink, Runtime, ServiceStatus, WorkspaceKey};
 
 /// How the idle sweep groups services: (workspace, service).
 type ServiceKeyRef = (String, String);
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+
+/// What a client sends while a request of its own is still running.
+///
+/// Only interactive `logs` reads any of this. The connection puts it on a
+/// channel per request; see `server.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FromClient {
+    /// Bytes typed at the client's terminal.
+    Keys(Vec<u8>),
+    /// The client's terminal changed size.
+    Resize(Window),
+}
+
+/// Where a request reads [`FromClient`] from.
+pub type ClientStream = tokio::sync::mpsc::UnboundedReceiver<FromClient>;
+
+/// The shape of a `logs` request, once the target has been taken off it.
+struct LogRequest {
+    follow: bool,
+    tail: Option<usize>,
+    window: Option<Window>,
+    interactive: bool,
+}
 
 use crate::env;
 use crate::gateway::{BindFailure, Gateway};
@@ -79,7 +103,18 @@ impl Supervisor {
         }
     }
 
-    pub async fn handle(&self, request: Request, events: &EventSink) -> Result<Response, ApiError> {
+    /// Runs a request.
+    ///
+    /// `from_client` carries what the client sends *while* the request
+    /// runs: keystrokes and window sizes. Only interactive `logs` reads
+    /// any of it; every other request leaves it unread, and it is dropped
+    /// when the request finishes.
+    pub async fn handle(
+        &self,
+        request: Request,
+        events: &EventSink,
+        from_client: ClientStream,
+    ) -> Result<Response, ApiError> {
         match request {
             Request::Ping => self.ping().await,
             Request::Shutdown => {
@@ -130,7 +165,23 @@ impl Supervisor {
                 services,
                 follow,
                 tail,
-            } => self.logs(target, services, follow, tail, events).await,
+                window,
+                interactive,
+            } => {
+                self.logs(
+                    target,
+                    services,
+                    LogRequest {
+                        follow,
+                        tail,
+                        window,
+                        interactive,
+                    },
+                    from_client,
+                    events,
+                )
+                .await
+            }
             Request::Exec {
                 target,
                 service,
@@ -461,14 +512,21 @@ impl Supervisor {
         &self,
         target: Target,
         services: Vec<String>,
-        follow: bool,
-        tail: Option<usize>,
+        options: LogRequest,
+        from_client: ClientStream,
         events: &EventSink,
     ) -> Result<Response, ApiError> {
+        let LogRequest {
+            follow,
+            tail,
+            window,
+            interactive,
+        } = options;
+
         let resolved = self.resolve(&target).await?;
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
 
-        let targets = if services.is_empty() {
+        let targets: Vec<String> = if services.is_empty() {
             resolved.config.services.keys().cloned().collect()
         } else {
             validate_service_names(&resolved.config, &services)?;
@@ -477,6 +535,31 @@ impl Supervisor {
 
         let workspace_key = WorkspaceKey::new(&resolved.project, &resolved.workspace.label);
         let shared_key = WorkspaceKey::shared(&resolved.project);
+
+        // The client offered its terminal. Whether that is taken up
+        // depends on there being exactly one service and that service
+        // having a terminal to offer back; when it is not, the reason is
+        // said out loud and the plain log stream follows.
+        if interactive {
+            match self.attachable(&resolved, &targets) {
+                Ok(name) => {
+                    let key = match resolved
+                        .config
+                        .service(&name)
+                        .map_err(ApiError::from)?
+                        .scope
+                    {
+                        ServiceScope::Workspace => workspace_key.service(&name),
+                        ServiceScope::Project => shared_key.service(&name),
+                    };
+
+                    return self
+                        .attach(runtime.as_ref(), &key, &name, window, from_client, events)
+                        .await;
+                }
+                Err(reason) => events.warn(reason),
+            }
+        }
 
         let mut streams = Vec::new();
         for name in &targets {
@@ -516,6 +599,108 @@ impl Supervisor {
 
         while let Some((service, entry)) = merged.next().await {
             events.output(Some(service), entry.stream, entry.line);
+        }
+
+        Ok(Response::Empty)
+    }
+
+    /// Which service `logs` may hand the client's terminal to.
+    ///
+    /// The `Err` is what to tell the person instead — a warning, not a
+    /// failure. They asked to read logs and will get logs; what they will
+    /// not get is to type, and being told why beats a keyboard that
+    /// quietly does nothing.
+    fn attachable(&self, resolved: &Resolved, targets: &[String]) -> Result<String, String> {
+        let [name] = targets else {
+            return Err("typing needs one service to type at. Name one, as in \
+                 `minato logs -f web`"
+                .to_string());
+        };
+
+        let service = resolved
+            .config
+            .service(name)
+            .map_err(|err| err.to_string())?;
+
+        if !service.tty {
+            return Err(format!(
+                "{name} has no terminal, so it cannot take input. Add \
+                 `tty = true` under [services.{name}] in minato.toml, then \
+                 `minato down && minato up`"
+            ));
+        }
+
+        Ok(name.clone())
+    }
+
+    /// Hands the client's terminal to a running service, both ways.
+    ///
+    /// Ends when the service's terminal closes — the container stopped —
+    /// or when the client goes away. Neither is a failure: leaving is how
+    /// this is meant to end.
+    async fn attach(
+        &self,
+        runtime: &dyn Runtime,
+        key: &minato_runtime::ServiceKey,
+        service: &str,
+        window: Option<Window>,
+        mut from_client: ClientStream,
+        events: &EventSink,
+    ) -> Result<Response, ApiError> {
+        let attachment = runtime.attach(key).await?;
+        let minato_runtime::Attachment {
+            mut output,
+            mut input,
+            fixed_size,
+        } = attachment;
+
+        match (fixed_size, window) {
+            // **Said before the screen is handed over.** After that the
+            // program owns the display, and a warning printed into it
+            // would be drawn over and lost.
+            (Some(fixed), Some(asked)) if fixed != asked => events.warn(format!(
+                "this runtime fixes a container's terminal at {fixed} when \
+                 the service starts and cannot resize it, so {service} will \
+                 draw to {fixed} rather than to your {asked} window"
+            )),
+            // Sized before the first frame, rather than left to the
+            // resize that a client sends on the way in.
+            (None, Some(asked)) => {
+                if let Err(err) = runtime.resize(key, asked.cols, asked.rows).await {
+                    events.debug(format!("cannot size {service}'s terminal: {err}"));
+                }
+            }
+            _ => {}
+        }
+
+        events.attached(service);
+
+        loop {
+            tokio::select! {
+                chunk = output.next() => match chunk {
+                    Some(bytes) => events.bytes(Some(service.to_string()), &bytes),
+                    // The container's terminal closed. The service
+                    // stopped, or was stopped.
+                    None => break,
+                },
+                message = from_client.recv() => match message {
+                    Some(FromClient::Keys(keys)) => {
+                        if input.write_all(&keys).await.is_err() {
+                            break;
+                        }
+                        // Flushed per keystroke. A terminal that answered
+                        // in batches would not be one.
+                        let _ = input.flush().await;
+                    }
+                    Some(FromClient::Resize(window)) => {
+                        if let Err(err) = runtime.resize(key, window.cols, window.rows).await {
+                            events.debug(format!("cannot resize {service}'s terminal: {err}"));
+                        }
+                    }
+                    // The client hung up.
+                    None => break,
+                },
+            }
         }
 
         Ok(Response::Empty)

@@ -104,6 +104,13 @@ pub struct ServiceSpec {
     pub workdir: String,
     pub env: BTreeMap<String, String>,
 
+    /// Run the process on a terminal, with its stdin left open.
+    ///
+    /// Set from `tty` in `minato.toml`. It is what lets `minato logs`
+    /// attach both ways, and what makes a program that checks for a
+    /// terminal — turborepo, most test runners — draw in colour.
+    pub tty: bool,
+
     /// The port listened on inside the container.
     pub port: Option<u16>,
 
@@ -575,6 +582,7 @@ mod tests {
                 ("PORT".to_string(), "3000".to_string()),
                 ("NODE_ENV".to_string(), "development".to_string()),
             ]),
+            tty: false,
             port: Some(3000),
             health: None,
             scope: ServiceScope::Workspace,

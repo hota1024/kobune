@@ -5,9 +5,12 @@
 //! own IP is up to the implementation; neither the proxy nor the
 //! supervisor knows the difference.
 
+use std::pin::Pin;
+
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use minato_api::OutputStream;
+use minato_api::{OutputStream, Window};
+use tokio::io::AsyncWrite;
 
 use crate::error::Result;
 use crate::event::EventSink;
@@ -29,6 +32,38 @@ pub struct LogOptions {
 pub struct LogLine {
     pub stream: OutputStream,
     pub line: String,
+}
+
+/// A live terminal on a running service.
+///
+/// Only a service started with `tty` has one. The two halves are
+/// independent: output keeps arriving while nobody is typing, and what is
+/// typed is echoed by the terminal inside the container rather than here.
+pub struct Attachment {
+    /// What the container's terminal produces, in the order it produced it.
+    ///
+    /// Chunks, not lines. A full-screen program's output is not made of
+    /// lines, and cutting it into them is not something that can be undone
+    /// further along.
+    pub output: BoxStream<'static, Vec<u8>>,
+
+    /// Where keystrokes go.
+    pub input: Pin<Box<dyn AsyncWrite + Send>>,
+
+    /// The size this terminal is stuck at, when it cannot be resized.
+    ///
+    /// `None` means [`Runtime::resize`] works. Apple Container reads the
+    /// size once, when the service starts, so what it says here is what a
+    /// full-screen program will see however large the window really is —
+    /// and the caller passes that on rather than letting someone wonder
+    /// why the display is the wrong shape.
+    pub fixed_size: Option<Window>,
+}
+
+impl std::fmt::Debug for Attachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Attachment")
+    }
 }
 
 /// How to run a command inside a container.
@@ -142,6 +177,25 @@ pub trait Runtime: Send + Sync {
         key: &ServiceKey,
         options: LogOptions,
     ) -> Result<BoxStream<'static, LogLine>>;
+
+    /// Opens the service's terminal, in both directions.
+    ///
+    /// Only for a service whose spec asked for `tty`; without one there is
+    /// no terminal to open and this fails. That is a condition the caller
+    /// is expected to have checked, not one to surprise a person with:
+    /// `minato logs` reads the service's configuration first and falls
+    /// back to plain log reading.
+    ///
+    /// Several attachments to one service are possible and all see the
+    /// same terminal, exactly as two `docker attach`es do. Nothing here
+    /// arbitrates between them.
+    async fn attach(&self, key: &ServiceKey) -> Result<Attachment>;
+
+    /// Tells the container's terminal how big the window is.
+    ///
+    /// A full-screen program asks its terminal for the size and draws to
+    /// it. Without this it would draw to the 80×24 the runtime invented.
+    async fn resize(&self, key: &ServiceKey, cols: u16, rows: u16) -> Result<()>;
 
     /// Runs a command inside the container.
     ///

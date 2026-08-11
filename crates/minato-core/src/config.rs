@@ -155,6 +155,21 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub workdir: Option<String>,
 
+    /// Give the process a terminal, and keep its stdin open.
+    ///
+    /// **What a program looks for before it draws anything.** Turborepo,
+    /// Vitest and the rest ask whether stdout is a terminal, and settle for
+    /// plain scrolling text when it is not — which is what a container
+    /// without this gives them. With it, `minato logs -f <service>` becomes
+    /// that terminal: colour comes through and keys reach the program.
+    ///
+    /// Off by default, because a terminal changes what the logs *are*: the
+    /// two output streams become one, so nothing separates stderr from
+    /// stdout any more, and lines arrive ending `\r\n`. A pipeline that
+    /// greps `minato logs` should not have that happen to it unasked.
+    #[serde(default)]
+    pub tty: bool,
+
     /// How readiness is determined. Used by scale-to-zero.
     #[serde(default)]
     pub health: Option<HealthCheck>,
