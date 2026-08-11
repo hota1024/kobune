@@ -188,6 +188,53 @@ Store the composed value as the secret, or give the application the two
 variables and let it join them.
 :::
 
+## Writing it to a file
+
+Some tools do not read the environment they are started with. `wrangler dev`
+does not pass its own to the Worker; Vite and dotenvx read a file off disk.
+`env_file` writes the settled values where they can find them:
+
+```toml
+[services.api]
+env_file = ".minato/env.api"
+```
+
+```sh
+wrangler dev --env-file .env --env-file .minato/env.api
+```
+
+The path is relative to the worktree, and the file is written before the
+service starts — on `minato up` and again whenever scale-to-zero wakes it. It
+is left in place afterwards, so `pnpm dev` run from the worktree by hand reads
+the same values.
+
+**Rewriting it unchanged is not a write**, so a dev server watching the file
+does not restart every time the service wakes.
+
+- **A path git tracks is refused.** A generated file leaves the worktree dirty
+  for good, and committing it would put one branch's URLs into every other
+  checkout. Write somewhere gitignored — `.minato/` is already there.
+- **A file Minato did not write is never overwritten.** The header line is the
+  marker, so an `.env.local` of your own is safe: you get an error naming it,
+  not a replacement.
+- **Not `.minato/env` or `.minato/env.local`.** Minato reads those two as
+  layers of its own, so writing one would feed the generated file straight
+  back in — and the workspace layer outranks everything. Write beside them.
+- **One path per service.** Two services sharing a file would overwrite each
+  other's environment at every start.
+- **Not on `scope = "project"`.** A shared service is mounted no worktree, so
+  the file would land where that container cannot see it.
+
+::: warning Secrets are left out
+Keys whose value is a `op://` or `keychain://` reference are named in a
+comment and not written. A resolved secret lives in the daemon's memory and
+never touches disk; a file would be handed on to whatever reads it, and that
+is the end of the guarantee.
+
+If a tool needs the secret itself, give it a `.env` of your own and pass both
+files.
+:::
+
 ## Secrets
 
 Do not commit secrets. Write a reference and Minato resolves it when the

@@ -958,6 +958,18 @@ impl Supervisor {
             }
         }
 
+        // Written before the service starts, and from the same values it
+        // is about to be given: a file that disagreed with the process's
+        // own environment would be worse than no file.
+        if let Some(relative) = &config.service(service).map_err(ApiError::from)?.env_file {
+            let note = format!("service: {service}  workspace: {}", record.label);
+            let contents = minato_core::env::render(&entries, &note);
+
+            if let Some(path) = env::write_env_file(&record.path, relative, &contents)? {
+                tracing::debug!("{service}: wrote {}", path.display());
+            }
+        }
+
         // Split references from plain values.
         let mut values = BTreeMap::new();
         let mut references = Vec::new();

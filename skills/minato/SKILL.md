@@ -180,6 +180,15 @@ To reach the name the application already reads, refer to it from `env` in
 NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
 ```
 
+For a tool that reads a file rather than its own environment (`wrangler dev`,
+Vite, dotenvx), `env_file` writes the settled values into the worktree before
+the service starts. Secrets are left out of it.
+
+```toml
+[services.api]
+env_file = ".minato/env.api"
+```
+
 **They are only there while the proxy is listening.** With no proxy there is
 no URL to hand out, so the variable is left unset rather than set to
 something that does not work, and a start-up script reading it fails with

@@ -228,6 +228,15 @@ fn parse_worktree_list(output: &str) -> Vec<Worktree> {
     result
 }
 
+/// Whether git tracks `relative` within `worktree`.
+///
+/// **A file Minato generates must not be one git is watching.** Writing it
+/// would leave the worktree permanently dirty, and committing it would put
+/// one branch's URLs into every other checkout.
+pub fn is_tracked(worktree: &Path, relative: &str) -> bool {
+    git(worktree, &["ls-files", "--error-unmatch", "--", relative]).is_ok()
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .current_dir(dir)
