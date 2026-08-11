@@ -6,7 +6,8 @@
 
 [![CI](https://github.com/hota1024/minato/actions/workflows/ci.yml/badge.svg)](https://github.com/hota1024/minato/actions/workflows/ci.yml)
 
-A development environment manager for AI agents.
+A development environment manager built around git worktrees. Agent-friendly
+by design.
 
 **Create a git worktree, and its preview environment is up.**
 

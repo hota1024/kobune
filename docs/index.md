@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Minato
   text: A preview environment per git worktree
-  tagline: Create a branch, and the environment is already running. Built for AI agents to drive.
+  tagline: Create a branch, and the environment is already running. Made to be driven by an agent as readily as by you.
   image:
     src: /logo/minato-mark.svg
     alt: Minato

@@ -1,7 +1,8 @@
 # Minato design notes
 
-A development environment manager for AI agents. The goal is that creating a
-git worktree is all it takes to have a preview environment running.
+A development environment manager built around git worktrees. Agent-friendly
+by design. The goal is that creating a git worktree is all it takes to have a
+preview environment running.
 
 ## 1. The idea
 
