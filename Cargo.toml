@@ -20,7 +20,7 @@ edition = "2024"
 # 1.85 is what edition 2024 needs. It is 1.88 because ratatui asks for it,
 # and the CLI draws everything it prints with ratatui.
 rust-version = "1.88"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/hota1024/minato"
 
 [workspace.dependencies]

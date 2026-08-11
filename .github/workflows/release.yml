@@ -89,7 +89,8 @@ jobs:
 
             cp "target/$target/release/minato" "$staging/"
             cp "target/$target/release/minatod" "$staging/"
-            cp LICENSE README.md "$staging/"
+            # NOTICE travels with every distribution — Apache-2.0 §4(d).
+            cp LICENSE NOTICE README.md "$staging/"
 
             # The CLI looks next to itself for the daemon, so the two have
             # to stay in one directory. The archive keeps them together.
