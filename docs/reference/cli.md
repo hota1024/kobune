@@ -342,6 +342,7 @@ Writes `.claude/skills/minato/SKILL.md`. Unchanged content is left alone.
 ```console
 $ minato daemon start
 $ minato daemon stop
+$ minato daemon restart
 $ minato daemon status
 ```
 
@@ -349,6 +350,17 @@ Any command starts the daemon if it is down, so these are rarely needed.
 `stop` on a machine with the LaunchDaemon installed is immediately followed by
 launchd starting it again — that is how it picks up new settings while keeping
 ports 80 and 443.
+
+`restart` is for the one case that does not fix itself: a daemon left running
+from an older build. It answers every command happily and speaks a protocol the
+new CLI does not, which reads as
+
+```
+error: the daemon speaks protocol 3, which this minato (protocol 5) cannot
+talk to. Restart it with `minato daemon restart`
+```
+
+Updating the binaries does not replace the process that is already running.
 
 ## Keeping it current
 

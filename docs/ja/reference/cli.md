@@ -344,6 +344,7 @@ $ minato skill show
 ```console
 $ minato daemon start
 $ minato daemon stop
+$ minato daemon restart
 $ minato daemon status
 ```
 
@@ -351,6 +352,17 @@ $ minato daemon status
 はほとんど必要ありません。LaunchDaemon を配置したマシンでは、`stop` の直後に
 launchd が再起動します。80/443 番ポートを保持したまま設定を再読み込みする
 手段です。
+
+`restart` は自動では解消しない唯一のケース——古いビルドのまま動き続けている
+daemon——のためにあります。コマンドには普通に応答しますが、新しい CLI が話す
+プロトコルとは食い違い、次のように表示されます。
+
+```
+error: the daemon speaks protocol 3, which this minato (protocol 5) cannot
+talk to. Restart it with `minato daemon restart`
+```
+
+バイナリを更新しても、すでに起動しているプロセスは置き換わりません。
 
 ## 更新
 
