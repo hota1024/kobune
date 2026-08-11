@@ -82,6 +82,20 @@ impl IdleTracker {
         Some(StartGuard { tracker: self, key })
     }
 
+    /// Whether a start is in flight for this host.
+    ///
+    /// **The sweep has to ask.** A host being woken has no endpoint on
+    /// its route yet, so anything reading "not running" as "nobody is
+    /// using it" would decide that against the very request doing the
+    /// waking.
+    pub fn is_starting(&self, host: &str) -> bool {
+        let key = host.to_ascii_lowercase();
+
+        self.starting
+            .lock()
+            .is_ok_and(|guard| guard.contains_key(&key))
+    }
+
     fn finish_start(&self, key: &str) {
         if let Ok(mut guard) = self.starting.lock() {
             guard.remove(key);
@@ -249,6 +263,31 @@ mod tests {
 
         // A different host starts independently.
         assert!(tracker.begin_start("api.myapp.localhost").is_some());
+    }
+
+    #[test]
+    fn a_start_in_flight_is_visible_to_the_sweep() {
+        // The sweep decides on routes, and a host being woken has no
+        // endpoint on its yet — so without this it reads as stopped, and
+        // stopped is what the sweep treats as nobody using it.
+        let tracker = IdleTracker::new();
+        assert!(!tracker.is_starting("web.myapp.localhost"));
+
+        {
+            let _guard = tracker
+                .begin_start("web.myapp.localhost")
+                .expect("claims it");
+
+            assert!(tracker.is_starting("web.myapp.localhost"));
+            // Asked with the casing a client happened to send.
+            assert!(tracker.is_starting("WEB.MyApp.localhost"));
+            assert!(!tracker.is_starting("api.myapp.localhost"));
+        }
+
+        assert!(
+            !tracker.is_starting("web.myapp.localhost"),
+            "the start is done"
+        );
     }
 
     #[test]

@@ -1779,8 +1779,13 @@ impl Supervisor {
         routes: &[(String, Route)],
         events: &EventSink,
     ) -> Result<usize, ApiError> {
-        let candidates =
-            unreached_internal_services(project, config, routes, &|host| self.idle.idle_for(host));
+        let candidates = unreached_internal_services(
+            project,
+            config,
+            routes,
+            &|host| self.idle.idle_for(host),
+            &|host| self.idle.is_starting(host),
+        );
 
         if candidates.is_empty() {
             return Ok(0);
@@ -2740,6 +2745,7 @@ fn unreached_internal_services(
     config: &MinatoConfig,
     routes: &[(String, Route)],
     idle_for: &dyn Fn(&str) -> Option<Duration>,
+    starting: &dyn Fn(&str) -> bool,
 ) -> Vec<minato_runtime::ServiceKey> {
     let internal: Vec<&str> = config
         .services
@@ -2796,6 +2802,14 @@ fn unreached_internal_services(
         for (workspace, entries) in dependents {
             // One dependent still in use is enough to keep it up.
             let all_idle = entries.iter().all(|(host, route)| {
+                // Being woken right now. Its route has no endpoint yet,
+                // so reading "not running" as "not using it" would stop
+                // the database out from under the request doing the
+                // waking.
+                if starting(host) {
+                    return false;
+                }
+
                 !route.is_running() || idle_for(host).is_some_and(|idle| idle >= timeout)
             });
 
@@ -3534,6 +3548,11 @@ mod tests {
         move |_| Some(Duration::from_secs(seconds))
     }
 
+    /// Nothing is being woken.
+    fn never_starting(_: &str) -> bool {
+        false
+    }
+
     #[test]
     fn an_internal_service_stops_once_its_dependents_go_quiet() {
         // `db` has no URL, so no request ever names it and it has no last
@@ -3551,6 +3570,7 @@ mod tests {
             &config,
             &routes,
             &idle_by(31 * 60), // past the 30m default
+            &never_starting,
         );
 
         assert_eq!(
@@ -3568,14 +3588,20 @@ mod tests {
             route_for("feat-1", "api", true),
         ];
 
-        let unreached = unreached_internal_services("myapp", &config, &routes, &|host| {
-            // `api` is still being called; `web` has gone quiet.
-            Some(Duration::from_secs(if host.starts_with("api.") {
-                5
-            } else {
-                31 * 60
-            }))
-        });
+        let unreached = unreached_internal_services(
+            "myapp",
+            &config,
+            &routes,
+            &|host| {
+                // `api` is still being called; `web` has gone quiet.
+                Some(Duration::from_secs(if host.starts_with("api.") {
+                    5
+                } else {
+                    31 * 60
+                }))
+            },
+            &never_starting,
+        );
 
         assert!(
             unreached.is_empty(),
@@ -3594,7 +3620,8 @@ mod tests {
             route_for("feat-1", "api", false),
         ];
 
-        let unreached = unreached_internal_services("myapp", &config, &routes, &|_| None);
+        let unreached =
+            unreached_internal_services("myapp", &config, &routes, &|_| None, &never_starting);
 
         assert_eq!(unreached, vec![WorkspaceKey::shared("myapp").service("db")]);
     }
@@ -3619,7 +3646,13 @@ mod tests {
         );
 
         let routes = vec![route_for("feat-1", "web", true)];
-        let unreached = unreached_internal_services("myapp", &config, &routes, &idle_by(31 * 60));
+        let unreached = unreached_internal_services(
+            "myapp",
+            &config,
+            &routes,
+            &idle_by(31 * 60),
+            &never_starting,
+        );
 
         assert!(unreached.is_empty(), "nothing would ever start it again");
     }
@@ -3648,18 +3681,48 @@ mod tests {
             route_for("feat-2", "web", true),
         ];
 
-        let unreached = unreached_internal_services("myapp", &config, &routes, &|host| {
-            Some(Duration::from_secs(if host.contains("feat-2") {
-                5
-            } else {
-                31 * 60
-            }))
-        });
+        let unreached = unreached_internal_services(
+            "myapp",
+            &config,
+            &routes,
+            &|host| {
+                Some(Duration::from_secs(if host.contains("feat-2") {
+                    5
+                } else {
+                    31 * 60
+                }))
+            },
+            &never_starting,
+        );
 
         assert_eq!(
             unreached,
             vec![WorkspaceKey::new("myapp", "feat-1").service("db")],
             "only the quiet worktree's database"
+        );
+    }
+
+    #[test]
+    fn a_dependent_being_woken_holds_it_open() {
+        // The narrow one. A host part-way through a wake has no endpoint
+        // on its route yet, so it looks stopped — and stopped counts as
+        // idle. Read literally, a sweep landing inside that window would
+        // stop the database out from under the request that is starting
+        // it, and the app would come up against nothing.
+        let config = config(SAMPLE);
+        let routes = vec![
+            route_for("feat-1", "web", false),
+            route_for("feat-1", "api", false),
+        ];
+
+        let unreached =
+            unreached_internal_services("myapp", &config, &routes, &|_| None, &|host| {
+                host.starts_with("web.")
+            });
+
+        assert!(
+            unreached.is_empty(),
+            "a start in flight is use, whatever the route says yet"
         );
     }
 
@@ -3671,7 +3734,13 @@ mod tests {
         let config = config(SAMPLE);
         let routes = vec![route_for("feat-1", "web", true)];
 
-        let unreached = unreached_internal_services("myapp", &config, &routes, &idle_by(31 * 60));
+        let unreached = unreached_internal_services(
+            "myapp",
+            &config,
+            &routes,
+            &idle_by(31 * 60),
+            &never_starting,
+        );
 
         assert!(
             unreached.iter().all(|key| key.service == "db"),
