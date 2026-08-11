@@ -15,6 +15,7 @@ mod update;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use minato_api::{Event, Request, Response, Target, Window};
@@ -356,6 +357,11 @@ enum DaemonCommand {
     Start,
     /// Stop the daemon
     Stop,
+    /// Stop the daemon and start it again
+    ///
+    /// What a daemon left running from an older build needs: it answers
+    /// happily and speaks a protocol this one does not.
+    Restart,
     /// Show the daemon's state
     Status,
 }
@@ -1930,34 +1936,28 @@ async fn handle_daemon(
     command: &DaemonCommand,
 ) -> Result<ExitCode, CliError> {
     match command {
-        DaemonCommand::Start => {
-            let (mut connection, start) = client.connect_or_spawn().await?;
-            warn_if_unprivileged(cli, start);
-            let pong = connection.handshake().await?;
+        DaemonCommand::Start => start_daemon(cli, client).await,
+        DaemonCommand::Stop => {
+            let was_running = stop_daemon(client).await?;
 
-            if cli.json {
-                output::print_json(&pong);
-            } else {
-                ui::daemon(&pong, Some(client.socket_path()));
+            if !cli.json {
+                if was_running {
+                    ui::confirm("stopped the daemon");
+                } else {
+                    ui::confirm("the daemon is not running");
+                }
             }
+
             Ok(ExitCode::SUCCESS)
         }
-        DaemonCommand::Stop => {
-            let mut connection = match client.connect().await {
-                Ok(connection) => connection,
-                Err(_) => {
-                    if !cli.json {
-                        ui::confirm("the daemon is not running");
-                    }
-                    return Ok(ExitCode::SUCCESS);
-                }
-            };
+        DaemonCommand::Restart => {
+            stop_daemon(client).await?;
 
-            connection.request(Request::Shutdown).await?;
-            if !cli.json {
-                ui::confirm("stopped the daemon");
-            }
-            Ok(ExitCode::SUCCESS)
+            // **Waited for.** The next start binds the same socket, and
+            // a daemon on its way out still holds it.
+            wait_until_stopped(client).await;
+
+            start_daemon(cli, client).await
         }
         DaemonCommand::Status => match client.connect().await {
             Ok(mut connection) => {
@@ -1982,6 +1982,54 @@ async fn handle_daemon(
     }
 }
 
+/// Starts the daemon and says what answered.
+async fn start_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError> {
+    let (mut connection, start) = client.connect_or_spawn().await?;
+    warn_if_unprivileged(cli, start);
+    let pong = connection.handshake().await?;
+
+    if cli.json {
+        output::print_json(&pong);
+    } else {
+        ui::daemon(&pong, Some(client.socket_path()));
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Asks the daemon to stop. `false` when there was none.
+///
+/// **Nothing here shakes hands.** The reason to stop a daemon is most
+/// often that it is too old to talk to, and a version check on the way in
+/// would refuse to do the one thing that fixes it.
+async fn stop_daemon(client: &Client) -> Result<bool, CliError> {
+    let Ok(mut connection) = client.connect().await else {
+        return Ok(false);
+    };
+
+    connection.request(Request::Shutdown).await?;
+    Ok(true)
+}
+
+/// Waits for the socket to stop answering, within reason.
+///
+/// Returning early would race the daemon's own shutdown for the socket.
+/// Giving up quietly is right too: `connect_or_spawn` clears a socket
+/// nothing answers on, so the worst a slow stop costs is one retry.
+async fn wait_until_stopped(client: &Client) {
+    const PATIENCE: Duration = Duration::from_secs(5);
+    const GLANCE: Duration = Duration::from_millis(50);
+
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while std::time::Instant::now() < deadline {
+        if client.connect().await.is_err() {
+            return;
+        }
+
+        tokio::time::sleep(GLANCE).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1991,6 +2039,28 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn the_remedy_for_an_old_daemon_is_a_command_that_exists() {
+        // The message names a command, and for a while there was no such
+        // command: a daemon left running from an older build told people
+        // to run `minato daemon restart` and clap answered "unrecognized
+        // subcommand". Whatever the message says has to parse.
+        let message = ClientError::VersionMismatch {
+            client: 5,
+            server: 3,
+        }
+        .to_string();
+
+        let quoted = message
+            .split('`')
+            .nth(1)
+            .unwrap_or_else(|| panic!("no command in: {message}"));
+
+        let words: Vec<&str> = quoted.split_whitespace().collect();
+        Cli::try_parse_from(&words)
+            .unwrap_or_else(|err| panic!("`{quoted}` does not parse: {err}"));
     }
 
     /// Parses a `logs` command line and says whether it would attach.
