@@ -10,6 +10,10 @@
 //!
 //! **Keeps plaintext secrets out of the repository.** Values may hold a
 //! reference (`op://` and friends), resolved by the daemon at start-up.
+//!
+//! A value may also hold `${ANOTHER_KEY}`, expanded when the layers are
+//! resolved. It is what lets a per-worktree URL reach a name the
+//! application already reads: `NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -95,7 +99,8 @@ impl std::str::FromStr for EnvScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvEntry {
     pub key: String,
-    /// The value as written. For a secret, the reference itself.
+    /// The value with `${...}` expanded. For a secret, the reference
+    /// itself — that one is resolved later, and only in memory.
     pub raw: String,
     pub scope: EnvScope,
 }
@@ -145,10 +150,32 @@ impl EnvLayers {
         Ok(())
     }
 
-    /// The merged result: for each key, the value from the highest layer.
+    /// The merged result: for each key, the value from the highest layer,
+    /// with every `${...}` reference expanded.
     ///
     /// Sorted by key so that display and comparison stay stable.
-    pub fn resolve(&self) -> Vec<EnvEntry> {
+    ///
+    /// **Expansion happens here rather than at each caller** so that what
+    /// `minato env ls` shows is what the container is given. A listing of
+    /// unexpanded values would be a listing of something nothing ever runs
+    /// with.
+    pub fn resolve(&self) -> Result<Vec<EnvEntry>, EnvError> {
+        expand_all(self.merge())
+    }
+
+    /// The merged result with every value still as it was written.
+    ///
+    /// **For saying something about how a value was written.** Expansion
+    /// has by then turned `$$NAME` into `$NAME` and pasted one value into
+    /// another, so a message built from the settled values would object to
+    /// a deliberate escape, and blame the value that referred to the
+    /// mistake rather than the one that made it.
+    pub fn unexpanded(&self) -> Vec<EnvEntry> {
+        self.merge().into_values().collect()
+    }
+
+    /// The merge alone, `${...}` still as written.
+    fn merge(&self) -> BTreeMap<String, EnvEntry> {
         let mut merged: BTreeMap<String, EnvEntry> = BTreeMap::new();
 
         for (scope, values) in &self.layers {
@@ -164,12 +191,187 @@ impl EnvLayers {
             }
         }
 
-        merged.into_values().collect()
+        merged
     }
 
     pub fn is_empty(&self) -> bool {
         self.layers.iter().all(|(_, values)| values.is_empty())
     }
+}
+
+/// Expands `${...}` throughout the merged set.
+///
+/// **What a reference resolves to is the value the container will see**,
+/// not the one from the layer below the reference. A worktree that
+/// overrides `MINATO_URL_API` overrides it for everything built out of it
+/// too; the other way round, the override would apply everywhere except
+/// where it was being used.
+fn expand_all(merged: BTreeMap<String, EnvEntry>) -> Result<Vec<EnvEntry>, EnvError> {
+    let mut expanded: BTreeMap<String, String> = BTreeMap::new();
+
+    for key in merged.keys() {
+        expand_key(key, &merged, &mut expanded, &mut Vec::new())?;
+    }
+
+    Ok(merged
+        .into_values()
+        .map(|entry| EnvEntry {
+            raw: expanded
+                .remove(&entry.key)
+                .unwrap_or_else(|| entry.raw.clone()),
+            ..entry
+        })
+        .collect())
+}
+
+/// Expands one key, and whatever it refers to, first.
+///
+/// `chain` is the path taken to get here, so a cycle can be reported as
+/// the loop it is rather than as a stack overflow.
+fn expand_key(
+    key: &str,
+    merged: &BTreeMap<String, EnvEntry>,
+    expanded: &mut BTreeMap<String, String>,
+    chain: &mut Vec<String>,
+) -> Result<String, EnvError> {
+    if let Some(done) = expanded.get(key) {
+        return Ok(done.clone());
+    }
+
+    if let Some(start) = chain.iter().position(|seen| seen == key) {
+        let mut loop_ = chain[start..].to_vec();
+        loop_.push(key.to_string());
+        return Err(EnvError::CyclicReference { chain: loop_ });
+    }
+
+    let Some(entry) = merged.get(key) else {
+        // Only reached through a reference, which checks first.
+        return Ok(String::new());
+    };
+
+    // A secret is a reference to be resolved at start-up, not a template.
+    // Expanding one would mean reading `op://` as text.
+    if SecretRef::parse(&entry.raw).is_some() {
+        expanded.insert(key.to_string(), entry.raw.clone());
+        return Ok(entry.raw.clone());
+    }
+
+    chain.push(key.to_string());
+    let value = expand_value(key, &entry.raw, merged, expanded, chain)?;
+    chain.pop();
+
+    expanded.insert(key.to_string(), value.clone());
+    Ok(value)
+}
+
+/// The substitution itself.
+///
+/// - `${NAME}` is a reference
+/// - `$$` is a literal `$`
+/// - everything else is left alone, `$NAME` included
+///
+/// **A bare `$NAME` stays literal** because these values have always been
+/// passed through as written, and quietly expanding them would change what
+/// existing configurations mean. `${...}` is new syntax and can only mean
+/// this.
+fn expand_value(
+    key: &str,
+    raw: &str,
+    merged: &BTreeMap<String, EnvEntry>,
+    expanded: &mut BTreeMap<String, String>,
+    chain: &mut Vec<String>,
+) -> Result<String, EnvError> {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+
+    while let Some(dollar) = rest.find('$') {
+        out.push_str(&rest[..dollar]);
+        let after = &rest[dollar + 1..];
+
+        if let Some(tail) = after.strip_prefix('$') {
+            out.push('$');
+            rest = tail;
+            continue;
+        }
+
+        let Some(name) = reference_at(after) else {
+            out.push('$');
+            rest = after;
+            continue;
+        };
+
+        let Some(target) = merged.get(name) else {
+            return Err(EnvError::UndefinedReference {
+                key: key.to_string(),
+                name: name.to_string(),
+            });
+        };
+
+        // A secret resolves in memory when the container starts, so there
+        // is nothing here to paste in. Pasting the reference itself would
+        // hand the container the string `op://…`, and expanding it would
+        // put the secret into `minato env ls` and into any value that
+        // gets written out.
+        if SecretRef::parse(&target.raw).is_some() {
+            return Err(EnvError::SecretReference {
+                key: key.to_string(),
+                name: name.to_string(),
+            });
+        }
+
+        out.push_str(&expand_key(name, merged, expanded, chain)?);
+        rest = &after[name.len() + 2..];
+    }
+
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// The name in `{NAME}...`, when there is one.
+///
+/// Anything that is not a usable variable name is not a reference:
+/// `${VAR:-default}` is shell syntax someone meant to pass through, and
+/// refusing it would leave no way to write it.
+fn reference_at(text: &str) -> Option<&str> {
+    let inner = text.strip_prefix('{')?;
+    let end = inner.find('}')?;
+    let name = &inner[..end];
+
+    is_valid_key(name).then_some(name)
+}
+
+/// The names written as `$NAME`, which is not a reference.
+///
+/// **So the trap can be answered instead of sprung.** `$MINATO_CACHE_DIR`
+/// is what anyone reaches for first, and a value passed through as written
+/// fails somewhere else entirely — a directory called `$MINATO_CACHE_DIR`
+/// appears in the worktree and nothing says why. The caller warns when one
+/// of these names is a variable that exists.
+pub fn bare_references(value: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = value;
+
+    while let Some(dollar) = rest.find('$') {
+        let after = &rest[dollar + 1..];
+
+        if let Some(tail) = after.strip_prefix('$') {
+            rest = tail;
+            continue;
+        }
+
+        let name: &str = after
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or_default();
+
+        if is_valid_key(name) {
+            names.push(name);
+        }
+
+        rest = &after[name.len()..];
+    }
+
+    names
 }
 
 /// A reference to a secret held outside the repository.
@@ -264,6 +466,17 @@ pub enum EnvError {
 
     #[error("not a usable variable name: `{0}`")]
     InvalidKey(String),
+
+    #[error("{key} refers to ${{{name}}}, which nothing sets")]
+    UndefinedReference { key: String, name: String },
+
+    #[error(
+        "{key} refers to ${{{name}}}, which is a secret reference. Minato resolves those when the container starts, so one cannot be built into another value"
+    )]
+    SecretReference { key: String, name: String },
+
+    #[error("these refer to each other and cannot be settled: {}", chain.join(" -> "))]
+    CyclicReference { chain: Vec<String> },
 }
 
 /// Whether a name is usable as an environment variable.
@@ -593,7 +806,7 @@ ESCAPED="line1\nline2"
         layers.push(EnvScope::Project, layer(&[("B", "project")]));
         layers.push(EnvScope::Workspace, layer(&[("B", "workspace")]));
 
-        let resolved = layers.resolve();
+        let resolved = layers.resolve().expect("resolves");
         let find = |key: &str| {
             resolved
                 .iter()
@@ -620,7 +833,7 @@ ESCAPED="line1\nline2"
         layers.push(EnvScope::Injected, layer(&[("MINATO_URL_WEB", "auto")]));
         layers.push(EnvScope::Project, layer(&[("MINATO_URL_WEB", "custom")]));
 
-        let resolved = layers.resolve();
+        let resolved = layers.resolve().expect("resolves");
         assert_eq!(resolved[0].raw, "custom");
         assert_eq!(resolved[0].scope, EnvScope::Project);
     }
@@ -630,9 +843,221 @@ ESCAPED="line1\nline2"
         let mut layers = EnvLayers::new();
         layers.push(EnvScope::Global, layer(&[("Z", "1"), ("A", "2")]));
 
-        let resolved = layers.resolve();
+        let resolved = layers.resolve().expect("resolves");
         let keys: Vec<&str> = resolved.iter().map(|e| e.key.as_str()).collect();
         assert_eq!(keys, vec!["A", "Z"]);
+    }
+
+    /// The value of `key` once the layers are settled.
+    fn settled(layers: &EnvLayers, key: &str) -> String {
+        layers
+            .resolve()
+            .expect("resolves")
+            .into_iter()
+            .find(|entry| entry.key == key)
+            .unwrap_or_else(|| panic!("{key} is present"))
+            .raw
+    }
+
+    #[test]
+    fn expands_a_reference_to_another_variable() {
+        // The point of the whole thing: a URL that differs per worktree,
+        // reaching the name the application already reads.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Injected,
+            layer(&[("MINATO_URL_API", "https://api.feat-1.myapp.localhost")]),
+        );
+        layers.push(
+            EnvScope::Service,
+            layer(&[
+                ("NEXT_PUBLIC_API_URL", "${MINATO_URL_API}"),
+                ("FILE_BASE_URL", "${MINATO_URL_API}/dev/r2"),
+            ]),
+        );
+
+        assert_eq!(
+            settled(&layers, "NEXT_PUBLIC_API_URL"),
+            "https://api.feat-1.myapp.localhost"
+        );
+        assert_eq!(
+            settled(&layers, "FILE_BASE_URL"),
+            "https://api.feat-1.myapp.localhost/dev/r2",
+            "a reference is a part of the value, not the whole of it"
+        );
+    }
+
+    #[test]
+    fn a_reference_sees_the_value_that_won() {
+        // Not the layer below the reference: an override that applied
+        // everywhere except where it was being used would be a trap.
+        let mut layers = EnvLayers::new();
+        layers.push(EnvScope::Injected, layer(&[("MINATO_URL_API", "auto")]));
+        layers.push(
+            EnvScope::Service,
+            layer(&[("API_URL", "${MINATO_URL_API}")]),
+        );
+        layers.push(
+            EnvScope::Workspace,
+            layer(&[("MINATO_URL_API", "http://localhost:8080")]),
+        );
+
+        assert_eq!(settled(&layers, "API_URL"), "http://localhost:8080");
+    }
+
+    #[test]
+    fn references_can_be_chained() {
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[("A", "one"), ("B", "${A}-two"), ("C", "${B}-three")]),
+        );
+
+        assert_eq!(settled(&layers, "C"), "one-two-three");
+    }
+
+    #[test]
+    fn an_undefined_reference_is_an_error() {
+        // Not an empty string. "Set, but empty" is the state that is
+        // hardest to trace back to its cause.
+        let mut layers = EnvLayers::new();
+        layers.push(EnvScope::Project, layer(&[("API_URL", "${NOT_SET}/v1")]));
+
+        let err = layers.resolve().unwrap_err().to_string();
+        assert!(err.contains("API_URL"), "name the value: {err}");
+        assert!(err.contains("NOT_SET"), "name the reference: {err}");
+    }
+
+    #[test]
+    fn a_cycle_is_reported_as_the_loop_it_is() {
+        let mut layers = EnvLayers::new();
+        layers.push(EnvScope::Project, layer(&[("A", "${B}"), ("B", "${A}")]));
+
+        let err = layers.resolve().unwrap_err().to_string();
+        assert!(err.contains("A -> B -> A"), "show the loop: {err}");
+    }
+
+    #[test]
+    fn a_secret_cannot_be_built_into_another_value() {
+        // Expanding one would put the secret in `minato env ls` and in
+        // anything written out of it; pasting the reference in would hand
+        // the container the string `op://…`.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[
+                ("PASSWORD", "op://Development/myapp/password"),
+                ("DATABASE_URL", "postgres://user:${PASSWORD}@db/app"),
+            ]),
+        );
+
+        let err = layers.resolve().unwrap_err().to_string();
+        assert!(err.contains("PASSWORD"), "name the secret: {err}");
+        assert!(err.contains("secret"), "say why: {err}");
+    }
+
+    #[test]
+    fn what_was_written_survives_for_anything_that_has_to_talk_about_it() {
+        // A warning about how a value was written cannot be read off the
+        // settled ones: `$$A` has become `$A` by then, and `B` is carrying
+        // a copy of the mistake `C` made.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[("A", "1"), ("B", "$${A}"), ("C", "$A"), ("D", "${C}")]),
+        );
+
+        let written = layers.unexpanded();
+        let find = |key: &str| {
+            written
+                .iter()
+                .find(|entry| entry.key == key)
+                .expect("present")
+                .raw
+                .clone()
+        };
+
+        assert_eq!(find("B"), "$${A}", "the escape is still an escape");
+        assert_eq!(find("D"), "${C}", "the mistake stays with C");
+        assert!(bare_references(&find("B")).is_empty());
+        assert!(bare_references(&find("D")).is_empty());
+        assert_eq!(bare_references(&find("C")), vec!["A"]);
+    }
+
+    #[test]
+    fn a_secret_reference_is_left_alone() {
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[("PASSWORD", "op://Development/myapp/password")]),
+        );
+
+        assert_eq!(
+            settled(&layers, "PASSWORD"),
+            "op://Development/myapp/password"
+        );
+    }
+
+    #[test]
+    fn a_bare_dollar_is_left_as_written() {
+        // These values have always been passed through verbatim. Expanding
+        // them now would change what existing configurations mean.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[
+                ("MINATO_CACHE_DIR", "/var/cache/minato"),
+                ("STORE", "$MINATO_CACHE_DIR/pnpm"),
+                ("COST", "$5"),
+            ]),
+        );
+
+        assert_eq!(settled(&layers, "STORE"), "$MINATO_CACHE_DIR/pnpm");
+        assert_eq!(settled(&layers, "COST"), "$5");
+    }
+
+    #[test]
+    fn double_dollar_escapes() {
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[("A", "one"), ("LITERAL", "$${A} costs $$5")]),
+        );
+
+        assert_eq!(settled(&layers, "LITERAL"), "${A} costs $5");
+    }
+
+    #[test]
+    fn what_is_not_a_variable_name_is_not_a_reference() {
+        // Shell syntax someone meant to pass to a shell. Refusing it would
+        // leave no way to write it.
+        let mut layers = EnvLayers::new();
+        layers.push(
+            EnvScope::Project,
+            layer(&[
+                ("SHELL_DEFAULT", "${PORT:-3000}"),
+                ("JQ", "${.name}"),
+                ("UNCLOSED", "${OPEN"),
+            ]),
+        );
+
+        assert_eq!(settled(&layers, "SHELL_DEFAULT"), "${PORT:-3000}");
+        assert_eq!(settled(&layers, "JQ"), "${.name}");
+        assert_eq!(settled(&layers, "UNCLOSED"), "${OPEN");
+    }
+
+    #[test]
+    fn bare_references_are_found_so_they_can_be_warned_about() {
+        assert_eq!(
+            bare_references("$MINATO_CACHE_DIR/pnpm"),
+            vec!["MINATO_CACHE_DIR"]
+        );
+        assert_eq!(bare_references("$A:$B"), vec!["A", "B"]);
+
+        assert!(
+            bare_references("${A} $$B $5 $").is_empty(),
+            "a reference, an escape, and two things that are neither"
+        );
     }
 
     #[test]

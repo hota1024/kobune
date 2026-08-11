@@ -336,6 +336,13 @@ Apple Container has no named volumes, so they become bind mounts under
 env = { NODE_ENV = "development", PORT = "3000" }
 ```
 
+A value may refer to another variable, which is how a per-worktree URL reaches
+the name an application already reads:
+
+```toml
+env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+```
+
 This is the *project* layer, and it is committed — keep secrets out of it. See
 [Environment variables](../guide/environment-variables).
 

@@ -5,6 +5,7 @@
 //! Minato's conveniences would quietly erase them.
 
 use indexmap::IndexMap;
+use minato_api::{ApiError, ErrorCode};
 use minato_core::{EnvLayers, EnvScope, MinatoConfig, Paths, WorkspaceRecord, env};
 
 use crate::gateway::Gateway;
@@ -60,6 +61,26 @@ pub fn injected(
     }
 
     values
+}
+
+/// Turns a failure to settle the layers into an API error.
+///
+/// **A missing `MINATO_URL_<SERVICE>` is usually the proxy being down**,
+/// not a mistake in the configuration: the variable is only injected while
+/// the gateway is listening, and only for an exposed service. Saying no
+/// more than "nothing sets it" sends someone to edit a `minato.toml` that
+/// is already right.
+pub fn resolution_error(err: env::EnvError) -> ApiError {
+    let error = ApiError::new(ErrorCode::InvalidConfig, err.to_string());
+
+    match &err {
+        env::EnvError::UndefinedReference { name, .. } if name.starts_with("MINATO_URL_") => error
+            .with_hint(
+                "MINATO_URL_<SERVICE> exists only while the proxy is listening, and only \
+                 for a service with `expose = true`. Run `minato doctor`",
+            ),
+        _ => error,
+    }
 }
 
 /// Turns a service name into a variable name.
@@ -311,7 +332,11 @@ mod tests {
         .expect("builds");
 
         assert!(
-            !shared.resolve().iter().any(|entry| entry.key == "ONLY_WEB"),
+            !shared
+                .resolve()
+                .expect("resolves")
+                .iter()
+                .any(|entry| entry.key == "ONLY_WEB"),
             "one service's own env is not everyone's"
         );
 
@@ -328,6 +353,7 @@ mod tests {
 
         let own = web
             .resolve()
+            .expect("resolves")
             .into_iter()
             .find(|entry| entry.key == "ONLY_WEB")
             .expect("asked about web, it is web's that matter");
@@ -337,6 +363,82 @@ mod tests {
             EnvScope::Service,
             "labelling it `project` sends someone to edit .minato/env for a \
              value the service overrides"
+        );
+    }
+
+    #[test]
+    fn a_service_can_put_its_url_under_the_name_its_app_reads() {
+        // The whole point of expansion: no start-up script in between.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+            [services.api]
+            image = "node:22"
+            port = 8080
+        "#,
+        );
+
+        let layers = layers_for_service(
+            &config,
+            "myapp",
+            &record("feat-1", false),
+            std::path::Path::new("/repo"),
+            Some("web"),
+            &Paths::with_root(std::path::PathBuf::from("/nowhere")),
+            &Gateway::with_ports(Some(80), Some(443)),
+        )
+        .expect("builds");
+
+        let value = layers
+            .resolve()
+            .expect("resolves")
+            .into_iter()
+            .find(|entry| entry.key == "NEXT_PUBLIC_API_URL")
+            .expect("present")
+            .raw;
+
+        assert_eq!(value, "https://api.feat-1.myapp.localhost");
+    }
+
+    #[test]
+    fn a_url_that_is_missing_because_the_proxy_is_down_says_so() {
+        // The configuration is right and the error is about the proxy.
+        // "nothing sets it" alone sends someone to edit `minato.toml`.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+            [services.api]
+            image = "node:22"
+            port = 8080
+        "#,
+        );
+
+        let layers = layers_for_service(
+            &config,
+            "myapp",
+            &record("feat-1", false),
+            std::path::Path::new("/repo"),
+            Some("web"),
+            &Paths::with_root(std::path::PathBuf::from("/nowhere")),
+            &Gateway::with_ports(None, None),
+        )
+        .expect("builds");
+
+        let error = resolution_error(layers.resolve().expect_err("no URL to refer to"));
+
+        assert!(
+            error.hint.is_some_and(|hint| hint.contains("proxy")),
+            "name the proxy, not the config"
         );
     }
 

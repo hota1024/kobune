@@ -328,6 +328,13 @@ Apple Container には名前付きボリュームがないため、
 env = { NODE_ENV = "development", PORT = "3000" }
 ```
 
+値の中では他の変数を参照できます。worktree ごとに変わる URL を、アプリケー
+ションが既に読んでいる名前で渡すための書き方です。
+
+```toml
+env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+```
+
 これは project 層にあたり、リポジトリで管理されます。秘匿すべき値は記述しない
 でください。[環境変数](../guide/environment-variables) を参照してください。
 

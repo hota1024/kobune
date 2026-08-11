@@ -610,6 +610,32 @@ round, Minato's conveniences would erase the user's settings.
 **No URL is injected while the proxy is down.** An empty string would leave it
 "set, but unreachable", and the cause is hard to see.
 
+### Referring to another variable
+
+A value may hold `${ANOTHER_KEY}`, expanded when the layers are resolved.
+
+```toml
+[services.web.env]
+NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
+```
+
+**Injection alone is not enough**: the URL arrives under Minato's name for it,
+and the application reads its own. Without this, every project writes a
+start-up script whose whole job is to copy one variable onto another.
+
+- **A reference resolves to the value that won**, not to the layer below the
+  one referring to it. An override that applied everywhere except where it was
+  being used would be a trap
+- **A bare `$NAME` is left as written.** These values have always been passed
+  through verbatim, so expanding them would change what existing
+  configurations mean. `minato up` warns when one names a variable that exists,
+  which turns the trap into a message
+- **A name nothing sets is an error**, for the same reason a missing URL is
+  left unset rather than emptied
+- **A secret cannot be built into another value.** Expanding one would put it
+  in `minato env ls`; pasting the reference in would hand the container the
+  string `op://…`
+
 ### What M3 turned up
 
 - `minato env ls` **says which layer each value came from**. With three layers,

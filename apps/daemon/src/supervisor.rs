@@ -812,6 +812,7 @@ impl Supervisor {
 
         let entries = layers
             .resolve()
+            .map_err(env::resolution_error)?
             .into_iter()
             .map(|entry| {
                 let secret = entry.secret_ref();
@@ -861,7 +862,7 @@ impl Supervisor {
         minato_core::env::write_file(&path, &minato_core::env::upsert(&current, &key, &value))
             .map_err(|err| ApiError::internal(err.to_string()))?;
 
-        self.env_list(target, false, None).await
+        written(key, self.env_list(target, false, None).await)
     }
 
     async fn env_unset(
@@ -876,7 +877,7 @@ impl Supervisor {
         minato_core::env::write_file(&path, &minato_core::env::remove(&current, &key))
             .map_err(|err| ApiError::internal(err.to_string()))?;
 
-        self.env_list(target, false, None).await
+        written(key, self.env_list(target, false, None).await)
     }
 
     /// Where a layer's file lives.
@@ -931,7 +932,31 @@ impl Supervisor {
         )
         .map_err(|err| ApiError::new(ErrorCode::InvalidConfig, err.to_string()))?;
 
-        let entries = layers.resolve();
+        let entries = layers.resolve().map_err(env::resolution_error)?;
+
+        // `$NAME` is passed through as written — right for a value on its
+        // way to a shell, a mistake everywhere else. Saying so where the
+        // name is one Minato has costs a line and saves an afternoon:
+        // otherwise a directory called `$MINATO_CACHE_DIR` appears in the
+        // worktree and nothing connects it back to here.
+        //
+        // **Read from the values as written**, not from the settled ones:
+        // by then `$$NAME` has become `$NAME`, and a reference has carried
+        // one value's mistake into every value built out of it.
+        let written = layers.unexpanded();
+        for entry in &written {
+            for name in minato_core::env::bare_references(&entry.raw)
+                .into_iter()
+                .filter(|name| written.iter().any(|other| other.key == *name))
+            {
+                let message = format!(
+                    "{}: {} contains ${name}, which is not expanded. Write ${{{name}}} to refer to it",
+                    service, entry.key
+                );
+                events.warn(message.clone());
+                tracing::warn!("{message}");
+            }
+        }
 
         // Split references from plain values.
         let mut values = BTreeMap::new();
@@ -2593,6 +2618,20 @@ fn tunnel_error(err: minato_tunnel::TunnelError) -> ApiError {
         TunnelError::Write { .. } => ApiError::internal(message),
         TunnelError::Failed { .. } => ApiError::new(ErrorCode::RuntimeFailed, message),
     }
+}
+
+/// Says the value was written, whatever the listing that follows does.
+///
+/// **`env set` and `env unset` answer with a listing, and settling the
+/// layers can fail** — a `${...}` somewhere refers to a name nothing sets.
+/// The value is on disk by then, so an error that only described the
+/// listing would read as though nothing had been written, and invite the
+/// same command again.
+fn written(key: String, listing: Result<Response, ApiError>) -> Result<Response, ApiError> {
+    listing.map_err(|err| ApiError {
+        message: format!("{key} was written. {}", err.message),
+        ..err
+    })
 }
 
 /// Reads a file, or an empty string when there is none.
