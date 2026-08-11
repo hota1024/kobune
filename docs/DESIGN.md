@@ -598,6 +598,8 @@ MINATO_WORKSPACE     = feat-1
 MINATO_SERVICE       = web
 MINATO_URL_WEB       = https://web.feat-1.myapp.localhost
 MINATO_URL_API       = https://api.feat-1.myapp.localhost
+MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
+MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
 MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
 ```
 
@@ -607,8 +609,58 @@ A `-` in a service name becomes `_` (`api-server` →
 **Injection is the bottom layer**, so the user can override it. The other way
 round, Minato's conveniences would erase the user's settings.
 
-**No URL is injected while the proxy is down.** An empty string would leave it
-"set, but unreachable", and the cause is hard to see.
+**No URL is injected while the proxy is down**, and no hostname either — the
+two go together. An empty string would leave it "set, but unreachable", and the
+cause is hard to see.
+
+### Referring to another variable
+
+A value may hold `${ANOTHER_KEY}`, expanded when the layers are resolved.
+
+```toml
+[services.web.env]
+NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
+```
+
+**Injection alone is not enough**: the URL arrives under Minato's name for it,
+and the application reads its own. Without this, every project writes a
+start-up script whose whole job is to copy one variable onto another.
+
+- **A reference resolves to the value that won**, not to the layer below the
+  one referring to it. An override that applied everywhere except where it was
+  being used would be a trap
+- **A bare `$NAME` is left as written.** These values have always been passed
+  through verbatim, so expanding them would change what existing
+  configurations mean. `minato up` warns when one names a variable that exists,
+  which turns the trap into a message
+- **A name nothing sets is an error**, for the same reason a missing URL is
+  left unset rather than emptied
+- **A secret cannot be built into another value.** Expanding one would put it
+  in `minato env ls`; pasting the reference in would hand the container the
+  string `op://…`
+
+### Writing it to a file
+
+Injection reaches the process. `wrangler dev` does not pass its environment to
+the Worker, and Vite reads `.env.local` off disk, so `env_file` writes the
+settled values into the worktree before the service starts.
+
+```toml
+[services.api]
+env_file = ".minato/env.api"
+```
+
+- **Secrets are left out**, named in a comment instead. A resolved secret
+  living only in memory is a guarantee that a file, handed on to whatever
+  reads it, would end
+- **Written before the start and on every wake**, from the same values the
+  container is given — a file that disagreed with the process's environment
+  would be worse than no file
+- **Unchanged is not a write.** A dev server watching the file would otherwise
+  restart every time scale-to-zero woke the service
+- **Anywhere in the worktree**, because the tools that need this read paths of
+  their own choosing. What makes that safe is refusing a path git tracks and
+  never overwriting a file without Minato's header
 
 ### What M3 turned up
 

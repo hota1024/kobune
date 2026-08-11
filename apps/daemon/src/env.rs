@@ -4,7 +4,10 @@
 //! goes first, so the user's own settings win. The other way round,
 //! Minato's conveniences would quietly erase them.
 
+use std::path::{Path, PathBuf};
+
 use indexmap::IndexMap;
+use minato_api::{ApiError, ErrorCode};
 use minato_core::{EnvLayers, EnvScope, MinatoConfig, Paths, WorkspaceRecord, env};
 
 use crate::gateway::Gateway;
@@ -43,8 +46,17 @@ pub fn injected(
         minato_core::config::CACHE_TARGET.to_string(),
     );
 
-    for (name, _, url) in exposed_urls(config, record, gateway) {
+    for (name, host, url) in exposed_urls(config, record, gateway) {
         values.insert(url_variable(&name), url);
+
+        // **A CORS origin, `allowedDevOrigins` and a cookie domain want
+        // the host, not the URL.** Cutting the scheme off `MINATO_URL_*`
+        // with `sed` is what every project does otherwise, and it is a
+        // name Minato has already worked out to build the URL.
+        //
+        // Under the same condition as the URL on purpose: a hostname
+        // nothing answers on is the "set, but broken" this avoids.
+        values.insert(hostname_variable(&name), host);
     }
 
     values
@@ -54,8 +66,9 @@ pub fn injected(
 ///
 /// What a container has to be able to resolve for the URL it was handed to
 /// work from inside one — see `ServiceSpec::gateway_hosts`. The same names
-/// `MINATO_URL_<SERVICE>` is built from, under the same condition: no
-/// proxy, no URL, and so nothing to point anywhere.
+/// `MINATO_URL_<SERVICE>` is built from and `MINATO_HOSTNAME_<SERVICE>`
+/// carries, under the same condition: no proxy, no URL, and so nothing to
+/// point anywhere.
 pub fn service_hosts(
     config: &MinatoConfig,
     record: &WorkspaceRecord,
@@ -96,12 +109,198 @@ fn exposed_urls(
         .collect()
 }
 
+/// Turns a failure to settle the layers into an API error.
+///
+/// **A missing `MINATO_URL_<SERVICE>` is usually the proxy being down**,
+/// not a mistake in the configuration: the variable is only injected while
+/// the gateway is listening, and only for an exposed service. Saying no
+/// more than "nothing sets it" sends someone to edit a `minato.toml` that
+/// is already right. `MINATO_HOSTNAME_<SERVICE>` goes the same way, for
+/// the same reason.
+pub fn resolution_error(err: env::EnvError) -> ApiError {
+    let error = ApiError::new(ErrorCode::InvalidConfig, err.to_string());
+
+    match &err {
+        env::EnvError::UndefinedReference { name, .. } if is_per_service(name) => error.with_hint(
+            "MINATO_URL_<SERVICE> and MINATO_HOSTNAME_<SERVICE> exist only while the \
+             proxy is listening, and only for a service with `expose = true`. Run \
+             `minato doctor`",
+        ),
+        _ => error,
+    }
+}
+
+/// Whether a name is one Minato injects per service.
+fn is_per_service(name: &str) -> bool {
+    name.starts_with("MINATO_URL_") || name.starts_with("MINATO_HOSTNAME_")
+}
+
 /// Turns a service name into a variable name.
 ///
 /// `cache-store` becomes `MINATO_URL_CACHE_STORE`. A hyphen is not valid
 /// in a variable name, so it becomes an underscore.
 pub fn url_variable(service: &str) -> String {
     format!("MINATO_URL_{}", service.to_uppercase().replace('-', "_"))
+}
+
+/// The name carrying a service's hostname.
+///
+/// `MINATO_HOSTNAME_<SERVICE>`, and not `MINATO_HOST_`: that one is taken
+/// by Apple Container, where it carries a peer's IP address. Two names a
+/// letter apart meaning different things is worse than a longer one.
+pub fn hostname_variable(service: &str) -> String {
+    format!(
+        "MINATO_HOSTNAME_{}",
+        service.to_uppercase().replace('-', "_")
+    )
+}
+
+/// Writes a service's settled environment into its worktree.
+///
+/// **For the tools that read a file rather than their process's
+/// environment.** `wrangler dev` does not pass its own environment to the
+/// Worker, and Vite reads `.env.local` off disk; without this, a project
+/// writes a start-up script that turns variables back into a file.
+///
+/// Returns the path written, or `None` when it already held exactly this.
+/// **Rewriting it unchanged would be a change to anything watching it** —
+/// a dev server restarting itself every time scale-to-zero wakes the
+/// service.
+pub fn write_env_file(
+    worktree: &Path,
+    relative: &str,
+    contents: &str,
+) -> Result<Option<PathBuf>, ApiError> {
+    let refuse = |why: &str| {
+        Err(ApiError::new(
+            ErrorCode::InvalidConfig,
+            format!("env_file `{relative}`: {why}"),
+        ))
+    };
+
+    // A generated file that git watches leaves the worktree permanently
+    // dirty, and committing it would put one branch's URLs into every
+    // other checkout.
+    if minato_core::git::is_tracked(worktree, relative) {
+        return refuse(
+            "git tracks it. Point it somewhere untracked, `.minato/` or a \
+             gitignored path",
+        );
+    }
+
+    let path = worktree.join(relative);
+
+    // Containment is checked against the deepest directory that already
+    // exists, and therefore *before* anything is created: a symlinked
+    // component would otherwise have directories made outside the worktree
+    // on the way to finding out.
+    let anchor = existing_ancestor(&path);
+    let root = worktree.canonicalize().unwrap_or_else(|_| worktree.into());
+
+    match anchor.canonicalize() {
+        Ok(resolved) if !resolved.starts_with(&root) => {
+            return refuse("resolves outside the worktree");
+        }
+        Ok(_) => {}
+        Err(source) => {
+            return Err(ApiError::internal(format!(
+                "env_file `{relative}`: cannot resolve {}: {source}",
+                anchor.display()
+            )));
+        }
+    }
+
+    let occupied = "there is already a file there that Minato did not write. \
+                    Move it aside, or point env_file somewhere else";
+
+    match std::fs::read_to_string(&path) {
+        // Somebody's own file. Whatever it is for, it is not this.
+        Ok(existing) if !env::is_generated(&existing) => return refuse(occupied),
+        Ok(existing) if existing == contents => return Ok(None),
+        Ok(_) => {}
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        // **Unreadable is not the same as absent.** A file in some other
+        // encoding, or one this user cannot read, is still somebody's —
+        // and the marker cannot say otherwise, so it gets left alone.
+        Err(_) => return refuse(occupied),
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| {
+            ApiError::internal(format!(
+                "env_file `{relative}`: cannot create {}: {source}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    // Written beside the target and renamed over it, so a service reading
+    // the file never sees half of one.
+    let temporary = temporary_beside(&path);
+    env::write_file(&temporary, contents).map_err(|err| {
+        let _ = std::fs::remove_file(&temporary);
+        ApiError::internal(format!("env_file `{relative}`: {err}"))
+    })?;
+
+    std::fs::rename(&temporary, &path).map_err(|source| {
+        let _ = std::fs::remove_file(&temporary);
+        ApiError::internal(format!(
+            "env_file `{relative}`: cannot write {}: {source}",
+            path.display()
+        ))
+    })?;
+
+    Ok(Some(path))
+}
+
+/// The nearest ancestor of `path` that exists.
+///
+/// Falls back to the path itself, which cannot escape anything: a
+/// non-existent root has nothing above it either.
+fn existing_ancestor(path: &Path) -> PathBuf {
+    let mut candidate = path.parent();
+
+    while let Some(dir) = candidate {
+        if dir.exists() {
+            return dir.to_path_buf();
+        }
+        candidate = dir.parent();
+    }
+
+    path.to_path_buf()
+}
+
+/// A sibling to write before renaming over the target.
+///
+/// A sibling rather than `/tmp`, because a rename across filesystems is
+/// not atomic — and on macOS `/tmp` regularly is one.
+///
+/// **A fresh name every time.** A fixed one is a file an earlier crash can
+/// leave behind, and the write that follows opens it rather than creating
+/// it: a leftover symlink would be written straight through, out of the
+/// worktree the containment check just held it inside, and a leftover
+/// regular file would keep whatever permissions it had rather than 0600.
+/// Two services writing at once would also rename each other's away.
+fn temporary_beside(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "env".to_string());
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or(0);
+    let count = NEXT.fetch_add(1, Ordering::Relaxed);
+
+    let directory = path.parent().unwrap_or(Path::new("."));
+    directory.join(format!(
+        ".{name}.{}-{nonce}-{count}.minato-tmp",
+        std::process::id()
+    ))
 }
 
 /// Stacks one service's layers, lowest priority first.
@@ -321,6 +520,66 @@ mod tests {
         );
 
         assert!(!values.keys().any(|key| key.starts_with("MINATO_URL_")));
+        assert!(
+            !values.keys().any(|key| key.starts_with("MINATO_HOSTNAME_")),
+            "a hostname nothing answers on is the same trap"
+        );
+    }
+
+    #[test]
+    fn injects_the_hostname_beside_the_url() {
+        // A CORS origin, `allowedDevOrigins` and a cookie domain want the
+        // host on its own. Cutting the scheme off the URL with `sed` is
+        // what every project does without this.
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &Gateway::with_ports(Some(80), Some(443)),
+        );
+
+        assert_eq!(
+            values.get("MINATO_HOSTNAME_WEB").map(String::as_str),
+            Some("web.feat-1.myapp.localhost"),
+            "no scheme, no port, no trailing slash"
+        );
+        assert_eq!(
+            values.get("MINATO_HOSTNAME_API_SERVER").map(String::as_str),
+            Some("api-server.feat-1.myapp.localhost"),
+            "a hyphen becomes an underscore in the name, not in the host"
+        );
+        assert!(
+            !values.contains_key("MINATO_HOSTNAME_DB"),
+            "a service with expose = false publishes no hostname"
+        );
+    }
+
+    #[test]
+    fn the_hostname_holds_no_port_even_when_the_url_does() {
+        // The port belongs to the URL. Anything asking for a hostname —
+        // `allowedDevOrigins`, a cookie domain — rejects one with a port
+        // in it.
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &Gateway::with_ports(Some(8080), Some(8443)),
+        );
+
+        assert!(
+            values
+                .get("MINATO_URL_WEB")
+                .is_some_and(|url| url.contains("8443")),
+            "the URL carries the port: {:?}",
+            values.get("MINATO_URL_WEB")
+        );
+        assert_eq!(
+            values.get("MINATO_HOSTNAME_WEB").map(String::as_str),
+            Some("web.feat-1.myapp.localhost"),
+            "the hostname does not"
+        );
     }
 
     #[test]
@@ -389,7 +648,11 @@ mod tests {
         .expect("builds");
 
         assert!(
-            !shared.resolve().iter().any(|entry| entry.key == "ONLY_WEB"),
+            !shared
+                .resolve()
+                .expect("resolves")
+                .iter()
+                .any(|entry| entry.key == "ONLY_WEB"),
             "one service's own env is not everyone's"
         );
 
@@ -406,6 +669,7 @@ mod tests {
 
         let own = web
             .resolve()
+            .expect("resolves")
             .into_iter()
             .find(|entry| entry.key == "ONLY_WEB")
             .expect("asked about web, it is web's that matter");
@@ -416,6 +680,256 @@ mod tests {
             "labelling it `project` sends someone to edit .minato/env for a \
              value the service overrides"
         );
+    }
+
+    #[test]
+    fn a_service_can_put_its_url_under_the_name_its_app_reads() {
+        // The whole point of expansion: no start-up script in between.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+            [services.api]
+            image = "node:22"
+            port = 8080
+        "#,
+        );
+
+        let layers = layers_for_service(
+            &config,
+            "myapp",
+            &record("feat-1", false),
+            std::path::Path::new("/repo"),
+            Some("web"),
+            &Paths::with_root(std::path::PathBuf::from("/nowhere")),
+            &Gateway::with_ports(Some(80), Some(443)),
+        )
+        .expect("builds");
+
+        let value = layers
+            .resolve()
+            .expect("resolves")
+            .into_iter()
+            .find(|entry| entry.key == "NEXT_PUBLIC_API_URL")
+            .expect("present")
+            .raw;
+
+        assert_eq!(value, "https://api.feat-1.myapp.localhost");
+    }
+
+    #[test]
+    fn a_url_that_is_missing_because_the_proxy_is_down_says_so() {
+        // The configuration is right and the error is about the proxy.
+        // "nothing sets it" alone sends someone to edit `minato.toml`.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+            [services.api]
+            image = "node:22"
+            port = 8080
+        "#,
+        );
+
+        let layers = layers_for_service(
+            &config,
+            "myapp",
+            &record("feat-1", false),
+            std::path::Path::new("/repo"),
+            Some("web"),
+            &Paths::with_root(std::path::PathBuf::from("/nowhere")),
+            &Gateway::with_ports(None, None),
+        )
+        .expect("builds");
+
+        let error = resolution_error(layers.resolve().expect_err("no URL to refer to"));
+
+        assert!(
+            error.hint.is_some_and(|hint| hint.contains("proxy")),
+            "name the proxy, not the config"
+        );
+    }
+
+    /// A worktree with nothing in it, and no git.
+    fn worktree() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn writes_the_file_and_the_directories_leading_to_it() {
+        let dir = worktree();
+        let contents = env::render(&[], "service: api");
+
+        let written = write_env_file(dir.path(), ".minato/env.api", &contents)
+            .expect("writes")
+            .expect("a new file is a change");
+
+        assert_eq!(written, dir.path().join(".minato/env.api"));
+        assert_eq!(
+            std::fs::read_to_string(&written).expect("reads"),
+            contents,
+            "what was asked for, byte for byte"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&written)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "it carries the environment");
+        }
+    }
+
+    #[test]
+    fn writing_the_same_contents_again_changes_nothing() {
+        // Anything watching the file — a dev server, most of all — would
+        // otherwise restart every time scale-to-zero woke the service.
+        let dir = worktree();
+        let contents = env::render(&[], "service: api");
+
+        write_env_file(dir.path(), ".minato/env.api", &contents).expect("writes");
+        let again = write_env_file(dir.path(), ".minato/env.api", &contents).expect("writes");
+
+        assert!(again.is_none(), "unchanged is not a write");
+    }
+
+    #[test]
+    fn replaces_a_file_it_wrote_itself() {
+        let dir = worktree();
+
+        write_env_file(dir.path(), ".env.minato", &env::render(&[], "old")).expect("writes");
+        let new = env::render(&[], "new");
+        write_env_file(dir.path(), ".env.minato", &new).expect("writes");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".env.minato")).expect("reads"),
+            new
+        );
+    }
+
+    #[test]
+    fn never_overwrites_a_file_somebody_else_wrote() {
+        // The whole risk of writing into a worktree: `.env.local` is a
+        // path a person may already be using.
+        let dir = worktree();
+        let mine = "SECRET=mine\n";
+        std::fs::write(dir.path().join(".env.local"), mine).expect("writes");
+
+        let err = write_env_file(dir.path(), ".env.local", &env::render(&[], "service: web"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("did not write"), "say why: {err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".env.local")).expect("reads"),
+            mine,
+            "and leave it alone"
+        );
+    }
+
+    #[test]
+    fn never_overwrites_a_file_it_cannot_even_read() {
+        // The marker cannot say a file is Minato's when the file will not
+        // read as text at all — an `.env` in UTF-16, say. Unreadable is
+        // still somebody's.
+        let dir = worktree();
+        let mine: &[u8] = &[0xff, 0xfe, b'F', 0x00, b'O', 0x00];
+        std::fs::write(dir.path().join(".env.local"), mine).expect("writes");
+
+        let err = write_env_file(dir.path(), ".env.local", &env::render(&[], "service: web"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("did not write"), "say why: {err}");
+        assert_eq!(
+            std::fs::read(dir.path().join(".env.local")).expect("reads"),
+            mine,
+            "and leave it alone"
+        );
+    }
+
+    #[test]
+    fn does_not_write_through_a_leftover_temporary_file() {
+        // A fixed temporary name is one an earlier crash can leave behind,
+        // and the write opens rather than creates it: a leftover symlink
+        // would carry the environment out of the worktree the containment
+        // check just held it inside.
+        let outside = tempfile::tempdir().expect("tempdir");
+        let target = outside.path().join("stolen");
+        std::fs::write(&target, "untouched").expect("writes");
+
+        let dir = worktree();
+        std::fs::create_dir(dir.path().join(".minato")).expect("creates");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, dir.path().join(".minato/.env.api.minato-tmp"))
+            .expect("links");
+
+        write_env_file(
+            dir.path(),
+            ".minato/env.api",
+            &env::render(&[], "service: api"),
+        )
+        .expect("writes");
+
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("reads"),
+            "untouched",
+            "the environment never went there"
+        );
+    }
+
+    #[test]
+    fn refuses_a_path_that_leaves_the_worktree_through_a_symlink() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        let dir = worktree();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).expect("links");
+
+        let err = write_env_file(dir.path(), "escape/env", &env::render(&[], "service: web"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("outside the worktree"), "{err}");
+        assert!(
+            !outside.path().join("env").exists(),
+            "and nothing is written there"
+        );
+    }
+
+    #[test]
+    fn refuses_a_path_git_tracks() {
+        // A generated file that git watches leaves the worktree dirty for
+        // good, and committing it spreads one branch's URLs to every other.
+        let dir = worktree();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .output()
+                .expect("git runs")
+        };
+
+        git(&["init", "--quiet"]);
+        std::fs::write(dir.path().join(".env"), "APP_ENV=development\n").expect("writes");
+        git(&["add", ".env"]);
+
+        let err = write_env_file(dir.path(), ".env", &env::render(&[], "service: web"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("git tracks it"), "{err}");
     }
 
     #[test]

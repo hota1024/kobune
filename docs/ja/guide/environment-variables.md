@@ -56,6 +56,8 @@ MINATO_SERVICE      = web
 MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
+MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
+MINATO_HOSTNAME_API = api.feature-user-auth.myapp.localhost
 ```
 
 ### `MINATO_CACHE_DIR`
@@ -65,19 +67,19 @@ MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 
 ```toml
 [services.web.env]
-npm_config_store_dir = "/var/cache/minato/pnpm"
-CARGO_HOME = "/var/cache/minato/cargo"
+npm_config_store_dir = "${MINATO_CACHE_DIR}/pnpm"
+CARGO_HOME = "${MINATO_CACHE_DIR}/cargo"
 ```
 
-::: warning `env` の値で `$VAR` は展開されません
-値は書いたままコンテナに渡されます。Minato も Docker も展開しません。
+::: warning 波括弧は省略できません
+`${MINATO_CACHE_DIR}` は[参照](#他の変数を参照する)であり、Minato が展開します。
+波括弧の無い `$MINATO_CACHE_DIR` は書いたまま渡され、Docker も展開しません。
 `npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` と書くと、workdir すなわち
 worktree からの相対パスとして `$MINATO_CACHE_DIR` という名前のディレクトリが
 作られます。これはまさに、この仕組みが防ごうとしている「リポジトリ内に数 GB」
-そのものです。
+そのものです。この書き方をした値には `minato up` が警告します。
 
-ここではパスをそのまま書いてください。`$MINATO_CACHE_DIR` はシェルが展開する
-場所——`command` や起動スクリプト——で使います。
+シェルが展開する場所——`command` や起動スクリプト——では波括弧は不要です。
 
 ```toml
 command = "sh -c 'pnpm config set store-dir $MINATO_CACHE_DIR/pnpm && pnpm dev'"
@@ -111,9 +113,11 @@ lockfile が異なる `node_modules` など）には
 `MINATO_SERVICE` とサービス固有の `env` は
 `minato env ls --service <name>` で確認してください。
 
-とくに重要なのが `MINATO_URL_<SERVICE>` です。URL はブランチごとに異なるため、
-フロントエンドは API の URL をハードコードできません。worktree ごとの環境が
-成立するのは、この変数があるためです。
+### `MINATO_URL_<SERVICE>`
+
+**とくに重要な変数です。** URL はブランチごとに異なるため、フロントエンドは
+API の URL をハードコードできません。worktree ごとの環境が成立するのは、この
+変数があるためです。
 
 ```js
 const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
@@ -133,9 +137,130 @@ const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
 が示します。
 :::
 
-Apple Container では、これに加えて他サービスの IP アドレスを保持する
-`MINATO_HOST_<SERVICE>` が注入されます。[ランタイム](./runtimes) を参照して
-ください。
+### `MINATO_HOSTNAME_<SERVICE>`
+
+同じホストを、周りに何も付けずに渡します。スキームもポートも末尾のスラッシュも
+ありません。
+
+```toml
+[services.web.env]
+NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
+
+[services.api.env]
+COOKIE_DOMAIN = "${MINATO_HOSTNAME_API}"
+```
+
+**CORS の origin、`allowedDevOrigins`、cookie の domain はいずれも URL ではなく
+これを要求します。** この変数が無いと、`MINATO_URL_<SERVICE>` から `sed` で
+スキームを削ぎ落とす処理がプロジェクト側に生まれます。
+
+注入される条件は URL と同じです。プロキシが待ち受けている間、かつ URL を公開
+しているサービスに限ります。応答しないホスト名を渡すのは、URL 側で避けている
+「値はあるのに繋がらない」と同じ状態だからです。
+
+::: warning `MINATO_HOST_<SERVICE>` とは別物です
+そちらは Apple Container のもので、他サービスの IP アドレスを保持します。
+[ランタイム](./runtimes) を参照してください。
+:::
+
+## 他の変数を参照する
+
+値の中の `${NAME}` は、`NAME` の解決結果に置き換えられます。
+
+```toml
+[services.web.env]
+NEXT_PUBLIC_WEB_URL = "${MINATO_URL_WEB}"
+NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
+FILE_BASE_URL       = "${MINATO_URL_API}/dev/r2"
+```
+
+**worktree ごとに変わる URL を、アプリケーションが既に読んでいる名前で渡すため
+の仕組みです。** `MINATO_URL_API` は Minato の名前で届くため、これを書けないと、
+変数を別の変数に写すためだけの起動スクリプトがどのプロジェクトにも生まれます。
+
+参照が解決するのは、どの層が優先されたかを問わず、コンテナに実際に渡る値です。
+したがって `.minato/env.local` で `MINATO_URL_API` を上書きすれば、そこから
+組み立てられる値もまとめて変わります。参照は連鎖できます。展開後の値は
+`minato env ls` にも表示されます。展開前の値の一覧は、どこでも動いていない
+ものの一覧だからです。
+
+- **波括弧の無い `$NAME` は展開されません。** これらの値はこれまで書いたまま
+  渡されてきたため、いま展開を始めると既存の設定の意味が変わってしまいます。
+  存在する変数名がこの形で書かれている場合は `minato up` が警告するので、
+  症状から探し当てる必要はありません。
+- **`$$` は `$` そのものです。** `$${A}` は `${A}` のまま渡ります。
+- **変数名でないものは参照ではありません。** `${PORT:-3000}` はシェルの記法
+  として、そのままシェルに届きます。
+- **どこにも定義の無い名前はエラーです。** 空文字にはしません。プロキシが無い
+  ときに `MINATO_URL_<SERVICE>` を未設定のままにするのと同じ理由です。その
+  ため `${MINATO_URL_API}` を参照していると、プロキシが動いていない間はその
+  変数が欠けたまま起動するのではなく、サービスの起動自体が止まります。復旧の
+  手順は `minato doctor` が示します。
+
+::: warning この機能より前に書かれた値について
+`${...}` と `$$` には、これまで無かった意味が付きました。既にこれらを含む値は
+挙動が変わります。`$$` は `$` 1 文字になり、存在しない変数名を指す `${NAME}`
+はそのまま渡されるのではなく `minato up` を止めます。文字として渡したい場合は
+ドルを重ねてください（`$` は `$$`、`${` は `$${`）。
+:::
+
+::: warning シークレットを他の値に埋め込むことはできません
+`PASSWORD` が `op://` や `keychain://` の参照である場合、
+`DATABASE_URL = "postgres://user:${PASSWORD}@db/app"` は拒否されます。これらは
+コンテナ起動時にメモリ上で解決される値であり、ここで展開すると `minato env ls`
+や、そこから書き出されるあらゆる出力に平文が載ってしまいます。
+
+組み立て済みの値をシークレットとして保存するか、2 つの変数のままアプリケー
+ションに渡して、そちらで結合してください。
+:::
+
+## ファイルに書き出す
+
+起動時の環境変数を読まない道具があります。`wrangler dev` は自身の環境変数を
+Worker に渡さず、Vite や dotenvx はディスク上のファイルを読みます。`env_file`
+は解決済みの値を、それらが見つけられる場所に書き出します。
+
+```toml
+[services.api]
+env_file = ".minato/env.api"
+```
+
+```sh
+wrangler dev --env-file .env --env-file .minato/env.api
+```
+
+パスは worktree からの相対で、サービスの起動直前——`minato up` のときと、
+scale-to-zero が起こすたび——に書かれます。停止後も残るため、worktree で
+`pnpm dev` を直接動かす場合も同じ値を読めます。
+
+**内容が変わらない場合は書き込みません。** ファイルを監視している dev server
+が、サービスが起きるたびに再起動してしまうためです。
+
+- **git が追跡しているパスは拒否します。** 生成ファイルは worktree を永久に
+  dirty にし、コミットすれば 1 つのブランチの URL が他のすべてのチェックアウト
+  に混入します。gitignore された場所——`.minato/` は既にそうです——を指定して
+  ください。
+- **Minato が書いたのでないファイルは上書きしません。** 目印は先頭行のヘッダ
+  です。自分で用意した `.env.local` は安全で、置き換えではなくファイル名を
+  含むエラーが返ります。
+- **`.minato/env` と `.minato/env.local` は指定できません。** この 2 つは
+  Minato 自身が層として読むファイルです。書き出すと生成ファイルがそのまま
+  入力に戻り、しかも workspace 層は最も優先度が高いため、前回の値が今回
+  注入される値を上書きしてしまいます。隣に別名で書いてください。
+- **1 つのパスにつき 1 サービスです。** 2 つのサービスが同じファイルを指すと、
+  起動のたびに互いの環境変数を上書きし合います。
+- **`scope = "project"` では使えません。** 共有サービスには worktree が
+  マウントされないため、そのコンテナから見えない場所に書かれてしまいます。
+
+::: warning シークレットは書き出されません
+値が `op://` や `keychain://` の参照であるキーは、コメントに名前だけ残し、
+書き出しません。解決済みのシークレットはデーモンのメモリ上にのみ存在し、
+ディスクには触れません。ファイルは読み手に渡っていくものなので、ここで書けば
+その保証は終わります。
+
+道具がシークレットそのものを必要とする場合は、自前の `.env` を用意して両方の
+ファイルを渡してください。
+:::
 
 ## シークレット
 

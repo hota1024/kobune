@@ -55,6 +55,8 @@ MINATO_SERVICE      = web
 MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
+MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
+MINATO_HOSTNAME_API = api.feature-user-auth.myapp.localhost
 ```
 
 ### `MINATO_CACHE_DIR`
@@ -64,18 +66,21 @@ volume Minato manages, mounted into every service.
 
 ```toml
 [services.web.env]
-npm_config_store_dir = "/var/cache/minato/pnpm"
-CARGO_HOME = "/var/cache/minato/cargo"
+npm_config_store_dir = "${MINATO_CACHE_DIR}/pnpm"
+CARGO_HOME = "${MINATO_CACHE_DIR}/cargo"
 ```
 
-::: warning `$VAR` is not expanded in `env`
-Values are passed to the container as written — nothing interpolates them, and
-neither does Docker. `npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` makes a
-directory *called* `$MINATO_CACHE_DIR` relative to the workdir, which is the
-worktree: the gigabyte-in-the-repository this exists to prevent.
+::: warning The braces are not optional
+`${MINATO_CACHE_DIR}` is [a reference](#referring-to-another-variable) and
+Minato expands it. `$MINATO_CACHE_DIR` without them is passed through as
+written, and Docker does not expand it either, so
+`npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` makes a directory *called*
+`$MINATO_CACHE_DIR` relative to the workdir, which is the worktree: the
+gigabyte-in-the-repository this exists to prevent. `minato up` warns when a
+value does this.
 
-Write the path out here. `$MINATO_CACHE_DIR` is for where a shell expands it —
-a `command`, or a start-up script:
+Braces are not needed where a shell does the expanding — a `command`, or a
+start-up script:
 
 ```toml
 command = "sh -c 'pnpm config set store-dir $MINATO_CACHE_DIR/pnpm && pnpm dev'"
@@ -108,9 +113,11 @@ line that caused it.
 `minato env ls` shows only what every service shares, so `MINATO_SERVICE` and
 a service's own `env` appear under `minato env ls --service <name>`.
 
-`MINATO_URL_<SERVICE>` is the important one. It is what makes a per-worktree
-environment hold together: the frontend cannot hardcode the API's URL, because
-the URL is different on every branch.
+### `MINATO_URL_<SERVICE>`
+
+**The important one.** It is what makes a per-worktree environment hold
+together: the frontend cannot hardcode the API's URL, because the URL is
+different on every branch.
 
 ```js
 const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
@@ -129,8 +136,130 @@ which names nothing that leads back here. `minato up` warns when it starts
 services with no proxy, and `minato doctor` says how to get one.
 :::
 
-On Apple Container there is also `MINATO_HOST_<SERVICE>`, carrying a peer's IP
-address. See [Runtimes](./runtimes).
+### `MINATO_HOSTNAME_<SERVICE>`
+
+The same host with nothing around it — no scheme, no port, no trailing slash.
+
+```toml
+[services.web.env]
+NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
+
+[services.api.env]
+COOKIE_DOMAIN = "${MINATO_HOSTNAME_API}"
+```
+
+**A CORS origin, `allowedDevOrigins` and a cookie domain all want this rather
+than a URL**, and cutting the scheme off `MINATO_URL_<SERVICE>` with `sed` is
+what a project ends up doing without it.
+
+It appears under the same condition as the URL: while the proxy is listening,
+and only for a service that publishes one. A hostname nothing answers on would
+be the same "set, but broken" the URL avoids.
+
+::: warning Not `MINATO_HOST_<SERVICE>`
+That name is Apple Container's, and it carries a peer's IP address — a
+different thing entirely. See [Runtimes](./runtimes).
+:::
+
+## Referring to another variable
+
+`${NAME}` in a value is replaced with whatever `NAME` resolves to.
+
+```toml
+[services.web.env]
+NEXT_PUBLIC_WEB_URL = "${MINATO_URL_WEB}"
+NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
+FILE_BASE_URL       = "${MINATO_URL_API}/dev/r2"
+```
+
+**This is what puts a per-worktree URL under the name your application already
+reads.** `MINATO_URL_API` arrives under Minato's name for it; without a way to
+say this, every project ends up with a start-up script whose whole job is to
+copy one variable onto another.
+
+A reference resolves to the value the container is given, from whichever layer
+won — so overriding `MINATO_URL_API` in `.minato/env.local` overrides
+everything built out of it too. References may chain. `minato env ls` shows
+what they came to, since a listing of unexpanded values would be a listing of
+something nothing runs with.
+
+- **`$NAME` without braces is left alone.** These values have always been
+  passed through as written, and expanding them now would change what existing
+  configurations mean. Where the name is one that exists, `minato up` says so
+  rather than leaving you to find out from the symptom.
+- **`$$` is a literal `$`**, so `$${A}` passes `${A}` through untouched.
+- **What is not a variable name is not a reference.** `${PORT:-3000}` is shell
+  syntax and reaches the shell unchanged.
+- **A name nothing sets is an error**, not an empty string — the same reason
+  `MINATO_URL_<SERVICE>` is left unset when there is no proxy. So referring to
+  `${MINATO_URL_API}` makes the service refuse to start while the proxy is
+  down, rather than start with the variable missing; `minato doctor` says how
+  to get one back.
+
+::: warning Values written before this existed
+`${...}` and `$$` now mean something they did not. A value already holding one
+changes: `$$` becomes a single `$`, and `${NAME}` naming a variable that does
+not exist stops `minato up` rather than being passed through. Double the
+dollar — `$$` for a literal `$`, `$${` for a literal `${` — for anything meant
+as text.
+:::
+
+::: warning A secret cannot be built into another value
+`DATABASE_URL = "postgres://user:${PASSWORD}@db/app"` is refused when
+`PASSWORD` is a `op://` or `keychain://` reference. Those are resolved in
+memory when the container starts, and expanding one here would put the secret
+into `minato env ls` and into anything written out of it.
+
+Store the composed value as the secret, or give the application the two
+variables and let it join them.
+:::
+
+## Writing it to a file
+
+Some tools do not read the environment they are started with. `wrangler dev`
+does not pass its own to the Worker; Vite and dotenvx read a file off disk.
+`env_file` writes the settled values where they can find them:
+
+```toml
+[services.api]
+env_file = ".minato/env.api"
+```
+
+```sh
+wrangler dev --env-file .env --env-file .minato/env.api
+```
+
+The path is relative to the worktree, and the file is written before the
+service starts — on `minato up` and again whenever scale-to-zero wakes it. It
+is left in place afterwards, so `pnpm dev` run from the worktree by hand reads
+the same values.
+
+**Rewriting it unchanged is not a write**, so a dev server watching the file
+does not restart every time the service wakes.
+
+- **A path git tracks is refused.** A generated file leaves the worktree dirty
+  for good, and committing it would put one branch's URLs into every other
+  checkout. Write somewhere gitignored — `.minato/` is already there.
+- **A file Minato did not write is never overwritten.** The header line is the
+  marker, so an `.env.local` of your own is safe: you get an error naming it,
+  not a replacement.
+- **Not `.minato/env` or `.minato/env.local`.** Minato reads those two as
+  layers of its own, so writing one would feed the generated file straight
+  back in — and the workspace layer outranks everything. Write beside them.
+- **One path per service.** Two services sharing a file would overwrite each
+  other's environment at every start.
+- **Not on `scope = "project"`.** A shared service is mounted no worktree, so
+  the file would land where that container cannot see it.
+
+::: warning Secrets are left out
+Keys whose value is a `op://` or `keychain://` reference are named in a
+comment and not written. A resolved secret lives in the daemon's memory and
+never touches disk; a file would be handed on to whatever reads it, and that
+is the end of the guarantee.
+
+If a tool needs the secret itself, give it a `.env` of your own and pass both
+files.
+:::
 
 ## Secrets
 

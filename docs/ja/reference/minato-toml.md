@@ -323,13 +323,34 @@ Apple Container には名前付きボリュームがないため、
 | キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
 | `env` | table | `{}` | このサービスに渡す環境変数 |
+| `env_file` | string | — | 解決済みの環境変数の書き出し先。worktree からの相対パス |
 
 ```toml
 env = { NODE_ENV = "development", PORT = "3000" }
 ```
 
+値の中では他の変数を参照できます。worktree ごとに変わる URL を、アプリケー
+ションが既に読んでいる名前で渡すための書き方です。
+
+```toml
+env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+```
+
 これは project 層にあたり、リポジトリで管理されます。秘匿すべき値は記述しない
 でください。[環境変数](../guide/environment-variables) を参照してください。
+
+`env_file` は解決結果を、自身の環境変数ではなくファイルを読む道具のために
+書き出します。
+
+```toml
+env_file = ".minato/env.api"
+```
+
+書き込まれるのはサービスの起動直前で、シークレットは含まれません。git が追跡
+しているパスは拒否され、Minato が書いたのでないファイルは上書きされません。
+Minato 自身が層として読む `.minato/env` と `.minato/env.local`、および他の
+サービスが既に使っているパスも拒否されます。また `scope = "project"` の
+サービスでは使えません。書き込む先の worktree がマウントされていないためです。
 
 ## 検証
 
