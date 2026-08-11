@@ -606,3 +606,145 @@ async fn rejects_an_unusable_host_header() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// An upstream that hangs up on its first `drops` connections and serves
+/// normally after that — a dev server whose port is published before it
+/// has bound it.
+///
+/// The counter is every connection it accepted, retries included.
+async fn spawn_late_upstream(drops: usize) -> (SocketAddr, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = accepted.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+
+            if counter.fetch_add(1, Ordering::SeqCst) < drops {
+                drop(stream);
+                continue;
+            }
+
+            tokio::spawn(async move {
+                let service = service_fn(|request: Request<Incoming>| async move {
+                    Ok::<_, Infallible>(Response::new(text(&format!(
+                        "upstream {}",
+                        request.uri().path()
+                    ))))
+                });
+
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+
+    (addr, accepted)
+}
+
+#[tokio::test]
+async fn a_service_that_answers_late_is_tried_again() {
+    // The cold-start 502: readiness said yes a moment before the app was
+    // listening, and the request that woke it paid for the gap.
+    let (upstream, accepted) = spawn_late_upstream(2).await;
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::stopped("myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Ready(upstream));
+    let proxy = spawn_proxy_with(routes, activator).await;
+
+    let (status, body) = request_through(proxy, "web.feat-1.myapp.localhost", "/woken").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("upstream /woken"), "got: {body}");
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        3,
+        "the two refusals and the one that answered"
+    );
+}
+
+#[tokio::test]
+async fn a_service_that_never_answers_still_reports_the_reason() {
+    // Retrying must not swallow the explanation when it does not help.
+    let (upstream, accepted) = spawn_late_upstream(usize::MAX).await;
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::stopped("myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Ready(upstream));
+    let proxy = spawn_proxy_with(routes, activator).await;
+
+    let (status, body) = request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body.contains("minato status"), "got: {body}");
+    assert!(
+        accepted.load(Ordering::SeqCst) > 1,
+        "it gave up without trying again"
+    );
+}
+
+#[tokio::test]
+async fn a_request_with_a_body_is_only_sent_once() {
+    // A body cannot be read twice, and a POST that did get through would
+    // be applied twice by a retry.
+    let (upstream, accepted) = spawn_late_upstream(usize::MAX).await;
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::stopped("myapp", "feat-1", "web"),
+    );
+
+    let activator = ScriptedActivator::new(Activation::Ready(upstream));
+    let proxy = spawn_proxy_with(routes, activator).await;
+
+    let stream = TcpStream::connect(proxy).await.expect("connects");
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .expect("handshake");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/orders")
+        .header(HOST, "web.feat-1.myapp.localhost")
+        .body(text("one order please"))
+        .expect("builds");
+
+    let response = sender.send_request(request).await.expect("gets a response");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(accepted.load(Ordering::SeqCst), 1, "sent more than once");
+}
+
+#[tokio::test]
+async fn a_running_service_is_not_retried() {
+    // Retrying belongs to the cold start. A service that is up and not
+    // answering is a real failure, and hiding it behind a delay helps
+    // nobody.
+    let (upstream, accepted) = spawn_late_upstream(usize::MAX).await;
+    let routes = Routes::new();
+    routes.insert(
+        "web.feat-1.myapp.localhost",
+        Route::new(upstream, "myapp", "feat-1", "web"),
+    );
+
+    let proxy = spawn_proxy(routes).await;
+    let (status, _) = request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(accepted.load(Ordering::SeqCst), 1, "tried again anyway");
+}

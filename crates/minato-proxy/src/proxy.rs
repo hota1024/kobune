@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
-use hyper::body::Incoming;
+use hyper::body::{Body as _, Incoming};
 use hyper::header::{HOST, HeaderValue};
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 
 use crate::activator::{Activation, Activator};
@@ -40,6 +40,14 @@ const CLIENT_WAIT: Duration = Duration::from_secs(120);
 
 /// How often the waiting page reloads itself, in seconds.
 const RETRY_AFTER_SECS: u32 = 2;
+
+/// How many times the request that woke a service may be sent.
+///
+/// See [`forward_after_wake`].
+const COLD_START_ATTEMPTS: u32 = 4;
+
+/// How long to leave between those attempts.
+const COLD_START_BACKOFF: Duration = Duration::from_millis(250);
 
 /// Handles one request.
 ///
@@ -84,18 +92,24 @@ pub async fn handle(
 
     // Already up: forward by the shortest path. Almost every request
     // goes this way.
-    let endpoint = match route.endpoint {
+    let (endpoint, woken) = match route.endpoint {
         Some(endpoint) => {
             activator.touch(&host);
-            endpoint
+            (endpoint, false)
         }
         None => match wake(&host, &request, activator.as_ref()).await {
-            Ok(endpoint) => endpoint,
+            Ok(endpoint) => (endpoint, true),
             Err(response) => return response,
         },
     };
 
-    match forward(request, endpoint).await {
+    let forwarded = if woken {
+        forward_after_wake(request, endpoint).await
+    } else {
+        forward(request, endpoint).await
+    };
+
+    match forwarded {
         Ok(response) => response,
         Err(err) => {
             tracing::debug!("cannot forward to {endpoint}: {err}");
@@ -220,11 +234,66 @@ fn starting_page(host: &str) -> Response<ProxyBody> {
         .expect("a fixed response always builds")
 }
 
-/// Forwards to the upstream, upgrades (WebSocket) included.
-async fn forward(
-    mut request: Request<Incoming>,
+/// Forwards the request that woke the service, retrying while it comes up.
+///
+/// Readiness is decided just before this, so the gap is small — but it is
+/// not zero, and a service that binds its port a moment late turns the
+/// whole cold start into one 502 for whoever asked for it. Trying again
+/// costs a few hundred milliseconds on a path that has already waited.
+///
+/// **Only a request that can be sent twice is retried.** A body is a
+/// stream and is gone once it has been read; a POST would be a second
+/// write upstream even if it could be replayed; and an upgrade carries a
+/// handle to the client connection that belongs to one attempt. What is
+/// left — a bodyless GET — is exactly what a browser navigation and an
+/// agent's `curl` send, which is what wakes a service in the first place.
+async fn forward_after_wake(
+    request: Request<Incoming>,
     upstream: SocketAddr,
 ) -> Result<Response<ProxyBody>, ProxyError> {
+    if !is_replayable(&request) {
+        return forward(request, upstream).await;
+    }
+
+    let (parts, _) = request.into_parts();
+
+    for attempt in 1..COLD_START_ATTEMPTS {
+        match forward(Request::from_parts(parts.clone(), empty_body()), upstream).await {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                tracing::debug!(
+                    "{upstream} is not answering yet on attempt {attempt}: {err}. Trying again"
+                );
+                tokio::time::sleep(COLD_START_BACKOFF).await;
+            }
+        }
+    }
+
+    // The last attempt reports its own error, so a failure that outlives
+    // the retries reads the same as one without them.
+    forward(Request::from_parts(parts, empty_body()), upstream).await
+}
+
+/// Whether sending this request again would be both possible and harmless.
+fn is_replayable(request: &Request<Incoming>) -> bool {
+    request.body().is_end_stream()
+        && !request.headers().contains_key(hyper::header::UPGRADE)
+        && matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        )
+}
+
+/// Forwards to the upstream, upgrades (WebSocket) included.
+async fn forward<B>(
+    mut request: Request<B>,
+    upstream: SocketAddr,
+) -> Result<Response<ProxyBody>, ProxyError>
+where
+    B: hyper::body::Body + Send + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let stream = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(upstream))
         .await
         .map_err(|_| ProxyError::ConnectTimeout(upstream))?
