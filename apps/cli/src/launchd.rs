@@ -9,6 +9,7 @@
 //! it into `/Library/LaunchDaemons` needs sudo, so all that comes back is
 //! the commands to run.
 
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 // The daemon and the client have to agree on where the plist lives and what
@@ -39,7 +40,10 @@ pub fn prepare(
     let destination = Path::new(INSTALL_DIR).join(format!("{LABEL}.plist"));
 
     std::fs::create_dir_all(minato_home)?;
-    std::fs::write(&source, plist(program, minato_home, user, ports))?;
+    std::fs::write(
+        &source,
+        plist(program, minato_home, user, ports, container_gateway()),
+    )?;
 
     let commands = vec![
         format!("sudo cp {} {}", source.display(), destination.display()),
@@ -81,6 +85,33 @@ pub fn uninstall_commands() -> Vec<String> {
     ]
 }
 
+/// Where Apple Container's containers reach the host, if it can be asked.
+///
+/// **The proxy has to be listening there, and only launchd can put it
+/// there.** A container on that network cannot reach the host's loopback,
+/// and :443 is privileged, so the socket has to be in the plist — which is
+/// written here, once, by `minato setup`.
+///
+/// `None` when Apple Container is not installed or not running. Running the
+/// CLI is duplicated from the daemon rather than shared: `minato-core` is
+/// where the two agree on the shape of the answer, and it stays clear of
+/// running container tooling itself.
+fn container_gateway() -> Option<Ipv4Addr> {
+    let output = std::process::Command::new(minato_core::apple::PROGRAM)
+        .args(minato_core::apple::LIST_ARGS)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    minato_core::apple::parse_gateway(
+        &String::from_utf8_lossy(&output.stdout),
+        minato_core::apple::DEFAULT_NETWORK,
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Ports {
     pub http: u16,
@@ -98,10 +129,19 @@ impl Default for Ports {
     }
 }
 
-fn plist(program: &Path, minato_home: &Path, user: &str, ports: Ports) -> String {
+fn plist(
+    program: &Path,
+    minato_home: &Path,
+    user: &str,
+    ports: Ports,
+    container_gateway: Option<Ipv4Addr>,
+) -> String {
     // `localhost` resolves to both ::1 and 127.0.0.1, so launchd opens two
     // sockets and hands over both descriptors. Clients that prefer IPv6
     // are covered too.
+    let mut nodes = vec!["localhost".to_string()];
+    nodes.extend(container_gateway.map(|gateway| gateway.to_string()));
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -140,25 +180,8 @@ fn plist(program: &Path, minato_home: &Path, user: &str, ports: Ports) -> String
 
   <key>Sockets</key>
   <dict>
-    <key>http</key>
-    <dict>
-      <key>SockNodeName</key>
-      <string>localhost</string>
-      <key>SockServiceName</key>
-      <string>{http}</string>
-      <key>SockType</key>
-      <string>stream</string>
-    </dict>
-
-    <key>https</key>
-    <dict>
-      <key>SockNodeName</key>
-      <string>localhost</string>
-      <key>SockServiceName</key>
-      <string>{https}</string>
-      <key>SockType</key>
-      <string>stream</string>
-    </dict>
+{http_sockets}
+{https_sockets}
 
     <key>dns-udp</key>
     <dict>
@@ -186,9 +209,43 @@ fn plist(program: &Path, minato_home: &Path, user: &str, ports: Ports) -> String
         program = escape_xml(&program.to_string_lossy()),
         user = escape_xml(user),
         home = escape_xml(&minato_home.to_string_lossy()),
-        http = ports.http,
-        https = ports.https,
+        http_sockets = stream_sockets("http", &nodes, ports.http),
+        https_sockets = stream_sockets("https", &nodes, ports.https),
         dns = ports.dns,
+    )
+}
+
+/// One socket entry, listening on `port` at every address in `nodes`.
+///
+/// **An array even for one address**, which launchd accepts and which
+/// keeps the second one from being a different shape of entry. An address
+/// that does not exist at boot — Apple Container's gateway, on a machine
+/// where its network has not come up — costs that socket and nothing else:
+/// the job still loads and its other sockets still listen.
+fn stream_sockets(key: &str, nodes: &[String], port: u16) -> String {
+    let entries: Vec<String> = nodes
+        .iter()
+        .map(|node| {
+            format!(
+                "      <dict>
+        <key>SockNodeName</key>
+        <string>{node}</string>
+        <key>SockServiceName</key>
+        <string>{port}</string>
+        <key>SockType</key>
+        <string>stream</string>
+      </dict>",
+                node = escape_xml(node),
+            )
+        })
+        .collect();
+
+    format!(
+        "    <key>{key}</key>
+    <array>
+{}
+    </array>",
+        entries.join("\n")
     )
 }
 
@@ -210,6 +267,7 @@ mod tests {
             Path::new("/Users/someone/.minato"),
             "someone",
             Ports::default(),
+            None,
         )
     }
 
@@ -251,6 +309,34 @@ mod tests {
     }
 
     #[test]
+    fn holds_the_ports_where_containers_reach_the_host_too() {
+        // Apple Container's containers cannot reach the host's loopback,
+        // and :443 is privileged — so if this socket is not in the plist,
+        // nothing can put the proxy where those containers look for it.
+        let xml = plist(
+            Path::new("/usr/local/bin/minatod"),
+            Path::new("/Users/someone/.minato"),
+            "someone",
+            Ports::default(),
+            Some(Ipv4Addr::new(192, 168, 64, 1)),
+        );
+
+        assert!(xml.contains("<string>192.168.64.1</string>"), "{xml}");
+        assert!(
+            xml.contains("<string>localhost</string>"),
+            "not instead of loopback: {xml}"
+        );
+    }
+
+    #[test]
+    fn names_only_loopback_without_apple_container() {
+        // Most machines have no such network, and a socket for an address
+        // that will never exist is one launchd reports as a failure every
+        // time the job loads.
+        assert!(!sample().contains("192.168.64"));
+    }
+
+    #[test]
     fn does_not_restart_after_a_clean_stop() {
         let xml = sample();
 
@@ -274,6 +360,7 @@ mod tests {
             Path::new("/tmp/<home>"),
             "some&one",
             Ports::default(),
+            None,
         );
 
         assert!(xml.contains("/tmp/a&amp;b/minatod"));
@@ -293,6 +380,7 @@ mod tests {
                 https: 8443,
                 dns: 15353,
             },
+            None,
         );
 
         assert!(xml.contains("<string>8080</string>"));

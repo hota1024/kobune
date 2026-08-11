@@ -172,6 +172,11 @@ Every service receives the other services' URLs as `MINATO_URL_<SERVICE>`
 (`MINATO_URL_API` for a service named `api`). Use those when the frontend calls
 the API — hardcoding breaks from one worktree to the next.
 
+**The same URL works from inside the container**, so server-to-server calls use
+it too: the hostnames are pointed at Minato's gateway in every container of the
+workspace. One Host and one Origin for both halves of an app is what keeps
+cookies and CORS from having to know about two.
+
 To reach the name the application already reads, refer to it from `env` in
 `minato.toml`. `${NAME}` is expanded; a bare `$NAME` is not.
 

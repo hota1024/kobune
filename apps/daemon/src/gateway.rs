@@ -41,6 +41,12 @@ pub const DEFAULT_DNS_PORT: u16 = 53;
 pub const FALLBACK_HTTP_PORT: u16 = 18080;
 pub const FALLBACK_HTTPS_PORT: u16 = 18443;
 
+/// How long to wait for Apple Container to say where its network is.
+///
+/// Generous enough for a cold CLI, short enough that a daemon start is not
+/// noticeably held up by a runtime this machine may not even use.
+const CONTAINER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Why a listener could not be held.
 ///
 /// **Worth keeping, not just logging.** "Needs privileges" and "something
@@ -91,8 +97,24 @@ pub struct GatewaySettings {
     /// Loopback only: this is for local development, and 0.0.0.0 would put
     /// the environment in front of everyone else on the LAN.
     pub bind: Vec<IpAddr>,
+    /// Addresses worth listening on, but not worth failing over.
+    ///
+    /// **Where a container reaches the host.** Apple Container's network
+    /// gateway is the only address a container there can find the proxy
+    /// at, and the loopback the rest of this binds is not reachable from
+    /// inside one. Docker needs nothing here: it forwards `host-gateway`
+    /// to the host's own loopback.
+    ///
+    /// Kept apart from [`Self::bind`] because it is allowed to be absent.
+    /// The address exists only while Apple Container's network is up, and
+    /// a machine that never runs it must not be moved onto a fallback port
+    /// for missing an address nobody was going to use.
+    pub extra_bind: Vec<IpAddr>,
     /// Where DNS listens. The resolver configuration names 127.0.0.1
     /// outright, so there is no ambiguity and IPv4 alone will do.
+    ///
+    /// No extras: the hostnames a container resolves are written into its
+    /// `/etc/hosts`, so nothing inside one asks Minato's DNS anything.
     pub dns_bind: IpAddr,
     /// Whether the proxy ports were asked for by name.
     ///
@@ -113,6 +135,7 @@ impl Default for GatewaySettings {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
             ],
+            extra_bind: Vec::new(),
             dns_bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             http_port_named: false,
             https_port_named: false,
@@ -122,6 +145,10 @@ impl Default for GatewaySettings {
 
 impl GatewaySettings {
     /// Overrides from the environment, for staying off privileged ports.
+    ///
+    /// [`Self::extra_bind`] is not part of this: it comes from asking
+    /// Apple Container where its network is, which is a question about the
+    /// machine rather than about the environment.
     pub fn from_env() -> Self {
         let mut settings = Self::default();
 
@@ -138,6 +165,50 @@ impl GatewaySettings {
         }
 
         settings
+    }
+
+    /// Adds the address containers reach the host at, if there is one.
+    ///
+    /// Asks Apple Container for its network gateway. Nothing to add when
+    /// it is not installed or not running, which is the common case and
+    /// costs one failed process spawn to find out.
+    ///
+    /// **Bounded.** This runs before anything is listening, so a CLI that
+    /// takes its time — the service is starting, the VM is waking — would
+    /// hold up the whole daemon. Giving up costs the addresses in
+    /// containers and nothing else, and `minato doctor` says so.
+    pub async fn with_container_gateway(mut self) -> Self {
+        let asked = tokio::process::Command::new(minato_core::apple::PROGRAM)
+            .args(minato_core::apple::LIST_ARGS)
+            .output();
+
+        let Ok(listed) = tokio::time::timeout(CONTAINER_PROBE_TIMEOUT, asked).await else {
+            tracing::debug!(
+                "`{} network list` did not answer in {CONTAINER_PROBE_TIMEOUT:?}",
+                minato_core::apple::PROGRAM
+            );
+            return self;
+        };
+
+        let Ok(output) = listed else {
+            return self;
+        };
+
+        if !output.status.success() {
+            return self;
+        }
+
+        let gateway = minato_core::apple::parse_gateway(
+            &String::from_utf8_lossy(&output.stdout),
+            minato_core::apple::DEFAULT_NETWORK,
+        );
+
+        if let Some(gateway) = gateway {
+            tracing::debug!("Apple Container's containers reach the host at {gateway}");
+            self.extra_bind.push(IpAddr::V4(gateway));
+        }
+
+        self
     }
 
     /// The port to try after `port`, if there is one worth naming.
@@ -195,6 +266,9 @@ pub struct Gateway {
     /// The addresses that were meant to be bound, for working out which
     /// were missed.
     wanted: Vec<IpAddr>,
+    /// The addresses containers reach the host at, which may or may not
+    /// have been had. [`Gateway::unreachable_from_containers`] says which.
+    extra_wanted: Vec<IpAddr>,
     /// Why each listener is missing, when it is.
     http_failure: Option<BindFailure>,
     https_failure: Option<BindFailure>,
@@ -249,6 +323,7 @@ impl Gateway {
             dns_port,
             ca_path,
             wanted: settings.bind.clone(),
+            extra_wanted: settings.extra_bind.clone(),
             http_failure,
             https_failure,
             dns_failure,
@@ -268,10 +343,17 @@ impl Gateway {
         // privileged, so unprivileged there is no other way to hold it.
         let activated = adopt_listeners(activation::HTTP_SOCKET);
         if !activated.is_empty() {
-            let addrs: Vec<SocketAddr> = activated
+            let mut addrs: Vec<SocketAddr> = activated
                 .iter()
                 .filter_map(|l| l.local_addr().ok())
                 .collect();
+
+            let mut activated = activated;
+            if let Some(port) = addrs.first().map(SocketAddr::port) {
+                let extra = bind_extra(&settings.extra_bind, port, "the HTTP proxy").await;
+                addrs.extend(extra.iter().filter_map(|l| l.local_addr().ok()));
+                activated.extend(extra);
+            }
 
             for listener in activated {
                 let routes = routes.clone();
@@ -301,9 +383,14 @@ impl Gateway {
         )
         .await;
 
-        let mut bound = Vec::with_capacity(listening.listeners.len());
+        let mut listeners = listening.listeners;
+        if let Some(port) = port_of(&listeners) {
+            listeners.extend(bind_extra(&settings.extra_bind, port, "the HTTP proxy").await);
+        }
 
-        for listener in listening.listeners {
+        let mut bound = Vec::with_capacity(listeners.len());
+
+        for listener in listeners {
             bound.extend(listener.local_addr().ok());
 
             let routes = routes.clone();
@@ -341,10 +428,17 @@ impl Gateway {
 
         let activated = adopt_listeners(activation::HTTPS_SOCKET);
         if !activated.is_empty() {
-            let addrs: Vec<SocketAddr> = activated
+            let mut addrs: Vec<SocketAddr> = activated
                 .iter()
                 .filter_map(|l| l.local_addr().ok())
                 .collect();
+
+            let mut activated = activated;
+            if let Some(port) = addrs.first().map(SocketAddr::port) {
+                let extra = bind_extra(&settings.extra_bind, port, "the HTTPS proxy").await;
+                addrs.extend(extra.iter().filter_map(|l| l.local_addr().ok()));
+                activated.extend(extra);
+            }
 
             for listener in activated {
                 let routes = routes.clone();
@@ -376,9 +470,14 @@ impl Gateway {
         )
         .await;
 
-        let mut bound = Vec::with_capacity(listening.listeners.len());
+        let mut listeners = listening.listeners;
+        if let Some(port) = port_of(&listeners) {
+            listeners.extend(bind_extra(&settings.extra_bind, port, "the HTTPS proxy").await);
+        }
 
-        for listener in listening.listeners {
+        let mut bound = Vec::with_capacity(listeners.len());
+
+        for listener in listeners {
             bound.extend(listener.local_addr().ok());
 
             let routes = routes.clone();
@@ -460,6 +559,7 @@ impl Gateway {
             dns_port: None,
             ca_path: None,
             wanted: Vec::new(),
+            extra_wanted: Vec::new(),
             http_failure: Some(BindFailure::Other),
             https_failure: Some(BindFailure::Other),
             dns_failure: Some(BindFailure::Other),
@@ -488,6 +588,7 @@ impl Gateway {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
             ],
+            extra_wanted: Vec::new(),
             http_failure: None,
             https_failure: None,
             dns_failure: None,
@@ -518,6 +619,11 @@ impl Gateway {
     /// the case that matters: HTTPS losing `[::1]` while HTTP holds it
     /// leaves every check green and half the HTTPS traffic going to a
     /// stranger.
+    ///
+    /// The extra addresses are left out of the comparison. Apple
+    /// Container's gateway is IPv4, and counting it would report IPv4 as
+    /// held while `127.0.0.1` went to another process — which is the exact
+    /// blind spot this exists to close.
     pub fn missing_families(&self) -> Vec<(&'static str, IpAddr)> {
         let mut missing = Vec::new();
 
@@ -525,14 +631,44 @@ impl Gateway {
             ("the HTTP proxy", &self.http_addrs),
             ("the HTTPS proxy", &self.https_addrs),
         ] {
+            let loopback: Vec<SocketAddr> = bound
+                .iter()
+                .filter(|addr| !self.extra_wanted.contains(&addr.ip()))
+                .copied()
+                .collect();
+
             missing.extend(
-                missing_from(bound, &self.wanted)
+                missing_from(&loopback, &self.wanted)
                     .into_iter()
                     .map(|family| (protocol, family)),
             );
         }
 
         missing
+    }
+
+    /// The addresses containers reach the host at that the proxy is not
+    /// listening on.
+    ///
+    /// **Empty on a machine that only runs Docker**, which needs nothing
+    /// here. Anything in it means a container under Apple Container
+    /// resolves its service URLs to an address where nothing answers —
+    /// usually a launchd plist written before that address was known,
+    /// since the job is what holds the privileged ports.
+    pub fn unreachable_from_containers(&self) -> Vec<IpAddr> {
+        // Whichever proxy the URLs name: HTTPS when it is up, because
+        // that is the one `url_for` issues.
+        let serving = if self.https_addrs.is_empty() {
+            &self.http_addrs
+        } else {
+            &self.https_addrs
+        };
+
+        self.extra_wanted
+            .iter()
+            .filter(|wanted| !serving.iter().any(|bound| bound.ip() == **wanted))
+            .copied()
+            .collect()
     }
 
     pub fn dns_port(&self) -> Option<u16> {
@@ -651,6 +787,42 @@ async fn bind_port(bind: &[IpAddr], port: u16, what: &str) -> Attempt {
         listeners,
         failure,
     }
+}
+
+/// The port a set of listeners is on, if there are any.
+fn port_of(listeners: &[TcpListener]) -> Option<u16> {
+    listeners
+        .first()
+        .and_then(|listener| listener.local_addr().ok())
+        .map(|addr| addr.port())
+}
+
+/// Binds the addresses that are worth having but not worth failing over.
+///
+/// Whatever comes up is served and whatever does not is logged, because
+/// neither outcome should change where the proxy listens for everyone
+/// else. Apple Container's gateway exists only while its network is up,
+/// and it is the same port either way — so a miss here costs containers
+/// their URLs and costs the host nothing.
+async fn bind_extra(bind: &[IpAddr], port: u16, what: &str) -> Vec<TcpListener> {
+    let mut listeners = Vec::new();
+
+    for ip in bind {
+        let addr = SocketAddr::new(*ip, port);
+
+        match TcpListener::bind(addr).await {
+            Ok(listener) => {
+                tracing::info!("{what}: also on {addr}, where containers reach the host");
+                listeners.push(listener);
+            }
+            Err(err) => tracing::debug!(
+                "{what}: {addr} is not available, so containers cannot \
+                 reach it there: {err}"
+            ),
+        }
+    }
+
+    listeners
 }
 
 /// One port's worth of binding.
@@ -1041,12 +1213,60 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
             ],
+            extra_wanted: Vec::new(),
             http_failure: None,
             https_failure: None,
             dns_failure: None,
             http_fell_back: false,
             https_fell_back: false,
         }
+    }
+
+    #[test]
+    fn says_when_containers_cannot_reach_the_proxy() {
+        // The launchd job holds :443, and a plist written before Apple
+        // Container's gateway was known holds it on loopback only — where
+        // no container can reach it. Silence there leaves the URL failing
+        // inside the container and working in the browser.
+        let apple = IpAddr::V4(Ipv4Addr::new(192, 168, 64, 1));
+
+        let mut gateway = bound(vec![], vec![v4(443)]);
+        gateway.extra_wanted = vec![apple];
+
+        assert_eq!(gateway.unreachable_from_containers(), vec![apple]);
+
+        gateway.https_addrs.push(SocketAddr::new(apple, 443));
+
+        assert!(
+            gateway.unreachable_from_containers().is_empty(),
+            "listening there is the whole requirement"
+        );
+    }
+
+    #[test]
+    fn an_extra_address_does_not_stand_in_for_a_lost_family() {
+        // Apple Container's gateway is IPv4. Counting it as "IPv4 is held"
+        // would show a healthy proxy while 127.0.0.1 went to another
+        // process — the case `missing_families` exists to catch.
+        let apple = IpAddr::V4(Ipv4Addr::new(192, 168, 64, 1));
+
+        let mut gateway = bound(vec![], vec![SocketAddr::new(apple, 443), v6(443)]);
+        gateway.extra_wanted = vec![apple];
+
+        assert_eq!(
+            gateway.missing_families(),
+            vec![("the HTTPS proxy", IpAddr::V4(Ipv4Addr::LOCALHOST))],
+            "127.0.0.1 is unattended and has to be reported"
+        );
+    }
+
+    #[test]
+    fn a_machine_without_apple_container_has_nothing_to_reach() {
+        assert!(
+            bound(vec![v4(80)], vec![v4(443)])
+                .unreachable_from_containers()
+                .is_empty()
+        );
     }
 
     fn v4(port: u16) -> SocketAddr {

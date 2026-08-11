@@ -21,6 +21,7 @@ pub fn build_workspace_spec(
     workspace: &str,
     worktree_path: &Path,
     envs: &BTreeMap<String, BTreeMap<String, String>>,
+    gateway_hosts: &[String],
 ) -> Result<WorkspaceSpec, ApiError> {
     let key = WorkspaceKey::new(project, workspace);
 
@@ -28,6 +29,11 @@ pub fn build_workspace_spec(
     // this order.
     let ordered = config.startup_order();
     let mut services = Vec::with_capacity(ordered.len());
+
+    let context = WorkspaceContext {
+        services: config.services.keys().cloned().collect(),
+        gateway_hosts: gateway_hosts.to_vec(),
+    };
 
     for name in ordered {
         let service_config = config
@@ -42,7 +48,7 @@ pub fn build_workspace_spec(
             workspace,
             worktree_path,
             envs.get(name).cloned().unwrap_or_default(),
-            config.services.keys().cloned().collect(),
+            context.clone(),
         )?);
     }
 
@@ -171,6 +177,21 @@ fn fingerprint(dockerfile: &Path, args: &BTreeMap<String, String>) -> std::io::R
     Ok(format!("{:x}", hasher.finalize())[..12].to_string())
 }
 
+/// What a service is told about the workspace around it.
+///
+/// Two lists that always travel together and always hold the same values
+/// for every service in a workspace — passing them one by one was how
+/// `build_service_spec` grew an argument list nobody could read.
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceContext {
+    /// Every service in the workspace, this one included.
+    pub services: Vec<String>,
+    /// The hostnames the workspace's services answer to.
+    ///
+    /// See [`minato_runtime::ServiceSpec::gateway_hosts`].
+    pub gateway_hosts: Vec<String>,
+}
+
 /// Builds the spec for one service.
 pub fn build_service_spec(
     service: &ServiceConfig,
@@ -179,12 +200,18 @@ pub fn build_service_spec(
     workspace: &str,
     worktree_path: &Path,
     env: BTreeMap<String, String>,
-    all_services: Vec<String>,
+    context: WorkspaceContext,
 ) -> Result<ServiceSpec, ApiError> {
     // Either a prebuilt image to pull, or a context to build. The
     // configuration has already rejected both and neither.
     let build = match &service.build {
-        Some(context) => Some(build_spec(service, name, project, context, worktree_path)?),
+        Some(build_context) => Some(build_spec(
+            service,
+            name,
+            project,
+            build_context,
+            worktree_path,
+        )?),
         None => None,
     };
 
@@ -250,7 +277,8 @@ pub fn build_service_spec(
 
     // The other services in this workspace. Resolving their names is the
     // runtime's job.
-    let peers: Vec<String> = all_services
+    let peers: Vec<String> = context
+        .services
         .into_iter()
         .filter(|other| other != name)
         .collect();
@@ -270,6 +298,7 @@ pub fn build_service_spec(
         volumes,
         source_mount,
         peers,
+        gateway_hosts: context.gateway_hosts,
     })
 }
 
@@ -316,6 +345,7 @@ mod tests {
             "feat-1",
             Path::new("/repo/wt/feat-1"),
             &no_envs(),
+            &[],
         )
         .expect("builds")
     }
@@ -339,8 +369,15 @@ mod tests {
         "#,
         );
 
-        let spec = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"), &no_envs())
-            .expect("builds");
+        let spec = build_workspace_spec(
+            &config,
+            "myapp",
+            "feat-1",
+            Path::new("/repo"),
+            &no_envs(),
+            &[],
+        )
+        .expect("builds");
 
         assert_eq!(
             spec.services[0].command,
@@ -461,7 +498,7 @@ mod tests {
     }
 
     fn built(dir: &Path, toml: &str) -> Result<WorkspaceSpec, ApiError> {
-        build_workspace_spec(&config(toml), "myapp", "feat-1", dir, &no_envs())
+        build_workspace_spec(&config(toml), "myapp", "feat-1", dir, &no_envs(), &[])
     }
 
     const BUILDS: &str = r#"
@@ -638,8 +675,15 @@ mod tests {
         "#,
         );
 
-        let err = build_workspace_spec(&config, "myapp", "feat-1", Path::new("/repo"), &no_envs())
-            .unwrap_err();
+        let err = build_workspace_spec(
+            &config,
+            "myapp",
+            "feat-1",
+            Path::new("/repo"),
+            &no_envs(),
+            &[],
+        )
+        .unwrap_err();
         assert_eq!(err.code, minato_api::ErrorCode::InvalidConfig);
     }
 }

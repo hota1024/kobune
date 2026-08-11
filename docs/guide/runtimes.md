@@ -30,6 +30,10 @@ else on the network.
 Service names resolve through network aliases, so `db:5432` works from inside
 any container in the same workspace.
 
+The workspace's own hostnames are added to each container as well, pointed at
+`host-gateway` — Docker's name for the host — so `https://api.myapp.localhost`
+reaches the proxy from inside a container exactly as it does from the browser.
+
 ## Apple Container
 
 Needs **macOS 26 or later** and the service running:
@@ -71,6 +75,23 @@ An unset variable is deliberate. A hostname that never resolves would send you
 looking for a DNS problem that does not exist; a missing variable points at the
 ordering.
 :::
+
+### Service URLs go through /etc/hosts
+
+There is no `--add-host` here, so the file that flag writes is generated and
+mounted at `/etc/hosts` instead. The workspace's hostnames are pointed at the
+network's gateway, which is the host: a container reaches the proxy there and
+nowhere else, since it cannot see the host's loopback.
+
+**The proxy has to be listening on that address**, and on 80 and 443 only
+launchd can put it there. `minato setup` writes that socket into the plist, so
+a machine set up before Apple Container was installed needs `minato setup` run
+again. `minato doctor` says so when it applies:
+
+```console
+$ minato doctor
+✗ reachable from containers  the proxy is not listening on 192.168.64.1, …
+```
 
 ### Everything shares one network
 

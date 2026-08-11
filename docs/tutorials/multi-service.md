@@ -61,9 +61,22 @@ Every service gets `MINATO_URL_<SERVICE>` for every other service. **This is
 the piece that makes per-worktree environments work at all** — without it, the
 frontend would have to guess.
 
-For server-to-server calls inside the same workspace you can also use the
+**The URL works from inside a container too**, not only in the browser. The
+name is pointed at Minato's gateway in every container of the workspace, so the
+frontend's server side can call the same `https://api.myapp.localhost` its
+browser half does — same Host, same Origin, so cookie domains and CORS do not
+have to be told about two of them.
+
+For a call that has no reason to leave the network you can still use the
 service name directly on Docker (`http://api:8080`), which skips the proxy.
 That does not work on Apple Container; see [Runtimes](../guide/runtimes).
+
+::: warning The certificate is not trusted inside a container
+`minato setup` puts Minato's CA in the host's keychain, which covers the
+browser. A container has its own trust store and does not get it, so an HTTPS
+call from inside one fails to verify. Until the CA is mounted in, tell the
+client not to check: `NODE_TLS_REJECT_UNAUTHORIZED=0` for Node, `curl -k`.
+:::
 
 ## Adding a database
 

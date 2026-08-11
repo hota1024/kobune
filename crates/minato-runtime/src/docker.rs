@@ -736,6 +736,8 @@ impl DockerRuntime {
             }
         }
 
+        let extra_hosts = extra_hosts(spec);
+
         // Make the service name resolvable, so `api` can reach `db:5432`.
         //
         // A throwaway joins the network — it needs to reach the others —
@@ -795,6 +797,11 @@ impl DockerRuntime {
                     None
                 } else {
                     Some(port_bindings)
+                },
+                extra_hosts: if extra_hosts.is_empty() {
+                    None
+                } else {
+                    Some(extra_hosts)
                 },
                 ..Default::default()
             }),
@@ -1592,6 +1599,24 @@ fn append_dockerfile(context: &mut Vec<u8>, dockerfile: &Path) -> std::io::Resul
     builder.into_inner()
 }
 
+/// The workspace's own URLs, pointed at the host where the proxy is.
+///
+/// `host-gateway` is Docker's name for "wherever the host is from in
+/// here", which Docker Desktop resolves to the address that reaches the
+/// host's loopback — the only addresses the proxy holds. Naming an address
+/// instead would be naming Docker Desktop's internals, which are not ours
+/// to depend on.
+///
+/// **A throwaway gets them too.** `minato exec` is where a service is
+/// poked at by hand, and a curl that works in the service but not in the
+/// shell beside it is the confusing kind of difference.
+fn extra_hosts(spec: &ServiceSpec) -> Vec<String> {
+    spec.gateway_hosts
+        .iter()
+        .map(|host| format!("{host}:host-gateway"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1628,6 +1653,52 @@ mod tests {
             (labels::SCOPE.to_string(), "workspace".to_string()),
             (labels::PORT.to_string(), "3000".to_string()),
         ])
+    }
+
+    #[test]
+    fn points_the_service_urls_at_the_host() {
+        // Without this the URL a container is handed resolves to nothing
+        // inside it, and server-to-server calls have to use a different
+        // Host than the browser does.
+        let mut spec = spec_for_hosts();
+        spec.gateway_hosts = vec![
+            "web.feat-1.myapp.localhost".into(),
+            "api.feat-1.myapp.localhost".into(),
+        ];
+
+        assert_eq!(
+            extra_hosts(&spec),
+            vec![
+                "web.feat-1.myapp.localhost:host-gateway".to_string(),
+                "api.feat-1.myapp.localhost:host-gateway".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn adds_no_hosts_when_there_are_no_urls() {
+        // No proxy, no URLs, and so nothing that has to resolve.
+        assert!(extra_hosts(&spec_for_hosts()).is_empty());
+    }
+
+    fn spec_for_hosts() -> ServiceSpec {
+        ServiceSpec {
+            key: WorkspaceKey::new("myapp", "feat-1").service("web"),
+            attached_to: WorkspaceKey::new("myapp", "feat-1"),
+            image: "node:22".into(),
+            build: None,
+            command: None,
+            workdir: "/workspace".into(),
+            env: Default::default(),
+            tty: false,
+            port: Some(3000),
+            health: None,
+            scope: ServiceScope::Workspace,
+            volumes: vec![],
+            source_mount: None,
+            peers: vec![],
+            gateway_hosts: vec![],
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! operations and networking belong to `minato-runtime` / `minato-proxy`
 //! and must not leak in here.
 
+pub mod apple;
 pub mod config;
 pub mod env;
 pub mod error;
