@@ -220,6 +220,11 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(OwnedFd, OwnedFd)> {
         ws_ypixel: 0,
     };
 
+    // A raw pointer rather than a reference, because the two platforms
+    // disagree about its constness — macOS takes `*mut winsize`, Linux
+    // `*const` — and a `*mut` coerces to either.
+    let requested: *mut libc::winsize = &mut size;
+
     // SAFETY: `openpty` writes one descriptor through each of the first
     // two pointers and reads the window size through the last. The two
     // name arguments are optional and left null.
@@ -229,7 +234,7 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(OwnedFd, OwnedFd)> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            requested,
         )
     };
 
