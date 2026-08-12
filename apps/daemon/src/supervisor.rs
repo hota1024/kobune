@@ -404,6 +404,12 @@ impl Supervisor {
             None => Check::warn("ca", "local CA", "not generated".to_string()),
         });
 
+        // What that CA may sign for, which is the difference between a
+        // key that is worth stealing and one that is not.
+        if let Some(check) = self.ca_scope_check(&target).await {
+            checks.push(check);
+        }
+
         // Only worth reporting once a tunnel has been set up. An unused
         // feature showing up as a warning on every `doctor` run trains
         // people to skim past the output.
@@ -1304,6 +1310,83 @@ impl Supervisor {
     }
 
     /// Diagnoses the tunnel, or nothing when there is none to diagnose.
+    /// What the local CA is allowed to sign for, and whether that covers
+    /// this project.
+    ///
+    /// **Two different problems, and they are not the same severity.**
+    ///
+    /// A CA with no constraint at all is every installation made before
+    /// the rule existed. It works perfectly; it is simply worth more to
+    /// an attacker than it needs to be. A warning, because nothing is
+    /// broken and replacing a trusted certificate is the user's call.
+    ///
+    /// A project whose domain falls outside the constraint is broken —
+    /// every HTTPS URL it issues will be refused — and the browser error
+    /// for it names neither Minato nor the constraint. A failure, with
+    /// the two ways out.
+    async fn ca_scope_check(&self, target: &Target) -> Option<Check> {
+        // Nothing to say before there is a CA at all; the check above
+        // has already said that.
+        self.gateway.ca_path()?;
+
+        let permitted = self.gateway.ca_permitted();
+        let title = "what the local CA may sign for";
+
+        if permitted.is_empty() {
+            return Some(
+                Check::warn(
+                    "ca-scope",
+                    title,
+                    "anything at all — this CA predates the name constraint, \
+                     so whoever can read its key can sign for any host and be \
+                     believed"
+                        .to_string(),
+                )
+                .with_fix(
+                    "delete ~/.minato/ca/, restart the daemon, and run \
+                     `minato setup` again to trust the replacement",
+                ),
+            );
+        }
+
+        let domain = self
+            .resolve_project_only(target)
+            .await
+            .ok()
+            .map(|context| context.config.domain());
+
+        // A machine with no project is a perfectly ordinary thing to run
+        // doctor on, and there is no domain to check against.
+        let Some(domain) = domain else {
+            return Some(Check::ok("ca-scope", title, permitted.join(", ")));
+        };
+
+        if minato_proxy::permits(permitted, &domain) {
+            return Some(Check::ok(
+                "ca-scope",
+                title,
+                format!("{} — which covers {domain}", permitted.join(", ")),
+            ));
+        }
+
+        Some(
+            Check::fail(
+                "ca-scope",
+                title,
+                format!(
+                    "{} — which does not cover {domain}, so every HTTPS URL \
+                     of this project will be refused",
+                    permitted.join(", ")
+                ),
+            )
+            .with_fix(format!(
+                "put [project] domain under one of {}, or delete \
+                 ~/.minato/ca/ and trust a replacement that covers {domain}",
+                permitted.join(" / ")
+            )),
+        )
+    }
+
     async fn tunnel_check(&self) -> Option<Check> {
         let record = self.tunnel_record().await.ok().flatten()?;
 

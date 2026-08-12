@@ -292,6 +292,37 @@ Re-signing it through rcgen produces different bytes every time — ECDSA
 signatures are not deterministic — and what goes out would no longer match what
 the user trusted.
 
+#### The CA is narrowed to `.localhost` and `.test`
+
+Issuing for whatever SNI asks is the right behaviour for the proxy and the
+wrong power for the key behind it. `minato setup` puts this certificate in the
+system trust store, so without a limit the key in `~/.minato/ca/` signs
+`google.com` as readily as anything of Minato's, and the machine believes it.
+`mkcert` asks for the same thing, which makes it usual rather than acceptable.
+
+So the CA carries an X.509 `NameConstraints` extension permitting `.localhost`
+and `.test` and nothing else. Both are reserved by RFC 6761 and can never be a
+real public name, so what a leaked key could sign is nothing anybody could be
+fooled by. A leading dot is what makes the subtree cover everything *under* the
+suffix, which is the whole requirement — every worktree invents a name at a new
+depth.
+
+Two consequences, and both are `minato doctor`'s to report rather than
+anything's to fix silently.
+
+- **A CA made before this has no constraint**, and is left alone. Replacing a
+  certificate the user trusted would break every URL until they noticed and
+  trusted the new one, which is a worse day than the one it prevents
+- **`[project] domain` can name a suffix outside it.** That configuration is
+  supported — `/etc/resolver/{suffix}` is written per suffix — so the check
+  says which domain and which suffixes, because the browser error for it names
+  neither
+
+The proxy still issues for a name outside the constraint rather than refusing
+the handshake: the constraint is enforced by whoever verifies, which is what
+X.509 is for, and a certificate error says far more than a dropped connection.
+It logs a line saying so.
+
 #### Listen on both IPv4 and IPv6 (found in M1)
 
 macOS resolves `*.localhost` to **both** `::1` and `127.0.0.1`, and clients

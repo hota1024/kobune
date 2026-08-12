@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, GeneralSubtree, IsCa, KeyPair,
+    KeyUsagePurpose, NameConstraints,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -28,6 +29,24 @@ pub const CA_KEY_FILE: &str = "minato-ca.key";
 
 /// How long the CA certificate is valid, in years.
 const CA_VALIDITY_YEARS: i64 = 10;
+
+/// The DNS suffixes a CA created from now on may sign for.
+///
+/// **This is what keeps a stolen key from being worth anything.** The
+/// certificate goes into the system trust store, so without a constraint
+/// whoever reads `minato-ca.key` can mint `google.com` and be believed.
+/// `mkcert` asks for the same bargain, which makes it usual rather than
+/// good, and X.509 has had the answer since 1999.
+///
+/// Both of these are reserved by RFC 6761 and can never be a real public
+/// name, so what a leaked key could sign is nothing anybody could be
+/// fooled by. `.test` is here because `docs/DESIGN.md` §5 anticipates it
+/// for anyone wanting a TLD of their own.
+///
+/// A leading dot is what makes a subtree match everything *under* the
+/// suffix as well as the suffix itself — which is the whole point, since
+/// every worktree invents a name at a new depth.
+pub const PERMITTED_SUFFIXES: [&str; 2] = [".localhost", ".test"];
 
 /// How long an issued leaf certificate is valid, in days.
 ///
@@ -76,6 +95,15 @@ pub struct LocalCa {
     der: CertificateDer<'static>,
     /// The PEM on disk, guaranteed identical to what the user trusted.
     pem: String,
+    /// The DNS suffixes this CA may sign for, read from its own name
+    /// constraints.
+    ///
+    /// **Empty means unconstrained**, which is what a CA created before
+    /// [`PERMITTED_SUFFIXES`] existed looks like. Those are left alone
+    /// rather than replaced — swapping a certificate the user trusted
+    /// would break every URL until they noticed and trusted the new one
+    /// — so `minato doctor` reports them instead.
+    permitted: Vec<String>,
     dir: PathBuf,
 }
 
@@ -124,6 +152,10 @@ impl LocalCa {
                 source,
             })?;
 
+        // Read before signing: `self_signed` consumes the params, and the
+        // constraint they carry is what tells an old CA from a new one.
+        let params_for_reading = params.clone();
+
         // Only ever used as the signing issuer. Its signature bytes do not
         // match the ones on disk, so it must not go out as the chain.
         let certificate = params.self_signed(&key_pair).map_err(CaError::Generate)?;
@@ -132,6 +164,7 @@ impl LocalCa {
         let der = pem_to_der(&cert_pem, dir.join(CA_CERT_FILE))?;
 
         Ok(Self {
+            permitted: permitted_from(&params_for_reading),
             certificate,
             key_pair,
             der,
@@ -153,6 +186,15 @@ impl LocalCa {
             KeyUsagePurpose::CrlSign,
             KeyUsagePurpose::DigitalSignature,
         ];
+
+        // What this CA may ever sign for. See PERMITTED_SUFFIXES.
+        params.name_constraints = Some(NameConstraints {
+            permitted_subtrees: PERMITTED_SUFFIXES
+                .iter()
+                .map(|suffix| GeneralSubtree::DnsName((*suffix).to_string()))
+                .collect(),
+            excluded_subtrees: Vec::new(),
+        });
 
         let mut name = DistinguishedName::new();
         // A name the user can find in Keychain.
@@ -182,8 +224,26 @@ impl LocalCa {
             key_pair,
             der,
             pem,
+            permitted: PERMITTED_SUFFIXES.iter().map(|s| s.to_string()).collect(),
             dir: dir.to_path_buf(),
         })
+    }
+
+    /// The DNS suffixes this CA may sign for.
+    ///
+    /// Empty for a CA that carries no name constraint at all — one made
+    /// before the rule existed. `minato doctor` is what says so.
+    pub fn permitted_suffixes(&self) -> &[String] {
+        &self.permitted
+    }
+
+    /// Whether this CA may sign for `host`.
+    ///
+    /// An unconstrained CA may sign for anything, which is exactly the
+    /// problem and exactly what it will do — so this answers `true` for
+    /// one rather than pretending otherwise.
+    pub fn permits(&self, host: &str) -> bool {
+        permits(&self.permitted, host)
     }
 
     /// The path to the CA certificate — what the user tells the system
@@ -298,6 +358,45 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<(), CaError> {
     })
 }
 
+/// The DNS suffixes a set of name constraints permits.
+///
+/// Only `DnsName` subtrees: an IP or a directory name says nothing about
+/// which hostnames this CA covers, which is the only question here.
+fn permitted_from(params: &CertificateParams) -> Vec<String> {
+    let Some(constraints) = params.name_constraints.as_ref() else {
+        return Vec::new();
+    };
+
+    constraints
+        .permitted_subtrees
+        .iter()
+        .filter_map(|subtree| match subtree {
+            GeneralSubtree::DnsName(name) => Some(name.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `permitted` covers `host`.
+///
+/// Free of `LocalCa` so that the daemon can ask the same question of a
+/// suffix it read from a configuration, without a CA in hand.
+pub fn permits(permitted: &[String], host: &str) -> bool {
+    // No constraint, so nothing is out of bounds.
+    if permitted.is_empty() {
+        return true;
+    }
+
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+
+    permitted.iter().any(|suffix| {
+        // `.localhost` covers `localhost` and everything under it, which
+        // is what a leading-dot subtree means in X.509.
+        let bare = suffix.trim_start_matches('.').to_ascii_lowercase();
+        host == bare || host.ends_with(&format!(".{bare}"))
+    })
+}
+
 /// Extracts the first certificate in a PEM as DER.
 fn pem_to_der(pem: &str, path: PathBuf) -> Result<CertificateDer<'static>, CaError> {
     let mut reader = std::io::BufReader::new(pem.as_bytes());
@@ -342,6 +441,20 @@ impl DynamicCertResolver {
             .get(&key)
         {
             return Some(existing.clone());
+        }
+
+        if !self.ca.permits(&key) {
+            // Issued anyway: the constraint is enforced by whoever
+            // verifies, which is correct X.509, and refusing here would
+            // turn a legible certificate error into a bare handshake
+            // failure. But it is worth saying once, where somebody
+            // debugging can find it.
+            tracing::warn!(
+                "{key} is outside what this CA may sign for ({}), so the \
+                 certificate will be refused by anything that checks it. \
+                 `minato doctor` says what to do about it",
+                self.ca.permitted_suffixes().join(", ")
+            );
         }
 
         let issued = match self.ca.issue(&key) {
@@ -477,6 +590,75 @@ mod tests {
             issued.cert[1], chain_der,
             "the CA in the chain must be the one on disk"
         );
+    }
+
+    #[test]
+    fn a_new_ca_is_narrowed_to_the_development_tlds() {
+        // The whole point. This certificate goes into the system trust
+        // store, and without this the key behind it signs `google.com`
+        // as readily as anything of Minato's.
+        let (_dir, ca) = temp_ca();
+
+        assert_eq!(ca.permitted_suffixes(), [".localhost", ".test"]);
+    }
+
+    #[test]
+    fn the_constraint_survives_being_written_and_read_back() {
+        // **The test that proves it is really in the certificate.**
+        // Loading parses the PEM from disk, so a constraint that rcgen
+        // had quietly dropped on the way out would come back empty here
+        // — and every other assertion in this file would still pass.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let created = LocalCa::load_or_create(dir.path()).expect("creates");
+        let written = created.permitted_suffixes().to_vec();
+        drop(created);
+
+        let loaded = LocalCa::load_or_create(dir.path()).expect("loads");
+
+        assert_eq!(loaded.permitted_suffixes(), written.as_slice());
+        assert!(!written.is_empty(), "an empty list would pass vacuously");
+    }
+
+    #[test]
+    fn a_constraint_covers_every_depth_a_worktree_invents() {
+        let (_dir, ca) = temp_ca();
+
+        for host in [
+            "localhost",
+            "myapp.localhost",
+            "web.myapp.localhost",
+            "web.feature-user-auth.myapp.localhost",
+            "web.myapp.test",
+        ] {
+            assert!(ca.permits(host), "{host} should be covered");
+        }
+
+        for host in ["google.com", "myapp.localhost.evil.com", "localhostx"] {
+            assert!(!ca.permits(host), "{host} must not be");
+        }
+    }
+
+    #[test]
+    fn an_unconstrained_ca_says_so_rather_than_looking_fine() {
+        // What every installation made before this rule has on disk.
+        // Reporting it as constrained would be the one answer worse than
+        // not asking.
+        assert!(permits(&[], "google.com"), "nothing is out of bounds");
+        assert!(
+            permitted_from(&CertificateParams::default()).is_empty(),
+            "no constraint means no permitted suffixes"
+        );
+    }
+
+    #[test]
+    fn matching_is_case_and_trailing_dot_insensitive() {
+        // Both arrive from the wire: SNI casing is the client's choice,
+        // and a name from DNS can be fully qualified.
+        let permitted = vec![".localhost".to_string()];
+
+        assert!(permits(&permitted, "WEB.MyApp.localhost"));
+        assert!(permits(&permitted, "web.myapp.localhost."));
+        assert!(permits(&permitted, "web.myapp.LOCALHOST."));
     }
 
     #[test]
