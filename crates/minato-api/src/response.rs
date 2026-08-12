@@ -93,6 +93,17 @@ pub struct PurgeReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<PurgeVolume>,
 
+    /// Storage that could not be listed, or would not go, and why.
+    ///
+    /// **Structured rather than logged past.** A runtime that cannot be
+    /// asked answers the same way as one holding nothing — an empty list —
+    /// and the difference is the whole question: an uninstall that could
+    /// not reach Docker would otherwise print a plan with no storage in
+    /// it, remove everything else, and exit 0, leaving volumes behind
+    /// under names only Minato knew.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage_left: Vec<PurgeStorageFailure>,
+
     /// Projects whose containers could not be taken down, and why.
     ///
     /// A runtime that is not running is the usual cause. These keep their
@@ -134,10 +145,24 @@ pub struct PurgeVolume {
     pub name: String,
 }
 
+/// Storage an uninstall did not manage to account for.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PurgeStorageFailure {
+    /// The runtime that could not be asked, or the volume that would not
+    /// go — whichever it was, named the way a person could go and look.
+    pub what: String,
+    pub reason: String,
+}
+
 impl PurgeReport {
     /// Whether the daemon has anything of its own left.
+    ///
+    /// **Storage it could not ask about counts as something left.** Not
+    /// knowing and having nothing are different answers, and only one of
+    /// them makes "nothing of Minato's was found" true.
     pub fn is_empty(&self) -> bool {
         self.volumes.is_empty()
+            && self.storage_left.is_empty()
             && self.projects.iter().all(|project| {
                 project
                     .workspaces
@@ -504,6 +529,23 @@ mod tests {
 
         assert!(!report.is_empty());
         assert_eq!(report.service_count(), 0);
+    }
+
+    #[test]
+    fn storage_that_could_not_be_asked_about_is_not_an_empty_report() {
+        // Docker not running, and every worktree already `minato rm`ed. An
+        // empty listing and a listing that failed are the same shape and
+        // opposite answers: reporting nothing here is how an uninstall
+        // says "there was no storage" about volumes it never saw.
+        let report = PurgeReport {
+            storage_left: vec![PurgeStorageFailure {
+                what: "docker".into(),
+                reason: "its storage could not be listed: connection refused".into(),
+            }],
+            ..PurgeReport::default()
+        };
+
+        assert!(!report.is_empty());
     }
 
     #[test]

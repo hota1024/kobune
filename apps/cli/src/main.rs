@@ -1256,6 +1256,12 @@ async fn handle_uninstall(
         return Ok(ExitCode::SUCCESS);
     }
 
+    // What the daemon could not take after all. The plan above is what it
+    // *expected* to be able to take, so a volume that turned out to be
+    // held by something, or a runtime that stopped answering between the
+    // two calls, is only known from the answer to the second one.
+    let mut left_behind: Vec<String> = Vec::new();
+
     // The containers first: once the daemon is gone, nothing knows their
     // names.
     if let Some(connection) = &mut connection {
@@ -1293,8 +1299,16 @@ async fn handle_uninstall(
             progress.finish();
         }
 
-        if let Err(err) = outcome {
-            ui::error(&format!("cannot take the containers down: {err}"), None);
+        match outcome {
+            Ok(Response::Purge(done)) => {
+                left_behind.extend(
+                    done.storage_left
+                        .iter()
+                        .map(|failure| format!("{}: {}", failure.what, failure.reason)),
+                );
+            }
+            Ok(_) => {}
+            Err(err) => ui::error(&format!("cannot take the containers down: {err}"), None),
         }
     }
 
@@ -1336,7 +1350,11 @@ async fn handle_uninstall(
         privileged.extend(run_privileged(&second, yes, cli.json));
     }
 
-    let failures = removed.failures;
+    // One list, because they are one answer to one question: what is still
+    // on this machine. A volume nothing would let go of is exactly as much
+    // "could not remove" as a file this user does not own.
+    let mut failures = removed.failures;
+    failures.extend(left_behind);
 
     if cli.json {
         output::print_json(&as_json(true, &failures, &privileged));

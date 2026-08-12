@@ -699,6 +699,26 @@ pub fn uninstall_plan(
         panel = panel.grid(grid);
     }
 
+    // Storage the daemon could not even ask about. Left out, this reads as
+    // a machine with no volumes on it — and the whole plan is the thing
+    // somebody is about to say yes to.
+    let storage_left = daemon
+        .map(|report| report.storage_left.as_slice())
+        .unwrap_or(&[]);
+    if !storage_left.is_empty() {
+        let mut lines = vec![Line::styled(
+            "storage that could not be accounted for, and stays:",
+            theme::bad(),
+        )];
+        for failure in storage_left {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {} ", failure.what), theme::subject()),
+                Span::styled(failure.reason.clone(), theme::muted()),
+            ]));
+        }
+        panel = panel.lines(lines);
+    }
+
     // Said out loud, and with the reason. A list that silently leaves the
     // containers out looks like a machine that has none.
     if let Err(reason) = daemon {
@@ -776,7 +796,12 @@ pub fn uninstall_plan(
         panel = panel.lines(lines);
     }
 
-    if plan.files.is_empty() && plan.privileged.is_empty() && services == 0 && volumes.is_empty() {
+    if plan.files.is_empty()
+        && plan.privileged.is_empty()
+        && services == 0
+        && volumes.is_empty()
+        && storage_left.is_empty()
+    {
         return panel.line(Span::styled(
             "nothing of Minato's was found on this machine",
             theme::muted(),
@@ -1532,6 +1557,31 @@ mod tests {
 
         assert!(text.contains("storage"), "got:\n{text}");
         assert!(text.contains("minato-myapp-pgdata"), "got:\n{text}");
+    }
+
+    #[test]
+    fn storage_that_could_not_be_listed_is_admitted_to() {
+        // The dangerous shape: Docker is down, so the daemon finds no
+        // volumes and the plan would read as a machine that has none —
+        // right before removing everything else and exiting 0.
+        let report = minato_api::PurgeReport {
+            storage_left: vec![minato_api::PurgeStorageFailure {
+                what: "docker".into(),
+                reason: "its storage could not be listed: connection refused".into(),
+            }],
+            ..Default::default()
+        };
+
+        let text = render(&uninstall_plan(
+            &crate::uninstall::Plan::default(),
+            Ok(&report),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(!text.contains("nothing of Minato"), "got:\n{text}");
+        assert!(text.contains("docker"), "got:\n{text}");
+        assert!(text.contains("connection refused"), "got:\n{text}");
     }
 
     #[test]

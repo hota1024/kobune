@@ -225,7 +225,7 @@ impl Supervisor {
             return Ok(runtime.clone());
         }
 
-        let runtime: Arc<dyn Runtime> = Arc::from(minato_runtime::create(id)?);
+        let runtime: Arc<dyn Runtime> = Arc::from(minato_runtime::create(id, self.paths.root())?);
         runtimes.insert(id.to_string(), runtime.clone());
         Ok(runtime)
     }
@@ -1037,7 +1037,8 @@ impl Supervisor {
             .map(|failure| failure.project.clone())
             .collect();
 
-        report.volumes = self.purge_volumes(dry_run, &stranded, events).await;
+        (report.volumes, report.storage_left) =
+            self.purge_volumes(dry_run, &stranded, events).await;
 
         // The tunnel is machine-wide rather than per project, so it is
         // dealt with once, here.
@@ -1080,21 +1081,25 @@ impl Supervisor {
     /// knows to look for. A runtime that cannot be reached, or was never
     /// installed, has nothing to say and is skipped.
     ///
-    /// **A stranded project keeps its storage.** Its containers are still
-    /// up and its state entry is kept for a later run; removing the data
-    /// underneath them would be the one irreversible half of a purge that
-    /// admits it did not finish.
+    /// **A stranded project keeps the storage that keeping it can save.**
+    /// Its containers are still up, and taking the data from under them
+    /// would be the one irreversible half of a purge that admits it did
+    /// not finish — see [`Self::skipping_it_would_save_it`] for the case
+    /// where leaving it out of the sweep saves nothing and only hides it.
     ///
-    /// Failing to remove one is reported and passed over, like every other
-    /// failure here: what is left is disk, and an uninstall that stopped
-    /// over it would leave the daemon, the binaries and the trusted CA in
-    /// place — all of which matter more.
+    /// **Everything that goes wrong here comes back in the report.** A
+    /// runtime that cannot be asked answers exactly as one holding nothing
+    /// does, so a failure kept to the log would read as "there is no
+    /// storage" all the way out to the plan somebody says yes to.
     async fn purge_volumes(
         &self,
         dry_run: bool,
         stranded: &BTreeSet<String>,
         events: &EventSink,
-    ) -> Vec<minato_api::PurgeVolume> {
+    ) -> (
+        Vec<minato_api::PurgeVolume>,
+        Vec<minato_api::PurgeStorageFailure>,
+    ) {
         const STEP: &str = "volumes";
 
         if !dry_run {
@@ -1102,6 +1107,7 @@ impl Supervisor {
         }
 
         let mut found = Vec::new();
+        let mut left = Vec::new();
 
         for id in minato_runtime::AVAILABLE_RUNTIMES {
             let Ok(runtime) = self.runtime(id).await else {
@@ -1111,18 +1117,29 @@ impl Supervisor {
             let volumes = match runtime.managed_volumes().await {
                 Ok(volumes) => volumes,
                 Err(err) => {
-                    events.debug(format!("cannot list {id}'s volumes: {err}"));
+                    // Not a runtime that is absent — that answers with an
+                    // empty list. This is one that is there and would not
+                    // say, so whatever it holds is about to be left behind.
+                    events.warn(format!("cannot list {id}'s storage: {err}"));
+                    left.push(minato_api::PurgeStorageFailure {
+                        what: id.to_string(),
+                        reason: format!("its storage could not be listed: {err}"),
+                    });
                     continue;
                 }
             };
 
             for volume in volumes {
-                if stranded.contains(&volume.project) {
+                if stranded.contains(&volume.project) && self.skipping_it_would_save_it(&volume) {
                     continue;
                 }
 
                 if !dry_run && let Err(err) = runtime.remove_managed_volume(&volume).await {
                     events.warn(format!("{} was not removed: {err}", volume.id));
+                    left.push(minato_api::PurgeStorageFailure {
+                        what: volume.id,
+                        reason: err.to_string(),
+                    });
                     continue;
                 }
 
@@ -1134,12 +1151,25 @@ impl Supervisor {
         }
 
         found.sort();
+        left.sort();
 
         if !dry_run {
             events.step_done(STEP, "removing the storage");
         }
 
-        found
+        (found, left)
+    }
+
+    /// Whether leaving this volume out of the sweep would actually keep it.
+    ///
+    /// Docker's storage is the daemon's to leave alone, so there it would.
+    /// Apple Container has no named volumes and uses a directory under
+    /// `MINATO_HOME` instead — which the CLI's half of an uninstall deletes
+    /// as one entry in its plan, moments after this runs. Skipping it there
+    /// saves nothing; all it does is keep the data off the list of what is
+    /// about to disappear, which is the one thing that list is for.
+    fn skipping_it_would_save_it(&self, volume: &minato_runtime::ManagedVolume) -> bool {
+        !std::path::Path::new(&volume.id).starts_with(self.paths.root())
     }
 
     /// The runtime to tear a project down with.
@@ -1440,6 +1470,43 @@ pub(super) mod tests {
             path,
             PathBuf::from("/Users/x/ghq/github.com/y/myapp.wt/feature-one"),
             "inside the repository it would end up in editor searches"
+        );
+    }
+
+    #[test]
+    fn a_stranded_project_keeps_the_storage_that_keeping_it_saves() {
+        // Docker's volumes are the daemon's to leave alone, so leaving one
+        // out of the sweep is what keeps it.
+        let supervisor = supervisor(Gateway::inert());
+
+        assert!(
+            supervisor.skipping_it_would_save_it(&minato_runtime::ManagedVolume {
+                project: "myapp".into(),
+                id: "minato-myapp-pgdata".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn storage_inside_the_daemons_own_directory_cannot_be_kept() {
+        // Apple Container's volumes live under `MINATO_HOME`, which the
+        // CLI's half of an uninstall deletes as one entry in its plan.
+        // Skipping this would not save the data — it would only leave it
+        // off the list of what is about to go, which is the one thing that
+        // list exists for.
+        let supervisor = supervisor(Gateway::inert());
+        let inside = supervisor
+            .paths
+            .root()
+            .join("volumes")
+            .join("myapp")
+            .join("pgdata");
+
+        assert!(
+            !supervisor.skipping_it_would_save_it(&minato_runtime::ManagedVolume {
+                project: "myapp".into(),
+                id: inside.display().to_string(),
+            })
         );
     }
 

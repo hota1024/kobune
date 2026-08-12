@@ -77,8 +77,14 @@ less accurately.
   says it takes Minato off the machine left behind storage only Minato knew
   the name of. They are found by label rather than from the daemon's records,
   which also reaches the storage of a project whose repository has already
-  been deleted; a project whose containers could not be taken down keeps its
-  data, along with the state entry that will finish the job later (#84)
+  been deleted. A project whose containers could not be taken down keeps its
+  data *where keeping it is possible*: Apple Container's volumes are
+  directories under `MINATO_HOME`, which the uninstaller removes as one, so
+  there they are listed as going rather than promised to somebody as kept.
+  Storage that could not be listed, or would not go, is named in the plan and
+  in what the command reports at the end — a runtime that cannot be asked
+  answers exactly as one holding nothing does, and the difference decides
+  whether an uninstall that left volumes behind says so (#84)
 - `minato init --from-compose` rewrites a sibling's URL — compose's
   `http://api:8080` — into `${MINATO_URL_API}`. Carried across verbatim it
   bypasses the proxy, hands the application a different URL from the

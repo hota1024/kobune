@@ -487,6 +487,11 @@ are found by that label rather than from the daemon's records, which is how
 the storage of a project whose repository you deleted months ago is reclaimed
 too.
 
+Storage that could not be listed — a runtime that is installed and not
+answering — is reported rather than counted as none, and so is a volume that
+would not go. Both mean an uninstall that left something behind, and both
+make the exit code non-zero.
+
 Nothing is listed that is not there, so the list is what is actually on the
 machine rather than everywhere Minato might have put something. The binaries
 are left alone when they are `cargo build` output — running `uninstall` from a

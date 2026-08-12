@@ -97,19 +97,18 @@ pub struct AppleContainerRuntime {
     terminals: Mutex<HashMap<ServiceKey, Terminal>>,
 }
 
-impl Default for AppleContainerRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl AppleContainerRuntime {
-    pub fn new() -> Self {
-        let volume_root = minato_core::Paths::resolve()
-            .map(|paths| paths.root().join("volumes"))
-            .unwrap_or_else(|_| PathBuf::from("/tmp/minato-volumes"));
-
-        Self::with_settings(PROGRAM.to_string(), volume_root)
+    /// Storage under the given Minato home.
+    ///
+    /// **Given rather than resolved from the environment.** This used to
+    /// read `MINATO_HOME` itself, which agreed with its caller as long as
+    /// the directory was only ever written to. `purge_volumes` deletes
+    /// from it, and a runtime that picks its own root while the daemon
+    /// holding it was built with another is a recursive delete aimed
+    /// somewhere nobody chose — a daemon test, which is handed a temporary
+    /// home, would have swept the developer's real storage.
+    pub fn for_home(root: &std::path::Path) -> Self {
+        Self::with_settings(PROGRAM.to_string(), root.join("volumes"))
     }
 
     pub fn with_settings(program: String, volume_root: PathBuf) -> Self {

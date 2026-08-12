@@ -32,10 +32,17 @@ pub use spec::{
 ///
 /// Nothing is connected to, so success here does not mean the runtime is
 /// usable. Callers check reachability with [`Runtime::probe`].
-pub fn create(id: &str) -> Result<Box<dyn Runtime>> {
+///
+/// `home` is the caller's `MINATO_HOME`. Apple Container keeps its named
+/// volumes in a directory under it, and that directory is now something
+/// `Runtime::remove_managed_volume` deletes — so which one is meant is the
+/// caller's to say rather than the runtime's to guess.
+pub fn create(id: &str, home: &std::path::Path) -> Result<Box<dyn Runtime>> {
     match id {
         "docker" => Ok(Box::new(DockerRuntime::connect()?)),
-        "apple" | "apple-container" | "container" => Ok(Box::new(AppleContainerRuntime::new())),
+        "apple" | "apple-container" | "container" => {
+            Ok(Box::new(AppleContainerRuntime::for_home(home)))
+        }
         other => Err(RuntimeError::Unsupported(format!(
             "no such runtime `{other}`. Use `docker` or `apple`"
         ))),
@@ -71,12 +78,14 @@ pub fn display_name(id: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
     fn rejects_unknown_runtime_with_a_useful_message() {
         // `Box<dyn Runtime>` is not Debug, so unwrap_err is out.
-        let message = match create("podman") {
+        let message = match create("podman", Path::new("/tmp/minato-test-home")) {
             Ok(runtime) => panic!("expected no support, got {}", runtime.id()),
             Err(err) => err.to_string(),
         };
@@ -97,7 +106,9 @@ mod tests {
         // failed in a container, which is the definition of the wrong
         // assertion.
         for id in AVAILABLE_RUNTIMES {
-            if let Err(RuntimeError::Unsupported(message)) = create(id) {
+            if let Err(RuntimeError::Unsupported(message)) =
+                create(id, Path::new("/tmp/minato-test-home"))
+            {
                 panic!("{id} is advertised but not recognised: {message}");
             }
         }
@@ -115,7 +126,7 @@ mod tests {
     #[test]
     fn accepts_apple_container_aliases() {
         for id in ["apple", "apple-container", "container"] {
-            let runtime = create(id).expect("creates");
+            let runtime = create(id, Path::new("/tmp/minato-test-home")).expect("creates");
             assert_eq!(runtime.id(), "apple");
         }
     }

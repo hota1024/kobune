@@ -8,6 +8,14 @@
 //! this module separately.** Rust therefore sees whatever the file it is
 //! building does not touch as dead, which under `-D warnings` would make
 //! adding a helper for one suite break the other.
+//!
+//! **The home is temporary; Docker is not.** [`Harness`] hands the daemon a
+//! `MINATO_HOME` of its own, so anything under that directory belongs to
+//! the test — but the containers, networks and volumes it makes are real,
+//! shared with whatever else is on the machine, and told apart only by the
+//! project name. Never send this supervisor a `Purge { dry_run: false }`:
+//! the storage sweep is machine-wide on purpose (see `docker_uninstall.rs`)
+//! and would take the volumes of whoever is running the suite.
 #![allow(dead_code)]
 
 use std::path::Path;
