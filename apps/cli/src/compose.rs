@@ -117,9 +117,18 @@ pub fn convert(project: &str, path: &str, yaml: &str) -> Result<Converted, Compo
     let mut carried = Vec::new();
     let mut blocks = Vec::new();
 
+    // Read once up front: rewriting `http://api:8080` into
+    // `${MINATO_URL_API}` needs to know which names are services here and
+    // which are somebody's real hostname.
+    let names: Vec<String> = services
+        .keys()
+        .filter_map(|name| name.as_str().map(str::to_string))
+        .collect();
+
     for (name, body) in services {
         let Some(name) = name.as_str() else { continue };
-        let service = Service::read(name, body, &mut dropped, &mut carried);
+        let mut service = Service::read(name, body, &mut dropped, &mut carried);
+        service.point_urls_at_minato(&names);
         blocks.push(service.render());
     }
 
@@ -266,6 +275,53 @@ impl Service {
                  `scope = \"project\"` shares it"
                     .to_string(),
             );
+        }
+    }
+
+    /// Turns compose's way of reaching a sibling into Minato's.
+    ///
+    /// **`http://api:8080` is faithful and wrong.** It is how compose
+    /// names another service, and here it bypasses the proxy, hands the
+    /// application a different URL from the one the browser uses — which
+    /// is what `MINATO_URL_*` exists to prevent — and does not resolve at
+    /// all under Apple Container, which has no container-to-container
+    /// DNS.
+    ///
+    /// Only rewritten when the host is a service in this same file. A
+    /// value pointing at something outside it is somebody's real
+    /// hostname and is left alone.
+    ///
+    /// Found by an agent that had never seen this codebase: writing the
+    /// configuration by hand from the Skill, it got this right, and the
+    /// converter meant to save that work got it wrong.
+    fn point_urls_at_minato(&mut self, services: &[String]) {
+        for value in self.env.values_mut() {
+            let Some(rest) = value
+                .strip_prefix("http://")
+                .or_else(|| value.strip_prefix("https://"))
+            else {
+                continue;
+            };
+
+            // `api:8080/v1` — the name is everything before the port or
+            // the path, whichever comes first.
+            let host = rest
+                .split(['/', ':'])
+                .next()
+                .unwrap_or_default()
+                .to_string();
+
+            if host.is_empty() || !services.contains(&host) {
+                continue;
+            }
+
+            let variable = host.to_uppercase().replace('-', "_");
+            let path = rest[host.len()..]
+                .split_once('/')
+                .map(|(_, path)| format!("/{path}"))
+                .unwrap_or_default();
+
+            *value = format!("${{MINATO_URL_{variable}}}{path}");
         }
     }
 
@@ -699,6 +755,75 @@ services:
                 out.toml
             );
         }
+    }
+
+    #[test]
+    fn a_url_pointing_at_a_sibling_becomes_the_one_minato_issues() {
+        // Compose reaches a sibling by service name. Carried across
+        // verbatim that bypasses the proxy, hands the app a different URL
+        // from the browser's, and does not resolve at all under Apple
+        // Container. An agent writing this by hand from the Skill got it
+        // right; the converter meant to save that work did not.
+        let out = convert_ok(
+            r#"
+services:
+  web:
+    image: node:22
+    environment:
+      ROOMS_API: http://api:8080
+      WITH_A_PATH: http://api:8080/v1
+      SOMEBODY_ELSES: https://api.stripe.com/v1
+      NOT_A_SERVICE: http://elsewhere:9000
+  api:
+    image: node:22
+"#,
+        );
+
+        assert!(
+            out.toml.contains(r#"ROOMS_API = "${MINATO_URL_API}""#),
+            "{}",
+            out.toml
+        );
+        assert!(
+            out.toml.contains(r#"WITH_A_PATH = "${MINATO_URL_API}/v1""#),
+            "the path has to survive: {}",
+            out.toml
+        );
+        assert!(
+            out.toml
+                .contains(r#"SOMEBODY_ELSES = "https://api.stripe.com/v1""#),
+            "a real hostname that merely starts with a service name is not ours: {}",
+            out.toml
+        );
+        assert!(
+            out.toml
+                .contains(r#"NOT_A_SERVICE = "http://elsewhere:9000""#),
+            "only names that are services in this file: {}",
+            out.toml
+        );
+    }
+
+    #[test]
+    fn a_hyphenated_service_becomes_a_legal_variable_name() {
+        // `MINATO_URL_` names cannot carry a hyphen, and Minato's own
+        // injection replaces it the same way.
+        let out = convert_ok(
+            r#"
+services:
+  web:
+    image: node:22
+    environment:
+      API: http://api-server:8080
+  api-server:
+    image: node:22
+"#,
+        );
+
+        assert!(
+            out.toml.contains(r#"API = "${MINATO_URL_API_SERVER}""#),
+            "{}",
+            out.toml
+        );
     }
 
     #[test]

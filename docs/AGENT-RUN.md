@@ -188,11 +188,64 @@ It was left out of this run's own pull request on purpose — a protocol change
 made quietly inside a validation task is the wrong way round — and taken as
 its own.
 
-## What this run is not
+## What this run was not
 
 I followed `SKILL.md` rather than my knowledge of the code, and the findings
-are real. But I wrote much of the surrounding system, so this finds **what the
+were real. But I wrote much of the surrounding system, so it found **what the
 instructions fail to say** — not what a model with no context would misread.
 
-An independent agent, on a project it has never seen, is still worth doing.
-This is written so that run can be compared against it.
+## The independent run
+
+Done on 2026-08-12 against `00cfa31`: an agent with no knowledge of this
+codebase, a project it had never seen — a booking page and the rooms service
+behind it — and nothing but the Skill. Its only configuration was a
+`docker-compose.yml`.
+
+**It finished the task and never once reached for `docker`.** The `--cacert`
+recipe added above worked first try for someone who did not write it, and the
+prediction of `curl: (60)` reproduced verbatim. `${MINATO_URL_API}`,
+`depends_on`, `health` — all used correctly, from the Skill alone.
+
+It found two things I could not have.
+
+### It never used `--from-compose`, in the one project that needed it
+
+It read the compose file for the port numbers, then **hand-wrote `minato.toml`
+from the reference documentation**, deriving ports, commands and health paths
+itself. `--from-compose` had shipped four commits earlier.
+
+It is documented in `DESIGN.md`, in both CLI references and in the changelog,
+and mentioned **zero times in `SKILL.md`** — the only file an agent reads. In
+its own words:
+
+> The Skill is silent on the "no `minato.toml` exists, and there's a stray
+> `docker-compose.yml` instead" scenario, which is exactly what I hit.
+
+A feature built to remove the entry barrier, invisible to the reader standing
+at it. **This is the one an author cannot find**: I knew the feature existed,
+so I never noticed that the instructions did not.
+
+### The converter carried a compose-ism it had a better answer for
+
+Converting the same file gave:
+
+```toml
+ROOMS_API = "http://api:8080"
+```
+
+Faithful, and wrong here: it bypasses the proxy, hands the application a
+different URL from the browser's, and does not resolve at all under Apple
+Container. **The agent, writing by hand from the Skill, got this right. The
+converter meant to save that work got it wrong.**
+
+Both are fixed. The same project now converts and starts with no hand-editing
+at all.
+
+### And two smaller ones
+
+- the Skill's worked example assumes npm scripts; this project was a bare
+  `node main.js` with no `package.json`, and the agent had to notice rather
+  than copy
+- `MINATO_URL_<SERVICE>` is the value, but which variable *name* the
+  application reads exists only in its source. The Skill said the first and
+  not the second

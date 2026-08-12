@@ -37,6 +37,23 @@ one. **The full reference is
 <https://minato.1024.works/reference/minato-toml>** — read it before writing
 one rather than guessing at key names.
 
+### There is no `minato.toml` yet
+
+**Look for a compose file first**, before writing anything:
+
+```bash
+minato init --from-compose      # finds compose.yaml, docker-compose.yml, …
+minato init                     # only if there is no compose file
+```
+
+It converts what maps, leaves `TODO` comments where compose could not say
+what Minato needs, and names every key it had no equivalent for. **Read the
+TODOs before the first `minato up`** — that is the whole of what it could not
+decide for you.
+
+Deriving the same file by hand from a compose file you can see is slower and
+gets the service URLs wrong, which is the one mistake that still starts.
+
 Two services, which is the shape most projects want:
 
 ```toml
@@ -54,6 +71,11 @@ port = 3000
 command = "sh -c 'npm run dev:web'"
 depends_on = ["api"]     # starts api first, and waits for it to be ready
 ```
+
+**That example is one shape, not the shape.** It happens to have npm scripts;
+plenty of projects are a bare `node server.js` with no `package.json` at all,
+and then there is nothing for `setup` to do. Take the keys from it, not the
+values.
 
 Worth knowing before you hit them:
 
@@ -234,6 +256,11 @@ before concluding the variable is missing.
 
 To reach the name the application already reads, refer to it from `env` in
 `minato.toml`. `${NAME}` is expanded; a bare `$NAME` is not.
+
+**Which name that is only exists in the application.** Minato knows the value
+to give — `MINATO_URL_API` — and cannot know that this project's web server
+reads it as `ROOMS_API`. Grep the source for the variable before writing the
+`env` block; a compose file, if there is one, usually names it too.
 
 ```toml
 [services.web.env]
