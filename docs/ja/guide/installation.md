@@ -227,20 +227,33 @@ $ minato update --check
 $ minato url web
 https://web.myapp.localhost
 › minato changed to 9f3c1a2 since the last run
-› the daemon is still the previous build, so run minato daemon stop
+› the daemon is not this build, so run minato daemon stop
 › this repository's Skill is not this build's, so run minato skill install --force
 ```
 
-どの行も、このマシンの状態がそう言っているから出ています。daemon が応答して
-それが別のビルドだった、`.claude/skills/minato/SKILL.md` がこのバイナリの持つ
-ものと違う、入っている plist が古い形で書かれている。推測はしません。Skill を
-一度も入れていないリポジトリに勧めることはなく、記録が始まる前に書かれた plist
-を古いと決めつけることもありません。
+どの行も、このマシンの状態がそう言っているから出ています。daemon が応答して、
+返ってきたバージョンがこのビルドのものではなかった、
+`.claude/skills/minato/SKILL.md` がこのバイナリの持つものと違う、入っている
+plist が古い形で書かれている。推測はしません。Skill を一度も入れていない
+リポジトリに勧めることはなく、記録が始まる前に書かれた plist を古いと
+決めつけることもありません。daemon の行が「前のビルド」ではなく「このビルド
+ではない」と言うのは、新しいバイナリから手で起動した daemon もここに入るから
+です。どちらでも対処は同じです。
+
+Skill の行について 2 点。対象は **いまいるリポジトリ** です。リポジトリの一覧を
+持っているわけではないので、別のチェックアウトに古い写しが残っていても、この行
+は面倒を見ません。また `--force` を使うため、手で編集した `SKILL.md` も古い写し
+と同様に置き換わります。どちらにせよ差分は `git diff` に出ます。
 
 表示は **ビルドごとに 1 回**、`--json` ではない最初の実行時です。これは
 `minato update` が関与しない更新 — `install.sh` の再実行、パッケージマネージャ、
 自分でのビルド — も同じようにカバーします。状態として持つのは
-`~/.minato/build.json` にある「最後に動いたコミット」だけです。
+`~/.minato/build.json` にある「最後に動いたコミット」だけで、これを書くのは上の
+行を表示したあとです。途中で中断された実行は、次にまた見つけ直します。
+
+`minato daemon` 自身には通知を付けません。`stop` は依頼を書いた時点で戻るため、
+直後に確認すると「いま止めたプロセスがまだ動いている」と報告してしまうからです。
+記録もしないので、次のコマンドがまとめて表示します。
 
 CLI 自身の発言と同じく stderr へ出し、`--json` では出しません。エージェントの
 ストリームは 1 つのドキュメントのままです。`minato update --json` は同じ内容を

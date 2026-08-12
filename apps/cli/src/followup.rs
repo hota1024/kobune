@@ -20,6 +20,7 @@
 //! [`crate::ui`]'s, as everywhere else.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use minato_client::Client;
 use serde::{Deserialize, Serialize};
@@ -47,34 +48,53 @@ impl Step {
 /// What is answering the daemon socket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Daemon {
-    /// Nothing is.
+    /// Nothing is — or nothing that could be asked in the moment this was
+    /// worth spending on it. Either way there is nothing to say about it.
     Stopped,
     /// A daemon from this build.
     Current,
-    /// A daemon from some other build.
-    Previous,
+    /// A daemon from a build that is not this one. **Which way round is
+    /// not known**: a daemon started by hand from a newer binary lands
+    /// here too, and the answer — restart it — is the same.
+    Other,
 }
+
+/// How long the socket gets to answer.
+///
+/// This runs after a command that has already printed its result, so the
+/// cost of asking has to round to nothing. A daemon wedged behind
+/// something slow is reported as [`Daemon::Stopped`]: not a claim that it
+/// is down, a refusal to hold up a finished command over a remark.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Asks the socket which build is on the other end.
 ///
-/// `version` is what this build reports for itself — the same string the
-/// daemon answers a `Ping` with, so two builds differ exactly when their
-/// commits do.
+/// `version` is what this build reports for itself. The daemon answers a
+/// `Ping` with the same string built the same way ([`minatod::version`]),
+/// and the two binaries carry one crate version between them and are only
+/// ever installed as a pair — so they differ exactly when their commits
+/// do.
 ///
 /// **Nothing is spawned.** A machine with no daemon running has nothing to
 /// restart, and starting one to discover that would be the opposite of
 /// what the caller is asking about.
 pub async fn daemon(client: &Client, version: &str) -> Daemon {
+    tokio::time::timeout(PROBE_TIMEOUT, ask(client, version))
+        .await
+        .unwrap_or(Daemon::Stopped)
+}
+
+async fn ask(client: &Client, version: &str) -> Daemon {
     let Ok(mut connection) = client.connect().await else {
         return Daemon::Stopped;
     };
 
     match connection.handshake().await {
         Ok(pong) if pong.version == version => Daemon::Current,
-        Ok(_) => Daemon::Previous,
+        Ok(_) => Daemon::Other,
         // A refused handshake is a daemon speaking a protocol this build
         // does not, which is the same answer by a shorter route.
-        Err(_) => Daemon::Previous,
+        Err(_) => Daemon::Other,
     }
 }
 
@@ -85,9 +105,14 @@ pub async fn daemon(client: &Client, version: &str) -> Daemon {
 /// itself says nothing about what has landed. Anything still answering is
 /// the build the update replaced, by construction.
 pub async fn daemon_after_replacing(client: &Client) -> Daemon {
-    match client.connect().await {
-        Ok(_) => Daemon::Previous,
-        Err(_) => Daemon::Stopped,
+    let connected = tokio::time::timeout(PROBE_TIMEOUT, client.connect())
+        .await
+        .is_ok_and(|connection| connection.is_ok());
+
+    if connected {
+        Daemon::Other
+    } else {
+        Daemon::Stopped
     }
 }
 
@@ -100,7 +125,16 @@ pub fn steps(daemon: Daemon, repository: Option<&Path>) -> Vec<Step> {
     // Most first, least last: a daemon from another build decides what
     // every command does next, an old plist decides whether the URLs
     // answer, and the Skill is read by an agent tomorrow.
-    steps.extend(daemon_step(daemon, minato_core::launchd::is_installed()));
+    if daemon == Daemon::Other {
+        // Not "the previous build": all that was established is that it
+        // is not this one, and a daemon someone started by hand from a
+        // newer binary would make the stronger claim a false one.
+        steps.push(daemon_step(
+            "the daemon is not this build",
+            minato_core::launchd::is_installed(),
+        ));
+    }
+
     steps.extend(setup_step(installed_plist().as_deref()));
     steps.extend(repository.and_then(skill_step));
 
@@ -116,9 +150,16 @@ pub fn steps(daemon: Daemon, repository: Option<&Path>) -> Vec<Step> {
 /// left behind rather than the one that has landed. The build that lands
 /// says the rest on its first run, where it can compare against itself.
 pub fn steps_after_replacing(daemon: Daemon) -> Vec<Step> {
-    daemon_step(daemon, minato_core::launchd::is_installed())
-        .into_iter()
-        .collect()
+    if daemon != Daemon::Other {
+        return Vec::new();
+    }
+
+    // Here the stronger wording is a fact: the binaries were replaced a
+    // moment ago, so a process still on the socket predates them.
+    vec![daemon_step(
+        "the daemon is still the previous build",
+        minato_core::launchd::is_installed(),
+    )]
 }
 
 /// Replacing a daemon left over from another build.
@@ -127,19 +168,15 @@ pub fn steps_after_replacing(daemon: Daemon) -> Vec<Step> {
 /// is what makes launchd start the job again, and it starts it from the
 /// binary that is there now. Without launchd nothing would bring it back,
 /// so it is stopped and started here.
-fn daemon_step(daemon: Daemon, launchd: bool) -> Option<Step> {
-    if daemon != Daemon::Previous {
-        return None;
-    }
-
-    Some(Step::new(
-        "the daemon is still the previous build",
+fn daemon_step(reason: &str, launchd: bool) -> Step {
+    Step::new(
+        reason,
         if launchd {
             "minato daemon stop"
         } else {
             "minato daemon restart"
         },
-    ))
+    )
 }
 
 /// `minato setup`, when the installed plist predates the shape this build
@@ -156,11 +193,10 @@ fn setup_step(installed: Option<&str>) -> Option<Step> {
 }
 
 /// The plist launchd has, when there is one to read.
+///
+/// No `is_installed` first: it is that same file being there, and reading
+/// a file that is not answers the question in one call.
 fn installed_plist() -> Option<String> {
-    if !minato_core::launchd::is_installed() {
-        return None;
-    }
-
     std::fs::read_to_string(minato_core::launchd::plist_path()).ok()
 }
 
@@ -199,8 +235,7 @@ fn record_path(paths: &minato_core::Paths) -> PathBuf {
     paths.root().join("build.json")
 }
 
-/// Whether this build is one the machine has not run before, remembering
-/// it either way.
+/// Whether this build is one the machine has not run before.
 ///
 /// This is what covers every way of updating that is not `minato update` —
 /// `install.sh` again, a package manager, a `cargo install` — none of which
@@ -211,11 +246,23 @@ fn record_path(paths: &minato_core::Paths) -> PathBuf {
 /// there is no previous daemon and no older plist, only a `minato setup`
 /// that has yet to be run and says so itself.
 ///
-/// Best effort with the file: a record that cannot be written costs a
-/// repeated notice, which is worth less than a message about a file nobody
-/// asked for.
+/// It does not record anything. [`remember`] does, and the caller runs it
+/// *after* the steps are printed — a probe that was interrupted in between
+/// would otherwise have marked the build as seen without anyone seeing it.
 pub fn is_new_build(paths: &minato_core::Paths) -> bool {
     changed(&record_path(paths), minato_core::BUILD_COMMIT)
+}
+
+/// Writes down that this build has now run here.
+///
+/// Best effort: a record that cannot be written costs a repeated notice,
+/// which is worth less than a message about a file nobody asked for.
+pub fn remember(paths: &minato_core::Paths) {
+    if minato_core::BUILD_COMMIT == crate::update::NO_COMMIT {
+        return;
+    }
+
+    write_record(&record_path(paths), minato_core::BUILD_COMMIT);
 }
 
 /// The whole of the rule, with the build to compare against passed in.
@@ -230,10 +277,7 @@ fn changed(path: &Path, commit: &str) -> bool {
         return false;
     }
 
-    let previous = read_record(path);
-    write_record(path, commit);
-
-    matches!(previous, Some(recorded) if recorded != commit)
+    matches!(read_record(path), Some(recorded) if recorded != commit)
 }
 
 fn read_record(path: &Path) -> Option<String> {
@@ -259,9 +303,9 @@ mod tests {
         // Nothing running, or this build already running: there is
         // nothing to replace, and saying so anyway would put a line under
         // every update that ever lands.
-        assert_eq!(daemon_step(Daemon::Stopped, false), None);
-        assert_eq!(daemon_step(Daemon::Current, false), None);
-        assert!(daemon_step(Daemon::Previous, false).is_some());
+        assert!(steps_after_replacing(Daemon::Stopped).is_empty());
+        assert!(steps_after_replacing(Daemon::Current).is_empty());
+        assert!(!steps_after_replacing(Daemon::Other).is_empty());
     }
 
     #[test]
@@ -269,23 +313,32 @@ mod tests {
         // Restarting by hand where launchd owns the job starts a daemon
         // outside it, which is exactly the state that leaves 80 and 443
         // unheld.
-        let with = daemon_step(Daemon::Previous, true).expect("a step");
-        assert_eq!(with.command, "minato daemon stop");
+        assert_eq!(daemon_step("", true).command, "minato daemon stop");
+        assert_eq!(daemon_step("", false).command, "minato daemon restart");
+    }
 
-        let without = daemon_step(Daemon::Previous, false).expect("a step");
-        assert_eq!(without.command, "minato daemon restart");
+    #[test]
+    fn an_update_claims_the_daemon_is_the_previous_build_and_a_run_does_not() {
+        // After the swap it is a fact — the binaries went a moment ago, so
+        // a process still answering predates them. On an ordinary run all
+        // that was established is that it is not this build, and a daemon
+        // started by hand from a newer one would make the stronger claim
+        // false.
+        let replaced = steps_after_replacing(Daemon::Other);
+        assert_eq!(replaced[0].reason, "the daemon is still the previous build");
+
+        let running = steps(Daemon::Other, None);
+        assert_eq!(running[0].reason, "the daemon is not this build");
     }
 
     #[test]
     fn an_update_speaks_only_for_the_daemon() {
         // The rest is compared against what this binary carries, and this
         // binary is the one being replaced.
-        let steps = steps_after_replacing(Daemon::Previous);
+        let steps = steps_after_replacing(Daemon::Other);
 
         assert_eq!(steps.len(), 1, "got: {steps:?}");
         assert!(steps[0].command.starts_with("minato daemon"));
-
-        assert!(steps_after_replacing(Daemon::Stopped).is_empty());
     }
 
     #[test]
@@ -355,11 +408,10 @@ mod tests {
         let path = dir.path().join("build.json");
 
         assert!(!changed(&path, ONE), "a fresh installation has no steps");
-        assert!(path.is_file(), "it is still what ran here last");
     }
 
     #[test]
-    fn a_build_is_new_once() {
+    fn a_build_is_new_until_it_is_remembered() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("build.json");
 
@@ -367,6 +419,13 @@ mod tests {
         write_record(&path, TWO);
 
         assert!(changed(&path, ONE));
+        assert!(
+            changed(&path, ONE),
+            "asking is not what settles it — a run that never got to print \
+             its steps has to find them again"
+        );
+
+        write_record(&path, ONE);
         assert!(
             !changed(&path, ONE),
             "the notice belongs to the run that found it, not to every run after"
@@ -391,6 +450,8 @@ mod tests {
         std::fs::write(&path, "{ not json").expect("writes");
 
         assert!(!changed(&path, ONE), "nothing to compare against");
+
+        write_record(&path, ONE);
         assert_eq!(read_record(&path).as_deref(), Some(ONE), "and it is fixed");
     }
 }

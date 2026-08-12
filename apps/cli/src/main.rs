@@ -401,7 +401,7 @@ async fn main() -> ExitCode {
     // left half-done. Before the notice below, which is about the *next*
     // build — this one is about the one in hand.
     if !cli.json && wants_followup_notice(&cli.command) {
-        print_followup(&followup_steps().await);
+        followup_notice().await;
     }
 
     // After the command, so a slow network cannot delay the output anyone is
@@ -618,11 +618,25 @@ fn print_update_notice(commit: &str) {
 
 /// Whether a command should carry the follow-up notice.
 ///
-/// The same three as [`wants_update_notice`], for reasons that line up:
-/// `update` has already printed the steps it could be sure of, and the
-/// other two are output nobody reads as prose.
+/// `update` has already printed the steps it could be sure of, and a
+/// second list under the panel would read as a different one. `completions`
+/// is redirected into a file and `uninstall` has just taken Minato off the
+/// machine.
+///
+/// **`daemon` is out for a reason of its own**: it is the command the steps
+/// send people to, and `stop` returns as soon as the request is written,
+/// leaving the socket up for a moment longer. Asking then would report the
+/// daemon somebody has this second stopped as still running — and because
+/// the notice is not printed, it is not remembered either, so it lands
+/// intact on the next command.
 fn wants_followup_notice(command: &Command) -> bool {
-    wants_update_notice(command)
+    !matches!(
+        command,
+        Command::Update { .. }
+            | Command::Completions { .. }
+            | Command::Uninstall { .. }
+            | Command::Daemon { .. }
+    )
 }
 
 /// What an update left to do, on the first run of the build it installed.
@@ -630,13 +644,17 @@ fn wants_followup_notice(command: &Command) -> bool {
 /// Empty on every other run, which is nearly all of them: the record only
 /// disagrees once per build, and everything after it — including the
 /// connection to the daemon socket — happens on the far side of that.
-async fn followup_steps() -> Vec<followup::Step> {
+///
+/// The build is remembered only once the steps have been printed, so a
+/// command interrupted in between finds them again rather than having
+/// marked itself as read.
+async fn followup_notice() {
     let Ok(paths) = minato_core::Paths::resolve() else {
-        return Vec::new();
+        return;
     };
 
     if !followup::is_new_build(&paths) {
-        return Vec::new();
+        return;
     }
 
     let daemon = match Client::from_env() {
@@ -645,16 +663,17 @@ async fn followup_steps() -> Vec<followup::Step> {
         Err(_) => followup::Daemon::Stopped,
     };
 
-    followup::steps(daemon, repository_root().as_deref())
+    print_followup(&followup::steps(daemon, skill_root().as_deref()));
+
+    followup::remember(&paths);
 }
 
-/// The repository the command ran in, for the steps that are about one.
-fn repository_root() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
-
-    minato_core::Repository::discover(&cwd)
+/// Where the Skill for the current directory lives, for the step that is
+/// about it. The same answer `minato skill install` would act on.
+fn skill_root() -> Option<PathBuf> {
+    std::env::current_dir()
         .ok()
-        .map(|repo| repo.main_root)
+        .map(|cwd| skill::root_for(&cwd))
 }
 
 /// The steps, under a line saying what they are doing there.
@@ -1617,11 +1636,7 @@ fn handle_skill(
             Ok(ExitCode::SUCCESS)
         }
         SkillCommand::Install { force } => {
-            // Run from inside a worktree, it still goes at the repository
-            // root.
-            let root = minato_core::Repository::discover(cwd)
-                .map(|repo| repo.main_root)
-                .unwrap_or_else(|_| cwd.to_path_buf());
+            let root = skill::root_for(cwd);
 
             let installed =
                 skill::install(&root, *force).map_err(|err| CliError::Local(err.to_string()))?;
@@ -2609,6 +2624,23 @@ mod tests {
         // The command after it is where the build that landed says the
         // rest, so that one does carry them.
         assert!(wants_followup_notice(&Command::Status));
+    }
+
+    #[test]
+    fn stopping_the_daemon_is_not_answered_with_go_and_stop_the_daemon() {
+        // `stop` returns as soon as the request is written, so the socket
+        // is up for a moment after it. The notice would report the daemon
+        // somebody has this second stopped as still running — and it is
+        // the command the step sends them to in the first place.
+        assert!(!wants_followup_notice(&Command::Daemon {
+            command: DaemonCommand::Stop
+        }));
+
+        // Still carried by the update check, which has nothing to do with
+        // what is on the socket.
+        assert!(wants_update_notice(&Command::Daemon {
+            command: DaemonCommand::Stop
+        }));
     }
 
     #[test]

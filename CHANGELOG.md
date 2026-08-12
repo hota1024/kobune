@@ -35,6 +35,10 @@ less accurately.
 
 ### Added
 
+- The daemon says which build it is: a `Ping` — and so `minato daemon status` —
+  now carries `0.1.0 (abc1234)` rather than the crate version alone, which is
+  the same string in every nightly and could tell no two builds apart
+
 - An update says what is left to run, worked out from the machine rather than
   stated: a daemon still on the previous build, a Skill in this repository that
   is not this build's, a LaunchDaemon written to an older shape. `minato

@@ -26,7 +26,10 @@ impl Supervisor {
         }
 
         Ok(Response::Pong(Pong {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            // With the commit, not just the crate version: it is what the
+            // CLI compares against its own to notice a daemon left running
+            // from the build an update replaced.
+            version: crate::version(),
             protocol: minato_api::PROTOCOL_VERSION,
             runtime: if reachable.is_empty() {
                 "none reachable".to_string()
