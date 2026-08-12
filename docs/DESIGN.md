@@ -292,6 +292,55 @@ Re-signing it through rcgen produces different bytes every time — ECDSA
 signatures are not deterministic — and what goes out would no longer match what
 the user trusted.
 
+#### The CA is narrowed to `localhost`
+
+Issuing for whatever SNI asks is the right behaviour for the proxy and the
+wrong power for the key behind it. `minato setup` puts this certificate in the
+system trust store, so without a limit the key in `~/.minato/ca/` signs
+`google.com` as readily as anything of Minato's, and the machine believes it.
+`mkcert` asks for the same thing, which makes it usual rather than acceptable.
+
+So the CA carries an X.509 `NameConstraints` extension permitting `localhost`
+and nothing else. It is reserved by RFC 6761 and can never be a real public
+name, so what a leaked key could sign is nothing anybody could be fooled by.
+
+**No leading dot, and that is not a detail.** RFC 5280 §4.2.1.10 says a DNS
+subtree is satisfied by the name itself *and* by anything with labels prepended
+— so `localhost` already covers `web.feat-1.myapp.localhost`, which is the
+whole requirement. `.localhost` is a different, non-standard form meaning
+strictly below, and it excludes `localhost` itself, which
+[the DNS server](#dns) answers for. The first version of this used the dot on
+the belief that it was what made subdomains work; OpenSSL and rustls-webpki
+both refuse `localhost` under it. Nothing caught that until a test asked a
+verifier instead of asking rcgen's own parser — the same mistake in the same
+shape as [§6's Apple Container fixtures](#what-running-apple-container-turned-up-m7).
+
+**Only what Minato actually serves.** `.test` was in this list briefly, on the
+strength of this document anticipating it — but nothing resolves it: the DNS
+server serves `localhost` alone and `minato setup` installs only
+`/etc/resolver/localhost`. Permitting a suffix that cannot resolve would have
+`minato doctor` report a working setup that is not one. It comes back when the
+resolver does.
+
+Two consequences, and both are `minato doctor`'s to report rather than
+anything's to fix silently.
+
+- **A CA made before this has no constraint**, and is left alone. Replacing a
+  certificate the user trusted would break every URL until they noticed and
+  trusted the new one, which is a worse day than the one it prevents. The fix
+  it prints stops trusting the old one *first*, while the file naming it is
+  still on disk
+- **`[project] domain` can name a suffix outside it**, and the browser error
+  for that names neither Minato nor the constraint. The check says which domain
+  and which suffixes — and does not offer regenerating the CA, because what a
+  new one permits is compiled in and a replacement would be identical
+
+The proxy still issues for a name outside the constraint rather than refusing
+the handshake: the constraint is enforced by whoever verifies, which is what
+X.509 is for, and a certificate error says far more than a dropped connection.
+It logs a line saying so, once — SNI is unauthenticated, so one line per
+distinct name is a way to write into the log for free.
+
 #### Listen on both IPv4 and IPv6 (found in M1)
 
 macOS resolves `*.localhost` to **both** `::1` and `127.0.0.1`, and clients
@@ -509,7 +558,8 @@ URL can be woken at all**. `expose = false` — what a database is — leaves on
 with no name for a request to carry, and that one fact decides both halves of
 this section.
 
-**Waking starts the whole `depends_on` closure**, in `startup_order`. Starting
+**Waking starts the whole `depends_on` closure**, in the same waves `up`
+uses (see §7, "Making starts faster"). Starting
 the single service the host named would hand the app a dependency that is not
 there, and no request would ever arrive to fix it. `up` had always done this;
 the wake path was the one way in that did not, so it worked under `minato up`
@@ -550,6 +600,65 @@ to the wrong conclusion — "the server is broken".
 - `node_modules` and the like live in a named volume per workspace, installed
   once
 - `minato new` runs `prepare` ahead of time (`--no-warm` turns it off)
+
+**Services start a wave at a time, not one at a time.** A start does not
+return until the service answers or gives up waiting on it — up to 15
+seconds each — so a `web`, an `api` and a `cache` that know nothing of each
+other used to spend that wait three times over for no reason. `depends_on`
+is a partial order, and the sequence it was being flattened into invented
+constraints it never asked for.
+
+So `startup_waves` groups services by depth in the dependency graph: wave 0
+depends on nothing, wave *n* depends only on earlier waves. Everything in a
+wave starts at once, and the next wave waits for it. Nothing within a wave
+depends on anything else in it, by construction — which is the whole
+argument for why this is safe, and what the tests pin. `setup` still runs
+immediately before its own service, so a migration against `db` keeps the
+ordering it needs. The same grouping drives the wake path, where the wait
+saved is one somebody is sitting through.
+
+**Not everything on that path overlaps, and the exceptions are the
+interesting part.** Pulling images does, because a pull is a download and
+the registry is somebody else's machine. Building them does not: a build
+already saturates its cores and BuildKit parallelises within one, so two at
+once move the work around rather than remove it. And `setup` does not,
+which costs the first `up` after `minato new` and is deliberate — every
+service mounts the same project-wide cache volume, so two setups at once
+are two arbitrary commands writing into one directory. A package manager's
+store is built for that; a `setup` is whatever somebody wrote, so the
+documentation promises one at a time and the lock keeps the promise.
+
+**Whether it is safe to overlap is the runtime's answer, not the
+supervisor's** (`Runtime::starts_concurrently`, off unless a backend says
+otherwise). Docker says yes: a peer is reached by name on the network, so
+when it started makes no difference. Apple Container says no — it has no
+such DNS and injects a peer's address at creation, read from the peer
+running by then, so two services started together would each be handed
+nothing for the other. There the sequence *is* the mechanism.
+
+**A backend that says no is not regrouped at all**, which is subtler than it
+looks. Flattening the waves gives a valid startup order, but not the same
+one `startup_order` gives — bucketing by depth pulls every independent
+service ahead of everything one level down, and a depth-first walk does not:
+
+```
+startup_order  db, api, cache, web, worker
+flattened      db, cache, api, worker, web
+```
+
+Where a wave starts at once that difference is invisible. Where it does not,
+it decides what a service is told: Apple Container injects
+`MINATO_HOST_<PEER>` for every peer already running, and `peers` is every
+other service in the workspace rather than only `depends_on`, so a service
+reordered past a neighbour loses the variable naming it. Sequential backends
+therefore keep the order they have always had, and the two orders being
+different is pinned by a test rather than left to be rediscovered.
+
+One consequence worth stating: two services starting at once share a
+network, so `ensure_network` — which looks and then creates — had to become
+one-caller-at-a-time. Docker does not refuse a name it already has; it makes
+a second network with the same name and a different id, and the two services
+end up unable to reach each other.
 
 ### Building rather than pulling (M0.5)
 
@@ -695,6 +804,7 @@ MINATO_URL_API       = https://api.feat-1.myapp.localhost
 MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
 MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
 MINATO_CA_FILE       = /etc/minato/ca.crt                      # while HTTPS is served
+NODE_EXTRA_CA_CERTS  = /etc/minato/ca.crt                      # the same file, wired in
 MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
 ```
 
@@ -704,12 +814,24 @@ A `-` in a service name becomes `_` (`api-server` →
 **Injection is the bottom layer**, so the user can override it. The other way
 round, Minato's conveniences would erase the user's settings.
 
-**`MINATO_CA_FILE` names a certificate, and does not wire it in.** The CA is
-mounted read-only so a service can verify the URL it was handed rather than
-turning verification off, but `NODE_EXTRA_CA_CERTS` and its equivalents are
-left to the service: Node's takes one file, so setting it would drop whatever
-an image already pointed it at, and it would be rendered into `env_file`, which
-is read on the host where that path does not exist.
+**The certificate is wired in, not just named.** Naming the file and leaving
+`NODE_EXTRA_CA_CERTS` to the service is what this did at first, and what came
+back was `SELF_SIGNED_CERT_IN_CHAIN` from projects with the CA mounted and
+unused — Node reads its extra certificate from the environment and nowhere
+else, so a file nobody assigns to that name is a file nobody trusts. Both
+costs are paid rather than avoided: it is kept out of `env_file`, which is read
+on the host where that path does not exist and Node would warn about it on
+every start, and an image that points it at a corporate bundle keeps that
+bundle by saying so in `[services.<name>.env]`, since injection is the bottom
+layer. **Only Node's.** `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and
+`REQUESTS_CA_BUNDLE` replace a trust store rather than adding to it, so
+setting them would leave a container trusting Minato and nothing else.
+
+**A task runner between the container and the process can drop it.**
+Turborepo's strict environment mode passes through what its configuration
+names and discards the rest, so the variable reaches `turbo` and not the
+server it starts. Nothing injected can reach past that, and the guide says
+what to add where.
 
 **No URL is injected while the proxy is down**, and no hostname either — the
 two go together. An empty string would leave it "set, but unreachable", and the
@@ -1106,10 +1228,15 @@ apps/daemon ─────────────────────>  mi
 `minato-api` is the only point of contact between the daemon and its clients.
 **No client-side crate may depend on `minato-runtime` or its neighbours** —
 that would leak Docker logic into the GUI and break the rule that everything
-goes through the daemon. `cargo xtask deps check` walks each client's
-dependencies with `cargo tree` and fails if one of them reaches
-`minato-runtime`, `-proxy`, `-dns` or `-tunnel`; CI runs it alongside
-`fmt` and `clippy`.
+goes through the daemon. `cargo xtask deps check` walks the dependencies of
+all three clients — the CLI, `minato-client` and the desktop app — with
+`cargo tree` and fails if one of them reaches `minato-runtime`, `-proxy`,
+`-dns` or `-tunnel`; CI runs it alongside `fmt` and `clippy`.
+
+It asks for every target rather than the one it happens to run on, and
+counts build-dependencies as well as normal ones. Both are ways a crate can
+be reached without appearing in an ordinary host build, and a check that
+only looks where it is standing is the kind that reports success for years.
 
 ### Versioning
 

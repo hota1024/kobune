@@ -178,13 +178,24 @@ workspace. One Host and one Origin for both halves of an app is what keeps
 cookies and CORS from having to know about two.
 
 **Do not reach for `NODE_TLS_REJECT_UNAUTHORIZED=0`.** Minato's CA is mounted
-into every service and named as `MINATO_CA_FILE`; wire it into the stack's own
-variable instead, and verification keeps working for everything else too.
+into every service, named as `MINATO_CA_FILE`, and already set as
+`NODE_EXTRA_CA_CERTS` — a Node service verifies these URLs with nothing added
+to `minato.toml`. Another stack points its own additive variable at
+`${MINATO_CA_FILE}`; `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE`
+replace the trust store rather than adding to it, so a container set up through
+one of those trusts nothing else.
 
-```toml
-[services.web.env]
-NODE_EXTRA_CA_CERTS = "${MINATO_CA_FILE}"
+**If `SELF_SIGNED_CERT_IN_CHAIN` still comes back, something between the
+container and the process is filtering the environment.** Turborepo 2's strict
+mode is the usual one: it passes through only what `turbo.json` names, so the
+variable reaches `turbo` and not the server it starts.
+
+```json
+{ "globalPassThroughEnv": ["NODE_EXTRA_CA_CERTS"] }
 ```
+
+Read `/proc/<pid>/environ` of the process that actually fetches, not of pid 1,
+before concluding the variable is missing.
 
 To reach the name the application already reads, refer to it from `env` in
 `minato.toml`. `${NAME}` is expanded; a bare `$NAME` is not.

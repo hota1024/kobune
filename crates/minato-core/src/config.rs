@@ -765,6 +765,62 @@ impl MinatoConfig {
 
         ordered
     }
+
+    /// Groups services so that everything in one wave can start at once.
+    ///
+    /// Wave 0 is what depends on nothing. Wave *n* is what depends only on
+    /// services in earlier waves — so nothing within a wave depends on
+    /// anything else in it, which is what makes starting them together
+    /// safe.
+    ///
+    /// **Flattened, this is a valid startup order but not the same one
+    /// [`Self::startup_order`] gives.** Bucketing by depth necessarily
+    /// pulls every independent service ahead of every service one level
+    /// down, and `startup_order`'s depth-first walk does not. For
+    /// `web -> {api, cache}`, `api -> db`, `worker -> db`:
+    ///
+    /// ```text
+    /// startup_order  db, api, cache, web, worker
+    /// flattened      db, cache, api, worker, web
+    /// ```
+    ///
+    /// Both put every dependency in front of what needs it, which is all
+    /// either promises. A caller that cares which of the two it walks —
+    /// because something reads the state of whatever is already running —
+    /// wants `startup_order`, not this flattened.
+    pub fn startup_waves(&self) -> Vec<Vec<&str>> {
+        // One pass is enough because `startup_order` has already put every
+        // dependency in front of the service that names it: by the time a
+        // service is reached, each of its dependencies has a depth.
+        let mut depths: IndexMap<&str, usize> = IndexMap::with_capacity(self.services.len());
+
+        for name in self.startup_order() {
+            let depth = self.services[name]
+                .depends_on
+                .iter()
+                // Indexed, not looked up with a fallback. A missing
+                // dependency cannot happen — `validate` rejects one that
+                // names nothing, and `startup_order` puts the rest in
+                // front — and reading it as depth 0 would put a service in
+                // the same wave as its own dependency, which is the one
+                // thing this must never do.
+                .map(|dep| depths[dep.as_str()] + 1)
+                .max()
+                .unwrap_or(0);
+
+            depths.insert(name, depth);
+        }
+
+        let mut waves: Vec<Vec<&str>> = Vec::new();
+        for (name, depth) in depths {
+            if waves.len() <= depth {
+                waves.resize_with(depth + 1, Vec::new);
+            }
+            waves[depth].push(name);
+        }
+
+        waves
+    }
 }
 
 #[cfg(test)]
@@ -1328,10 +1384,8 @@ mod tests {
         assert!(result.is_err(), "a typo must be caught");
     }
 
-    #[test]
-    fn startup_order_respects_dependencies() {
-        let config = parse(
-            r#"
+    /// `web` -> `api` -> `db`: nothing can overlap.
+    const CHAIN: &str = r#"
             [project]
             name = "myapp"
             [services.web]
@@ -1342,22 +1396,11 @@ mod tests {
             depends_on = ["db"]
             [services.db]
             image = "x"
-        "#,
-        )
-        .expect("valid");
+        "#;
 
-        let order = config.startup_order();
-        assert_eq!(order.len(), 3);
-
-        let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
-        assert!(pos("db") < pos("api"));
-        assert!(pos("api") < pos("web"));
-    }
-
-    #[test]
-    fn startup_order_handles_diamond() {
-        let config = parse(
-            r#"
+    /// `web` over both `api` and `worker`, which share `db`. The two
+    /// middles are independent of each other.
+    const DIAMOND: &str = r#"
             [project]
             name = "myapp"
             [services.web]
@@ -1371,9 +1414,23 @@ mod tests {
             depends_on = ["db"]
             [services.db]
             image = "x"
-        "#,
-        )
-        .expect("valid");
+        "#;
+
+    #[test]
+    fn startup_order_respects_dependencies() {
+        let config = parse(CHAIN).expect("valid");
+
+        let order = config.startup_order();
+        assert_eq!(order.len(), 3);
+
+        let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
+        assert!(pos("db") < pos("api"));
+        assert!(pos("api") < pos("web"));
+    }
+
+    #[test]
+    fn startup_order_handles_diamond() {
+        let config = parse(DIAMOND).expect("valid");
 
         let order = config.startup_order();
         assert_eq!(
@@ -1387,6 +1444,128 @@ mod tests {
         assert!(pos("db") < pos("worker"));
         assert!(pos("api") < pos("web"));
         assert!(pos("worker") < pos("web"));
+    }
+
+    #[test]
+    fn services_that_need_nothing_share_the_first_wave() {
+        // The point of the whole thing: three services that know nothing
+        // of each other are one wave, not three.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            [services.api]
+            image = "x"
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(config.startup_waves(), vec![vec!["web", "api", "db"]]);
+    }
+
+    #[test]
+    fn a_chain_gets_a_wave_each() {
+        let config = parse(CHAIN).expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api"], vec!["web"]]
+        );
+    }
+
+    #[test]
+    fn a_diamond_puts_the_two_middles_together() {
+        let config = parse(DIAMOND).expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api", "worker"], vec!["web"]]
+        );
+    }
+
+    #[test]
+    fn a_wave_waits_for_the_furthest_of_its_dependencies() {
+        // `web` depends on `db` directly as well as through `api`. Put in
+        // wave 1 it would start alongside `api`, which is the one thing
+        // `depends_on` promises it will not do.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["db", "api"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api"], vec!["web"]]
+        );
+    }
+
+    /// `web` over `api` and `cache`; `api` and `worker` over `db`. The
+    /// point of it is that `cache` and `worker` are independent of the
+    /// chain through `api`, which is where the two orders come apart.
+    const FORK: &str = r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["api", "cache"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.worker]
+            image = "x"
+            depends_on = ["db"]
+            [services.cache]
+            image = "x"
+            [services.db]
+            image = "x"
+        "#;
+
+    #[test]
+    fn every_dependency_still_comes_first_when_the_waves_are_flattened() {
+        let config = parse(FORK).expect("valid");
+
+        let flattened: Vec<&str> = config.startup_waves().concat();
+        let pos = |name: &str| flattened.iter().position(|s| *s == name).expect("present");
+
+        assert_eq!(flattened.len(), config.services.len());
+        assert!(pos("db") < pos("api"));
+        assert!(pos("db") < pos("worker"));
+        assert!(pos("api") < pos("web"));
+        assert!(pos("cache") < pos("web"));
+    }
+
+    #[test]
+    fn flattening_the_waves_is_not_the_same_list_as_startup_order() {
+        // Pinned because it is easy to assume otherwise, and something
+        // did: the two are both valid, and a caller that reads the state
+        // of whatever is already running can tell them apart. See the
+        // note on `startup_waves`, and `supervisor::waves`, which keeps
+        // sequential backends on `startup_order` for this reason.
+        let config = parse(FORK).expect("valid");
+
+        assert_eq!(
+            config.startup_order(),
+            vec!["db", "api", "cache", "web", "worker"]
+        );
+        assert_eq!(
+            config.startup_waves().concat(),
+            vec!["db", "cache", "api", "worker", "web"]
+        );
     }
 
     #[test]

@@ -12,6 +12,15 @@ use minato_core::{EnvLayers, EnvScope, MinatoConfig, Paths, WorkspaceRecord, env
 
 use crate::gateway::Gateway;
 
+/// Where Node takes a certificate to trust on top of its own roots.
+///
+/// **The additive one.** `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and
+/// `REQUESTS_CA_BUNDLE` replace the trust store rather than adding to it,
+/// so a container told about Minato through one of those would stop
+/// trusting everywhere else — including the registry it installs from.
+/// There is no additive equivalent to set for them.
+const NODE_CA_VAR: &str = "NODE_EXTRA_CA_CERTS";
+
 /// The variables Minato injects.
 ///
 /// **`MINATO_URL_<SERVICE>` is the important one.** Without a way for the
@@ -52,16 +61,24 @@ pub fn injected(
     // `NODE_TLS_REJECT_UNAUTHORIZED=0`, which turns verification off for
     // the whole process rather than for Minato.
     //
-    // **The path only.** `NODE_EXTRA_CA_CERTS` was set here at first, and
-    // it takes one file: an image that already points it at a corporate
-    // bundle would have lost that bundle, since container env beats image
-    // `ENV`. It would also be rendered into `env_file`, which is read on
-    // the host, where this path does not exist and Node warns about it on
-    // every start. So Minato names the file and the service wires it in,
-    // the way `MINATO_CACHE_DIR` already works.
+    // **Wired in, not just named.** Naming the file and leaving the rest
+    // to the service is what this did at first, and what came back was
+    // `SELF_SIGNED_CERT_IN_CHAIN` from projects with the certificate
+    // mounted and unused. Node reads its extra CA from the environment
+    // and nowhere else, so a name nobody assigns to `NODE_EXTRA_CA_CERTS`
+    // is a certificate nobody trusts.
+    //
+    // The two costs of setting it are paid rather than avoided. It is
+    // kept out of `env_file` — see [`container_only`] — and an image that
+    // points it at a corporate bundle is one `[services.<name>.env]` line
+    // away from keeping it, since this is the bottom layer.
     if gateway.trusted_ca().is_some() {
         values.insert(
             "MINATO_CA_FILE".to_string(),
+            minato_core::config::CA_TARGET.to_string(),
+        );
+        values.insert(
+            NODE_CA_VAR.to_string(),
             minato_core::config::CA_TARGET.to_string(),
         );
     }
@@ -272,6 +289,21 @@ pub fn hostname_variable(service: &str) -> String {
         "MINATO_HOSTNAME_{}",
         service.to_uppercase().replace('-', "_")
     )
+}
+
+/// Whether a value Minato injects belongs to the container alone.
+///
+/// **`env_file` is read on the host**, where a path into a container
+/// resolves to nothing. That is harmless while nothing reads the name —
+/// `MINATO_CA_FILE` and `MINATO_CACHE_DIR` are addressed to the project,
+/// which knows where they point. `NODE_EXTRA_CA_CERTS` is not: Node reads
+/// it by name, and a host-side `node` handed this file would warn on
+/// every start about a certificate that was never the problem.
+///
+/// **Injected values only.** A project that sets it for itself means it,
+/// wherever the file is read.
+pub fn container_only(entry: &env::EnvEntry) -> bool {
+    entry.scope == EnvScope::Injected && entry.key == NODE_CA_VAR
 }
 
 /// Writes a service's settled environment into its worktree.
@@ -591,16 +623,28 @@ mod tests {
         );
     }
 
+    /// A gateway serving HTTPS with a certificate that is really on disk,
+    /// as production's is. A path nobody created names a file no
+    /// container will have mounted.
+    fn ca_on_disk(dir: &tempfile::TempDir) -> Gateway {
+        let ca = dir.path().join("minato-ca.crt");
+        std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").expect("writes");
+
+        Gateway::with_ports(Some(80), Some(443)).with_ca(&ca.to_string_lossy())
+    }
+
     #[test]
     fn tells_a_container_which_certificate_to_trust() {
         // Without this the URL connects and then fails to verify, and the
         // way out everyone finds is turning verification off entirely.
+        let dir = tempfile::tempdir().expect("tempdir");
+
         let values = injected(
             &config(SAMPLE),
             "myapp",
             &record("feat-1", false),
             Some("web"),
-            &Gateway::with_ports(Some(80), Some(443)).with_ca("/home/me/.minato/ca/ca.crt"),
+            &ca_on_disk(&dir),
         );
 
         assert_eq!(
@@ -608,12 +652,70 @@ mod tests {
             Some(minato_core::config::CA_TARGET),
             "the path inside the container, not the one on the host"
         );
+        assert_eq!(
+            values.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some(minato_core::config::CA_TARGET),
+            "naming the file and leaving Node unwired is a certificate \
+             mounted and never trusted"
+        );
+    }
+
+    #[test]
+    fn a_service_keeps_the_certificate_it_chose() {
+        // The cost of setting Node's variable: an image pointed at a
+        // corporate bundle would lose it. Injection is the bottom layer,
+        // so saying so in `minato.toml` is enough to keep it.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            env = { NODE_EXTRA_CA_CERTS = "/etc/ssl/corporate.pem" }
+        "#,
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let layers = layers_for_service(
+            &config,
+            "myapp",
+            &record("feat-1", false),
+            std::path::Path::new("/repo"),
+            Some("web"),
+            &Paths::with_root(std::path::PathBuf::from("/nowhere")),
+            &ca_on_disk(&dir),
+        )
+        .expect("builds");
+
+        let chosen = layers
+            .resolve()
+            .expect("resolves")
+            .into_iter()
+            .find(|entry| entry.key == NODE_CA_VAR)
+            .expect("set either way");
+
+        assert_eq!(chosen.raw, "/etc/ssl/corporate.pem");
+        assert_eq!(chosen.scope, EnvScope::Service);
+    }
+
+    #[test]
+    fn only_minato_own_certificate_is_kept_out_of_the_env_file() {
+        let entry = |key: &str, scope| env::EnvEntry {
+            key: key.to_string(),
+            raw: minato_core::config::CA_TARGET.to_string(),
+            scope,
+        };
+
+        assert!(container_only(&entry(NODE_CA_VAR, EnvScope::Injected)));
         assert!(
-            !values.contains_key("NODE_EXTRA_CA_CERTS"),
-            "Node's variable takes one file, so setting it would drop \
-             whatever the image already pointed it at — and it is rendered \
-             into env_file, which is read on the host where this path does \
-             not exist"
+            !container_only(&entry(NODE_CA_VAR, EnvScope::Service)),
+            "a project that set it means it, wherever the file is read"
+        );
+        assert!(
+            !container_only(&entry("MINATO_CA_FILE", EnvScope::Injected)),
+            "a container path nothing reads by name misleads no one"
         );
     }
 
@@ -622,21 +724,55 @@ mod tests {
         // The CA loads whether or not :443 could be held. With HTTPS down
         // the URLs are http://, so there is nothing for a container to
         // verify — and the file would still be mounted for it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ca = dir.path().join("minato-ca.crt");
+        std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").expect("writes");
+
         let values = injected(
             &config(SAMPLE),
             "myapp",
             &record("feat-1", false),
             Some("web"),
-            &Gateway::with_ports(Some(80), None).with_ca("/home/me/.minato/ca/minato-ca.crt"),
+            &Gateway::with_ports(Some(80), None).with_ca(&ca.to_string_lossy()),
         );
 
         assert!(
             values
                 .get("MINATO_URL_WEB")
                 .is_some_and(|url| url.starts_with("http://")),
-            "the state under test is HTTP-only"
+            "the state under test is HTTP-only, with the certificate there"
         );
         assert!(!values.contains_key("MINATO_CA_FILE"));
+        assert!(!values.contains_key(NODE_CA_VAR));
+    }
+
+    #[test]
+    fn names_no_certificate_once_the_file_is_gone() {
+        // It can be removed under a running daemon — `minato setup`
+        // undone, the directory cleared — and what is mounted is decided
+        // from the same answer. A name that outlives the mount is Node
+        // warning on every start about a certificate it cannot load.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gateway = ca_on_disk(&dir);
+
+        std::fs::remove_file(dir.path().join("minato-ca.crt")).expect("removes");
+
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &gateway,
+        );
+
+        assert!(
+            values
+                .get("MINATO_URL_WEB")
+                .is_some_and(|url| url.starts_with("https://")),
+            "HTTPS is still being served; it is the file that went"
+        );
+        assert!(!values.contains_key("MINATO_CA_FILE"));
+        assert!(!values.contains_key(NODE_CA_VAR));
     }
 
     #[test]

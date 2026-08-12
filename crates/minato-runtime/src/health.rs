@@ -241,6 +241,9 @@ pub async fn await_service(
         };
     };
 
+    // The id says only what this is, not which service it is for: the
+    // caller has scoped the sink (`EventSink::for_service`), so several of
+    // these can run at once without colliding.
     let label = format!("waiting for {service}");
     events.step_started("await", &label);
 

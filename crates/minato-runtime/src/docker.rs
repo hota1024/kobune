@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bollard::Docker;
@@ -169,6 +169,9 @@ pub struct DockerRuntime {
     docker: Docker,
     /// The services Minato itself stopped. See [`DockerRuntime::stop`].
     asked_to_stop: Mutex<HashSet<ServiceKey>>,
+    /// One lock per network name, held across
+    /// [`DockerRuntime::ensure_network`]. See there for why.
+    network_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl DockerRuntime {
@@ -191,12 +194,41 @@ impl DockerRuntime {
         Self {
             docker,
             asked_to_stop: Mutex::new(HashSet::new()),
+            network_locks: Mutex::new(HashMap::new()),
         }
     }
 
     /// The services this runtime stopped and has not started since.
     fn asked_to_stop(&self) -> HashSet<ServiceKey> {
-        self.asked_to_stop.lock().expect("lock").clone()
+        self.stopped_set().clone()
+    }
+
+    /// The set itself.
+    ///
+    /// **Poisoning is not an error here.** A wave takes this from several
+    /// tasks at once, so one panic while it is held would otherwise turn
+    /// every later start and stop into a panic inside a request handler.
+    /// What it holds is advisory — which services Minato stopped, used to
+    /// tell a clean stop from a crash — so carrying on with whatever is in
+    /// it beats taking the daemon down over it.
+    fn stopped_set(&self) -> std::sync::MutexGuard<'_, HashSet<ServiceKey>> {
+        self.asked_to_stop
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The lock that guards creating one network.
+    ///
+    /// Made on first use and kept, so two callers naming the same network
+    /// get the same lock. There is one per workspace, so the map does not
+    /// grow with anything a person does twice.
+    fn network_lock(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.network_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(name.to_string())
+            .or_default()
+            .clone()
     }
 
     fn unavailable(err: impl std::fmt::Display) -> RuntimeError {
@@ -207,8 +239,30 @@ impl DockerRuntime {
     }
 
     /// Creates the network if it is not there.
+    ///
+    /// **One caller at a time.** This looks and then creates, and services
+    /// starting side by side share a network — so both could look before
+    /// either created, and both would then create. Docker does not refuse
+    /// a name it already has: it makes a second network with the same name
+    /// and a different id, and the two services end up on networks that
+    /// cannot reach each other.
+    ///
+    /// In practice `prepare` runs first on both paths in and creates the
+    /// networks there, so what the concurrent callers reach here is the
+    /// list and not the create. That is what the lock costs — one listing
+    /// at a time — and it is not what the lock is for: a guarantee that
+    /// holds only because of what some other function happened to do first
+    /// is not one to leave a data race behind.
+    ///
+    /// **The lock is per network, not one for the runtime.** Two networks
+    /// cannot collide with each other, and one `DockerRuntime` serves
+    /// every project on the machine — so a single lock would put an
+    /// unrelated workspace's listing in front of a wake that has a request
+    /// waiting on it.
     async fn ensure_network(&self, key: &WorkspaceKey) -> Result<String> {
         let name = names::network(key);
+        let lock = self.network_lock(&name);
+        let _guard = lock.lock().await;
 
         let mut filters = HashMap::new();
         filters.insert("name".to_string(), vec![name.clone()]);
@@ -960,21 +1014,59 @@ impl Runtime for DockerRuntime {
         }
         events.step_done("network", "preparing the network");
 
-        for service in &spec.services {
-            match &service.build {
-                Some(build) => self.ensure_built(build, rebuild, events).await?,
-                None => self.ensure_image(&service.image, events).await?,
-            }
+        // **Pulls overlap; builds do not.**
+        //
+        // A pull is a download. Three of them at once finish in about the
+        // time the slowest takes rather than the sum, the registry is a
+        // different machine, and the daemon already de-duplicates the
+        // layers two images share.
+        //
+        // A build is the opposite: it saturates the cores it is given,
+        // BuildKit already runs the stages inside one build in parallel,
+        // and two builds interleave their output onto a display holding a
+        // single line. Running them together would move the same work
+        // around rather than remove any of it, and would make the log
+        // unreadable while it did.
+        //
+        // Each is told which service it belongs to, since several now
+        // report at once and a step id has to name one thing.
+        let (building, pulling): (Vec<_>, Vec<_>) = spec
+            .services
+            .iter()
+            .partition(|service| service.build.is_some());
+
+        let pulls = pulling.iter().map(|service| {
+            let events = events.for_service(service.name());
+            async move { self.ensure_image(&service.image, &events).await }
+        });
+
+        for pulled in futures::future::join_all(pulls).await {
+            pulled?;
+        }
+
+        for service in building {
+            let build = service.build.as_ref().expect("partitioned on it");
+            self.ensure_built(build, rebuild, &events.for_service(service.name()))
+                .await?;
         }
 
         Ok(())
     }
 
+    fn starts_concurrently(&self) -> bool {
+        true
+    }
+
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
         let name = names::container(&spec.key);
 
+        // Two services can be starting at once, and a step id has to name
+        // the one thing it tracks. Scoped once here rather than at each
+        // call below, and inherited by the readiness wait further down.
+        let events = &events.for_service(spec.name());
+
         // Whatever it exits with next is nothing to do with the last stop.
-        self.asked_to_stop.lock().expect("lock").remove(&spec.key);
+        self.stopped_set().remove(&spec.key);
 
         // Already running: do nothing. `minato up` gives the same result
         // however many times it is run.
@@ -1150,6 +1242,9 @@ impl Runtime for DockerRuntime {
     }
 
     async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        // Scoped like `start`: a step id names the one service it is
+        // tracking, whether or not anything overlaps today.
+        let events = &events.for_service(&key.service);
         let Some(container) = self.find_container(key).await? else {
             events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
@@ -1177,7 +1272,7 @@ impl Runtime for DockerRuntime {
         // Only for as long as this runtime lives: after a daemon restart
         // nothing knows who stopped what, and the exit code is all there
         // is to go on again.
-        self.asked_to_stop.lock().expect("lock").insert(key.clone());
+        self.stopped_set().insert(key.clone());
 
         events.step_done("stop", format!("stopping {}", key.service));
         events.service_state(&key.service, ServiceState::Stopped);
@@ -1185,6 +1280,7 @@ impl Runtime for DockerRuntime {
     }
 
     async fn remove(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        let events = &events.for_service(&key.service);
         let Some(container) = self.find_container(key).await? else {
             return Ok(());
         };
@@ -1204,7 +1300,7 @@ impl Runtime for DockerRuntime {
             .map_err(|e| RuntimeError::failed(format!("removing container {id}"), e))?;
 
         // There is no longer a container whose exit code needs explaining.
-        self.asked_to_stop.lock().expect("lock").remove(key);
+        self.stopped_set().remove(key);
 
         events.step_done("remove", format!("removing {}", key.service));
         Ok(())

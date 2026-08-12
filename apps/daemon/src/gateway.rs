@@ -263,6 +263,11 @@ pub struct Gateway {
     https_addrs: Vec<SocketAddr>,
     dns_port: Option<u16>,
     ca_path: Option<PathBuf>,
+    /// The DNS suffixes the local CA may sign for.
+    ///
+    /// Empty for a CA with no name constraint — one made before the rule
+    /// existed. `doctor` is where that gets said out loud.
+    ca_permitted: Vec<String>,
     /// The addresses that were meant to be bound, for working out which
     /// were missed.
     wanted: Vec<IpAddr>,
@@ -305,15 +310,16 @@ impl Gateway {
             shutdown.clone(),
         )
         .await;
-        let (https_addrs, ca_path, https_failure, https_fell_back) = Self::start_https(
-            paths,
-            &routes,
-            settings,
-            launchd_installed,
-            activator,
-            shutdown.clone(),
-        )
-        .await;
+        let (https_addrs, ca_path, ca_permitted, https_failure, https_fell_back) =
+            Self::start_https(
+                paths,
+                &routes,
+                settings,
+                launchd_installed,
+                activator,
+                shutdown.clone(),
+            )
+            .await;
         let (dns_port, dns_failure) = Self::start_dns(settings, shutdown).await;
 
         Self {
@@ -322,6 +328,7 @@ impl Gateway {
             https_addrs,
             dns_port,
             ca_path,
+            ca_permitted,
             wanted: settings.bind.clone(),
             extra_wanted: settings.extra_bind.clone(),
             http_failure,
@@ -414,16 +421,29 @@ impl Gateway {
         launchd_installed: bool,
         activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
-    ) -> (Vec<SocketAddr>, Option<PathBuf>, Option<BindFailure>, bool) {
+    ) -> (
+        Vec<SocketAddr>,
+        Option<PathBuf>,
+        Vec<String>,
+        Option<BindFailure>,
+        bool,
+    ) {
         let ca = match LocalCa::load_or_create(&paths.ca_dir()) {
             Ok(ca) => Arc::new(ca),
             Err(err) => {
                 tracing::warn!("no CA available, so HTTPS stays off: {err}");
-                return (Vec::new(), None, Some(BindFailure::Other), false);
+                return (
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                    Some(BindFailure::Other),
+                    false,
+                );
             }
         };
 
         let ca_path = ca.certificate_path();
+        let ca_permitted = ca.permitted_suffixes().to_vec();
         let tls = server_config(ca);
 
         let activated = adopt_listeners(activation::HTTPS_SOCKET);
@@ -454,7 +474,7 @@ impl Gateway {
             }
 
             tracing::info!("HTTPS proxy: inherited from launchd ({addrs:?})");
-            return (addrs, Some(ca_path), None, false);
+            return (addrs, Some(ca_path), ca_permitted, None, false);
         }
 
         let listening = bind_with_fallback(
@@ -492,7 +512,13 @@ impl Gateway {
             });
         }
 
-        (bound, Some(ca_path), listening.failure, listening.fell_back)
+        (
+            bound,
+            Some(ca_path),
+            ca_permitted,
+            listening.failure,
+            listening.fell_back,
+        )
     }
 
     async fn start_dns(
@@ -565,6 +591,7 @@ impl Gateway {
             https_addrs: Vec::new(),
             dns_port: None,
             ca_path: None,
+            ca_permitted: Vec::new(),
             wanted: Vec::new(),
             extra_wanted: Vec::new(),
             http_failure: Some(BindFailure::Other),
@@ -591,6 +618,7 @@ impl Gateway {
             https_addrs: https.map(both).unwrap_or_default(),
             dns_port: None,
             ca_path: None,
+            ca_permitted: Vec::new(),
             wanted: vec![
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -609,6 +637,14 @@ impl Gateway {
     #[cfg(test)]
     pub(crate) fn with_ca(mut self, path: &str) -> Self {
         self.ca_path = Some(PathBuf::from(path));
+        self
+    }
+
+    /// The suffixes the CA reports. Empty is what a CA made before the
+    /// name-constraint rule looks like.
+    #[cfg(test)]
+    pub(crate) fn with_ca_permitting(mut self, suffixes: &[&str]) -> Self {
+        self.ca_permitted = suffixes.iter().map(|s| s.to_string()).collect();
         self
     }
 
@@ -714,6 +750,12 @@ impl Gateway {
         self.ca_path.as_deref()
     }
 
+    /// The DNS suffixes the local CA may sign for. Empty when it carries
+    /// no name constraint at all.
+    pub fn ca_permitted(&self) -> &[String] {
+        &self.ca_permitted
+    }
+
     /// Whether the proxy is running. No URLs are issued when it is not.
     pub fn is_serving(&self) -> bool {
         !self.http_addrs.is_empty() || !self.https_addrs.is_empty()
@@ -727,9 +769,17 @@ impl Gateway {
     /// URLs — nothing a container could verify. Mounting the file and
     /// naming it then would be arranging trust for a connection that is
     /// never made.
+    ///
+    /// **Nor "was there one when the daemon started".** The file can be
+    /// removed under a running daemon — `minato setup` undone, the
+    /// directory cleared — and what is mounted is decided from this, so
+    /// answering from the start would name a certificate no container
+    /// has. Node reads `NODE_EXTRA_CA_CERTS` by name and warns on every
+    /// start about a file it cannot load, which is the whole of what the
+    /// variable was set to avoid.
     pub fn trusted_ca(&self) -> Option<&std::path::Path> {
         self.https_port()?;
-        self.ca_path()
+        self.ca_path().filter(|path| path.is_file())
     }
 
     /// The URL for a hostname, or `None` when the proxy is not running.
@@ -755,31 +805,82 @@ fn format_url(scheme: &str, host: &str, port: u16, default_port: u16) -> String 
     }
 }
 
-/// Turns a descriptor from launchd into a tokio listener.
-fn adopt_listeners(name: &str) -> Vec<TcpListener> {
-    activation::tcp_listeners(name)
+/// The sockets among those launchd handed over that it managed to bind.
+///
+/// **A descriptor arrives even when the bind failed.** A plist naming an
+/// address the machine does not have — Apple Container's gateway, on a
+/// host whose container network is down — costs that socket and nothing
+/// else, which is what writing the plist counts on. But launchd still
+/// hands the descriptor over, and the socket behind it never bound:
+/// `getsockname` answers `0.0.0.0:0` instead of failing, so it reads as
+/// an address like any other.
+///
+/// **Dropped here, before anything else sees it.** It would otherwise be
+/// served — an `accept` that can only fail — counted as the proxy
+/// listening, and, since launchd does not hand the descriptors back in
+/// any particular order, be the address [`Gateway::https_port`] speaks
+/// for. Every service is then told to reach the proxy on port 0, which a
+/// browser refuses outright.
+fn bound_only<S>(
+    name: &str,
+    taken: Vec<S>,
+    address: impl Fn(&S) -> std::io::Result<SocketAddr>,
+) -> Vec<S> {
+    taken
         .into_iter()
-        .filter_map(|listener| match TcpListener::from_std(listener) {
-            Ok(listener) => Some(listener),
+        .filter(|socket| match address(socket) {
+            Ok(addr) if addr.port() != 0 => true,
+            Ok(_) => {
+                // The address it was meant to hold is not recoverable from
+                // an unbound socket, so the plist is where to look. Most
+                // often it names one this machine does not have.
+                tracing::warn!(
+                    "leaving out one of {name}'s sockets: launchd handed it over without \
+                     binding it. Check the addresses in its plist"
+                );
+                false
+            }
             Err(err) => {
-                tracing::warn!("cannot take over {name}'s socket: {err}");
-                None
+                tracing::warn!("leaving out one of {name}'s sockets: no address ({err})");
+                false
             }
         })
         .collect()
 }
 
+/// Turns a descriptor from launchd into a tokio listener.
+fn adopt_listeners(name: &str) -> Vec<TcpListener> {
+    bound_only(
+        name,
+        activation::tcp_listeners(name),
+        std::net::TcpListener::local_addr,
+    )
+    .into_iter()
+    .filter_map(|listener| match TcpListener::from_std(listener) {
+        Ok(listener) => Some(listener),
+        Err(err) => {
+            tracing::warn!("cannot take over {name}'s socket: {err}");
+            None
+        }
+    })
+    .collect()
+}
+
 fn adopt_udp(name: &str) -> Vec<tokio::net::UdpSocket> {
-    activation::udp_sockets(name)
-        .into_iter()
-        .filter_map(|socket| match tokio::net::UdpSocket::from_std(socket) {
-            Ok(socket) => Some(socket),
-            Err(err) => {
-                tracing::warn!("cannot take over {name}'s socket: {err}");
-                None
-            }
-        })
-        .collect()
+    bound_only(
+        name,
+        activation::udp_sockets(name),
+        std::net::UdpSocket::local_addr,
+    )
+    .into_iter()
+    .filter_map(|socket| match tokio::net::UdpSocket::from_std(socket) {
+        Ok(socket) => Some(socket),
+        Err(err) => {
+            tracing::warn!("cannot take over {name}'s socket: {err}");
+            None
+        }
+    })
+    .collect()
 }
 
 /// Binds `port` on every wanted address.
@@ -1237,6 +1338,7 @@ mod tests {
             https_addrs: https,
             dns_port: None,
             ca_path: None,
+            ca_permitted: Vec::new(),
             wanted: vec![
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -1393,6 +1495,45 @@ mod tests {
     fn nothing_bound_is_reported_separately() {
         // Everything failing is not the "only one family" problem.
         assert!(Gateway::inert().missing_families().is_empty());
+    }
+
+    #[test]
+    fn a_socket_launchd_could_not_bind_is_left_out() {
+        use std::os::fd::FromRawFd;
+
+        // What went wrong: the plist named Apple Container's gateway on a
+        // machine whose container network was down, launchd handed the
+        // descriptor over anyway, and the socket behind it answered
+        // `0.0.0.0:0` rather than failing. Coming back first, that 0 was
+        // the port every service was then told to reach the proxy on —
+        // and a browser refuses port 0 as unsafe.
+        let listening = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(fd >= 0, "no socket to stand in for the one launchd lost");
+
+        // SAFETY: a socket this process just made and owns, still unbound
+        // — the same state launchd's descriptor arrives in.
+        let never_bound = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+
+        assert_eq!(
+            never_bound.local_addr().ok().map(|addr| addr.port()),
+            Some(0),
+            "the premise: an unbound socket has an address, and its port is 0"
+        );
+
+        let kept = bound_only(
+            "https",
+            vec![never_bound, listening],
+            std::net::TcpListener::local_addr,
+        );
+
+        assert_eq!(kept.len(), 1, "only the socket that bound is kept");
+        assert_ne!(
+            kept[0].local_addr().unwrap().port(),
+            0,
+            "and it is the one with a port to speak for the proxy"
+        );
     }
 
     #[test]
