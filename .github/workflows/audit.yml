@@ -11,16 +11,27 @@ on:
     - cron: '17 4 * * 1'
   # And whenever the set of dependencies actually moves, which is the
   # other moment the answer can change.
+  #
+  # `.cargo/audit.toml` is in the lists because it is a maintained
+  # decision log, not configuration that sits still: dropping an entry
+  # is a claim the advisory no longer applies, and it should be checked
+  # on the pull request making the claim rather than on main the
+  # following Monday with nobody attached to it.
+  #
+  # The two lists are duplicated because GitHub Actions does not resolve
+  # YAML anchors. Keep them in step.
   push:
     branches: [main]
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - '.cargo/audit.toml'
       - '.github/workflows/audit.yml'
   pull_request:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - '.cargo/audit.toml'
       - '.github/workflows/audit.yml'
   workflow_dispatch:
 
@@ -28,6 +39,13 @@ jobs:
   audit:
     name: Advisories
     runs-on: ubuntu-latest
+
+    # It checks out and runs a check. Everything else the default token
+    # might carry is of no use to a job that installs a prebuilt binary
+    # from outside the repository.
+    permissions:
+      contents: read
+
     steps:
       - uses: actions/checkout@v5
 

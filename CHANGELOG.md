@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes, in the format of [Keep a Changelog](https://keepachangelog.com/1.1.0/).
+Notable changes, in the format of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 **Nothing has been released.** `nightly` is a rolling build of `main` and
 carries no version, so everything below is unreleased by definition. What this
@@ -26,6 +26,12 @@ less accurately.
   asks its callers for nothing, and `minato exec` prints the secrets resolved
   from 1Password and the Keychain — so who can reach it was the whole of the
   access control, and it was whatever the umask allowed (#51)
+- `install.sh` stops rather than warning when it cannot verify a download.
+  With no `sha256sum`, `shasum` or `openssl` it used to carry on, so the
+  `curl … | sh` the README recommends had no integrity check at all and said
+  so only in scrollback nobody reads. A checksum file that is not a checksum
+  — an error page, a truncated download — is refused for the same reason
+  (#53)
 
 ### Added
 
