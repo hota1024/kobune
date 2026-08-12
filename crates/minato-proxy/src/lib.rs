@@ -11,7 +11,10 @@ pub mod routes;
 pub mod server;
 
 pub use activator::{Activation, Activator, NoopActivator};
-pub use ca::{CA_CERT_FILE, CA_KEY_FILE, CaError, DynamicCertResolver, LocalCa, server_config};
+pub use ca::{
+    CA_CERT_FILE, CA_KEY_FILE, CaError, DynamicCertResolver, LocalCa, PERMITTED_SUFFIXES, permits,
+    server_config,
+};
 pub use routes::{Route, Routes, normalize_host};
 pub use server::{serve_http, serve_https};
 

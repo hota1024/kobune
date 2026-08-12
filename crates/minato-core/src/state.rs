@@ -269,13 +269,17 @@ impl ProjectRecord {
 
 /// Reads and writes the state file.
 ///
-/// Does no cross-process locking. The daemon is the single writer, and
-/// serialises its own access with a `Mutex`.
+/// Does no locking of any kind. [`Self::update`] loads, mutates and saves,
+/// so **two overlapping writers lose one of the two writes** — the rename
+/// keeps the file readable, which is exactly what makes the loss quiet.
 ///
-/// **What makes it the single writer is the socket**, not a lock here: a
-/// second daemon tries to connect to `minatod.sock` before anything else
-/// and stands down when something answers (`apps/daemon/src/server.rs`).
-/// So there is exactly one process in a position to write this file.
+/// Within the daemon that is the caller's job, and the daemon does it with
+/// one `Mutex` taken around every access (`apps/daemon/src/supervisor.rs`).
+/// Between processes, a second daemon stands down when something answers
+/// on `minatod.sock` (`apps/daemon/src/server.rs`) — near enough to a
+/// single writer in practice, though two started together can both get
+/// past that check, so it is a reason not to worry rather than a promise
+/// to build on.
 #[derive(Debug, Clone)]
 pub struct StateStore {
     path: PathBuf,

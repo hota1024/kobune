@@ -25,8 +25,9 @@ pub fn build_workspace_spec(
 ) -> Result<WorkspaceSpec, ApiError> {
     let key = WorkspaceKey::new(project, workspace);
 
-    // Ordered so dependencies come first. The runtime starts them in
-    // this order.
+    // Ordered so dependencies come first. `prepare` wants the flat list;
+    // the supervisor regroups it into waves before starting anything
+    // (`supervisor::waves`), and that regrouping relies on this order.
     let ordered = config.startup_order();
     let mut services = Vec::with_capacity(ordered.len());
 
