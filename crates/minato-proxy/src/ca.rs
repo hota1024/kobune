@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, GeneralSubtree, IsCa, KeyPair,
-    KeyUsagePurpose, NameConstraints,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, GeneralSubtree, IsCa, Issuer,
+    KeyPair, KeyUsagePurpose, NameConstraints,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -97,20 +97,22 @@ pub enum CaError {
 
 /// The local CA.
 pub struct LocalCa {
-    /// The issuer used to sign leaves.
+    /// What signs leaves.
     ///
-    /// On load this is rebuilt from what is on disk, so its signature bytes
-    /// differ from the ones on disk — an ECDSA signature is different every
-    /// time. What goes out as the chain is always [`Self::der`].
-    certificate: rcgen::Certificate,
-    key_pair: KeyPair,
+    /// **Not the certificate on disk.** An issuer carries the signing key
+    /// and the name to put in `issuer`, and nothing of the certificate's
+    /// own bytes — which is the right shape, since an ECDSA signature is
+    /// different every time and re-signing would produce a CA that is not
+    /// the one the user trusted. What goes out as the chain is always
+    /// [`Self::der`].
+    issuer: Issuer<'static, KeyPair>,
     /// The CA certificate exactly as it is on disk. Sent as the chain
     /// alongside each leaf.
     der: CertificateDer<'static>,
     /// The PEM on disk, guaranteed identical to what the user trusted.
     pem: String,
-    /// The DNS suffixes this CA may sign for, read from its own name
-    /// constraints.
+    /// The DNS suffixes this CA may sign for, read from the certificate's
+    /// own name constraints.
     ///
     /// **Empty means unconstrained**, which is what a CA created before
     /// [`PERMITTED_SUFFIXES`] existed looks like. Those are left alone
@@ -160,27 +162,21 @@ impl LocalCa {
             source,
         })?;
 
-        let params =
-            CertificateParams::from_ca_cert_pem(&cert_pem).map_err(|source| CaError::Parse {
-                path: cert_path,
-                source,
-            })?;
-
-        // Before signing, which consumes them. The constraint they carry
-        // is what tells a CA made under this rule from one made before it.
-        let permitted = permitted_from(&params);
-
-        // Only ever used as the signing issuer. Its signature bytes do not
-        // match the ones on disk, so it must not go out as the chain.
-        let certificate = params.self_signed(&key_pair).map_err(CaError::Generate)?;
-
         // What the user trusted is the certificate on disk. Send that.
         let der = pem_to_der(&cert_pem, dir.join(CA_CERT_FILE))?;
 
+        // Read from the certificate, which is the only place it exists:
+        // an `Issuer` does not carry name constraints.
+        let permitted = permitted_from(&der);
+
+        let issuer = Issuer::from_ca_cert_der(&der, key_pair).map_err(|source| CaError::Parse {
+            path: cert_path,
+            source,
+        })?;
+
         Ok(Self {
             permitted,
-            certificate,
-            key_pair,
+            issuer,
             der,
             pem: cert_pem,
             dir: dir.to_path_buf(),
@@ -219,14 +215,6 @@ impl LocalCa {
         params.not_before = now();
         params.not_after = now() + time::Duration::days(365 * CA_VALIDITY_YEARS);
 
-        // **Read back rather than assumed.** Taking the constant here
-        // would have `create` report a constraint whose presence in the
-        // certificate nothing checked — and rcgen declines to emit the
-        // extension at all when both subtree lists are empty, so the two
-        // really can differ. `load` reads the same way, so a fresh CA and
-        // a reloaded one cannot disagree about the same file.
-        let permitted = permitted_from(&params);
-
         let key_pair = KeyPair::generate().map_err(CaError::Generate)?;
         let certificate = params.self_signed(&key_pair).map_err(CaError::Generate)?;
 
@@ -241,9 +229,19 @@ impl LocalCa {
 
         let der = CertificateDer::from(certificate.der().to_vec());
 
+        // **Read out of the certificate, not taken from the constant.**
+        // Taking the constant would have `create` report a constraint
+        // whose presence in the bytes nothing checked — and rcgen omits
+        // the extension entirely when both subtree lists are empty, so
+        // the two really can differ. `load` reads the same way, from the
+        // same place, so a fresh CA and a reloaded one cannot disagree
+        // about the same file.
+        let permitted = permitted_from(&der);
+
+        let issuer = Issuer::from_ca_cert_der(&der, key_pair).map_err(CaError::Generate)?;
+
         Ok(Self {
-            certificate,
-            key_pair,
+            issuer,
             der,
             pem,
             permitted,
@@ -293,7 +291,7 @@ impl LocalCa {
 
         let key_pair = KeyPair::generate().map_err(CaError::Generate)?;
         let leaf = params
-            .signed_by(&key_pair, &self.certificate, &self.key_pair)
+            .signed_by(&key_pair, &self.issuer)
             .map_err(CaError::Generate)?;
 
         let leaf_der = CertificateDer::from(leaf.der().to_vec());
@@ -380,20 +378,36 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<(), CaError> {
     })
 }
 
-/// The DNS suffixes a set of name constraints permits.
+/// The DNS suffixes a certificate's name constraints permit.
+///
+/// **Parsed out of the certificate itself.** rcgen 0.14 has no public way
+/// to ask: `CertificateParams::from_ca_cert_der` went `pub(crate)`, and
+/// the `Issuer` that replaced it keeps the signing key and the
+/// distinguished name and drops the constraints. So this reads the
+/// extension directly, which is where rcgen was reading it from anyway.
 ///
 /// Only `DnsName` subtrees: an IP or a directory name says nothing about
 /// which hostnames this CA covers, which is the only question here.
-fn permitted_from(params: &CertificateParams) -> Vec<String> {
-    let Some(constraints) = params.name_constraints.as_ref() else {
+///
+/// An unreadable certificate answers the same as an unconstrained one —
+/// empty. Both mean "nothing here says what this may sign for", and a CA
+/// that will not parse has worse problems than this function.
+fn permitted_from(der: &CertificateDer<'_>) -> Vec<String> {
+    let Ok((_, certificate)) = x509_parser::parse_x509_certificate(der) else {
+        return Vec::new();
+    };
+
+    let Ok(Some(constraints)) = certificate.name_constraints() else {
         return Vec::new();
     };
 
     constraints
+        .value
         .permitted_subtrees
         .iter()
-        .filter_map(|subtree| match subtree {
-            GeneralSubtree::DnsName(name) => Some(name.to_ascii_lowercase()),
+        .flatten()
+        .filter_map(|subtree| match subtree.base {
+            x509_parser::extensions::GeneralName::DNSName(name) => Some(name.to_ascii_lowercase()),
             _ => None,
         })
         .collect()
@@ -709,9 +723,17 @@ mod tests {
         // Reporting it as constrained would be the one answer worse than
         // not asking.
         assert!(permits(&[], "google.com"), "nothing is out of bounds");
+
+        // A real certificate with no constraint, which is what every
+        // installation made before the rule has on disk.
+        let key_pair = KeyPair::generate().expect("generates");
+        let mut params = CertificateParams::default();
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        let certificate = params.self_signed(&key_pair).expect("self-signs");
+
         assert!(
-            permitted_from(&CertificateParams::default()).is_empty(),
-            "no constraint means no permitted suffixes"
+            permitted_from(&CertificateDer::from(certificate.der().to_vec())).is_empty(),
+            "no constraint in the certificate means no permitted suffixes"
         );
     }
 
