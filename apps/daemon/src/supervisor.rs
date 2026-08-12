@@ -3038,8 +3038,18 @@ fn write_env_file_for(
         return Ok(());
     };
 
+    // Everything the container is given except what only means something
+    // in there — a container path handed to a tool running on the host is
+    // a warning on every start about a file that was never missing.
+    let written: Vec<_> = settled
+        .entries
+        .iter()
+        .filter(|entry| !env::container_only(entry))
+        .cloned()
+        .collect();
+
     let note = format!("service: {service}  workspace: {}", record.label);
-    let contents = minato_core::env::render(&settled.entries, &note);
+    let contents = minato_core::env::render(&written, &note);
 
     if let Some(path) = env::write_env_file(&record.path, relative, &contents)? {
         tracing::debug!("{service}: wrote {}", path.display());
@@ -4050,6 +4060,62 @@ mod tests {
             !dir.path().join(".minato/env.api").exists(),
             "api was not asked to start"
         );
+    }
+
+    #[test]
+    fn the_env_file_leaves_out_what_only_a_container_can_read() {
+        // This file is read on the *host*, and Node reads
+        // NODE_EXTRA_CA_CERTS by name: left in, it is a warning on every
+        // start about a certificate file that was never missing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let record = record_at(dir.path());
+
+        let entry = |key: &str, raw: &str, scope| minato_core::env::EnvEntry {
+            key: key.to_string(),
+            raw: raw.to_string(),
+            scope,
+        };
+
+        let web = ServiceEnv {
+            values: BTreeMap::from([(
+                "NODE_EXTRA_CA_CERTS".to_string(),
+                minato_core::config::CA_TARGET.to_string(),
+            )]),
+            entries: vec![
+                entry(
+                    "NODE_EXTRA_CA_CERTS",
+                    minato_core::config::CA_TARGET,
+                    minato_core::EnvScope::Injected,
+                ),
+                entry(
+                    "MINATO_CA_FILE",
+                    minato_core::config::CA_TARGET,
+                    minato_core::EnvScope::Injected,
+                ),
+                entry(
+                    "API_URL",
+                    "https://api.myapp.localhost",
+                    minato_core::EnvScope::Service,
+                ),
+            ],
+        };
+
+        let envs = BTreeMap::from([("web".to_string(), web)]);
+
+        write_env_files(&config(TWO_ENV_FILES), &record, &envs, &["web".to_string()])
+            .expect("writes");
+
+        let written = std::fs::read_to_string(dir.path().join(".minato/env.web")).expect("reads");
+
+        assert!(
+            !written.contains("NODE_EXTRA_CA_CERTS"),
+            "the container has it from its environment; the host cannot use it: {written}"
+        );
+        assert!(
+            written.contains("MINATO_CA_FILE"),
+            "a path nothing reads by name is the project's to use: {written}"
+        );
+        assert!(written.contains("API_URL="), "{written}");
     }
 
     #[test]

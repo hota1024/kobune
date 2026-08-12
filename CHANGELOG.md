@@ -23,9 +23,12 @@ less accurately.
 
 ### Added
 
-- A container can verify Minato's own HTTPS URLs. The CA is mounted read-only
-  and named as `MINATO_CA_FILE`, so a service reaching another over
-  `MINATO_URL_<SERVICE>` need not turn verification off
+- A container verifies Minato's own HTTPS URLs without being told to. The CA is
+  mounted read-only, named as `MINATO_CA_FILE`, and handed to Node as
+  `NODE_EXTRA_CA_CERTS`, so a service reaching another over
+  `MINATO_URL_<SERVICE>` need not turn verification off. Naming the file and
+  leaving the wiring to the service left `SELF_SIGNED_CERT_IN_CHAIN` in
+  projects that had the certificate mounted and unused (#68)
 - A service URL resolves from inside a container as well as from the browser,
   so one hostname works for both halves of an application and cookies and CORS
   need know about only one
