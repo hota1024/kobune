@@ -205,6 +205,30 @@ pub trait Runtime: Send + Sync {
     /// Starts a service. Already running: returns as-is, does nothing.
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService>;
 
+    /// Whether two services that do not depend on each other may be
+    /// started at the same time.
+    ///
+    /// **Off unless a backend says otherwise.** Starting in sequence is
+    /// what every backend has always done, so a new one is not made to
+    /// prove it is safe before it works at all.
+    ///
+    /// Docker says yes: a peer is reached by name on the network, so when
+    /// it started makes no difference to anything that came up beside it.
+    /// Apple Container says no — it has no such DNS, and injects a peer's
+    /// address into the container at creation, read from the peer that is
+    /// running by then. Two services started together would each be
+    /// handed nothing for the other.
+    ///
+    /// **A property of the backend, not of the installation**, which is
+    /// why this is answered here and not on [`RuntimeInfo`]. Its
+    /// neighbour `supports_custom_networks` is discovered by asking, and
+    /// deciding how to start on the result of a fallible round trip would
+    /// put a new way for `up` to fail in front of a question the code
+    /// already knows the answer to.
+    fn starts_concurrently(&self) -> bool {
+        false
+    }
+
     /// Stops a service, keeping the container so the next start is fast.
     async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()>;
 

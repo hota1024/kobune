@@ -558,7 +558,8 @@ URL can be woken at all**. `expose = false` — what a database is — leaves on
 with no name for a request to carry, and that one fact decides both halves of
 this section.
 
-**Waking starts the whole `depends_on` closure**, in `startup_order`. Starting
+**Waking starts the whole `depends_on` closure**, in the same waves `up`
+uses (see §7, "Making starts faster"). Starting
 the single service the host named would hand the app a dependency that is not
 there, and no request would ever arrive to fix it. `up` had always done this;
 the wake path was the one way in that did not, so it worked under `minato up`
@@ -599,6 +600,36 @@ to the wrong conclusion — "the server is broken".
 - `node_modules` and the like live in a named volume per workspace, installed
   once
 - `minato new` runs `prepare` ahead of time (`--no-warm` turns it off)
+
+**Services start a wave at a time, not one at a time.** A start does not
+return until the service answers or gives up waiting on it — up to 15
+seconds each — so a `web`, an `api` and a `cache` that know nothing of each
+other used to spend that wait three times over for no reason. `depends_on`
+is a partial order, and the sequence it was being flattened into invented
+constraints it never asked for.
+
+So `startup_waves` groups services by depth in the dependency graph: wave 0
+depends on nothing, wave *n* depends only on earlier waves. Everything in a
+wave starts at once, and the next wave waits for it. Nothing within a wave
+depends on anything else in it, by construction — which is the whole
+argument for why this is safe, and what the tests pin. `setup` still runs
+immediately before its own service, so a migration against `db` keeps the
+ordering it needs. The same grouping drives the wake path, where the wait
+saved is one somebody is sitting through.
+
+**Whether it is safe to overlap is the runtime's answer, not the
+supervisor's** (`Runtime::starts_concurrently`, off unless a backend says
+otherwise). Docker says yes: a peer is reached by name on the network, so
+when it started makes no difference. Apple Container says no — it has no
+such DNS and injects a peer's address at creation, read from the peer
+running by then, so two services started together would each be handed
+nothing for the other. There the sequence *is* the mechanism.
+
+One consequence worth stating: two services starting at once share a
+network, so `ensure_network` — which looks and then creates — had to become
+one-caller-at-a-time. Docker does not refuse a name it already has; it makes
+a second network with the same name and a different id, and the two services
+end up unable to reach each other.
 
 ### Building rather than pulling (M0.5)
 
@@ -744,6 +775,7 @@ MINATO_URL_API       = https://api.feat-1.myapp.localhost
 MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
 MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
 MINATO_CA_FILE       = /etc/minato/ca.crt                      # while HTTPS is served
+NODE_EXTRA_CA_CERTS  = /etc/minato/ca.crt                      # the same file, wired in
 MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
 ```
 
@@ -753,12 +785,24 @@ A `-` in a service name becomes `_` (`api-server` →
 **Injection is the bottom layer**, so the user can override it. The other way
 round, Minato's conveniences would erase the user's settings.
 
-**`MINATO_CA_FILE` names a certificate, and does not wire it in.** The CA is
-mounted read-only so a service can verify the URL it was handed rather than
-turning verification off, but `NODE_EXTRA_CA_CERTS` and its equivalents are
-left to the service: Node's takes one file, so setting it would drop whatever
-an image already pointed it at, and it would be rendered into `env_file`, which
-is read on the host where that path does not exist.
+**The certificate is wired in, not just named.** Naming the file and leaving
+`NODE_EXTRA_CA_CERTS` to the service is what this did at first, and what came
+back was `SELF_SIGNED_CERT_IN_CHAIN` from projects with the CA mounted and
+unused — Node reads its extra certificate from the environment and nowhere
+else, so a file nobody assigns to that name is a file nobody trusts. Both
+costs are paid rather than avoided: it is kept out of `env_file`, which is read
+on the host where that path does not exist and Node would warn about it on
+every start, and an image that points it at a corporate bundle keeps that
+bundle by saying so in `[services.<name>.env]`, since injection is the bottom
+layer. **Only Node's.** `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and
+`REQUESTS_CA_BUNDLE` replace a trust store rather than adding to it, so
+setting them would leave a container trusting Minato and nothing else.
+
+**A task runner between the container and the process can drop it.**
+Turborepo's strict environment mode passes through what its configuration
+names and discards the rest, so the variable reaches `turbo` and not the
+server it starts. Nothing injected can reach past that, and the guide says
+what to add where.
 
 **No URL is injected while the proxy is down**, and no hostname either — the
 two go together. An empty string would leave it "set, but unreachable", and the

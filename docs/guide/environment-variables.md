@@ -54,6 +54,7 @@ MINATO_WORKSPACE    = feature-user-auth
 MINATO_SERVICE      = web
 MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_CA_FILE      = /etc/minato/ca.crt
+NODE_EXTRA_CA_CERTS = /etc/minato/ca.crt
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
@@ -70,24 +71,53 @@ host's keychain. A container has its own trust store and does not get it, so
 without this the URL connects and then fails on the certificate — and the way
 out everyone finds is turning verification off for the whole process.
 
-Point your stack's own variable at it. For Node that is one line:
+**Node needs no wiring**: `NODE_EXTRA_CA_CERTS` is set to the same file, so a
+`fetch` from a server component or an API route verifies and nothing has to be
+turned off. It is set underneath your own values — an image that points it at a
+corporate bundle keeps that bundle by saying so:
 
 ```toml
 [services.web.env]
-NODE_EXTRA_CA_CERTS = "${MINATO_CA_FILE}"
+NODE_EXTRA_CA_CERTS = "/etc/ssl/corporate-and-minato.pem"
 ```
 
-**`NODE_EXTRA_CA_CERTS` adds to the trust store; `SSL_CERT_FILE`,
-`CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE` replace it.** A container told to
-trust Minato through one of those trusts nothing else, so an outbound HTTPS
-call to anywhere but Minato stops working. Prefer the additive one where your
-stack has it.
+Node takes one file there, so trusting both means one file holding both.
 
-Minato does not set `NODE_EXTRA_CA_CERTS` for you, deliberately. It takes one
-file, so an image that already points it at a corporate bundle would silently
-lose that bundle — and it would be written into [`env_file`](#env-file), which
-is read on the *host*, where `/etc/minato/ca.crt` does not exist and Node warns
-about it on every start.
+**Only Node's is set for you.** `NODE_EXTRA_CA_CERTS` adds to the trust store,
+while `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE` replace it — a
+container told to trust Minato through one of those trusts nothing else, and an
+outbound call to anywhere but Minato stops working. Point them at a bundle you
+built, or use the system store below.
+
+`NODE_EXTRA_CA_CERTS` is the one injected value left out of
+[`env_file`](#env-file): that file is read on the *host*, where
+`/etc/minato/ca.crt` does not exist and Node would warn about it on every
+start. `MINATO_CA_FILE` is there, for a project that wants to name the path
+itself.
+
+### When the certificate does not reach the process
+
+A task runner between the container and your server can drop it. Turborepo's
+strict environment mode — the default in Turborepo 2 — passes through only what
+its configuration names, so `NODE_EXTRA_CA_CERTS` reaches `turbo` and not the
+`next dev` it starts, and the error is the one this section exists to prevent:
+
+```
+[cause]: Error: self-signed certificate in certificate chain {
+  code: 'SELF_SIGNED_CERT_IN_CHAIN'
+}
+```
+
+Name it in `turbo.json` and it goes through:
+
+```json
+{ "globalPassThroughEnv": ["NODE_EXTRA_CA_CERTS"] }
+```
+
+Nothing Minato injects can reach past a tool that filters the environment,
+since Node takes its extra certificate from the environment and nowhere else.
+If a variable is set in the container and missing in the process, look for what
+is in between.
 
 For a stack that reads the system trust store instead, add the certificate to
 it at start:
