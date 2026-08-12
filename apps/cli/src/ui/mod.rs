@@ -164,6 +164,16 @@ pub fn note(text: &str) -> Line<'static> {
     views::note(text)
 }
 
+/// A follow-up step: the state of the machine, and the command that
+/// settles it.
+///
+/// One shape for the lot of them, wherever they are printed — the panel
+/// `update` leaves behind and the notice a new build prints on its first
+/// run both read as a list of the same kind of thing.
+pub fn step(reason: &str, command: &str) -> Line<'static> {
+    hint(&format!("{reason}, so run"), command)
+}
+
 /// A heading and the lines under it.
 ///
 /// For what a command has to say *besides* what it did — the keys a
@@ -317,5 +327,21 @@ mod tests {
         // frame would only be in the way.
         let text = render(&Loose(vec![Line::raw("error: nope")]));
         assert_eq!(text, "error: nope\n");
+    }
+
+    #[test]
+    fn a_step_reads_as_a_state_and_the_command_that_settles_it() {
+        // The state first, because it is what decides whether the command
+        // is worth running at all — someone who has already restarted
+        // their daemon should be able to stop reading at the comma.
+        let text = render(&Loose(vec![step(
+            "the daemon is still the previous build",
+            "minato daemon stop",
+        )]));
+
+        assert_eq!(
+            text.trim_end(),
+            "› the daemon is still the previous build, so run minato daemon stop"
+        );
     }
 }

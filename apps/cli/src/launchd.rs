@@ -17,6 +17,32 @@ use std::path::{Path, PathBuf};
 // this side's job alone.
 pub use minato_core::launchd::{INSTALL_DIR, LABEL};
 
+/// The shape of the plist this build writes.
+///
+/// **Bump it whenever the generated plist gains something an installed one
+/// would not have** — a socket, a key launchd reads, a different program
+/// to run. It goes into the file as a comment, and comparing it with what
+/// is installed is how a build that has just landed works out that
+/// `minato setup` has something new to do (see [`crate::followup`]).
+///
+/// Leaving it alone when the shape does move costs nothing but the notice:
+/// the plist already there keeps working exactly as well as it did.
+pub const PLIST_REVISION: u32 = 1;
+
+/// How the revision appears in the file.
+const REVISION_MARKER: &str = "minato plist revision";
+
+/// The revision an installed plist was written by.
+///
+/// `None` for a plist from before the marker existed, and for one edited
+/// into a shape this cannot read. Both are left alone deliberately: an
+/// installation that works is not worth sending anyone to a privileged,
+/// interactive command over a number that was never written down.
+pub fn revision_of(plist: &str) -> Option<u32> {
+    let (_, rest) = plist.split_once(REVISION_MARKER)?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 pub struct LaunchdPlan {
     /// Where the generated plist went. No privileges needed.
     pub source: PathBuf,
@@ -146,6 +172,7 @@ fn plist(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!-- {REVISION_MARKER} {PLIST_REVISION} -->
 <dict>
   <key>Label</key>
   <string>{LABEL}</string>
@@ -344,6 +371,24 @@ mod tests {
         // useless.
         assert!(xml.contains("<key>SuccessfulExit</key>"));
         assert!(xml.contains("<false/>"));
+    }
+
+    #[test]
+    fn says_which_revision_wrote_it() {
+        // A build that lands on a machine reads this to work out whether
+        // `minato setup` has anything new to do. Without it in the file,
+        // it never has anything to compare against.
+        assert_eq!(revision_of(&sample()), Some(PLIST_REVISION));
+    }
+
+    #[test]
+    fn a_plist_from_before_the_marker_has_no_revision() {
+        // Every plist installed until now. `None` rather than 0, which
+        // would read as "older than revision 1" and send those machines
+        // to `minato setup` over a comment.
+        assert_eq!(revision_of("<plist version=\"1.0\"><dict/></plist>"), None);
+        assert_eq!(revision_of("<!-- minato plist revision -->"), None);
+        assert_eq!(revision_of("<!-- minato plist revision x -->"), None);
     }
 
     #[test]

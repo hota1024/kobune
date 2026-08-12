@@ -23,10 +23,15 @@ pub struct Installed {
     pub overwritten: bool,
 }
 
+/// Where the Skill goes in a repository.
+pub fn path_in(root: &Path) -> PathBuf {
+    root.join(SKILL_DIR).join(SKILL_FILE)
+}
+
 /// Writes the Skill into a repository.
 pub fn install(root: &Path, force: bool) -> anyhow::Result<Installed> {
     let dir = root.join(SKILL_DIR);
-    let path = dir.join(SKILL_FILE);
+    let path = path_in(root);
 
     let existing = std::fs::read_to_string(&path).ok();
 

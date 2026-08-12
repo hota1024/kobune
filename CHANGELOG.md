@@ -35,6 +35,15 @@ less accurately.
 
 ### Added
 
+- An update says what is left to run, worked out from the machine rather than
+  stated: a daemon still on the previous build, a Skill in this repository that
+  is not this build's, a LaunchDaemon written to an older shape. `minato
+  update` prints the one it can be sure of and carries it as `next` under
+  `--json`; the build that lands prints the rest on its first run, which is
+  what covers the updates `minato update` never sees — `install.sh` again, a
+  package manager, a build of your own. Once per build, on stderr, never under
+  `--json`, and silent when there is nothing to do
+
 - The documentation site serves itself to agents: `/llms.txt` indexes the
   pages, `/llms-full.txt` is all of them in one file, and each page has a
   `.md` beside it, so `/guide/installation.md` is `/guide/installation` as

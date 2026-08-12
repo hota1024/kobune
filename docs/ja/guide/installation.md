@@ -182,12 +182,11 @@ fish は追加設定なしで読み込みます。zsh はディレクトリを `
 ```console
 $ minato update
 › installing 9f3c1a2…
-╭ update ──────────────────────────────────────────╮
-│ installed  9f3c1a2                               │
-│                                                  │
-│ › the running daemon is still the previous build │
-│ › replace it with minato daemon stop             │
-╰──────────────────────────────────────────────────╯
+╭ update ─────────────────────────────────────────────────────────────╮
+│ installed  9f3c1a2                                                  │
+│                                                                     │
+│ › the daemon is still the previous build, so run minato daemon stop │
+╰─────────────────────────────────────────────────────────────────────╯
 ```
 
 `update` は、実行した `minato` が置かれているディレクトリを対象に、現在の
@@ -199,6 +198,11 @@ $ minato update
 実行中のバイナリは書き込めませんが、置き換えることはできます。そのため daemon
 が動いている状態で更新しても、再起動するまでは古いビルドが動き続けます。最後の
 1 行はそのことを指しています。停止すれば launchd が新しいものを起動します。
+LaunchDaemon を入れていない場合は `minato daemon restart` と表示します。
+止めるだけでは何も起動し直さないからです。
+
+この 1 行は **状態から導いたもので、常に出るわけではありません**。daemon が
+動いていなければ入れ替えるものはなく、パネルは入れたビルドだけを伝えます。
 
 インストールせずに確認するだけなら次のようにします。
 
@@ -210,6 +214,49 @@ $ minato update --check
 │                                 │
 │ › install it with minato update │
 ╰─────────────────────────────────╯
+```
+
+### 新しいビルドが残した作業
+
+上のパネルが答えられるのは、置き換えられる側のビルドについてだけです。
+リポジトリの Skill が新しいものと一致しているか、LaunchDaemon が新しいビルドの
+書く形になっているか — これらに答えられるのは、入った側のビルドだけです。
+そこで、そのビルドが最初に実行されたときに自分で答えます。
+
+```console
+$ minato url web
+https://web.myapp.localhost
+› minato changed to 9f3c1a2 since the last run
+› the daemon is still the previous build, so run minato daemon stop
+› this repository's Skill is not this build's, so run minato skill install --force
+```
+
+どの行も、このマシンの状態がそう言っているから出ています。daemon が応答して
+それが別のビルドだった、`.claude/skills/minato/SKILL.md` がこのバイナリの持つ
+ものと違う、入っている plist が古い形で書かれている。推測はしません。Skill を
+一度も入れていないリポジトリに勧めることはなく、記録が始まる前に書かれた plist
+を古いと決めつけることもありません。
+
+表示は **ビルドごとに 1 回**、`--json` ではない最初の実行時です。これは
+`minato update` が関与しない更新 — `install.sh` の再実行、パッケージマネージャ、
+自分でのビルド — も同じようにカバーします。状態として持つのは
+`~/.minato/build.json` にある「最後に動いたコミット」だけです。
+
+CLI 自身の発言と同じく stderr へ出し、`--json` では出しません。エージェントの
+ストリームは 1 つのドキュメントのままです。`minato update --json` は同じ内容を
+データとして返します。
+
+```json
+{
+  "status": "installed",
+  "commit": "9f3c1a2…",
+  "next": [
+    {
+      "command": "minato daemon stop",
+      "reason": "the daemon is still the previous build"
+    }
+  ]
+}
 ```
 
 ### 自動チェック

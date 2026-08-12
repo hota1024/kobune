@@ -421,6 +421,25 @@ $ minato update --check
 `status` は `current` / `available` / `installed` / `unknown` のいずれかです。
 `unknown` は、そのビルドがコミットを記録しておらず比較できないことを表します。
 
+`installed` のときは `next` も返します。バイナリが入れ替わったいま実行する価値
+のあるコマンドと、そう言える根拠になっている状態です。
+
+```json
+{
+  "status": "installed",
+  "commit": "…",
+  "next": [
+    { "command": "minato daemon stop", "reason": "the daemon is still the previous build" }
+  ]
+}
+```
+
+やることがなければ空です（daemon が動いていなかった場合など）。ここに入るのは、
+置き換えられる側のビルドが確実に言えることだけです。残りは入った側のビルドが
+最初の実行時に表示します。`minato changed to 9f3c1a2 since the last run` の下に
+1 行ずつ、**stderr** へ、ビルドごとに 1 回、`--json` では表示しません。最後に
+動いたコミットは `~/.minato/build.json` に置いています。
+
 チェックはコマンドの実行後に 1 日 1 回自動で走り、stderr に 1 行表示します。
 `MINATO_NO_UPDATE_CHECK` で停止でき、`--json` のときは表示しません。
 
