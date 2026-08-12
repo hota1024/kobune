@@ -40,6 +40,37 @@ $ minato init
 $ minato init --force    # 既存のファイルを上書きする
 ```
 
+#### compose ファイルから変換する
+
+```console
+$ minato init --from-compose              # compose.yaml、docker-compose.yml などを探す
+$ minato init --from-compose infra.yml    # ファイルを指定する
+```
+
+**意図的に完全な変換ではありません。** compose は巨大で、その半分は Minato では
+意味を持ちません。そのためすべてのキーは3つのいずれかに振り分けられ、黙って
+消えるものはありません。
+
+- **変換される** — `image`、`build`、`ports`、`expose`、`command`、
+  `environment`、`depends_on`、`volumes`、`healthcheck`、`working_dir`、`tty`
+- **`TODO` としてサービスの直上に残る** — compose では表現できないもの。
+  データベースを worktree 間で共有するか、`setup` に何を実行させるか
+- **レポートに列挙される** — `restart`、`deploy`、`networks`、`logging` など。
+  サービスごとに
+
+最初の `minato up` の前に TODO を読んでください。完成しているように見えて
+そうではないファイルは、変換しないことより高くつきます。
+
+特に知っておく価値のある変換が2つあります。
+
+- **`env_file` は `carry` になります。** このキーは2つの形式で意味が正反対で、
+  compose はファイルを*読み*、Minato は書き出します。そのまま対応付けると
+  最初の `up` であなたの `.env` を上書きします。`carry` が実際の意味 —
+  新しい worktree に必要で、git が持ってこないファイル — に相当します
+- **`ports: ["3000:8000"]` はコンテナ側の `8000` を採ります。** Minato は自身が
+  選んだポートで公開するため、必要なのはアプリがコンテナ内で待ち受けている
+  ポートです
+
 ### `minato doctor`
 
 環境を診断し、`✓` 以外のすべての項目に対処方法を表示します。診断対象は、

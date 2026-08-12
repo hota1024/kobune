@@ -32,6 +32,7 @@ flate2 = "1"
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+yaml-rust2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

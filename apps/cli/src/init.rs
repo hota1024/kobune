@@ -12,6 +12,84 @@ use minato_core::{Repository, naming};
 pub struct InitOutcome {
     pub path: PathBuf,
     pub project: String,
+    /// The compose file it was converted from, when it was.
+    pub from: Option<PathBuf>,
+    /// Keys compose had that Minato has no answer for, per service.
+    ///
+    /// **Never empty because nothing was lost — empty because nothing
+    /// was.** A conversion that quietly leaves things out produces a
+    /// file that looks finished and is not.
+    pub dropped: Vec<(String, String)>,
+    /// Files compose read environments from, now `carry`.
+    pub carried: Vec<String>,
+}
+
+/// Converts a compose file rather than writing the template.
+///
+/// `explicit` names one; without it the usual names are tried in the
+/// order compose itself tries them.
+pub fn from_compose(
+    cwd: &Path,
+    explicit: Option<&Path>,
+    force: bool,
+) -> anyhow::Result<InitOutcome> {
+    let root = match Repository::discover(cwd) {
+        Ok(repo) => repo.main_root,
+        Err(_) => cwd.to_path_buf(),
+    };
+
+    let path = match explicit {
+        Some(named) => {
+            let named = if named.is_absolute() {
+                named.to_path_buf()
+            } else {
+                root.join(named)
+            };
+
+            if !named.is_file() {
+                anyhow::bail!("{} does not exist", named.display());
+            }
+            named
+        }
+        None => crate::compose::CANDIDATES
+            .iter()
+            .map(|name| root.join(name))
+            .find(|candidate| candidate.is_file())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no compose file in {}: looked for {}. Name one with \
+                     --from-compose <FILE>",
+                    root.display(),
+                    crate::compose::CANDIDATES.join(", ")
+                )
+            })?,
+    };
+
+    let destination = root.join(CONFIG_FILE);
+    if destination.exists() && !force {
+        anyhow::bail!(
+            "{} already exists. Pass --force to overwrite it",
+            destination.display()
+        );
+    }
+
+    let yaml = std::fs::read_to_string(&path)?;
+    let project = project_name_from(&root);
+    let converted = crate::compose::convert(&project, &path.display().to_string(), &yaml)?;
+
+    std::fs::write(&destination, &converted.toml)?;
+
+    Ok(InitOutcome {
+        path: destination,
+        project,
+        from: Some(path),
+        dropped: converted
+            .dropped
+            .into_iter()
+            .map(|entry| (entry.service, entry.key))
+            .collect(),
+        carried: converted.carried,
+    })
 }
 
 pub fn run(cwd: &Path, force: bool) -> anyhow::Result<InitOutcome> {
@@ -33,7 +111,13 @@ pub fn run(cwd: &Path, force: bool) -> anyhow::Result<InitOutcome> {
     let project = project_name_from(&root);
     std::fs::write(&path, template(&project))?;
 
-    Ok(InitOutcome { path, project })
+    Ok(InitOutcome {
+        path,
+        project,
+        from: None,
+        dropped: Vec::new(),
+        carried: Vec::new(),
+    })
 }
 
 /// Derives the project name from the directory name.
