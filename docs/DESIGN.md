@@ -617,6 +617,17 @@ immediately before its own service, so a migration against `db` keeps the
 ordering it needs. The same grouping drives the wake path, where the wait
 saved is one somebody is sitting through.
 
+**Not everything on that path overlaps, and the exceptions are the
+interesting part.** Pulling images does, because a pull is a download and
+the registry is somebody else's machine. Building them does not: a build
+already saturates its cores and BuildKit parallelises within one, so two at
+once move the work around rather than remove it. And `setup` does not,
+which costs the first `up` after `minato new` and is deliberate — every
+service mounts the same project-wide cache volume, so two setups at once
+are two arbitrary commands writing into one directory. A package manager's
+store is built for that; a `setup` is whatever somebody wrote, so the
+documentation promises one at a time and the lock keeps the promise.
+
 **Whether it is safe to overlap is the runtime's answer, not the
 supervisor's** (`Runtime::starts_concurrently`, off unless a backend says
 otherwise). Docker says yes: a peer is reached by name on the network, so
