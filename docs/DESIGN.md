@@ -1106,8 +1106,10 @@ apps/daemon ─────────────────────>  mi
 `minato-api` is the only point of contact between the daemon and its clients.
 **No client-side crate may depend on `minato-runtime` or its neighbours** —
 that would leak Docker logic into the GUI and break the rule that everything
-goes through the daemon. CI enforces it with `cargo-deny` or a dependency-graph
-check.
+goes through the daemon. `cargo xtask deps check` walks each client's
+dependencies with `cargo tree` and fails if one of them reaches
+`minato-runtime`, `-proxy`, `-dns` or `-tunnel`; CI runs it alongside
+`fmt` and `clippy`.
 
 ### Versioning
 
