@@ -169,6 +169,8 @@ pub struct DockerRuntime {
     docker: Docker,
     /// The services Minato itself stopped. See [`DockerRuntime::stop`].
     asked_to_stop: Mutex<HashSet<ServiceKey>>,
+    /// Held across [`DockerRuntime::ensure_network`]. See there for why.
+    network_lock: tokio::sync::Mutex<()>,
 }
 
 impl DockerRuntime {
@@ -191,6 +193,7 @@ impl DockerRuntime {
         Self {
             docker,
             asked_to_stop: Mutex::new(HashSet::new()),
+            network_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -207,7 +210,22 @@ impl DockerRuntime {
     }
 
     /// Creates the network if it is not there.
+    ///
+    /// **One caller at a time.** This looks and then creates, and services
+    /// starting side by side share a network — so both could look before
+    /// either created, and both would then create. Docker does not refuse
+    /// a name it already has: it makes a second network with the same name
+    /// and a different id, and the two services end up on networks that
+    /// cannot reach each other.
+    ///
+    /// In practice `prepare` runs first on both paths in and creates the
+    /// networks there, so what the concurrent callers reach here is the
+    /// list and not the create. That is what the lock costs — one listing
+    /// at a time — and it is not what the lock is for: a guarantee that
+    /// holds only because of what some other function happened to do first
+    /// is not one to leave a data race behind.
     async fn ensure_network(&self, key: &WorkspaceKey) -> Result<String> {
+        let _guard = self.network_lock.lock().await;
         let name = names::network(key);
 
         let mut filters = HashMap::new();
@@ -970,8 +988,17 @@ impl Runtime for DockerRuntime {
         Ok(())
     }
 
+    fn starts_concurrently(&self) -> bool {
+        true
+    }
+
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
         let name = names::container(&spec.key);
+
+        // Two services can be starting at once, and a step id has to name
+        // the one thing it tracks. Scoped once here rather than at each
+        // call below, and inherited by the readiness wait further down.
+        let events = &events.for_service(spec.name());
 
         // Whatever it exits with next is nothing to do with the last stop.
         self.asked_to_stop.lock().expect("lock").remove(&spec.key);

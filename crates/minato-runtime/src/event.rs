@@ -14,12 +14,44 @@ use tokio::sync::mpsc;
 #[derive(Clone, Debug, Default)]
 pub struct EventSink {
     sender: Option<mpsc::UnboundedSender<Event>>,
+    /// Set by [`EventSink::for_service`]. See there.
+    service: Option<String>,
 }
 
 impl EventSink {
     pub fn new(sender: mpsc::UnboundedSender<Event>) -> Self {
         Self {
             sender: Some(sender),
+            service: None,
+        }
+    }
+
+    /// The same sink, with every step it carries named after `service`.
+    ///
+    /// **A step id has to be unique among the steps in flight.** A display
+    /// tracks one by its id and retires it by the same ([`crate`]'s
+    /// caller, `apps/cli/src/ui/progress.rs`), so two services starting at
+    /// once under a shared `start` would have each finishing the other's
+    /// line. Naming them here rather than at each call site means a
+    /// backend cannot forget: `start` says `start`, and what comes out is
+    /// `start-web`.
+    ///
+    /// Nested work is covered too — the readiness wait a start runs is
+    /// handed this same sink, so its `await` is named without knowing it
+    /// had to be.
+    pub fn for_service(&self, service: impl Into<String>) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            service: Some(service.into()),
+        }
+    }
+
+    /// The id a step goes out under.
+    fn step_id(&self, id: impl Into<String>) -> String {
+        let id = id.into();
+        match &self.service {
+            Some(service) => format!("{id}-{service}"),
+            None => id,
         }
     }
 
@@ -64,11 +96,11 @@ impl EventSink {
     }
 
     pub fn step_started(&self, id: impl Into<String>, label: impl Into<String>) {
-        self.send(Event::step_started(id, label));
+        self.send(Event::step_started(self.step_id(id), label));
     }
 
     pub fn step_done(&self, id: impl Into<String>, label: impl Into<String>) {
-        self.send(Event::step_done(id, label));
+        self.send(Event::step_done(self.step_id(id), label));
     }
 
     pub fn step_failed(
@@ -77,7 +109,7 @@ impl EventSink {
         label: impl Into<String>,
         reason: impl Into<String>,
     ) {
-        self.send(Event::step_failed(id, label, reason));
+        self.send(Event::step_failed(self.step_id(id), label, reason));
     }
 
     pub fn step_skipped(
@@ -86,7 +118,7 @@ impl EventSink {
         label: impl Into<String>,
         reason: impl Into<String>,
     ) {
-        self.send(Event::step_skipped(id, label, reason));
+        self.send(Event::step_skipped(self.step_id(id), label, reason));
     }
 
     pub fn step_progress(
@@ -96,7 +128,7 @@ impl EventSink {
         message: impl Into<String>,
     ) {
         self.send(Event::Step {
-            id: id.into(),
+            id: self.step_id(id),
             label: label.into(),
             status: StepStatus::Progress {
                 message: message.into(),

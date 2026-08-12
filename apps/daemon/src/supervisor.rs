@@ -55,6 +55,15 @@ pub struct Supervisor {
     /// Its own lock rather than [`Self::state_lock`]: this is held for as
     /// long as an install takes, and holding the state lock that long
     /// would stall every unrelated command.
+    ///
+    /// **It is why a wave's setups do not overlap**, even though the
+    /// starts around them do. That costs the first `up` after `minato new`
+    /// — later ones find the setup recorded and never reach here — and it
+    /// is deliberate for now: two installs at once would interleave their
+    /// output on a display that renders `Event::Output` without the
+    /// service it names (`apps/cli/src/ui/progress.rs`), so narrowing this
+    /// to a key means teaching the display to attribute lines in the same
+    /// change.
     setup_lock: Mutex<()>,
     /// The proxy and DNS. Also where URLs come from.
     gateway: Arc<Gateway>,
@@ -1544,13 +1553,25 @@ impl Supervisor {
 
         tracing::info!("a request to {host} is starting {}", starting.join(", "));
 
+        // A wave at a time, as `up` does. This one is on the path of a
+        // request that is being held open, so the wait saved is a wait
+        // somebody is sitting through.
         let mut endpoint = None;
-        for spec in &specs {
-            let running = runtime.start(spec, &events).await?;
+        for wave in waves(&config, &specs) {
+            let started = run_wave(
+                runtime.starts_concurrently(),
+                wave.iter()
+                    .map(|spec| runtime.start(spec, &events))
+                    .collect(),
+            )
+            .await?;
 
             // The host was asked for one service. The rest are here to
             // stand behind it.
-            if spec.name() == route.service {
+            if let Some(running) = started
+                .into_iter()
+                .find(|running| running.key.service == route.service)
+            {
                 endpoint = running.endpoint;
             }
         }
@@ -2390,18 +2411,38 @@ impl Supervisor {
 
         runtime.prepare(&prepare_spec, rebuild, events).await?;
 
-        // Started in startup_order, each one set up just before it starts.
+        // Started a wave at a time, each service set up just before it
+        // starts.
         //
         // **Interleaved, not done in a batch first.** A setup that needs a
         // dependency — migrations against `db` — has to run after the
-        // thing it depends on is up, and `startup_order` already puts them
-        // in that order.
-        for service in &filtered {
-            self.run_setup(resolved, service, runtime.as_ref(), events)
-                .await?;
-            runtime.start(service, events).await?;
+        // thing it depends on is up, and the waves already put them in
+        // that order.
+        for wave in waves(&resolved.config, &filtered) {
+            run_wave(
+                runtime.starts_concurrently(),
+                wave.iter()
+                    .map(|service| {
+                        self.setup_and_start(resolved, service, runtime.as_ref(), events)
+                    })
+                    .collect(),
+            )
+            .await?;
         }
 
+        Ok(())
+    }
+
+    /// One service's `setup`, then the service.
+    async fn setup_and_start(
+        &self,
+        resolved: &Resolved,
+        service: &minato_runtime::ServiceSpec,
+        runtime: &dyn Runtime,
+        events: &EventSink,
+    ) -> Result<(), ApiError> {
+        self.run_setup(resolved, service, runtime, events).await?;
+        runtime.start(service, events).await?;
         Ok(())
     }
 
@@ -2825,6 +2866,76 @@ fn unreached_internal_services(
     }
 
     unreached
+}
+
+/// Runs one wave's worth of work, overlapping it where that is allowed.
+///
+/// **The error that comes back is the first in wave order**, either way,
+/// so which one it is does not depend on which service happened to give up
+/// first.
+///
+/// Concurrently, the whole wave finishes before a failure is reported. Its
+/// members are independent by construction, so one failing says nothing
+/// about the others, and abandoning them mid-flight would leave containers
+/// half-created for no gain. In sequence there is nothing already in
+/// flight to see out, so the first failure stops it — which is what this
+/// path has always done.
+async fn run_wave<T, E>(
+    concurrently: bool,
+    work: Vec<impl std::future::Future<Output = Result<T, E>>>,
+) -> Result<Vec<T>, E> {
+    if concurrently {
+        return futures::future::join_all(work).await.into_iter().collect();
+    }
+
+    let mut done = Vec::with_capacity(work.len());
+    for one in work {
+        done.push(one.await?);
+    }
+
+    Ok(done)
+}
+
+/// Regroups an ordered run of specs into the waves they can start in.
+///
+/// `startup_waves` has already decided the grouping; this only picks out
+/// the specs the caller is actually starting. A wave the selection skipped
+/// entirely is dropped rather than left empty, which keeps "one wave, one
+/// round of starts" true.
+///
+/// **Depth is read off the whole configuration, not the selection.** That
+/// is the same answer, because a selection always arrives closed over its
+/// dependencies (see [`select_with_dependencies`]) — so every dependency
+/// a selected service has is selected too, and sits in the wave the full
+/// graph puts it in.
+fn waves<'a>(
+    config: &MinatoConfig,
+    specs: &'a [minato_runtime::ServiceSpec],
+) -> Vec<Vec<&'a minato_runtime::ServiceSpec>> {
+    let grouped: Vec<Vec<&minato_runtime::ServiceSpec>> = config
+        .startup_waves()
+        .into_iter()
+        .map(|wave| {
+            specs
+                .iter()
+                .filter(|spec| wave.contains(&spec.name()))
+                .collect()
+        })
+        .filter(|wave: &Vec<_>| !wave.is_empty())
+        .collect();
+
+    // Every spec was built by walking this same configuration — through
+    // `build_workspace_spec` or through `wake_order`, both of which read
+    // `startup_order` — so `startup_waves` names all of them and nothing
+    // is dropped here. Stated rather than guarded: the guard would be a
+    // branch no caller can reach.
+    debug_assert_eq!(
+        grouped.iter().map(Vec::len).sum::<usize>(),
+        specs.len(),
+        "every spec is a service the configuration names"
+    );
+
+    grouped
 }
 
 /// The named services, plus everything they depend on.
@@ -3489,6 +3600,116 @@ mod tests {
         let config = config(SAMPLE);
         let selected = select_with_dependencies(&config, &[]).expect("resolves");
         assert_eq!(selected.len(), 3);
+    }
+
+    /// The specs `up` would start, for the services `only` names.
+    ///
+    /// Built the way `start_services` builds them — ordered, then narrowed
+    /// to the selection — so what the wave tests are handed is what the
+    /// real path hands `waves`.
+    fn specs_for(config: &MinatoConfig, only: &[&str]) -> Vec<minato_runtime::ServiceSpec> {
+        let names: Vec<String> = only.iter().map(|name| (*name).to_string()).collect();
+        let selected = select_with_dependencies(config, &names).expect("resolves");
+
+        let context = crate::spec::WorkspaceContext {
+            services: config.services.keys().cloned().collect(),
+            gateway_hosts: vec![],
+            ca_file: None,
+        };
+
+        spec::build_workspace_spec(
+            config,
+            "myapp",
+            "feat-1",
+            Path::new("/repo/wt/feat-1"),
+            &BTreeMap::new(),
+            &context,
+        )
+        .expect("builds")
+        .services
+        .into_iter()
+        .filter(|spec| selected.iter().any(|name| name == spec.name()))
+        .collect()
+    }
+
+    fn wave_names<'a>(waves: &[Vec<&'a minato_runtime::ServiceSpec>]) -> Vec<Vec<&'a str>> {
+        waves
+            .iter()
+            .map(|wave| wave.iter().map(|spec| spec.name()).collect())
+            .collect()
+    }
+
+    // What the grouping itself does is pinned on `startup_waves`, in
+    // `minato-core`. What is left to test here is the part that only
+    // exists at this layer: mapping specs onto those waves, and doing it
+    // for a selection narrower than the configuration.
+
+    #[test]
+    fn a_narrowed_selection_leaves_no_empty_wave_behind() {
+        // `up api` skips `web` entirely. `web` sits in wave 2 of the full
+        // graph, and an empty wave 2 left in place would be a round of
+        // starts that starts nothing.
+        let config = config(SAMPLE);
+        let specs = specs_for(&config, &["api"]);
+
+        assert_eq!(
+            wave_names(&waves(&config, &specs)),
+            vec![vec!["db"], vec!["api"]]
+        );
+    }
+
+    #[test]
+    fn a_wave_never_holds_a_service_and_its_dependency() {
+        // The one invariant the whole thing rests on: everything in a wave
+        // starts at once, so a dependency sharing a wave with what depends
+        // on it would be the ordering `depends_on` exists to give.
+        let config = config(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            port = 3000
+            depends_on = ["api", "cache"]
+            [services.api]
+            image = "node:22"
+            port = 8080
+            depends_on = ["db"]
+            [services.worker]
+            image = "node:22"
+            depends_on = ["db"]
+            [services.cache]
+            image = "redis:7"
+            port = 6379
+            [services.db]
+            image = "postgres:16"
+            port = 5432
+        "#,
+        );
+        let specs = specs_for(&config, &[]);
+        let grouped = waves(&config, &specs);
+
+        let mut started: Vec<&str> = Vec::new();
+        for wave in &grouped {
+            for spec in wave {
+                for dependency in &config.services[spec.name()].depends_on {
+                    assert!(
+                        started.contains(&dependency.as_str()),
+                        "{} starts alongside or before {dependency}, which it depends on: {:?}",
+                        spec.name(),
+                        wave_names(&grouped)
+                    );
+                }
+            }
+            started.extend(wave.iter().map(|spec| spec.name()));
+        }
+
+        assert_eq!(
+            started.len(),
+            config.services.len(),
+            "every service still starts: {:?}",
+            wave_names(&grouped)
+        );
     }
 
     #[test]
