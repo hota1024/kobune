@@ -726,6 +726,7 @@ MINATO_URL_API       = https://api.feat-1.myapp.localhost
 MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
 MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
 MINATO_CA_FILE       = /etc/minato/ca.crt                      # while HTTPS is served
+NODE_EXTRA_CA_CERTS  = /etc/minato/ca.crt                      # the same file, wired in
 MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
 ```
 
@@ -735,12 +736,24 @@ A `-` in a service name becomes `_` (`api-server` →
 **Injection is the bottom layer**, so the user can override it. The other way
 round, Minato's conveniences would erase the user's settings.
 
-**`MINATO_CA_FILE` names a certificate, and does not wire it in.** The CA is
-mounted read-only so a service can verify the URL it was handed rather than
-turning verification off, but `NODE_EXTRA_CA_CERTS` and its equivalents are
-left to the service: Node's takes one file, so setting it would drop whatever
-an image already pointed it at, and it would be rendered into `env_file`, which
-is read on the host where that path does not exist.
+**The certificate is wired in, not just named.** Naming the file and leaving
+`NODE_EXTRA_CA_CERTS` to the service is what this did at first, and what came
+back was `SELF_SIGNED_CERT_IN_CHAIN` from projects with the CA mounted and
+unused — Node reads its extra certificate from the environment and nowhere
+else, so a file nobody assigns to that name is a file nobody trusts. Both
+costs are paid rather than avoided: it is kept out of `env_file`, which is read
+on the host where that path does not exist and Node would warn about it on
+every start, and an image that points it at a corporate bundle keeps that
+bundle by saying so in `[services.<name>.env]`, since injection is the bottom
+layer. **Only Node's.** `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and
+`REQUESTS_CA_BUNDLE` replace a trust store rather than adding to it, so
+setting them would leave a container trusting Minato and nothing else.
+
+**A task runner between the container and the process can drop it.**
+Turborepo's strict environment mode passes through what its configuration
+names and discards the rest, so the variable reaches `turbo` and not the
+server it starts. Nothing injected can reach past that, and the guide says
+what to add where.
 
 **No URL is injected while the proxy is down**, and no hostname either — the
 two go together. An empty string would leave it "set, but unreachable", and the

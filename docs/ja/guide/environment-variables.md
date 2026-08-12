@@ -55,6 +55,7 @@ MINATO_WORKSPACE    = feature-user-auth
 MINATO_SERVICE      = web
 MINATO_CACHE_DIR    = /var/cache/minato
 MINATO_CA_FILE      = /etc/minato/ca.crt
+NODE_EXTRA_CA_CERTS = /etc/minato/ca.crt
 MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
 MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
 MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
@@ -71,23 +72,52 @@ Minato 自身の CA 証明書です。すべてのサービスに読み取り専
 無いと URL には到達するのに証明書で落ち、結局プロセス全体の検証を切ることに
 なります。
 
-利用しているスタック側の変数から参照してください。Node なら 1 行です。
+**Node は何も書かなくて済みます。** 同じファイルが `NODE_EXTRA_CA_CERTS` にも
+設定されるため、Server Component や API Route からの `fetch` は検証付きで
+通ります。利用者の値より下の層なので、企業の CA バンドルを指しているイメージは
+そう書けばそちらが残ります。
 
 ```toml
 [services.web.env]
-NODE_EXTRA_CA_CERTS = "${MINATO_CA_FILE}"
+NODE_EXTRA_CA_CERTS = "/etc/ssl/corporate-and-minato.pem"
 ```
 
-**`NODE_EXTRA_CA_CERTS` は追加、`SSL_CERT_FILE` / `CURL_CA_BUNDLE` /
-`REQUESTS_CA_BUNDLE` は置き換えです。** 後者で Minato を信頼させたコンテナは
-他のどこも信頼しなくなり、Minato 以外への HTTPS 通信が止まります。追加型が
-あるならそちらを使ってください。
+この変数はファイルを 1 つしか取れないので、両方を信頼したいなら 1 つの
+ファイルにまとめてください。
 
-`NODE_EXTRA_CA_CERTS` を Minato が設定しないのは意図的です。この変数は
-ファイルを 1 つしか取れないため、企業の CA バンドルを指しているイメージでは
-それを黙って失わせてしまいます。また [`env_file`](#env-file) にも書き出され、
-そちらは*ホスト*で読まれるので、`/etc/minato/ca.crt` が存在せず Node が起動の
-たびに警告を出します。
+**Minato が設定するのは Node の分だけです。** `NODE_EXTRA_CA_CERTS` は追加ですが
+`SSL_CERT_FILE` / `CURL_CA_BUNDLE` / `REQUESTS_CA_BUNDLE` は置き換えで、後者で
+Minato を信頼させたコンテナは他のどこも信頼しなくなり、Minato 以外への HTTPS
+通信が止まります。自分で作ったバンドルを指すか、下のシステムトラストストアを
+使ってください。
+
+`NODE_EXTRA_CA_CERTS` は、注入される値の中で唯一 [`env_file`](#env-file) に
+書き出されません。あちらは*ホスト*で読まれるファイルで、`/etc/minato/ca.crt` は
+存在せず Node が起動のたびに警告を出すためです。パスを自分で使いたい場合の
+`MINATO_CA_FILE` は書き出されます。
+
+### 証明書がプロセスまで届かないとき
+
+コンテナとサーバーの間に挟まるタスクランナーが落とすことがあります。Turborepo 2
+の既定である strict environment mode は設定に書かれた変数しか通さないため、
+`NODE_EXTRA_CA_CERTS` は `turbo` までは届いてもその先の `next dev` には渡らず、
+この節が防ごうとしているエラーがそのまま出ます。
+
+```
+[cause]: Error: self-signed certificate in certificate chain {
+  code: 'SELF_SIGNED_CERT_IN_CHAIN'
+}
+```
+
+`turbo.json` に名前を書けば通ります。
+
+```json
+{ "globalPassThroughEnv": ["NODE_EXTRA_CA_CERTS"] }
+```
+
+Node は追加の証明書を環境変数からしか受け取らないため、環境を濾すツールの
+向こう側へは Minato の注入は届きません。コンテナには設定されているのに
+プロセスには無い、というときは間に挟まっているものを疑ってください。
 
 システムのトラストストアを読むスタックでは、起動時に追加してください。
 
