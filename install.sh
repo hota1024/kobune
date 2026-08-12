@@ -328,17 +328,40 @@ content_length() {
 
 # The checksum is published alongside the archive, so a truncated download
 # fails here instead of turning into a confusing "cannot execute".
+#
+# **Nothing here is allowed to pass by not answering.** A check that gives
+# up and carries on is not a check, and the only trace it leaves is a
+# warning in the scrollback of a `curl … | sh` nobody is reading. So every
+# way out of this function either compares two digests or stops the
+# install.
 verify() {
     # $1 archive, $2 checksum file
     expected="$(cut -d' ' -f1 <"$2")"
 
+    # A download that produced an error page rather than a checksum would
+    # otherwise report a mismatch, which sends someone looking at the
+    # archive when the problem is the other file.
+    case "$expected" in
+        '' | *[!0-9a-fA-F]*)
+            die "$(basename "$2") is not a sha256 checksum. The download may have been intercepted, or the release may be broken"
+            ;;
+    esac
+
+    if [ "${#expected}" -ne 64 ]; then
+        die "$(basename "$2") holds a ${#expected}-character digest, not a sha256. The download may have been intercepted, or the release may be broken"
+    fi
+
+    # Three, because failing closed is only reasonable if it does not lock
+    # anyone out: coreutils has the first, macOS ships the second, and
+    # openssl covers what is left.
     if need sha256sum; then
         actual="$(sha256sum "$1" | cut -d' ' -f1)"
     elif need shasum; then
         actual="$(shasum -a 256 "$1" | cut -d' ' -f1)"
+    elif need openssl; then
+        actual="$(openssl dgst -sha256 "$1" | sed 's/.*= *//')"
     else
-        warn "no sha256 tool found, skipping verification"
-        return 0
+        die "no sha256 tool found (sha256sum, shasum or openssl), so the download cannot be verified. Install one, or download and check the release by hand: https://github.com/$REPO/releases"
     fi
 
     # Lowercased on both sides: sha256sum and shasum agree today, but a
