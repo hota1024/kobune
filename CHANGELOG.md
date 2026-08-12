@@ -35,6 +35,13 @@ less accurately.
 
 ### Added
 
+- The documentation site serves itself to agents: `/llms.txt` indexes the
+  pages, `/llms-full.txt` is all of them in one file, and each page has a
+  `.md` beside it, so `/guide/installation.md` is `/guide/installation` as
+  Markdown. English only — these files are not translated — and without the
+  `/vX.Y/` snapshots, superseded documentation being the last thing to hand
+  an agent
+
 - `minato init --from-compose` converts a `docker-compose.yml`, turning the
   entry cost from rewriting a working file into reviewing a generated one.
   Deliberately not a complete conversion: what has no equivalent is named per

@@ -52,11 +52,38 @@ cannot read woff2, so `wawoff2` decompresses it first — the alternative is
 `loadSystemFonts`, which would set the card in whatever the machine
 happens to have and make a runner's output differ from a laptop's.
 
+## What agents read
+
+`vitepress-plugin-llms`, configured in `config.ts`, adds an English-only
+surface for AI agents on every build:
+
+- `/llms.txt`, the index, in the sidebar's order and under its headings.
+- `/llms-full.txt`, every English page in one file.
+- `<page>.md` beside every page, so `/guide/installation.md` is
+  `/guide/installation` as Markdown.
+
+Japanese and the `/vX.Y/` snapshots are left out, derived from `LOCALES` and
+`versions.json` rather than written out again. `srcExclude` covers the rest:
+the plugin takes its pages from Vite's module graph, so a file that is not a
+page never reaches it.
+
+Three limits, all of them the plugin's behaviour rather than configuration.
+The home page has no `.md` and is not in either index. Links inside the
+generated files are the ones VitePress wrote — extension-less, so following
+one lands on the HTML page. And the guide index is written to `/guide.md`
+rather than `/guide/index.md`, which leaves its own `./installation` links
+resolving a directory too high.
+
+Every English page also carries a hidden `Are you an LLM? …` div pointing at
+its `.md`. It stays out of the local search index. `injectLLMHint: false`
+removes it.
+
 ## Adding a page
 
 Add it to `PAGES` in `config.ts`, with a title for each language, then write
 `guide/thing.md` and `ja/guide/thing.md`. The sidebar, both locales and every
-future snapshot follow from that one entry.
+future snapshot follow from that one entry — and an English page gains its
+`.md` and its line in `llms.txt` with no further work.
 
 A page in `PAGES` with no file behind it fails the build, which is deliberate:
 half-translated navigation is worse than a missing page.
@@ -112,10 +139,15 @@ Already done, and recorded here for whoever has to do it again.
 
 ### The hostname is in two places
 
-`sitemap.hostname` in `config.ts` and the custom domain in Cloudflare. A
-sitemap has to carry absolute URLs, so it cannot be derived. Preview
-deployments therefore serve a sitemap pointing at production, which is
-harmless: nothing crawls a preview.
+`HOSTNAME` in `config.ts` — used by the sitemap, the social card and
+`llms.txt` — and the custom domain in Cloudflare. A sitemap has to carry
+absolute URLs, so it cannot be derived.
+
+Preview deployments therefore serve a sitemap pointing at production, which
+is harmless: nothing crawls a preview. `llms.txt` is not harmless in the same
+way. Its links are meant to be followed, so on a preview they read the live
+site rather than the branch, and the file cannot be reviewed on the
+deployment that built it.
 
 ## Conventions
 
