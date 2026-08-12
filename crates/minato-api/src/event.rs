@@ -29,6 +29,10 @@ pub enum Event {
     ServiceState {
         service: String,
         state: ServiceState,
+        /// Why, when `state` is `failed`. Beside it for the same reason
+        /// it is beside [`crate::ServiceInfo::state`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 
     /// Container or build output, passed through verbatim.
@@ -231,6 +235,7 @@ mod tests {
                 },
             },
             Event::ServiceState {
+                reason: None,
                 service: "web".into(),
                 state: ServiceState::Ready,
             },

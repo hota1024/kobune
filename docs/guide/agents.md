@@ -50,14 +50,16 @@ $ minato status --json
   "workspace": {
     "project": "myapp",
     "services": [
-      { "name": "web", "state": { "state": "ready" },
+      { "name": "web", "state": "ready",
         "url": "https://web.feature-auth.myapp.localhost" }
     ]
   }
 }
 ```
 
-Nothing has to be parsed out of human-readable text.
+Nothing has to be parsed out of human-readable text, and `state` is a string
+rather than an object, so `.state == "ready"` is a comparison that works. A
+`failed` service carries a `reason` beside its state.
 
 Without `--json` there is still nothing to strip. On a terminal the CLI draws
 its results — a frame, aligned columns, colour on the parts that carry meaning

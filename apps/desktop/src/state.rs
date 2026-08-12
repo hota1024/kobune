@@ -157,6 +157,7 @@ mod tests {
 
     fn service(name: &str, state: ServiceState, url: Option<&str>) -> ServiceInfo {
         ServiceInfo {
+            reason: state.reason().map(str::to_string),
             name: name.into(),
             state,
             scope: ServiceScope::Workspace,

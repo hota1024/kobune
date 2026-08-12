@@ -1234,6 +1234,9 @@ impl Supervisor {
 
                 ServiceInfo {
                     name: name.clone(),
+                    // Lifted out before the state goes on the wire, where
+                    // it becomes a plain string and cannot carry it.
+                    reason: state.reason().map(str::to_string),
                     state,
                     scope: service_config.scope,
                     url,

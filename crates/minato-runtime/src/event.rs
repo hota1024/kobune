@@ -137,9 +137,14 @@ impl EventSink {
     }
 
     pub fn service_state(&self, service: impl Into<String>, state: ServiceState) {
+        // Lifted out here, once, so no caller has to remember: the state
+        // goes on the wire as a plain string and cannot carry it.
+        let reason = state.reason().map(str::to_string);
+
         self.send(Event::ServiceState {
             service: service.into(),
             state,
+            reason,
         });
     }
 

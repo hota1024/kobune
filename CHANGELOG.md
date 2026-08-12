@@ -79,6 +79,12 @@ less accurately.
 
 ### Changed
 
+- **`state` in `--json` is a plain string**, and `reason` sits beside it
+  rather than inside it, so `.state == "ready"` is true where it used to be
+  compared against `{"state":"ready"}`. On the first command the Skill tells
+  an agent to run. `PROTOCOL_VERSION` is 6; the daemon and the CLI ship
+  together and say so on a mismatch
+
 - `rcgen` 0.14. It removed the only public way to read a certificate's name
   constraints back, which is how `minato doctor` tells a CA made under the
   `localhost` rule from one made before it, so that now reads the certificate

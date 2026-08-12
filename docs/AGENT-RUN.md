@@ -175,11 +175,18 @@ awkward JSON one.
 Fixed here: the documented example, and `SKILL.md` now says to read
 `.state.state` and where `reason` lives.
 
-**Not fixed here, and worth deciding.** Flattening `state` to a string with
-`reason` beside it would be the shape `--json` consumers expect, and
-`--json` being pleasant is the whole differentiator. It is also a protocol
-change — `PROTOCOL_VERSION`, every client, and the GUI. Left as a decision
-rather than made quietly inside a validation task.
+**Since taken.** `state` is now a plain string with `reason` beside it, at
+`PROTOCOL_VERSION` 6:
+
+```console
+$ minato status --json | jq -r '.workspace.services[] | "\(.name): \(.state)"'
+web: ready
+broken: failed
+```
+
+It was left out of this run's own pull request on purpose — a protocol change
+made quietly inside a validation task is the wrong way round — and taken as
+its own.
 
 ## What this run is not
 
