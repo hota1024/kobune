@@ -1,4 +1,5 @@
 import { defineConfig, type DefaultTheme } from 'vitepress'
+import llmstxt from 'vitepress-plugin-llms'
 import versions from './versions.json'
 
 /**
@@ -29,6 +30,20 @@ const HOSTNAME = 'https://minato.1024.works'
  * the code. A snapshot nests underneath: `/v0.1/` and `/v0.1/ja/`.
  */
 const LOCALES = ['', '/ja'] as const
+
+/**
+ * The files under `docs/` that are not pages.
+ *
+ * DESIGN.md is the internal record — including the decisions that were
+ * reversed — AGENT-RUN.md is a transcript kept for reference, and README.md
+ * is how to work on this site. All three stay in the repository and are read
+ * on GitHub.
+ *
+ * VitePress keeps them off the site through `srcExclude`. The llms.txt
+ * plugin globs `docs/` itself and never sees that setting, so it is handed
+ * the same list — one array, so the two cannot drift apart.
+ */
+const NOT_PAGES = ['DESIGN.md', 'AGENT-RUN.md', 'README.md']
 
 type Lang = 'en' | 'ja'
 
@@ -253,13 +268,39 @@ export default defineConfig({
   // hostname, so a move is one edit.
   sitemap: { hostname: HOSTNAME },
 
-  // DESIGN.md predates this site and is an internal record — the decisions
-  // and the ones that were reversed — not a page for readers. It stays in
-  // the repository and is linked to on GitHub.
-  // Neither is a page for readers. DESIGN.md is the internal record —
-  // including the decisions that were reversed — and README.md is how to
-  // work on this site. Both stay in the repository and are read on GitHub.
-  srcExclude: ['DESIGN.md', 'AGENT-RUN.md', 'README.md'],
+  srcExclude: NOT_PAGES,
+
+  // The agent-facing half of the site: `/llms.txt`, `/llms-full.txt`, and a
+  // `.md` beside every page — `/guide/installation` is the page and
+  // `/guide/installation.md` is the same page as Markdown, which `cleanUrls`
+  // leaves the extension free for. A directory's index is the exception:
+  // `/guide/` is written as `/guide.md`, and that is the URL `llms.txt`
+  // gives for it.
+  vite: {
+    plugins: [
+      llmstxt({
+        // Absolute, for the reason the sitemap is: `llms.txt` is read away
+        // from the site, where a relative link has nothing to resolve
+        // against.
+        domain: HOSTNAME,
+
+        // English only, by decision — these files are not translated, so
+        // `ja` goes. So do the snapshots `cargo xtask docs snapshot` will
+        // start writing to `/vX.Y/`: superseded documentation is the last
+        // thing to hand an agent. That second pattern matches nothing yet,
+        // and is written now because the build that starts producing
+        // snapshots is not the one anybody will think to check it on.
+        ignoreFiles: [...NOT_PAGES, 'ja/**', 'v*/**'],
+
+        // The plugin orders and titles the index from `themeConfig.sidebar`,
+        // and there is nothing at that key here: every sidebar lives under
+        // `locales`, because each locale and version has its own. Handing it
+        // the root English one is what makes `llms.txt` read in the order of
+        // the sidebar rather than the order of the directory tree.
+        sidebar: sidebar('', 'en'),
+      }),
+    ],
+  },
 
   head: [
     // The icon rather than the mark: a favicon is drawn at 16px against
