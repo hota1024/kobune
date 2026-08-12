@@ -196,7 +196,16 @@ impl Harness {
         format!("{service}.{}.localhost", self.project)
     }
 
-    /// Which of the project's services the runtime says are up.
+    /// Which of the project's services the runtime says are up, right
+    /// now.
+    ///
+    /// **A snapshot of an asynchronous system, so not a thing to assert
+    /// on.** `up` and `down` return when the runtime has been asked; a
+    /// container is neither running nor stopped the instant it is asked,
+    /// and a loaded runner is where that gap becomes visible. Build a
+    /// wait out of this — [`Harness::wait_until_running`] — rather than
+    /// comparing it to what you expect. Three unrelated pull requests
+    /// were held up by assertions that did the latter.
     async fn running(&self) -> Vec<String> {
         let runtime = minato_runtime::docker::DockerRuntime::connect().expect("Docker answers");
 
@@ -375,11 +384,9 @@ async fn waking_a_service_brings_up_what_it_depends_on() {
         matches!(activation, minato_proxy::Activation::Ready(_)),
         "the request should have been answered: {activation:?}"
     );
-    assert_eq!(
-        harness.running().await,
-        vec!["db".to_string(), "web".to_string()],
-        "a service with no URL has no request of its own to arrive"
-    );
+    // A service with no URL has no request of its own to arrive, so it
+    // comes up only if the wake brought it.
+    harness.wait_until_running(&["db", "web"]).await;
 }
 
 #[tokio::test]
@@ -393,10 +400,7 @@ async fn an_internal_service_follows_its_last_dependent_down() {
     let harness = Harness::new("mnte2eidle", &web_and_db("mnte2eidle"));
 
     harness.up().await;
-    assert_eq!(
-        harness.running().await,
-        vec!["db".to_string(), "web".to_string()]
-    );
+    harness.wait_until_running(&["db", "web"]).await;
 
     // Past the 1s timeout in the configuration above.
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -407,12 +411,9 @@ async fn an_internal_service_follows_its_last_dependent_down() {
     let stopped = harness.supervisor.sweep_idle().await;
     assert_eq!(stopped, 2, "web and the db behind it");
 
-    let running = harness.running().await;
-    assert!(
-        running.is_empty(),
-        "a database per worktree, running for ever, is what this exists to \
-         prevent; still running: {running:?}"
-    );
+    // The count above is what pins "in the same sweep". This is only
+    // the state settling afterwards, so it waits.
+    harness.wait_until_running(&[]).await;
 }
 
 #[tokio::test]
@@ -451,14 +452,13 @@ idle_timeout = "1s"
     );
 
     harness.up().await;
+    harness.wait_until_running(&["db", "web"]).await;
+
     tokio::time::sleep(Duration::from_secs(2)).await;
     harness.supervisor.sweep_idle().await;
 
-    assert_eq!(
-        harness.running().await,
-        vec!["db".to_string()],
-        "nothing would ever start it again"
-    );
+    // `web` goes; `db` stays, because nothing would ever start it again.
+    harness.wait_until_running(&["db"]).await;
 }
 
 #[tokio::test]
@@ -486,10 +486,7 @@ async fn a_swept_service_comes_back_on_the_next_request() {
         matches!(activation, minato_proxy::Activation::Ready(_)),
         "{activation:?}"
     );
-    assert_eq!(
-        harness.running().await,
-        vec!["db".to_string(), "web".to_string()]
-    );
+    harness.wait_until_running(&["db", "web"]).await;
 }
 
 #[tokio::test]
@@ -503,7 +500,7 @@ async fn starting_twice_leaves_one_container() {
     let harness = Harness::new("mnte2erepeat", &web_and_db("mnte2erepeat"));
 
     harness.up().await;
-    let first = harness.running().await;
+    harness.wait_until_running(&["db", "web"]).await;
 
     harness.up().await;
     harness
@@ -511,7 +508,9 @@ async fn starting_twice_leaves_one_container() {
         .activate(&harness.host("web"), START_WAIT)
         .await;
 
-    assert_eq!(harness.running().await, first, "no second copy of anything");
+    // Still two, and the same two. A second copy would show up here as a
+    // duplicate service name, since `running` reads the runtime's labels.
+    harness.wait_until_running(&["db", "web"]).await;
 }
 
 /// Two services that know nothing of each other, each slow to answer.
@@ -594,9 +593,7 @@ async fn independent_services_do_not_wait_for_each_other() {
          other: {events:#?}"
     );
 
-    assert_eq!(
-        harness.running().await,
-        vec!["api".to_string(), "web".to_string()],
-        "both still have to be up at the end of it"
-    );
+    // The ordering above is the point; this is only that nothing fell
+    // over on the way.
+    harness.wait_until_running(&["api", "web"]).await;
 }
