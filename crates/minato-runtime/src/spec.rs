@@ -220,6 +220,25 @@ pub enum VolumeScope {
     Workspace,
 }
 
+/// One piece of storage Minato is holding, as its runtime knows it.
+///
+/// What [`Runtime::managed_volumes`](crate::Runtime::managed_volumes)
+/// finds and [`Runtime::remove_managed_volume`](crate::Runtime::remove_managed_volume)
+/// takes back. The two are a pair on purpose: `id` is whatever the runtime
+/// that listed it calls the thing — a Docker volume name, a directory on
+/// Apple Container — so nothing above has to know which it is looking at.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ManagedVolume {
+    /// The project whose storage it is.
+    ///
+    /// Empty when the volume carries no project of its own. It is still
+    /// Minato's, and still goes; there is simply nothing to group it under.
+    pub project: String,
+
+    /// What the runtime calls it.
+    pub id: String,
+}
+
 /// A persistent mount.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VolumeMount {

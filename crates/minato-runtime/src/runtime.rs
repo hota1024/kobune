@@ -15,7 +15,8 @@ use tokio::io::AsyncWrite;
 use crate::error::Result;
 use crate::event::EventSink;
 use crate::spec::{
-    RunningService, ServiceKey, ServiceSpec, ServiceStatus, WorkspaceKey, WorkspaceSpec,
+    ManagedVolume, RunningService, ServiceKey, ServiceSpec, ServiceStatus, WorkspaceKey,
+    WorkspaceSpec,
 };
 
 /// How to read logs.
@@ -307,6 +308,27 @@ pub trait Runtime: Send + Sync {
     /// runtime, not a state store, is the source of truth, so this listing
     /// has to be trustworthy.
     async fn list_project(&self, project: &str) -> Result<Vec<ServiceStatus>>;
+
+    /// Every volume this runtime is holding for Minato, whatever project it
+    /// belongs to.
+    ///
+    /// **Found by looking, not from the daemon's state.** This exists for
+    /// `minato uninstall`, and by the time anyone uninstalls, the
+    /// repository a project was registered from may well have been deleted
+    /// already — its storage is then reachable from nothing, since the name
+    /// was Minato's invention rather than the user's. A workspace volume
+    /// that `destroy_workspace` has already taken is simply not here.
+    async fn managed_volumes(&self) -> Result<Vec<ManagedVolume>>;
+
+    /// Removes one of them.
+    ///
+    /// Only a volume *this* runtime listed. The `id` is its own name for
+    /// the thing and means nothing to another backend.
+    ///
+    /// Failing is ordinary — a volume still mounted by a container that
+    /// would not go is the usual cause — so the caller is expected to
+    /// report it and carry on rather than abandon the rest.
+    async fn remove_managed_volume(&self, volume: &ManagedVolume) -> Result<()>;
 }
 
 /// The label keys put on containers.

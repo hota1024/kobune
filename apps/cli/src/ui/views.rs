@@ -678,12 +678,53 @@ pub fn uninstall_plan(
         panel = panel.grid(grid);
     }
 
+    // **Named, one by one.** A project volume outlives the worktrees that
+    // used it, so this is where somebody's development database is — and
+    // the real name is what they would need to save one before saying yes.
+    // "3 volumes" would not be something anybody could check.
+    let volumes = daemon
+        .map(|report| report.volumes.as_slice())
+        .unwrap_or(&[]);
+    if !volumes.is_empty() {
+        let mut grid = Grid::new().caption(Span::styled(
+            "storage — the data in it goes too:",
+            theme::heading(),
+        ));
+        for volume in volumes {
+            grid.push(vec![
+                Line::styled(volume.project.clone(), theme::muted()),
+                Line::styled(volume.name.clone(), theme::subject()),
+            ]);
+        }
+        panel = panel.grid(grid);
+    }
+
+    // Storage the daemon could not even ask about. Left out, this reads as
+    // a machine with no volumes on it — and the whole plan is the thing
+    // somebody is about to say yes to.
+    let storage_left = daemon
+        .map(|report| report.storage_left.as_slice())
+        .unwrap_or(&[]);
+    if !storage_left.is_empty() {
+        let mut lines = vec![Line::styled(
+            "storage that could not be accounted for, and stays:",
+            theme::bad(),
+        )];
+        for failure in storage_left {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {} ", failure.what), theme::subject()),
+                Span::styled(failure.reason.clone(), theme::muted()),
+            ]));
+        }
+        panel = panel.lines(lines);
+    }
+
     // Said out loud, and with the reason. A list that silently leaves the
     // containers out looks like a machine that has none.
     if let Err(reason) = daemon {
         panel = panel.lines(vec![
             Line::styled(
-                "the daemon's containers are not in this list:",
+                "the daemon's containers and storage are not in this list:",
                 theme::warn(),
             ),
             Line::styled(format!("  {reason}"), theme::muted()),
@@ -755,7 +796,12 @@ pub fn uninstall_plan(
         panel = panel.lines(lines);
     }
 
-    if plan.files.is_empty() && plan.privileged.is_empty() && services == 0 {
+    if plan.files.is_empty()
+        && plan.privileged.is_empty()
+        && services == 0
+        && volumes.is_empty()
+        && storage_left.is_empty()
+    {
         return panel.line(Span::styled(
             "nothing of Minato's was found on this machine",
             theme::muted(),
@@ -1456,6 +1502,10 @@ mod tests {
                 }],
             }],
             worktrees: vec![PathBuf::from("/repo/myapp.wt/feat-1")],
+            volumes: vec![minato_api::PurgeVolume {
+                project: "myapp".into(),
+                name: "minato-myapp-pgdata".into(),
+            }],
             ..Default::default()
         }
     }
@@ -1488,6 +1538,75 @@ mod tests {
         assert!(text.contains("web"), "containers:\n{text}");
         assert!(text.contains(".minato"), "files:\n{text}");
         assert!(text.contains("remove-trusted-cert"), "root steps:\n{text}");
+        assert!(text.contains("minato-myapp-pgdata"), "storage:\n{text}");
+    }
+
+    #[test]
+    fn storage_is_named_by_what_the_runtime_calls_it() {
+        // `pgdata` is what `minato.toml` says; `minato-myapp-pgdata` is
+        // what Docker was told. Someone who wants to keep a database
+        // before saying yes has to be able to find it, and only the
+        // second name does that.
+        let report = purge_report();
+        let text = render(&uninstall_plan(
+            &host_plan(),
+            Ok(&report),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("storage"), "got:\n{text}");
+        assert!(text.contains("minato-myapp-pgdata"), "got:\n{text}");
+    }
+
+    #[test]
+    fn storage_that_could_not_be_listed_is_admitted_to() {
+        // The dangerous shape: Docker is down, so the daemon finds no
+        // volumes and the plan would read as a machine that has none —
+        // right before removing everything else and exiting 0.
+        let report = minato_api::PurgeReport {
+            storage_left: vec![minato_api::PurgeStorageFailure {
+                what: "docker".into(),
+                reason: "its storage could not be listed: connection refused".into(),
+            }],
+            ..Default::default()
+        };
+
+        let text = render(&uninstall_plan(
+            &crate::uninstall::Plan::default(),
+            Ok(&report),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(!text.contains("nothing of Minato"), "got:\n{text}");
+        assert!(text.contains("docker"), "got:\n{text}");
+        assert!(text.contains("connection refused"), "got:\n{text}");
+    }
+
+    #[test]
+    fn storage_on_its_own_is_not_nothing() {
+        // The usual state by the time anyone uninstalls: the worktrees are
+        // gone, so there are no containers, and the volumes they shared
+        // are still there. Saying "nothing was found" and then deleting a
+        // database is the failure this guards.
+        let report = minato_api::PurgeReport {
+            volumes: vec![minato_api::PurgeVolume {
+                project: "myapp".into(),
+                name: "minato-myapp-pgdata".into(),
+            }],
+            ..Default::default()
+        };
+
+        let text = render(&uninstall_plan(
+            &crate::uninstall::Plan::default(),
+            Ok(&report),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(!text.contains("nothing of Minato"), "got:\n{text}");
+        assert!(text.contains("minato-myapp-pgdata"), "got:\n{text}");
     }
 
     #[test]

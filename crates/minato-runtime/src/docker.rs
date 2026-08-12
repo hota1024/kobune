@@ -40,8 +40,8 @@ use crate::runtime::{
     RuntimeInfo, Sizing, Throwaway, labels, names,
 };
 use crate::spec::{
-    BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
-    WorkspaceKey, WorkspaceSpec,
+    BuildSpec, ManagedVolume, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount,
+    VolumeMount, WorkspaceKey, WorkspaceSpec,
 };
 
 const RUNTIME_ID: &str = "docker";
@@ -1642,6 +1642,44 @@ impl Runtime for DockerRuntime {
             .iter()
             .filter_map(|summary| Self::summary_to_status(summary, &asked_to_stop))
             .collect())
+    }
+
+    async fn managed_volumes(&self) -> Result<Vec<ManagedVolume>> {
+        // The managed label alone. Filtering by project as well would only
+        // find the projects somebody already knew to ask about, and the
+        // ones worth finding here are the ones nothing remembers.
+        let mut filters = HashMap::new();
+        filters.insert(
+            "label".to_string(),
+            vec![format!("{}={}", labels::MANAGED, labels::MANAGED_VALUE)],
+        );
+
+        let listed = self
+            .docker
+            .list_volumes(Some(ListVolumesOptions { filters }))
+            .await
+            .map_err(Self::unavailable)?;
+
+        Ok(listed
+            .volumes
+            .unwrap_or_default()
+            .into_iter()
+            .map(|volume| ManagedVolume {
+                project: volume
+                    .labels
+                    .get(labels::PROJECT)
+                    .cloned()
+                    .unwrap_or_default(),
+                id: volume.name,
+            })
+            .collect())
+    }
+
+    async fn remove_managed_volume(&self, volume: &ManagedVolume) -> Result<()> {
+        self.docker
+            .remove_volume(&volume.id, None)
+            .await
+            .map_err(|e| RuntimeError::failed(format!("removing volume {}", volume.id), e))
     }
 }
 

@@ -4,7 +4,7 @@
 //! [`EventSink`], and how to show it is the CLI's and the GUI's own
 //! decision (`docs/DESIGN.md` §3).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -225,7 +225,7 @@ impl Supervisor {
             return Ok(runtime.clone());
         }
 
-        let runtime: Arc<dyn Runtime> = Arc::from(minato_runtime::create(id)?);
+        let runtime: Arc<dyn Runtime> = Arc::from(minato_runtime::create(id, self.paths.root())?);
         runtimes.insert(id.to_string(), runtime.clone());
         Ok(runtime)
     }
@@ -1028,6 +1028,18 @@ impl Supervisor {
             });
         }
 
+        // Everything above worked from the state file, project by project.
+        // The storage is swept afterwards and machine-wide, for the reason
+        // `purge_volumes` gives.
+        let stranded: BTreeSet<String> = report
+            .stranded
+            .iter()
+            .map(|failure| failure.project.clone())
+            .collect();
+
+        (report.volumes, report.storage_left) =
+            self.purge_volumes(dry_run, &stranded, events).await;
+
         // The tunnel is machine-wide rather than per project, so it is
         // dealt with once, here.
         report.tunnel = self.purge_tunnel(dry_run, events).await;
@@ -1039,12 +1051,6 @@ impl Supervisor {
             // finish the job. Clearing the lot would forget the name of
             // every container that is still up, and there would be nothing
             // left that knew how to find them.
-            let stranded: std::collections::BTreeSet<&str> = report
-                .stranded
-                .iter()
-                .map(|failure| failure.project.as_str())
-                .collect();
-
             let _guard = self.state_lock.lock().await;
             self.store
                 .update(|state| {
@@ -1062,6 +1068,108 @@ impl Supervisor {
         report.worktrees.dedup();
 
         Ok(Response::Purge(report))
+    }
+
+    /// Takes the storage Minato made, whichever runtime is holding it.
+    ///
+    /// **Asked of every runtime, not of the projects in the state file.**
+    /// A project volume is deliberately longer-lived than any worktree, so
+    /// by the time somebody uninstalls, the state file may have forgotten
+    /// the project that owns it — its repository deleted, its worktrees
+    /// `minato rm`ed one by one. Sweeping per known project would leave
+    /// exactly those behind, under a name Minato chose and nobody else
+    /// knows to look for. A runtime that cannot be reached, or was never
+    /// installed, has nothing to say and is skipped.
+    ///
+    /// **A stranded project keeps the storage that keeping it can save.**
+    /// Its containers are still up, and taking the data from under them
+    /// would be the one irreversible half of a purge that admits it did
+    /// not finish — see [`Self::skipping_it_would_save_it`] for the case
+    /// where leaving it out of the sweep saves nothing and only hides it.
+    ///
+    /// **Everything that goes wrong here comes back in the report.** A
+    /// runtime that cannot be asked answers exactly as one holding nothing
+    /// does, so a failure kept to the log would read as "there is no
+    /// storage" all the way out to the plan somebody says yes to.
+    async fn purge_volumes(
+        &self,
+        dry_run: bool,
+        stranded: &BTreeSet<String>,
+        events: &EventSink,
+    ) -> (
+        Vec<minato_api::PurgeVolume>,
+        Vec<minato_api::PurgeStorageFailure>,
+    ) {
+        const STEP: &str = "volumes";
+
+        if !dry_run {
+            events.step_started(STEP, "removing the storage");
+        }
+
+        let mut found = Vec::new();
+        let mut left = Vec::new();
+
+        for id in minato_runtime::AVAILABLE_RUNTIMES {
+            let Ok(runtime) = self.runtime(id).await else {
+                continue;
+            };
+
+            let volumes = match runtime.managed_volumes().await {
+                Ok(volumes) => volumes,
+                Err(err) => {
+                    // Not a runtime that is absent — that answers with an
+                    // empty list. This is one that is there and would not
+                    // say, so whatever it holds is about to be left behind.
+                    events.warn(format!("cannot list {id}'s storage: {err}"));
+                    left.push(minato_api::PurgeStorageFailure {
+                        what: id.to_string(),
+                        reason: format!("its storage could not be listed: {err}"),
+                    });
+                    continue;
+                }
+            };
+
+            for volume in volumes {
+                if stranded.contains(&volume.project) && self.skipping_it_would_save_it(&volume) {
+                    continue;
+                }
+
+                if !dry_run && let Err(err) = runtime.remove_managed_volume(&volume).await {
+                    events.warn(format!("{} was not removed: {err}", volume.id));
+                    left.push(minato_api::PurgeStorageFailure {
+                        what: volume.id,
+                        reason: err.to_string(),
+                    });
+                    continue;
+                }
+
+                found.push(minato_api::PurgeVolume {
+                    project: volume.project,
+                    name: volume.id,
+                });
+            }
+        }
+
+        found.sort();
+        left.sort();
+
+        if !dry_run {
+            events.step_done(STEP, "removing the storage");
+        }
+
+        (found, left)
+    }
+
+    /// Whether leaving this volume out of the sweep would actually keep it.
+    ///
+    /// Docker's storage is the daemon's to leave alone, so there it would.
+    /// Apple Container has no named volumes and uses a directory under
+    /// `MINATO_HOME` instead — which the CLI's half of an uninstall deletes
+    /// as one entry in its plan, moments after this runs. Skipping it there
+    /// saves nothing; all it does is keep the data off the list of what is
+    /// about to disappear, which is the one thing that list is for.
+    fn skipping_it_would_save_it(&self, volume: &minato_runtime::ManagedVolume) -> bool {
+        !std::path::Path::new(&volume.id).starts_with(self.paths.root())
     }
 
     /// The runtime to tear a project down with.
@@ -1362,6 +1470,43 @@ pub(super) mod tests {
             path,
             PathBuf::from("/Users/x/ghq/github.com/y/myapp.wt/feature-one"),
             "inside the repository it would end up in editor searches"
+        );
+    }
+
+    #[test]
+    fn a_stranded_project_keeps_the_storage_that_keeping_it_saves() {
+        // Docker's volumes are the daemon's to leave alone, so leaving one
+        // out of the sweep is what keeps it.
+        let supervisor = supervisor(Gateway::inert());
+
+        assert!(
+            supervisor.skipping_it_would_save_it(&minato_runtime::ManagedVolume {
+                project: "myapp".into(),
+                id: "minato-myapp-pgdata".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn storage_inside_the_daemons_own_directory_cannot_be_kept() {
+        // Apple Container's volumes live under `MINATO_HOME`, which the
+        // CLI's half of an uninstall deletes as one entry in its plan.
+        // Skipping this would not save the data — it would only leave it
+        // off the list of what is about to go, which is the one thing that
+        // list exists for.
+        let supervisor = supervisor(Gateway::inert());
+        let inside = supervisor
+            .paths
+            .root()
+            .join("volumes")
+            .join("myapp")
+            .join("pgdata");
+
+        assert!(
+            !supervisor.skipping_it_would_save_it(&minato_runtime::ManagedVolume {
+                project: "myapp".into(),
+                id: inside.display().to_string(),
+            })
         );
     }
 
