@@ -66,13 +66,22 @@ pub struct Supervisor {
     /// instead of — see [`Supervisor::run_setup`].
     ///
     /// **It is why a wave's setups do not overlap**, even though the
-    /// starts around them do. That costs the first `up` after `minato new`
-    /// — later ones find the setup recorded and never reach here — and it
-    /// is deliberate for now: two installs at once would interleave their
-    /// output on a display that renders `Event::Output` without the
-    /// service it names (`apps/cli/src/ui/progress.rs`), so narrowing this
-    /// to a key means teaching the display to attribute lines in the same
-    /// change.
+    /// starts around them do, and that is the decision rather than a step
+    /// not yet taken. Every service mounts the same project-wide cache
+    /// volume (`CACHE_VOLUME`, `apps/daemon/src/spec.rs`), so two setups
+    /// at once are two arbitrary commands writing into one directory. A
+    /// package manager's store is built for that; a `setup` is whatever
+    /// somebody wrote, and Minato promises in
+    /// `docs/reference/minato-toml.md` that one runs at a time.
+    ///
+    /// The cost is bounded and falls in one place: the first `up` after
+    /// `minato new`. Later ones find the setup recorded and never reach
+    /// here.
+    ///
+    /// Narrowing it to a key would need that promise withdrawn first, and
+    /// would want the display to attribute output lines while it was at it
+    /// — `apps/cli/src/ui/progress.rs` renders `Event::Output` without the
+    /// service the event already names.
     setup_lock: Mutex<()>,
     /// The proxy and DNS. Also where URLs come from.
     gateway: Arc<Gateway>,
