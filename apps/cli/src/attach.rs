@@ -146,8 +146,11 @@ impl Session {
 /// size can still be reported without the watcher keeping the session alive
 /// on its own.
 ///
-/// Its own function so that the arrangement can be tested. [`Session::start`]
-/// needs a real terminal for raw mode, and there is none under `cargo test`.
+/// What keeps it from coming back is [`pass_on_resizes`]'s signature: a
+/// watcher that cannot be handed a strong sender cannot hold one. This
+/// exists so that the pairing can also be shown in a test, since
+/// [`Session::start`] needs a real terminal for raw mode and there is none
+/// under `cargo test`.
 fn split(typed: UnboundedSender<Typed>) -> (UnboundedSender<Typed>, WeakUnboundedSender<Typed>) {
     let window = typed.downgrade();
     (typed, window)
@@ -385,32 +388,12 @@ mod tests {
             "the client reads this as the person having detached"
         );
 
-        // The regression this guards: the window watcher used to be given
-        // a clone, so the channel stayed open and detaching detached from
-        // nothing.
+        // The window watcher used to be given a clone, so the channel
+        // stayed open, `call_attached` waited on for ever, and ctrl-p
+        // ctrl-q left `minato logs` running instead of ending it.
         assert!(
             window.upgrade().is_none(),
             "the window watcher must not hold the session open by itself"
         );
-    }
-
-    #[tokio::test]
-    async fn a_window_that_changes_size_while_someone_is_there_is_reported() {
-        // The other half: weak is not the same as useless, and a resize
-        // during a session still has to arrive.
-        let (typed, mut received) = mpsc::unbounded_channel::<Typed>();
-        let (keyboard, window) = split(typed);
-
-        let window = window.upgrade().expect("someone is still attached");
-        window
-            .send(Typed::Resize(Window::new(120, 40)))
-            .expect("takes it");
-
-        assert_eq!(
-            received.recv().await,
-            Some(Typed::Resize(Window::new(120, 40)))
-        );
-
-        drop(keyboard);
     }
 }

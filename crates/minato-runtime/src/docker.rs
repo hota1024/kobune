@@ -52,8 +52,19 @@ const RUNTIME_ID: &str = "docker";
 /// The announcement is in the first bytes a program writes and the log is
 /// read from the beginning, so this bounds a chatty service rather than
 /// limiting what can be found. A program that first asks for a mouse after
-/// eight megabytes of output is not worth slowing every attach for.
-const MODE_SCAN_LIMIT: usize = 8 * 1024 * 1024;
+/// a megabyte of output is not worth slowing every attach for.
+const MODE_SCAN_LIMIT: usize = 1024 * 1024;
+
+/// How long to spend on that.
+///
+/// **Both bounds are needed.** The size cap alone bounds the volume and
+/// not the time, and the read is on the way to an attachment: a log driver
+/// that answers slowly, or a daemon that stalls mid-stream, would leave
+/// `minato logs -f` waiting with nothing said, because the client is not
+/// told it is attached until this returns. Running out of either loses the
+/// mouse and the alternate screen, which is where every attachment stood
+/// before any of this existed.
+const MODE_SCAN_TIME: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Runs a `cmd:` health check inside a container.
 ///
@@ -679,10 +690,28 @@ impl DockerRuntime {
     /// program announced itself with — the ones an attachment that arrives
     /// later would otherwise never hear.
     ///
+    /// **From this run only.** A container's log outlives the process in
+    /// it — scale-to-zero stops one and the next request starts it again,
+    /// both writing into the same log — and a mode the last run set and
+    /// never took back is not a description of this one.
+    ///
     /// **Never a failure.** An unreadable log — a rotated one, a container
-    /// whose driver keeps none — costs the mouse and the alternate screen,
-    /// which is exactly where every attachment stood before this existed.
+    /// whose driver keeps none, one that takes too long to answer — costs
+    /// the mouse and the alternate screen, which is exactly where every
+    /// attachment stood before this existed.
     async fn terminal_modes(&self, id: &str) -> Modes {
+        match tokio::time::timeout(MODE_SCAN_TIME, self.scan_for_modes(id)).await {
+            Ok(modes) => modes,
+            Err(_) => {
+                tracing::debug!("gave up reading back what {id} did to its terminal");
+                Modes::new()
+            }
+        }
+    }
+
+    /// The scan itself, for [`terminal_modes`](Self::terminal_modes) to put
+    /// a clock on.
+    async fn scan_for_modes(&self, id: &str) -> Modes {
         let mut modes = Modes::new();
         let mut scanned = 0usize;
 
@@ -693,6 +722,7 @@ impl DockerRuntime {
                 stdout: true,
                 stderr: true,
                 tail: "all".to_string(),
+                since: self.started_at(id).await.unwrap_or(0),
                 ..Default::default()
             }),
         );
@@ -716,6 +746,25 @@ impl DockerRuntime {
         }
 
         modes
+    }
+
+    /// When the process now inside the container started, in seconds.
+    ///
+    /// `None` when Docker will not say, which reads the whole log rather
+    /// than none of it: an older run's announcements are a worse answer
+    /// than this one's, and no announcements at all is worse than both.
+    async fn started_at(&self, id: &str) -> Option<i64> {
+        let started = self
+            .docker
+            .inspect_container(id, None)
+            .await
+            .ok()?
+            .state?
+            .started_at?;
+
+        chrono::DateTime::parse_from_rfc3339(&started)
+            .ok()
+            .map(|at| at.timestamp())
     }
 
     /// Creates the container, replacing any existing one.
@@ -1543,23 +1592,18 @@ impl Runtime for DockerRuntime {
             }
         });
 
-        // The terminal the program believes it has, before the first frame
-        // it draws on this one. Empty for a program that only ever printed
-        // text, and then nothing is sent at all.
-        let output =
-            futures::stream::iter((!preamble.is_empty()).then_some(preamble)).chain(output);
-
-        Ok(Attachment {
-            output: Box::pin(output),
-            input: attached.input,
+        Ok(Attachment::opening_with(
+            preamble,
+            Box::pin(output),
+            attached.input,
             // The container this was opened on, kept: a window drag then
             // costs one call each rather than a lookup and a call.
-            sizing: Sizing::Follows(Box::new(DockerTerminal {
+            Sizing::Follows(Box::new(DockerTerminal {
                 docker: self.docker.clone(),
                 container: id,
                 service: key.service.clone(),
             })),
-        })
+        ))
     }
 
     async fn exec(

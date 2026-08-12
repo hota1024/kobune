@@ -8,6 +8,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
+use futures::StreamExt as _;
 use futures::stream::BoxStream;
 use minato_api::{OutputStream, Window};
 use tokio::io::AsyncWrite;
@@ -115,6 +116,35 @@ pub struct Attachment {
 
     /// What can be done about the size of it.
     pub sizing: Sizing,
+}
+
+impl Attachment {
+    /// One that begins by telling the terminal what the program made of
+    /// its own.
+    ///
+    /// **Every runtime's attachment goes through here**, so that what a
+    /// client receives first is one decision rather than one per backend.
+    /// A program that only ever printed text leaves `preamble` empty, and
+    /// then nothing at all is sent ahead of its output.
+    ///
+    /// Where the preamble comes from is the backend's own business: the
+    /// daemon owns Apple Container's terminal and watches it go past,
+    /// while Docker's is read back out of the container's log.
+    pub fn opening_with(
+        preamble: Vec<u8>,
+        output: BoxStream<'static, Vec<u8>>,
+        input: Pin<Box<dyn AsyncWrite + Send>>,
+        sizing: Sizing,
+    ) -> Self {
+        let output =
+            futures::stream::iter((!preamble.is_empty()).then_some(preamble)).chain(output);
+
+        Self {
+            output: Box::pin(output),
+            input,
+            sizing,
+        }
+    }
 }
 
 impl std::fmt::Debug for Attachment {

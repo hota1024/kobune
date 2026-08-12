@@ -19,6 +19,9 @@ libc.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 bollard.workspace = true
+# To read a container's start time out of what Docker reports, which is
+# RFC 3339 — see `terminal_modes`.
+chrono.workspace = true
 tar = "0.4"
 shell-words.workspace = true
 thiserror.workspace = true

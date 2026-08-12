@@ -112,8 +112,12 @@ impl Terminal {
                             // Read before it is handed on, and whether or
                             // not anyone is listening: the announcement
                             // this is looking for comes long before the
-                            // first attachment.
-                            watched.lock().expect("lock").watch(&buffer[..count]);
+                            // first attachment. A lock that cannot be
+                            // taken costs the replay and nothing else, so
+                            // the output still goes on below.
+                            if let Ok(mut watched) = watched.lock() {
+                                watched.watch(&buffer[..count]);
+                            }
 
                             // An error means nobody is listening, which is
                             // the normal state of a service nobody has
@@ -152,8 +156,17 @@ impl Terminal {
 
     /// What to tell a terminal so that it matches the one the program
     /// believes it is writing to.
+    ///
+    /// **Nothing, rather than a panic, if the reader task died holding the
+    /// lock.** Every other step of an attachment degrades to "no mouse, no
+    /// alternate screen"; this one taking the runtime's container
+    /// bookkeeping down with it — `attach` holds that lock too — would be
+    /// the whole session lost for the sake of a preamble.
     pub(crate) fn preamble(&self) -> Vec<u8> {
-        self.modes.lock().expect("lock").preamble()
+        self.modes
+            .lock()
+            .map(|modes| modes.preamble())
+            .unwrap_or_default()
     }
 
     /// Where to send keystrokes.
@@ -434,9 +447,10 @@ mod tests {
         .await
         .expect("does not time out");
 
+        // In the order it asked, which is what makes it a replay.
         assert_eq!(
             String::from_utf8_lossy(&preamble),
-            "\x1b[?25l\x1b[?1006h\x1b[?1049h"
+            "\x1b[?1049h\x1b[?1006h\x1b[?25l"
         );
     }
 

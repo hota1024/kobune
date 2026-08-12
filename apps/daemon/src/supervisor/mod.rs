@@ -461,7 +461,26 @@ impl Supervisor {
         match &sizing {
             // Sized before the first frame, rather than left to a resize
             // that arrives once the program has already drawn.
+            //
+            // **Twice, and the first one is deliberately wrong.** Entering
+            // the alternate screen clears it, so a program that is already
+            // drawing has to be given a reason to draw again or the
+            // attachment lands on a blank screen and stays there until
+            // something else happens — which for an event-driven interface
+            // may be never. A size that changes is that reason: it is the
+            // signal every full-screen program redraws on, and it is why
+            // dragging the window has always been the folk cure for a
+            // display that came up wrong. Sizing straight to the window
+            // would be no change at all for the second person to attach
+            // from the same terminal.
             Sizing::Follows(terminal) => {
+                let nudge = Window::new(window.cols, window.rows.saturating_sub(1).max(1));
+                if nudge != window
+                    && let Err(err) = terminal.resize(nudge).await
+                {
+                    events.debug(format!("cannot size {service}'s terminal: {err}"));
+                }
+
                 if let Err(err) = terminal.resize(window).await {
                     events.debug(format!("cannot size {service}'s terminal: {err}"));
                 }
