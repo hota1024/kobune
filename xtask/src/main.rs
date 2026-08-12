@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+mod deps;
 mod docs;
 
 fn main() {
@@ -11,6 +12,7 @@ fn main() {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
     let result = match args.as_slice() {
+        ["deps", "check"] => deps::check(&repo_root()),
         ["docs", "snapshot", version] => docs::snapshot(&repo_root(), version),
         ["docs", "snapshot"] => Err("usage: cargo xtask docs snapshot <version>".into()),
         _ => {
@@ -29,6 +31,7 @@ fn usage() {
     eprintln!("usage: cargo xtask <command>");
     eprintln!();
     eprintln!("commands:");
+    eprintln!("  deps check                Check the direction of dependencies (DESIGN §13)");
     eprintln!("  docs snapshot <version>   Freeze the current docs as /v<version>/");
 }
 

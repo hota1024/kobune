@@ -1,0 +1,63 @@
+version: 2
+
+updates:
+  # Cargo. Nearly a thousand crates reach a build here, so the whole point
+  # of the grouping below is that this does not become a pull request per
+  # crate per week — which is the state in which nobody reads any of them.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # One pull request for everything that cannot change behaviour on
+      # its own. This is the one worth merging without much thought.
+      patches:
+        update-types:
+          - patch
+      # And one for the rest, together, so a version bump is read
+      # alongside whatever else moved with it rather than on its own.
+      minor:
+        update-types:
+          - minor
+    ignore:
+      # Pinned by `Cargo.lock` rather than by a version, and deliberately
+      # (see the note in the workspace manifest): gpui and gpui-component
+      # have to come from the same source or two copies of gpui end up in
+      # the graph. Dependabot cannot know that, and a bump it proposed
+      # would be one to decline every week.
+      - dependency-name: gpui
+      - dependency-name: gpui_platform
+      - dependency-name: gpui-component
+      - dependency-name: gpui-component-assets
+
+  # The actions in `.github/workflows/`. Few, and each one is a `uses:`
+  # line, so these are cheap to read and worth having on their own.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: ci
+
+  # The documentation site. It ships nothing — no part of it reaches a
+  # binary — so it gets the same weekly grouping and no more attention
+  # than that.
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      docs:
+        patterns:
+          - "*"

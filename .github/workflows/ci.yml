@@ -46,6 +46,13 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: cargo fmt --all --check
 
+      # Nor can the dependency graph. `docs/DESIGN.md` §13: no client-side
+      # crate may reach `minato-runtime` and its neighbours, or Docker
+      # ends up in the GUI and the daemon stops being the only way in.
+      - name: Direction of dependencies
+        if: matrix.os == 'macos-latest'
+        run: cargo xtask deps check
+
       # `minato-desktop` is excluded here and built in its own job: it pulls
       # GPUI from the Zed repository, which dominates the build time and
       # would delay the result for changes that cannot affect it.

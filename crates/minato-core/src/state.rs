@@ -269,9 +269,13 @@ impl ProjectRecord {
 
 /// Reads and writes the state file.
 ///
-/// Does no cross-process locking. The daemon is expected to be the single
-/// writer — the PID file guarantees that — and to serialise its own
-/// access with a `Mutex`.
+/// Does no cross-process locking. The daemon is the single writer, and
+/// serialises its own access with a `Mutex`.
+///
+/// **What makes it the single writer is the socket**, not a lock here: a
+/// second daemon tries to connect to `minatod.sock` before anything else
+/// and stands down when something answers (`apps/daemon/src/server.rs`).
+/// So there is exactly one process in a position to write this file.
 #[derive(Debug, Clone)]
 pub struct StateStore {
     path: PathBuf,
