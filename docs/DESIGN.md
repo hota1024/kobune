@@ -1023,8 +1023,7 @@ minato rm <workspace> [--force]   # destroy the environment, git worktree remove
 minato ls [--json]                # workspaces and their state
 
 minato up [--service web]         # start explicitly
-minato down [--all]
-minato restart <service>
+minato down [--all] [--service web]
 minato status [--json]
 
 minato url [service]              # the URL, one line on stdout
@@ -1056,13 +1055,17 @@ dependencies (Docker, cloudflared). On failure it says what to do about it.
   "services": [
     {
       "name": "web",
-      "state": "ready",
+      // An object, not a string: `ServiceState` is an internally tagged
+      // enum, so `failed` carries its `reason` in the same place. Worth
+      // spelling out here because an agent reading this example writes
+      // `.state == "ready"` and gets nothing.
+      "state": { "state": "ready" },
       "url": "https://web.feat-1.myapp.localhost",
       "tunnel_url": "https://web-feat-1.myapp.example.com",
       "endpoint": "127.0.0.1:49312",
       "last_access": "2026-08-07T09:12:44Z"
     },
-    { "name": "db", "state": "ready", "url": null, "scope": "project" }
+    { "name": "db", "state": { "state": "ready" }, "url": null, "scope": "project" }
   ]
 }
 ```

@@ -116,6 +116,41 @@ check the exit code.
 service is stopped** — a request wakes the environment up. It can take a few
 seconds, but `curl` waits for readiness, so use it as-is.
 
+**`curl: (60)` does not mean you are stuck.** It means the local CA is not in
+the system trust store, and putting it there needs sudo — which is a person's
+job. You do not need it. `minato doctor --json` reports where the certificate
+is, and `--cacert` verifies against it properly:
+
+```bash
+CA=$(minato doctor --json | jq -r '.checks[] | select(.id == "ca") | .detail')
+curl -sS --fail-with-body --cacert "$CA" "$(minato url web)/"
+```
+
+Use that rather than stopping, and rather than `-k`, which would hide a real
+certificate problem alongside this one. Mention to the user that
+`minato setup` would make the plain `curl` work.
+
+### After editing a file
+
+Your worktree is mounted into the container, so the *file* changes the instant
+you save it. Whether the **process** notices is up to what `command` starts.
+
+- a dev server with a watcher — `next dev`, `vite`, `nodemon` — picks it up,
+  and there is nothing to do
+- anything else, `node server.js` included, is still running the old code
+
+```bash
+minato down --service api && minato up --service api
+```
+
+**Check this before you doubt the edit.** A stale process answers exactly like
+a change that did not work — a 404 on the route you just added — and the next
+move it invites is to go back and rewrite code that was already correct.
+`minato exec api -- grep <something-you-just-wrote> /workspace/api/server.js`
+settles which of the two it is in one command.
+
+There is no `minato restart`.
+
 ### Read the logs
 
 ```bash
@@ -250,12 +285,21 @@ Removes the worktree and its environment. The branch stays.
 
 **Work through these in order.** Do not fall back to `docker` on a hunch.
 
-1. `minato status --json` — look at each service's `state`
+1. `minato status --json` — look at each service's `state`.
+
+   **It is an object, not a string**, so `.state` on its own is
+   `{"state":"ready"}` and never equal to `"ready"`. Read `.state.state`:
+
+   ```bash
+   minato status --json | jq -r '.workspace.services[] | "\(.name) \(.state.state)"'
+   ```
+
    - `stopped` → reach for it, or run `minato up`
    - `starting` → wait. The container is up but its `health` check is not
      answering, which is what a dev server still building looks like
-   - `failed` → `reason` says why. A container that exited non-zero lands
-     here, so this is what a start-up script that died looks like
+   - `failed` → `.state.reason` says why, in the same object. A container
+     that exited non-zero lands here, so this is what a start-up script that
+     died looks like
 2. `minato logs <service>` — errors from the app itself
 3. `minato env ls --service <name>` — what that container is actually given,
    and which layer each value came from. Check here before concluding a
@@ -269,7 +313,7 @@ Removes the worktree and its environment. The branch stays.
 
 | Symptom | Where to look |
 | --- | --- |
-| `curl` exits 60 | The certificate is not trusted. `minato doctor` prints the steps to trust the CA (they need sudo, so ask a person) |
+| `curl` exits 60 | The CA is not in the system trust store. Verify with `--cacert` against the path `minato doctor --json` reports; trusting it needs sudo, so that is the user's to run |
 | The URL does not connect | `minato doctor`. Usually DNS or the proxy is not set up yet |
 | A 404 comes back | Wrong hostname. Get it again from `minato url` |
 | A 502 comes back | The service is registered but not answering. `minato logs` |
@@ -277,6 +321,7 @@ Removes the worktree and its environment. The branch stays.
 | `minato exec` says the container is not running | It died. `minato logs` for why, `minato exec --fresh` to get inside anyway |
 | Startup never finishes | Watch it with `minato logs -f` |
 | A config change does nothing | `minato down && minato up` |
+| A code change does nothing | The process is stale, not the file. `minato down --service X && minato up --service X` |
 
 ## Reading the output
 

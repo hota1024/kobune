@@ -259,7 +259,7 @@ export default defineConfig({
   // Neither is a page for readers. DESIGN.md is the internal record —
   // including the decisions that were reversed — and README.md is how to
   // work on this site. Both stay in the repository and are read on GitHub.
-  srcExclude: ['DESIGN.md', 'README.md'],
+  srcExclude: ['DESIGN.md', 'AGENT-RUN.md', 'README.md'],
 
   head: [
     // The icon rather than the mark: a favicon is drawn at 16px against
