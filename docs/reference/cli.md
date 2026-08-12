@@ -418,6 +418,29 @@ current `nightly`. `--check` reports and installs nothing. Under `--json`:
 `status` is one of `current`, `available`, `installed` or `unknown` — `unknown`
 meaning this build records no commit, so there is nothing to compare.
 
+`installed` carries `next` as well: the commands worth running now that the
+binaries have moved, each with the state that makes it worth running.
+
+```json
+{
+  "status": "installed",
+  "commit": "…",
+  "next": [
+    { "command": "minato daemon stop", "reason": "the daemon is still the previous build" }
+  ]
+}
+```
+
+It is empty when there is nothing to do — no daemon was running — and it holds
+only what the build being replaced can still be sure of. The rest is printed by
+the build that lands, on its first run: one line per step on **stderr**, under
+`minato changed to 9f3c1a2 since the last run`, once per build and never under
+`--json`. The Skill step is about the repository the command ran in. The commit
+that last ran is kept in `~/.minato/build.json`, written after the lines are
+printed, and `minato daemon` carries no notice at all — `stop` returns before
+the socket goes quiet, so the answer would be about a daemon it has just asked
+to leave.
+
 A check runs by itself once a day after any command and prints one line to
 stderr. `MINATO_NO_UPDATE_CHECK` turns it off, and `--json` never includes it.
 

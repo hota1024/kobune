@@ -20,11 +20,15 @@ use minatod::tunnel::TunnelHandle;
 
 /// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
 /// is what tells one build from another.
+///
+/// The same string a `Ping` is answered with — see [`minatod::version`],
+/// which is where it is built, so what this daemon says it is cannot
+/// depend on who asked.
 fn version() -> &'static str {
     // Leaked once at startup: clap wants a `&'static str`, and the string is
     // built from two compile-time constants so there is nothing to free.
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VERSION.get_or_init(|| minato_core::version_string(env!("CARGO_PKG_VERSION")))
+    VERSION.get_or_init(minatod::version)
 }
 
 #[derive(Parser, Debug)]

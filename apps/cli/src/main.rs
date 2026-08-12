@@ -5,6 +5,7 @@
 
 mod attach;
 mod compose;
+mod followup;
 mod init;
 mod launchd;
 mod output;
@@ -396,6 +397,13 @@ async fn main() -> ExitCode {
 
     let outcome = run(&cli).await;
 
+    // The first run of a build the machine has not seen: what the update
+    // left half-done. Before the notice below, which is about the *next*
+    // build — this one is about the one in hand.
+    if !cli.json && wants_followup_notice(&cli.command) {
+        followup_notice().await;
+    }
+
     // After the command, so a slow network cannot delay the output anyone is
     // waiting for. Never under `--json`: that stream is parsed, and a line
     // about a new build landing in it would be a bug rather than a nuisance.
@@ -606,6 +614,90 @@ fn print_update_notice(commit: &str) {
         &format!("a newer build is available ({commit}). Install it with"),
         "minato update",
     )]);
+}
+
+/// Whether a command should carry the follow-up notice.
+///
+/// `update` has already printed the steps it could be sure of, and a
+/// second list under the panel would read as a different one. `completions`
+/// is redirected into a file and `uninstall` has just taken Minato off the
+/// machine.
+///
+/// **`daemon` is out for a reason of its own**: it is the command the steps
+/// send people to, and `stop` returns as soon as the request is written,
+/// leaving the socket up for a moment longer. Asking then would report the
+/// daemon somebody has this second stopped as still running — and because
+/// the notice is not printed, it is not remembered either, so it lands
+/// intact on the next command.
+fn wants_followup_notice(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Update { .. }
+            | Command::Completions { .. }
+            | Command::Uninstall { .. }
+            | Command::Daemon { .. }
+    )
+}
+
+/// What an update left to do, on the first run of the build it installed.
+///
+/// Empty on every other run, which is nearly all of them: the record only
+/// disagrees once per build, and everything after it — including the
+/// connection to the daemon socket — happens on the far side of that.
+///
+/// The build is remembered only once the steps have been printed, so a
+/// command interrupted in between finds them again rather than having
+/// marked itself as read.
+async fn followup_notice() {
+    let Ok(paths) = minato_core::Paths::resolve() else {
+        return;
+    };
+
+    if !followup::is_new_build(&paths) {
+        return;
+    }
+
+    let daemon = match Client::from_env() {
+        Ok(client) => followup::daemon(&client, version()).await,
+        // No socket to ask, so nothing is claimed about what is on it.
+        Err(_) => followup::Daemon::Stopped,
+    };
+
+    print_followup(&followup::steps(daemon, skill_root().as_deref()));
+
+    followup::remember(&paths);
+}
+
+/// Where the Skill for the current directory lives, for the step that is
+/// about it. The same answer `minato skill install` would act on.
+fn skill_root() -> Option<PathBuf> {
+    std::env::current_dir()
+        .ok()
+        .map(|cwd| skill::root_for(&cwd))
+}
+
+/// The steps, under a line saying what they are doing there.
+///
+/// Without it a `minato status` in the morning grows a remark about the
+/// daemon out of nowhere. With it, the build that changed is named — which
+/// is also the answer to "since when?".
+fn print_followup(steps: &[followup::Step]) {
+    if steps.is_empty() {
+        return;
+    }
+
+    let mut lines = vec![ui::note(&format!(
+        "minato changed to {} since the last run",
+        minato_core::BUILD_COMMIT_SHORT
+    ))];
+
+    lines.extend(
+        steps
+            .iter()
+            .map(|step| ui::step(&step.reason, &step.command)),
+    );
+
+    ui::notice(lines);
 }
 
 /// The errors the CLI deals with. Ones from the daemon keep its exit
@@ -1059,23 +1151,26 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
             }
         }
         Updated::Installed(commit) => {
+            // The binaries are in place; the machine around them is a
+            // step behind. What that leaves to do is worked out rather
+            // than stated, so a machine with no daemon running is not
+            // told to restart one.
+            let steps = followup::steps_after_replacing(daemon_after_update().await);
+
             if cli.json {
                 output::print_json(&serde_json::json!({
                     "status": "installed",
                     "commit": commit,
+                    "next": steps,
                 }));
             } else {
-                // The running daemon is still the old binary. It is not
-                // restarted here because that is launchd's job where
-                // launchd is installed, and stopping it is what makes
-                // launchd pick the new one up.
                 ui::done(
                     "update",
                     &[("installed", short_commit(&commit))],
-                    vec![
-                        ui::note("the running daemon is still the previous build"),
-                        ui::hint("replace it with", "minato daemon stop"),
-                    ],
+                    steps
+                        .iter()
+                        .map(|step| ui::step(&step.reason, &step.command))
+                        .collect(),
                 );
             }
         }
@@ -1165,6 +1260,15 @@ async fn run_update(
     }
 
     Ok(Updated::Installed(installed))
+}
+
+/// Whether a daemon survived the swap, which is the one thing the build
+/// being replaced can still answer for.
+async fn daemon_after_update() -> followup::Daemon {
+    match Client::from_env() {
+        Ok(client) => followup::daemon_after_replacing(&client).await,
+        Err(_) => followup::Daemon::Stopped,
+    }
 }
 
 /// A commit at the length that tells a reader something.
@@ -1532,11 +1636,7 @@ fn handle_skill(
             Ok(ExitCode::SUCCESS)
         }
         SkillCommand::Install { force } => {
-            // Run from inside a worktree, it still goes at the repository
-            // root.
-            let root = minato_core::Repository::discover(cwd)
-                .map(|repo| repo.main_root)
-                .unwrap_or_else(|_| cwd.to_path_buf());
+            let root = skill::root_for(cwd);
 
             let installed =
                 skill::install(&root, *force).map_err(|err| CliError::Local(err.to_string()))?;
@@ -2513,6 +2613,34 @@ mod tests {
 
         // Everything else still gets it.
         assert!(wants_update_notice(&Command::Status));
+    }
+
+    #[test]
+    fn an_update_does_not_repeat_its_own_steps() {
+        // It has just printed what it could be sure of, in a panel. The
+        // same lines under it, as a notice, would read as a second list.
+        assert!(!wants_followup_notice(&Command::Update { check: false }));
+
+        // The command after it is where the build that landed says the
+        // rest, so that one does carry them.
+        assert!(wants_followup_notice(&Command::Status));
+    }
+
+    #[test]
+    fn stopping_the_daemon_is_not_answered_with_go_and_stop_the_daemon() {
+        // `stop` returns as soon as the request is written, so the socket
+        // is up for a moment after it. The notice would report the daemon
+        // somebody has this second stopped as still running — and it is
+        // the command the step sends them to in the first place.
+        assert!(!wants_followup_notice(&Command::Daemon {
+            command: DaemonCommand::Stop
+        }));
+
+        // Still carried by the update check, which has nothing to do with
+        // what is on the socket.
+        assert!(wants_update_notice(&Command::Daemon {
+            command: DaemonCommand::Stop
+        }));
     }
 
     #[test]

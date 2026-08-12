@@ -182,12 +182,11 @@ generator, but nothing is tested against them.
 ```console
 $ minato update
 › installing 9f3c1a2…
-╭ update ──────────────────────────────────────────╮
-│ installed  9f3c1a2                               │
-│                                                  │
-│ › the running daemon is still the previous build │
-│ › replace it with minato daemon stop             │
-╰──────────────────────────────────────────────────╯
+╭ update ─────────────────────────────────────────────────────────────╮
+│ installed  9f3c1a2                                                  │
+│                                                                     │
+│ › the daemon is still the previous build, so run minato daemon stop │
+╰─────────────────────────────────────────────────────────────────────╯
 ```
 
 `update` replaces the installation it is run from — the directory holding the
@@ -198,7 +197,12 @@ would not agree on the protocol between them.
 The new files are written beside the old ones and renamed into place. A running
 executable cannot be written to, but it can be replaced, so an update while the
 daemon is up leaves it running the old build until it is restarted. Which is
-what the last line is about: stopping it is how launchd picks the new one up.
+what the last line is about: stopping it is how launchd picks the new one up,
+and without the LaunchDaemon installed it reads `minato daemon restart`
+instead, because nothing else would bring it back.
+
+That line is **worked out, not printed regardless**: with no daemon running
+there is nothing to replace, and the panel says only what it installed.
 
 To look without installing:
 
@@ -210,6 +214,65 @@ $ minato update --check
 │                                 │
 │ › install it with minato update │
 ╰─────────────────────────────────╯
+```
+
+### What a new build leaves to do
+
+The panel above can only speak for the build being replaced. Whether the Skill
+in a repository matches the new one, and whether the LaunchDaemon is the shape
+the new one writes, are questions only the build that has landed can answer —
+so it answers them itself, the first time you run it:
+
+```console
+$ minato url web
+https://web.myapp.localhost
+› minato changed to 9f3c1a2 since the last run
+› the daemon is not this build, so run minato daemon stop
+› this repository's Skill is not this build's, so run minato skill install --force
+```
+
+Each line is there because something on this machine says so: a daemon answered
+and the version it gave was not this build's, `.claude/skills/minato/SKILL.md`
+differs from the one this binary carries, the installed plist was written to an
+older shape. Nothing is guessed — a repository that never had the Skill is not
+offered one, and a plist from before this was recorded is left alone rather than
+called old. The daemon line says *not this build* rather than *the previous
+one*, because a daemon you started by hand from a newer binary lands there too;
+the answer is the same either way.
+
+Two things to know about the Skill line. It is about **the repository you are
+standing in** — the check has no list of your repositories, so another checkout
+with an older copy is not covered by it. And `--force` is what the command
+takes, so a `SKILL.md` you have edited by hand is replaced along with an
+outdated one; the difference is visible in `git diff` either way.
+
+It appears **once per build**, on the first run that is not `--json`, and this
+is also what covers the updates `minato update` knows nothing about: rerunning
+`install.sh`, a package manager, a build of your own. `~/.minato/build.json`
+holds the commit that last ran, and is the whole of the state involved. The
+build is written down only once the lines above have been printed, so a run
+interrupted before that finds them again.
+
+`minato daemon` carries no notice of its own: `stop` returns as soon as the
+daemon has been asked, so a check made straight after would report the process
+you have this second stopped as still running. Nothing is recorded either, and
+the next command says the lot.
+
+It is stderr, like every other remark of the CLI's own, and never appears under
+`--json` — an agent's stream stays one document. `minato update --json` carries
+the same steps as data instead:
+
+```json
+{
+  "status": "installed",
+  "commit": "9f3c1a2…",
+  "next": [
+    {
+      "command": "minato daemon stop",
+      "reason": "the daemon is still the previous build"
+    }
+  ]
+}
 ```
 
 ### The automatic check

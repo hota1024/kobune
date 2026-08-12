@@ -43,7 +43,7 @@ pub const NO_CHECK_ENV: &str = "MINATO_NO_UPDATE_CHECK";
 
 /// What [`minato_core::BUILD_COMMIT`] says when there was no commit to
 /// record: a source tarball, or a build from before it was recorded.
-const NO_COMMIT: &str = "unknown";
+pub const NO_COMMIT: &str = "unknown";
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
