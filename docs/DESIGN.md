@@ -625,6 +625,24 @@ such DNS and injects a peer's address at creation, read from the peer
 running by then, so two services started together would each be handed
 nothing for the other. There the sequence *is* the mechanism.
 
+**A backend that says no is not regrouped at all**, which is subtler than it
+looks. Flattening the waves gives a valid startup order, but not the same
+one `startup_order` gives — bucketing by depth pulls every independent
+service ahead of everything one level down, and a depth-first walk does not:
+
+```
+startup_order  db, api, cache, web, worker
+flattened      db, cache, api, worker, web
+```
+
+Where a wave starts at once that difference is invisible. Where it does not,
+it decides what a service is told: Apple Container injects
+`MINATO_HOST_<PEER>` for every peer already running, and `peers` is every
+other service in the workspace rather than only `depends_on`, so a service
+reordered past a neighbour loses the variable naming it. Sequential backends
+therefore keep the order they have always had, and the two orders being
+different is pinned by a test rather than left to be rediscovered.
+
 One consequence worth stating: two services starting at once share a
 network, so `ensure_network` — which looks and then creates — had to become
 one-caller-at-a-time. Docker does not refuse a name it already has; it makes

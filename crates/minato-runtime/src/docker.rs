@@ -1177,6 +1177,9 @@ impl Runtime for DockerRuntime {
     }
 
     async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        // Scoped like `start`: a step id names the one service it is
+        // tracking, whether or not anything overlaps today.
+        let events = &events.for_service(&key.service);
         let Some(container) = self.find_container(key).await? else {
             events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
@@ -1212,6 +1215,7 @@ impl Runtime for DockerRuntime {
     }
 
     async fn remove(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        let events = &events.for_service(&key.service);
         let Some(container) = self.find_container(key).await? else {
             return Ok(());
         };
