@@ -920,6 +920,7 @@ async fn run_attached(
     // pump rather than kept alive here beside it.
     let mut typed = Some(typed);
     let mut session = None;
+    let mut screen = attach::Screen::new();
 
     let outcome = connection
         .call_attached(
@@ -934,7 +935,7 @@ async fn run_attached(
                         None => {}
                     }
                 }
-                Event::Bytes { data } => attach::show(&minato_api::decode_bytes(&data)),
+                Event::Bytes { data } => screen.show(&minato_api::decode_bytes(&data)),
                 other => output::print_output_event(&other),
             },
             keys,
@@ -948,7 +949,7 @@ async fn run_attached(
     drop(session);
 
     if was_attached {
-        attach::restore();
+        screen.restore();
     }
 
     // **Detaching says nothing**, because whoever pressed the keys knows

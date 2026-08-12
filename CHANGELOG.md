@@ -35,6 +35,16 @@ less accurately.
 
 ### Added
 
+- The mouse and the trackpad reach a service you have `minato logs -f`
+  attached to, so turborepo's log pane scrolls under the pointer as it does
+  when you run it yourself. A full-screen program asks for mouse reports once,
+  in the first bytes it writes, and an attachment that arrives later missed
+  the request entirely: the terminal sent nothing and the wheel did nothing,
+  and the program's frames landed on the normal screen rather than the
+  alternate one. What the program made of its terminal is now read back when
+  you attach — the modes only, not the picture, which the program redraws
+  anyway — and put back when you leave
+
 - The daemon says which build it is: a `Ping` — and so `minato daemon status` —
   now carries `0.1.0 (abc1234)` rather than the crate version alone, which is
   the same string in every nightly and could tell no two builds apart
@@ -90,6 +100,12 @@ less accurately.
   so a task runner's own interface works (#33)
 
 ### Fixed
+
+- Ctrl-P Ctrl-Q detaches. It stopped passing keys on and then waited: the
+  window watcher held a second sender for the channel whose closing *is* the
+  message that somebody left, so the message was never sent and `minato logs`
+  sat there with nobody reading the terminal, needing Ctrl-C — which is the
+  one key the sequence exists to avoid
 
 - `minato uninstall` takes the named volumes with it, and lists them before
   asking. A project volume is shared between worktrees and outlives all of

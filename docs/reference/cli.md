@@ -255,6 +255,15 @@ without being able to type by accident.
 | --- | --- |
 | Ctrl-P Ctrl-Q | Detach. The service keeps running |
 | Anything else | Goes to the program, Ctrl-C included |
+| The mouse and the trackpad | Go to the program too, where it wants them |
+
+**The wheel scrolls what the program scrolls.** A full-screen program asks
+for mouse reports once, in the first bytes it writes, and attaching an hour
+later would otherwise miss the request — leaving a terminal that sends
+nothing and a wheel that does nothing. What the program made of its terminal
+is read back when you attach and set again here, so turborepo's log pane
+scrolls under the pointer as it does when you run it yourself. It is put
+back the way it was when you detach.
 
 Ctrl-C belongs to the program: in a task runner it usually means "quit",
 which stops the service. Ctrl-P Ctrl-Q is how you leave without stopping

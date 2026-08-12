@@ -1171,7 +1171,7 @@ impl Runtime for AppleContainerRuntime {
     }
 
     async fn attach(&self, key: &ServiceKey) -> Result<Attachment> {
-        let (output, keyboard) = {
+        let (output, keyboard, preamble) = {
             let terminals = self.terminals.lock().expect("lock");
             let terminal = terminals
                 .get(key)
@@ -1187,7 +1187,11 @@ impl Runtime for AppleContainerRuntime {
                     )
                 })?;
 
-            (terminal.subscribe(), terminal.keyboard())
+            (
+                terminal.subscribe(),
+                terminal.keyboard(),
+                terminal.preamble(),
+            )
         };
 
         // A subscriber that falls too far behind is told how much it
@@ -1197,6 +1201,13 @@ impl Runtime for AppleContainerRuntime {
         // already been discarded.
         let output = tokio_stream::wrappers::BroadcastStream::new(output)
             .filter_map(|chunk| async move { chunk.ok() });
+
+        // Nothing already written is replayed, so what the program said
+        // about the terminal — the alternate screen, the mouse — has to be
+        // said again on its behalf. Empty for a program that only ever
+        // printed text, and then nothing is sent at all.
+        let output =
+            futures::stream::iter((!preamble.is_empty()).then_some(preamble)).chain(output);
 
         Ok(Attachment {
             output: Box::pin(output),

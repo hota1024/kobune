@@ -4,17 +4,19 @@
 //! full-screen interface — turborepo's, most test runners' — needs the
 //! bytes it writes to arrive unaltered and the keys pressed to arrive
 //! unread, so the terminal goes into raw mode and this passes both
-//! directions through without looking at them.
+//! directions through without altering either.
 //!
-//! The one exception is the detach sequence, which has to be caught here:
-//! ctrl-c belongs to the program, so there has to be something else that
-//! means "give me my terminal back".
+//! Two things are read on the way past, and only read. The detach sequence
+//! has to be caught here: ctrl-c belongs to the program, so there has to be
+//! something else that means "give me my terminal back". And what the
+//! service makes of this terminal is noted — the alternate screen, the
+//! mouse — so that leaving can put it back.
 
 use std::io::{IsTerminal, Read, Write};
 
 use minato_api::{Typed, Window};
 use ratatui::crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedSender, WeakUnboundedSender};
 use tokio::task::JoinHandle;
 
 /// Ctrl-P, then Ctrl-Q: the keys that detach.
@@ -56,20 +58,58 @@ pub fn announce(service: &str) {
     );
 }
 
-/// Undoes what a full-screen program was in the middle of.
+/// This terminal, for as long as a service is drawing on it.
 ///
-/// **Best effort, and only after an attachment.** A program that drew a
-/// full-screen interface was on the alternate screen with the cursor
-/// hidden, and detaching leaves it that way: the shell prompt lands on
-/// top of the last frame with nothing to type at. Leaving the alternate
-/// screen and showing the cursor is what a terminal multiplexer does when
-/// a pane goes, and on a program that used neither it costs nothing.
-pub fn restore() {
-    let _ = ratatui::crossterm::execute!(
-        std::io::stdout(),
-        LeaveAlternateScreen,
-        ratatui::crossterm::cursor::Show
-    );
+/// It holds what the service has made of it — the alternate screen, a
+/// hidden cursor, the mouse reporting a full-screen program asked for —
+/// read out of the bytes on their way to the screen. Detaching is then a
+/// matter of putting back what was changed rather than guessing: a mouse
+/// mode left on writes a report into the shell every time the pointer
+/// moves.
+#[derive(Default)]
+pub struct Screen {
+    modes: minato_core::Modes,
+}
+
+impl Screen {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Writes what the service's terminal produced, byte for byte.
+    ///
+    /// Flushed every time. A full-screen program's output only makes sense
+    /// at the moment it arrives — a cursor move held back in a buffer is a
+    /// screen drawn in the wrong order.
+    pub fn show(&mut self, bytes: &[u8]) {
+        self.modes.watch(bytes);
+
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(bytes);
+        let _ = out.flush();
+    }
+
+    /// Undoes what a full-screen program was in the middle of.
+    ///
+    /// **Best effort, and only after an attachment.** Every mode the
+    /// service set goes back to what a terminal does without it, and then
+    /// — whatever was or was not seen — the alternate screen is left and
+    /// the cursor shown. That last part is the floor: a program that
+    /// entered the alternate screen before anyone attached announced it to
+    /// a terminal that no longer exists, and without this the shell prompt
+    /// lands on top of its final frame with nothing to type at.
+    pub fn restore(&self) {
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(&self.modes.restoration());
+        let _ = out.flush();
+        drop(out);
+
+        let _ = ratatui::crossterm::execute!(
+            std::io::stdout(),
+            LeaveAlternateScreen,
+            ratatui::crossterm::cursor::Show
+        );
+    }
 }
 
 /// The terminal, for as long as a service has it.
@@ -87,29 +127,30 @@ impl Session {
     pub fn start(typed: UnboundedSender<Typed>) -> std::io::Result<Self> {
         enable_raw_mode()?;
 
-        std::thread::spawn({
-            let typed = typed.clone();
-            move || pass_on_keys(typed)
-        });
+        let (keyboard, window) = split(typed);
+        std::thread::spawn(move || pass_on_keys(keyboard));
 
         Ok(Self {
-            resizes: tokio::spawn(pass_on_resizes(typed)),
+            resizes: tokio::spawn(pass_on_resizes(window)),
         })
     }
 }
 
-/// Writes what the service's terminal produced, byte for byte.
+/// The keyboard's end of the channel, and the window watcher's.
 ///
-/// Flushed every time. A full-screen program's output only makes sense at
-/// the moment it arrives — a cursor move held back in a buffer is a screen
-/// drawn in the wrong order.
+/// **The keyboard holds the only sender.** Putting it down is how the rest
+/// of the program is told that the person detached, and a second one held
+/// by the watcher would mean it was never put down: the channel would stay
+/// open with nobody reading the terminal, and ctrl-p ctrl-q would leave
+/// `minato logs` running rather than end it. Weak, so a window that changes
+/// size can still be reported without the watcher keeping the session alive
+/// on its own.
 ///
-/// Not a method: it writes to standard output, and needs nothing a
-/// [`Session`] holds.
-pub fn show(bytes: &[u8]) {
-    let mut out = std::io::stdout().lock();
-    let _ = out.write_all(bytes);
-    let _ = out.flush();
+/// Its own function so that the arrangement can be tested. [`Session::start`]
+/// needs a real terminal for raw mode, and there is none under `cargo test`.
+fn split(typed: UnboundedSender<Typed>) -> (UnboundedSender<Typed>, WeakUnboundedSender<Typed>) {
+    let window = typed.downgrade();
+    (typed, window)
 }
 
 impl Drop for Session {
@@ -217,7 +258,10 @@ fn pass_on_keys(typed: UnboundedSender<Typed>) {
 }
 
 /// Tells the service when this window changes size.
-async fn pass_on_resizes(typed: UnboundedSender<Typed>) {
+///
+/// **Weakly.** This outlives nothing: a window that changes size after the
+/// person has detached is no longer anybody's to report.
+async fn pass_on_resizes(typed: WeakUnboundedSender<Typed>) {
     let mut resized =
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change()) {
             Ok(signal) => signal,
@@ -242,6 +286,12 @@ async fn pass_on_resizes(typed: UnboundedSender<Typed>) {
             continue;
         }
         last = Some(window);
+
+        // Taken for the send and no longer, so that this never holds the
+        // channel open across a wait.
+        let Some(typed) = typed.upgrade() else {
+            return;
+        };
 
         if typed.send(Typed::Resize(window)).is_err() {
             return;
@@ -325,11 +375,42 @@ mod tests {
     #[tokio::test]
     async fn dropping_the_keyboard_is_how_leaving_is_reported() {
         let (typed, mut received) = mpsc::unbounded_channel::<Typed>();
-        drop(typed);
+        let (keyboard, window) = split(typed);
+
+        // What `pass_on_keys` does when it reads ctrl-p ctrl-q.
+        drop(keyboard);
 
         assert!(
             received.recv().await.is_none(),
             "the client reads this as the person having detached"
         );
+
+        // The regression this guards: the window watcher used to be given
+        // a clone, so the channel stayed open and detaching detached from
+        // nothing.
+        assert!(
+            window.upgrade().is_none(),
+            "the window watcher must not hold the session open by itself"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_window_that_changes_size_while_someone_is_there_is_reported() {
+        // The other half: weak is not the same as useless, and a resize
+        // during a session still has to arrive.
+        let (typed, mut received) = mpsc::unbounded_channel::<Typed>();
+        let (keyboard, window) = split(typed);
+
+        let window = window.upgrade().expect("someone is still attached");
+        window
+            .send(Typed::Resize(Window::new(120, 40)))
+            .expect("takes it");
+
+        assert_eq!(
+            received.recv().await,
+            Some(Typed::Resize(Window::new(120, 40)))
+        );
+
+        drop(keyboard);
     }
 }

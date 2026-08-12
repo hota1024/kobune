@@ -30,7 +30,7 @@ use bollard::volume::ListVolumesOptions;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use minato_api::OutputStream;
-use minato_core::{ServiceScope, ServiceState};
+use minato_core::{Modes, ServiceScope, ServiceState};
 
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
@@ -45,6 +45,15 @@ use crate::spec::{
 };
 
 const RUNTIME_ID: &str = "docker";
+
+/// How much of a service's log to read looking for what the program made
+/// of its terminal.
+///
+/// The announcement is in the first bytes a program writes and the log is
+/// read from the beginning, so this bounds a chatty service rather than
+/// limiting what can be found. A program that first asks for a mouse after
+/// eight megabytes of output is not worth slowing every attach for.
+const MODE_SCAN_LIMIT: usize = 8 * 1024 * 1024;
 
 /// Runs a `cmd:` health check inside a container.
 ///
@@ -660,6 +669,53 @@ impl DockerRuntime {
             .map_err(Self::unavailable)?;
 
         Ok(containers.into_iter().next())
+    }
+
+    /// What the program has already made of the terminal it was given.
+    ///
+    /// The log of a container that has a terminal *is* what the program
+    /// wrote to it, escape sequences and all, so reading it back from the
+    /// beginning finds the `ESC[?1049h` and `ESC[?1000h` a full-screen
+    /// program announced itself with — the ones an attachment that arrives
+    /// later would otherwise never hear.
+    ///
+    /// **Never a failure.** An unreadable log — a rotated one, a container
+    /// whose driver keeps none — costs the mouse and the alternate screen,
+    /// which is exactly where every attachment stood before this existed.
+    async fn terminal_modes(&self, id: &str) -> Modes {
+        let mut modes = Modes::new();
+        let mut scanned = 0usize;
+
+        let mut log = self.docker.logs(
+            id,
+            Some(LogsOptions::<String> {
+                follow: false,
+                stdout: true,
+                stderr: true,
+                tail: "all".to_string(),
+                ..Default::default()
+            }),
+        );
+
+        while let Some(chunk) = log.next().await {
+            let bytes = match chunk {
+                Ok(output) => output.into_bytes(),
+                Err(err) => {
+                    tracing::debug!("cannot read back what {id} did to its terminal: {err}");
+                    break;
+                }
+            };
+
+            modes.watch(&bytes);
+
+            scanned = scanned.saturating_add(bytes.len());
+            if scanned >= MODE_SCAN_LIMIT {
+                tracing::debug!("stopped reading {id}'s log after {scanned} bytes");
+                break;
+            }
+        }
+
+        modes
     }
 
     /// Creates the container, replacing any existing one.
@@ -1447,11 +1503,14 @@ impl Runtime for DockerRuntime {
                     stdout: Some(true),
                     stderr: Some(true),
                     stream: Some(true),
-                    // **Nothing replayed.** A full-screen program's past
+                    // **No output replayed.** A full-screen program's past
                     // output is a record of a screen that no longer
                     // exists; drawing it again produces a mess, and the
                     // program redraws in full anyway. Whoever wants the
                     // history has `minato logs` without `-f`.
+                    //
+                    // What the program *said about the terminal* is
+                    // replayed, and separately — see the preamble below.
                     logs: Some(false),
                     // Left to Docker's default, and never triggered:
                     // detaching is the client's business, and it holds the
@@ -1461,6 +1520,11 @@ impl Runtime for DockerRuntime {
             )
             .await
             .map_err(|e| RuntimeError::failed(format!("attaching to {}", key.service), e))?;
+
+        // **After the attachment is open**, so that nothing written while
+        // the log is being read is missed. The log is only scanned, never
+        // shown, so seeing the same bytes twice costs nothing.
+        let preamble = self.terminal_modes(&id).await.preamble();
 
         // With a terminal there is one stream, and Docker reports it as
         // `Console`. The rest are matched so that a container that turns
@@ -1478,6 +1542,12 @@ impl Runtime for DockerRuntime {
                 }
             }
         });
+
+        // The terminal the program believes it has, before the first frame
+        // it draws on this one. Empty for a program that only ever printed
+        // text, and then nothing is sent at all.
+        let output =
+            futures::stream::iter((!preamble.is_empty()).then_some(preamble)).chain(output);
 
         Ok(Attachment {
             output: Box::pin(output),

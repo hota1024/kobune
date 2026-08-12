@@ -16,7 +16,9 @@
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 
+use minato_core::Modes;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{broadcast, mpsc};
@@ -45,6 +47,15 @@ pub(crate) struct Terminal {
 
     /// What the far end has written, for whoever is listening.
     output: broadcast::Sender<Vec<u8>>,
+
+    /// What the program has made of this terminal.
+    ///
+    /// Kept because [`subscribe`](Self::subscribe) replays nothing: a
+    /// program says `ESC[?1049h` and `ESC[?1000h` once, in its first
+    /// bytes, and someone who attaches an hour later needs telling. Read
+    /// from every chunk on its way past, so it costs nothing when nobody
+    /// is listening.
+    modes: Arc<Mutex<Modes>>,
 }
 
 impl Terminal {
@@ -77,7 +88,10 @@ impl Terminal {
         let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
         let (input, mut typed) = mpsc::unbounded_channel::<Vec<u8>>();
 
+        let modes = Arc::new(Mutex::new(Modes::new()));
+
         let published = output.clone();
+        let watched = modes.clone();
         tokio::spawn(async move {
             let fd = match AsyncFd::new(master) {
                 Ok(fd) => fd,
@@ -95,6 +109,12 @@ impl Terminal {
                         // container it was attached to went away.
                         Ok(0) | Err(_) => break,
                         Ok(count) => {
+                            // Read before it is handed on, and whether or
+                            // not anyone is listening: the announcement
+                            // this is looking for comes long before the
+                            // first attachment.
+                            watched.lock().expect("lock").watch(&buffer[..count]);
+
                             // An error means nobody is listening, which is
                             // the normal state of a service nobody has
                             // attached to.
@@ -118,12 +138,22 @@ impl Terminal {
             let _ = child.wait().await;
         });
 
-        Ok(Self { input, output })
+        Ok(Self {
+            input,
+            output,
+            modes,
+        })
     }
 
     /// The output from now on. Nothing already written is replayed.
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
         self.output.subscribe()
+    }
+
+    /// What to tell a terminal so that it matches the one the program
+    /// believes it is writing to.
+    pub(crate) fn preamble(&self) -> Vec<u8> {
+        self.modes.lock().expect("lock").preamble()
     }
 
     /// Where to send keystrokes.
@@ -378,6 +408,51 @@ mod tests {
             format!("{} {}", DEFAULT_WINDOW.rows, DEFAULT_WINDOW.cols),
             "got: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn what_the_program_asked_of_the_terminal_is_kept() {
+        // Nobody is subscribed while this runs, which is the point: the
+        // announcement comes long before the first attachment, and an
+        // attachment that arrives after it has to be told.
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg("printf '\\033[?1049h\\033[?1006h\\033[?25l'");
+
+        let terminal = Terminal::open(command).expect("opens");
+
+        let preamble = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let preamble = terminal.preamble();
+                if !preamble.is_empty() {
+                    return preamble;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("does not time out");
+
+        assert_eq!(
+            String::from_utf8_lossy(&preamble),
+            "\x1b[?25l\x1b[?1006h\x1b[?1049h"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_that_only_prints_leaves_nothing_to_replay() {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("echo hello");
+
+        let terminal = Terminal::open(command).expect("opens");
+        let mut output = terminal.subscribe();
+
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .expect("does not time out");
+
+        assert!(terminal.preamble().is_empty());
     }
 
     #[tokio::test]
