@@ -86,7 +86,15 @@ bytes = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
-rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+# **Directly, not through rcgen.** 0.14 stopped exposing any way to read a
+# certificate's name constraints back: `CertificateParams::from_ca_cert_der`
+# went `pub(crate)`, and the `Issuer` that replaced it keeps the signing key
+# and the distinguished name and drops the constraints. Reading them is how
+# `minato doctor` tells a CA made under the rule from one made before it, so
+# it now parses the certificate here — which is where rcgen was reading them
+# from anyway. Kept in step with rcgen's own x509-parser to avoid two copies.
+x509-parser = "0.18"
 hickory-server = "0.24"
 hickory-proto = "0.24"
 
