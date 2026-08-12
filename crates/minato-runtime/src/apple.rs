@@ -876,6 +876,12 @@ impl Runtime for AppleContainerRuntime {
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
         let name = names::container(&spec.key);
 
+        // Scoped as the Docker backend scopes it. Nothing here starts two
+        // services at once — see the module header — but a step id that
+        // means something different depending on the backend is a trap for
+        // whoever changes that.
+        let events = &events.for_service(spec.name());
+
         if let Some(existing) = self.find_container(&spec.key).await? {
             // A built image is tagged with a fingerprint of its inputs, so
             // an edited Dockerfile produces a new tag. Leaving the old

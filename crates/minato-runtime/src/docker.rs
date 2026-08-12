@@ -211,13 +211,19 @@ impl DockerRuntime {
 
     /// Creates the network if it is not there.
     ///
-    /// **One caller at a time.** This looks and then creates, and two
-    /// services starting side by side share a network — so both would look
-    /// before either created, and both would then create. Docker does not
-    /// refuse a name it already has: it makes a second network with the
-    /// same name and a different id, and the two services end up on
-    /// networks that cannot reach each other. The lock is held over a list
-    /// and, at most once per workspace, a create.
+    /// **One caller at a time.** This looks and then creates, and services
+    /// starting side by side share a network — so both could look before
+    /// either created, and both would then create. Docker does not refuse
+    /// a name it already has: it makes a second network with the same name
+    /// and a different id, and the two services end up on networks that
+    /// cannot reach each other.
+    ///
+    /// In practice `prepare` runs first on both paths in and creates the
+    /// networks there, so what the concurrent callers reach here is the
+    /// list and not the create. That is what the lock costs — one listing
+    /// at a time — and it is not what the lock is for: a guarantee that
+    /// holds only because of what some other function happened to do first
+    /// is not one to leave a data race behind.
     async fn ensure_network(&self, key: &WorkspaceKey) -> Result<String> {
         let _guard = self.network_lock.lock().await;
         let name = names::network(key);
@@ -989,10 +995,10 @@ impl Runtime for DockerRuntime {
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
         let name = names::container(&spec.key);
 
-        // **Named after the service, not after the operation.** Two
-        // services can be starting at once, and a display that tracks a
-        // step by its id would have one of them finish the other's.
-        let step = format!("start-{}", spec.name());
+        // Two services can be starting at once, and a step id has to name
+        // the one thing it tracks. Scoped once here rather than at each
+        // call below, and inherited by the readiness wait further down.
+        let events = &events.for_service(spec.name());
 
         // Whatever it exits with next is nothing to do with the last stop.
         self.asked_to_stop.lock().expect("lock").remove(&spec.key);
@@ -1031,7 +1037,7 @@ impl Runtime for DockerRuntime {
 
             if !wrong_image && !wrong_terminal && existing.state.as_deref() == Some("running") {
                 events.step_skipped(
-                    &step,
+                    "start",
                     format!("starting {}", spec.name()),
                     "already running",
                 );
@@ -1065,7 +1071,7 @@ impl Runtime for DockerRuntime {
                 .map_err(|e| RuntimeError::failed(format!("removing container {name}"), e))?;
         }
 
-        events.step_started(&step, format!("starting {}", spec.name()));
+        events.step_started("start", format!("starting {}", spec.name()));
         events.service_state(spec.name(), ServiceState::Starting);
 
         let network = names::network(&spec.attached_to);
@@ -1098,7 +1104,7 @@ impl Runtime for DockerRuntime {
             .start_container(&id, None::<StartContainerOptions<String>>)
             .await
             .map_err(|e| {
-                events.step_failed(&step, format!("starting {}", spec.name()), e.to_string());
+                events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
                 RuntimeError::failed(format!("starting container {name}"), e)
             })?;
 
@@ -1129,7 +1135,7 @@ impl Runtime for DockerRuntime {
 
         let endpoint = self.resolve_endpoint(&id, spec.port).await?;
 
-        events.step_done(&step, format!("starting {}", spec.name()));
+        events.step_done("start", format!("starting {}", spec.name()));
 
         // A container being up does not mean the app inside is listening.
         // Without this wait, the curl right after `minato new` fails with

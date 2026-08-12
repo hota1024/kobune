@@ -55,6 +55,15 @@ pub struct Supervisor {
     /// Its own lock rather than [`Self::state_lock`]: this is held for as
     /// long as an install takes, and holding the state lock that long
     /// would stall every unrelated command.
+    ///
+    /// **It is why a wave's setups do not overlap**, even though the
+    /// starts around them do. That costs the first `up` after `minato new`
+    /// — later ones find the setup recorded and never reach here — and it
+    /// is deliberate for now: two installs at once would interleave their
+    /// output on a display that renders `Event::Output` without the
+    /// service it names (`apps/cli/src/ui/progress.rs`), so narrowing this
+    /// to a key means teaching the display to attribute lines in the same
+    /// change.
     setup_lock: Mutex<()>,
     /// The proxy and DNS. Also where URLs come from.
     gateway: Arc<Gateway>,
@@ -1549,28 +1558,21 @@ impl Supervisor {
         // somebody is sitting through.
         let mut endpoint = None;
         for wave in waves(&config, &specs) {
-            let started = if runtime.starts_concurrently() {
-                futures::future::join_all(wave.iter().map(|spec| runtime.start(spec, &events)))
-                    .await
-            } else {
-                let mut started = Vec::with_capacity(wave.len());
-                for spec in &wave {
-                    let outcome = runtime.start(spec, &events).await;
-                    let failed = outcome.is_err();
-                    started.push(outcome);
-                    if failed {
-                        break;
-                    }
-                }
-                started
-            };
+            let started = run_wave(
+                runtime.starts_concurrently(),
+                wave.iter()
+                    .map(|spec| runtime.start(spec, &events))
+                    .collect(),
+            )
+            .await?;
 
-            for running in started.into_iter().collect::<Result<Vec<_>, _>>()? {
-                // The host was asked for one service. The rest are here to
-                // stand behind it.
-                if running.key.service == route.service {
-                    endpoint = running.endpoint;
-                }
+            // The host was asked for one service. The rest are here to
+            // stand behind it.
+            if let Some(running) = started
+                .into_iter()
+                .find(|running| running.key.service == route.service)
+            {
+                endpoint = running.endpoint;
             }
         }
 
@@ -2417,60 +2419,16 @@ impl Supervisor {
         // thing it depends on is up, and the waves already put them in
         // that order.
         for wave in waves(&resolved.config, &filtered) {
-            self.start_wave(resolved, &wave, runtime.as_ref(), events)
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    /// Sets up and starts one wave of services.
-    ///
-    /// Nothing in a wave depends on anything else in it, so on a runtime
-    /// that allows it they go at once — which is the whole saving, since
-    /// [`Runtime::start`] does not return until the service answers or
-    /// gives up waiting, and three services that know nothing of each
-    /// other used to spend that wait three times over.
-    ///
-    /// **The whole wave finishes before a failure is reported.** Its
-    /// members are independent by construction, so one failing says
-    /// nothing about the others, and abandoning them mid-flight would
-    /// leave containers half-created for no gain. Whatever depends on the
-    /// wave is in a later one and is never reached.
-    async fn start_wave(
-        &self,
-        resolved: &Resolved,
-        wave: &[&minato_runtime::ServiceSpec],
-        runtime: &dyn Runtime,
-        events: &EventSink,
-    ) -> Result<(), ApiError> {
-        let outcomes = if runtime.starts_concurrently() {
-            futures::future::join_all(
+            run_wave(
+                runtime.starts_concurrently(),
                 wave.iter()
-                    .map(|service| self.setup_and_start(resolved, service, runtime, events)),
+                    .map(|service| {
+                        self.setup_and_start(resolved, service, runtime.as_ref(), events)
+                    })
+                    .collect(),
             )
-            .await
-        } else {
-            let mut outcomes = Vec::with_capacity(wave.len());
-            for service in wave {
-                let outcome = self
-                    .setup_and_start(resolved, service, runtime, events)
-                    .await;
-                let failed = outcome.is_err();
-                outcomes.push(outcome);
-
-                // In sequence there is no wave already in flight to see
-                // out, so stopping here is what this path has always done.
-                if failed {
-                    break;
-                }
-            }
-            outcomes
-        };
-
-        // The first failure in wave order, so which error comes back does
-        // not depend on which service happened to give up first.
-        outcomes.into_iter().collect::<Result<Vec<_>, _>>()?;
+            .await?;
+        }
 
         Ok(())
     }
@@ -2910,12 +2868,40 @@ fn unreached_internal_services(
     unreached
 }
 
+/// Runs one wave's worth of work, overlapping it where that is allowed.
+///
+/// **The error that comes back is the first in wave order**, either way,
+/// so which one it is does not depend on which service happened to give up
+/// first.
+///
+/// Concurrently, the whole wave finishes before a failure is reported. Its
+/// members are independent by construction, so one failing says nothing
+/// about the others, and abandoning them mid-flight would leave containers
+/// half-created for no gain. In sequence there is nothing already in
+/// flight to see out, so the first failure stops it — which is what this
+/// path has always done.
+async fn run_wave<T, E>(
+    concurrently: bool,
+    work: Vec<impl std::future::Future<Output = Result<T, E>>>,
+) -> Result<Vec<T>, E> {
+    if concurrently {
+        return futures::future::join_all(work).await.into_iter().collect();
+    }
+
+    let mut done = Vec::with_capacity(work.len());
+    for one in work {
+        done.push(one.await?);
+    }
+
+    Ok(done)
+}
+
 /// Regroups an ordered run of specs into the waves they can start in.
 ///
-/// The specs are already in `startup_order`; this only says where the
-/// breaks go. Anything the configuration does not name is left in a wave
-/// of its own at the end rather than dropped — a service that cannot be
-/// placed still has to start, and starting it last is the safe reading.
+/// `startup_waves` has already decided the grouping; this only picks out
+/// the specs the caller is actually starting. A wave the selection skipped
+/// entirely is dropped rather than left empty, which keeps "one wave, one
+/// round of starts" true.
 ///
 /// **Depth is read off the whole configuration, not the selection.** That
 /// is the same answer, because a selection always arrives closed over its
@@ -2926,30 +2912,30 @@ fn waves<'a>(
     config: &MinatoConfig,
     specs: &'a [minato_runtime::ServiceSpec],
 ) -> Vec<Vec<&'a minato_runtime::ServiceSpec>> {
-    let depths = config.startup_waves();
-    let depth_of = |name: &str| depths.iter().position(|wave| wave.contains(&name));
+    let grouped: Vec<Vec<&minato_runtime::ServiceSpec>> = config
+        .startup_waves()
+        .into_iter()
+        .map(|wave| {
+            specs
+                .iter()
+                .filter(|spec| wave.contains(&spec.name()))
+                .collect()
+        })
+        .filter(|wave: &Vec<_>| !wave.is_empty())
+        .collect();
 
-    let mut waves: Vec<Vec<&minato_runtime::ServiceSpec>> = Vec::new();
-    let mut unplaced: Vec<&minato_runtime::ServiceSpec> = Vec::new();
+    // Every spec was built by walking this same configuration — through
+    // `build_workspace_spec` or through `wake_order`, both of which read
+    // `startup_order` — so `startup_waves` names all of them and nothing
+    // is dropped here. Stated rather than guarded: the guard would be a
+    // branch no caller can reach.
+    debug_assert_eq!(
+        grouped.iter().map(Vec::len).sum::<usize>(),
+        specs.len(),
+        "every spec is a service the configuration names"
+    );
 
-    for spec in specs {
-        match depth_of(spec.name()) {
-            Some(depth) => {
-                if waves.len() <= depth {
-                    waves.resize_with(depth + 1, Vec::new);
-                }
-                waves[depth].push(spec);
-            }
-            None => unplaced.push(spec),
-        }
-    }
-
-    // A wave the selection skipped entirely leaves a gap. Dropping the
-    // empties keeps "one wave, one round of starts" true.
-    waves.retain(|wave| !wave.is_empty());
-    waves.extend(unplaced.into_iter().map(|spec| vec![spec]));
-
-    waves
+    grouped
 }
 
 /// The named services, plus everything they depend on.
@@ -3653,44 +3639,10 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_chain_of_dependencies_gets_a_wave_each() {
-        // SAMPLE is web -> api -> db. There is nothing to overlap, and
-        // grouping must not invent any.
-        let config = config(SAMPLE);
-        let specs = specs_for(&config, &[]);
-
-        assert_eq!(
-            wave_names(&waves(&config, &specs)),
-            vec![vec!["db"], vec!["api"], vec!["web"]]
-        );
-    }
-
-    #[test]
-    fn services_that_need_nothing_land_in_one_wave() {
-        let config = config(
-            r#"
-            [project]
-            name = "myapp"
-            [services.web]
-            image = "node:22"
-            port = 3000
-            [services.api]
-            image = "node:22"
-            port = 8080
-            [services.db]
-            image = "postgres:16"
-            port = 5432
-        "#,
-        );
-        let specs = specs_for(&config, &[]);
-
-        assert_eq!(
-            wave_names(&waves(&config, &specs)),
-            vec![vec!["web", "api", "db"]],
-            "one round of starts, not three"
-        );
-    }
+    // What the grouping itself does is pinned on `startup_waves`, in
+    // `minato-core`. What is left to test here is the part that only
+    // exists at this layer: mapping specs onto those waves, and doing it
+    // for a selection narrower than the configuration.
 
     #[test]
     fn a_narrowed_selection_leaves_no_empty_wave_behind() {

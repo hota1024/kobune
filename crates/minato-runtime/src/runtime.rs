@@ -218,6 +218,13 @@ pub trait Runtime: Send + Sync {
     /// address into the container at creation, read from the peer that is
     /// running by then. Two services started together would each be
     /// handed nothing for the other.
+    ///
+    /// **A property of the backend, not of the installation**, which is
+    /// why this is answered here and not on [`RuntimeInfo`]. Its
+    /// neighbour `supports_custom_networks` is discovered by asking, and
+    /// deciding how to start on the result of a fallible round trip would
+    /// put a new way for `up` to fail in front of a question the code
+    /// already knows the answer to.
     fn starts_concurrently(&self) -> bool {
         false
     }

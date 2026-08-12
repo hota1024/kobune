@@ -138,23 +138,30 @@ impl Harness {
     }
 
     async fn request(&self, request: Request) -> minato_api::Response {
+        self.request_watching(request, &EventSink::discard()).await
+    }
+
+    async fn request_watching(&self, request: Request, events: &EventSink) -> minato_api::Response {
         // Nothing here types at a terminal, so the keyboard channel is
         // only ever the shape the signature wants.
         let (_keys, from_client) = tokio::sync::mpsc::unbounded_channel();
 
         self.supervisor
-            .handle(request, &EventSink::discard(), from_client)
+            .handle(request, events, from_client)
             .await
             .unwrap_or_else(|err| panic!("{err:?}"))
     }
 
-    async fn up(&self) {
-        self.request(Request::Up {
+    fn up_request(&self) -> Request {
+        Request::Up {
             target: self.target(),
             services: Vec::new(),
             rebuild: false,
-        })
-        .await;
+        }
+    }
+
+    async fn up(&self) {
+        self.request(self.up_request()).await;
     }
 
     /// One `up`, and everything it said while doing it.
@@ -165,20 +172,7 @@ impl Harness {
     /// happens to be holding.
     async fn up_watching(&self) -> Vec<minato_api::Event> {
         let (events, mut received) = EventSink::channel();
-        let (_keys, from_client) = tokio::sync::mpsc::unbounded_channel();
-
-        self.supervisor
-            .handle(
-                Request::Up {
-                    target: self.target(),
-                    services: Vec::new(),
-                    rebuild: false,
-                },
-                &events,
-                from_client,
-            )
-            .await
-            .unwrap_or_else(|err| panic!("{err:?}"));
+        self.request_watching(self.up_request(), &events).await;
 
         let mut all = Vec::new();
         while let Ok(event) = received.try_recv() {
@@ -545,17 +539,21 @@ command = "sh -c 'sleep 4; echo ok > /tmp/index.html; httpd -f -p 8080 -h /tmp'"
     )
 }
 
-/// Where an event saying `step` reached `status` sits in the stream.
-fn step_at(events: &[minato_api::Event], step: &str, status: &minato_api::StepStatus) -> usize {
+/// Where the first event saying `step` reached a matching status sits.
+fn step_at(
+    events: &[minato_api::Event],
+    step: &str,
+    matching: impl Fn(&minato_api::StepStatus) -> bool,
+) -> usize {
     events
         .iter()
         .position(|event| {
             matches!(
                 event,
-                minato_api::Event::Step { id, status: seen, .. } if id == step && seen == status
+                minato_api::Event::Step { id, status, .. } if id == step && matching(status)
             )
         })
-        .unwrap_or_else(|| panic!("no `{step}` {status:?} in {events:#?}"))
+        .unwrap_or_else(|| panic!("no matching `{step}` in {events:#?}"))
 }
 
 #[tokio::test]
@@ -571,25 +569,21 @@ async fn independent_services_do_not_wait_for_each_other() {
 
     let events = harness.up_watching().await;
 
+    use minato_api::StepStatus;
     let started = |service: &str| {
-        step_at(
-            &events,
-            &format!("await-{service}"),
-            &minato_api::StepStatus::Started,
-        )
+        step_at(&events, &format!("await-{service}"), |status| {
+            matches!(status, StepStatus::Started)
+        })
     };
+    // Spelled out rather than "anything but `Started`": a wait that
+    // reported `Progress` would satisfy that and be read as finished.
     let settled = |service: &str| {
-        events
-            .iter()
-            .position(|event| {
-                matches!(
-                    event,
-                    minato_api::Event::Step { id, status, .. }
-                        if id == &format!("await-{service}")
-                            && !matches!(status, minato_api::StepStatus::Started)
-                )
-            })
-            .unwrap_or_else(|| panic!("`await-{service}` never settled in {events:#?}"))
+        step_at(&events, &format!("await-{service}"), |status| {
+            matches!(
+                status,
+                StepStatus::Done | StepStatus::Skipped { .. } | StepStatus::Failed { .. }
+            )
+        })
     };
 
     assert!(

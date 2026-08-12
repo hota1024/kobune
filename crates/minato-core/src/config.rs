@@ -786,7 +786,13 @@ impl MinatoConfig {
             let depth = self.services[name]
                 .depends_on
                 .iter()
-                .map(|dep| depths.get(dep.as_str()).map_or(0, |depth| depth + 1))
+                // Indexed, not looked up with a fallback. A missing
+                // dependency cannot happen — `validate` rejects one that
+                // names nothing, and `startup_order` puts the rest in
+                // front — and reading it as depth 0 would put a service in
+                // the same wave as its own dependency, which is the one
+                // thing this must never do.
+                .map(|dep| depths[dep.as_str()] + 1)
                 .max()
                 .unwrap_or(0);
 
@@ -1366,10 +1372,8 @@ mod tests {
         assert!(result.is_err(), "a typo must be caught");
     }
 
-    #[test]
-    fn startup_order_respects_dependencies() {
-        let config = parse(
-            r#"
+    /// `web` -> `api` -> `db`: nothing can overlap.
+    const CHAIN: &str = r#"
             [project]
             name = "myapp"
             [services.web]
@@ -1380,22 +1384,11 @@ mod tests {
             depends_on = ["db"]
             [services.db]
             image = "x"
-        "#,
-        )
-        .expect("valid");
+        "#;
 
-        let order = config.startup_order();
-        assert_eq!(order.len(), 3);
-
-        let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
-        assert!(pos("db") < pos("api"));
-        assert!(pos("api") < pos("web"));
-    }
-
-    #[test]
-    fn startup_order_handles_diamond() {
-        let config = parse(
-            r#"
+    /// `web` over both `api` and `worker`, which share `db`. The two
+    /// middles are independent of each other.
+    const DIAMOND: &str = r#"
             [project]
             name = "myapp"
             [services.web]
@@ -1409,9 +1402,23 @@ mod tests {
             depends_on = ["db"]
             [services.db]
             image = "x"
-        "#,
-        )
-        .expect("valid");
+        "#;
+
+    #[test]
+    fn startup_order_respects_dependencies() {
+        let config = parse(CHAIN).expect("valid");
+
+        let order = config.startup_order();
+        assert_eq!(order.len(), 3);
+
+        let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
+        assert!(pos("db") < pos("api"));
+        assert!(pos("api") < pos("web"));
+    }
+
+    #[test]
+    fn startup_order_handles_diamond() {
+        let config = parse(DIAMOND).expect("valid");
 
         let order = config.startup_order();
         assert_eq!(
@@ -1450,21 +1457,7 @@ mod tests {
 
     #[test]
     fn a_chain_gets_a_wave_each() {
-        let config = parse(
-            r#"
-            [project]
-            name = "myapp"
-            [services.web]
-            image = "x"
-            depends_on = ["api"]
-            [services.api]
-            image = "x"
-            depends_on = ["db"]
-            [services.db]
-            image = "x"
-        "#,
-        )
-        .expect("valid");
+        let config = parse(CHAIN).expect("valid");
 
         assert_eq!(
             config.startup_waves(),
@@ -1474,24 +1467,7 @@ mod tests {
 
     #[test]
     fn a_diamond_puts_the_two_middles_together() {
-        let config = parse(
-            r#"
-            [project]
-            name = "myapp"
-            [services.web]
-            image = "x"
-            depends_on = ["api", "worker"]
-            [services.api]
-            image = "x"
-            depends_on = ["db"]
-            [services.worker]
-            image = "x"
-            depends_on = ["db"]
-            [services.db]
-            image = "x"
-        "#,
-        )
-        .expect("valid");
+        let config = parse(DIAMOND).expect("valid");
 
         assert_eq!(
             config.startup_waves(),
