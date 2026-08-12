@@ -49,12 +49,21 @@ pub struct Supervisor {
     /// can then run on different runtimes.
     runtimes: Mutex<HashMap<String, Arc<dyn Runtime>>>,
     /// Serialises writes to the state file.
+    ///
+    /// **Every `store` access goes under this, without exception.**
+    /// [`StateStore::update`] is a load, a mutate and a save with no lock
+    /// of its own, so two writers that overlap do not corrupt the file —
+    /// they lose one of the two writes, which is worse to diagnose. The
+    /// one place that took a different lock and not this one recorded a
+    /// completed `setup`, and could erase a workspace that had just been
+    /// registered.
     state_lock: Mutex<()>,
     /// Serialises `setup` across the check, the run and the record.
     ///
     /// Its own lock rather than [`Self::state_lock`]: this is held for as
     /// long as an install takes, and holding the state lock that long
-    /// would stall every unrelated command.
+    /// would stall every unrelated command. It is held *as well as*, never
+    /// instead of — see [`Supervisor::run_setup`].
     ///
     /// **It is why a wave's setups do not overlap**, even though the
     /// starts around them do. That costs the first `up` after `minato new`
@@ -2580,18 +2589,27 @@ impl Supervisor {
         // Two `up`s racing would otherwise both decide it was needed and
         // both run an install into the same volume, then both remember the
         // result as good.
+        //
+        // It does not stand in for [`Self::state_lock`], which is what
+        // makes a read-modify-write of the state file safe against
+        // everything that is not a setup. Both are taken, this one first —
+        // an ordering nothing else can contradict, because `setup_lock` is
+        // taken here and nowhere else.
         let _guard = self.setup_lock.lock().await;
 
         let project = resolved.project.clone();
         let workspace = resolved.workspace.label.clone();
 
-        let pending = self.store.load().map_err(ApiError::from)?.needs_setup(
-            &project,
-            &workspace,
-            name,
-            service.scope,
-            &setup,
-        );
+        let pending = {
+            let _state = self.state_lock.lock().await;
+            self.store.load().map_err(ApiError::from)?.needs_setup(
+                &project,
+                &workspace,
+                name,
+                service.scope,
+                &setup,
+            )
+        };
 
         if !pending {
             return Ok(());
@@ -2627,12 +2645,14 @@ impl Supervisor {
         // run, whatever it managed to do before giving up.
         let service_name = name.to_string();
         let scope = service.scope;
-        let recorded = self
-            .store
-            .update(|state| {
-                Ok(state.record_setup(&project, &workspace, &service_name, scope, &setup))
-            })
-            .map_err(ApiError::from)?;
+        let recorded = {
+            let _state = self.state_lock.lock().await;
+            self.store
+                .update(|state| {
+                    Ok(state.record_setup(&project, &workspace, &service_name, scope, &setup))
+                })
+                .map_err(ApiError::from)?
+        };
 
         if !recorded {
             events.debug(format!(
