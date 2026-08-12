@@ -14,9 +14,8 @@ less accurately.
 
 ### Security
 
-- The local CA is narrowed to `.localhost` and `.test` with an X.509 name
-  constraint, so a key that escaped could sign nothing anyone could be fooled
-  by. `minato setup` puts this certificate in the system trust store, and
+- The local CA is narrowed to `localhost` with an X.509 name constraint, so a
+  key that escaped could sign nothing anyone could be fooled by. `minato setup` puts this certificate in the system trust store, and
   without the constraint the key behind it signed any host at all. A CA
   generated before this is left alone rather than replaced — swapping a
   trusted certificate breaks every URL until somebody notices — and

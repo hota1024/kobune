@@ -457,6 +457,80 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
     assert!(String::from_utf8_lossy(&body).contains("upstream /secure"));
 }
 
+/// Every name the CA's constraint is supposed to cover, put to a real
+/// verifier.
+///
+/// **This is the test the constraint needed and did not have.** The first
+/// version of `PERMITTED_SUFFIXES` carried a leading dot — `.localhost` —
+/// on the belief that the dot is what makes a subtree cover what is under
+/// it. It is the opposite: RFC 5280 §4.2.1.10 already covers everything
+/// with labels prepended, and the dot is a non-standard form meaning
+/// *strictly* below, which excludes `localhost` itself. Every unit test
+/// passed, because they all asked rcgen's own parser rather than anything
+/// that verifies.
+///
+/// `localhost` is not a hypothetical: `minato-dns` answers for the apex,
+/// so `https://localhost` is a URL a person really opens.
+#[tokio::test]
+async fn the_constrained_ca_verifies_for_every_name_it_covers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ca = Arc::new(LocalCa::load_or_create(dir.path()).expect("creates a CA"));
+
+    let ca_der = rustls::pki_types::CertificateDer::from(
+        rustls_pemfile::certs(&mut std::io::BufReader::new(
+            ca.certificate_pem().as_bytes(),
+        ))
+        .next()
+        .expect("has a certificate")
+        .expect("reads")
+        .to_vec(),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let shutdown = Arc::new(Notify::new());
+
+    tokio::spawn(async move {
+        let _ = serve_https(
+            listener,
+            Routes::new(),
+            Arc::new(NoopActivator),
+            server_config(ca),
+            shutdown,
+        )
+        .await;
+    });
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca_der).expect("trusts the CA");
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+
+    for name in [
+        // The apex, which a leading dot would exclude.
+        "localhost",
+        // A project on the main worktree.
+        "web.myapp.localhost",
+        // And one at the depth every new worktree invents.
+        "api.feature-user-auth.myapp.localhost",
+    ] {
+        let server_name = rustls::pki_types::ServerName::try_from(name).expect("a valid name");
+        let tcp = TcpStream::connect(addr).await.expect("connects");
+
+        connector
+            .connect(server_name, tcp)
+            .await
+            .unwrap_or_else(|err| {
+                panic!(
+                    "a client trusting only this CA must accept {name}, and did not: {err}. \
+                     The name constraint is refusing a name Minato serves"
+                )
+            });
+    }
+}
+
 #[tokio::test]
 async fn wakes_a_stopped_service_and_forwards() {
     // Scale-to-zero itself: a request wakes a stopped service and goes

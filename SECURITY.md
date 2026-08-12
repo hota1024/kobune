@@ -41,11 +41,11 @@ Worth reading before `curl … | sh`, and the context a report lands in.
 what makes `https://web.feat-1.myapp.localhost` work without a warning. The
 private key is `0600` and never leaves the machine.
 
-**It carries a name constraint**, so it may sign only for `.localhost` and
-`.test` and a verifier refuses anything else it signs. Both are reserved TLDs
-that can never be a real public name, so a key that escaped would be worth
-close to nothing — which is not the bargain `mkcert` and most local-HTTPS
-tools ask for.
+**It carries a name constraint**, so it may sign only for `localhost` and
+names under it, and a verifier refuses anything else it signs. `localhost` is
+reserved and can never be a real public name, so a key that escaped would be
+worth close to nothing — which is not the bargain `mkcert` and most
+local-HTTPS tools ask for.
 
 A CA generated before that rule has no constraint and can still sign for
 anything. It is not replaced automatically: swapping a certificate you trusted

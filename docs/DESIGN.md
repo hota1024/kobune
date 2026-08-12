@@ -292,7 +292,7 @@ Re-signing it through rcgen produces different bytes every time — ECDSA
 signatures are not deterministic — and what goes out would no longer match what
 the user trusted.
 
-#### The CA is narrowed to `.localhost` and `.test`
+#### The CA is narrowed to `localhost`
 
 Issuing for whatever SNI asks is the right behaviour for the proxy and the
 wrong power for the key behind it. `minato setup` puts this certificate in the
@@ -300,28 +300,46 @@ system trust store, so without a limit the key in `~/.minato/ca/` signs
 `google.com` as readily as anything of Minato's, and the machine believes it.
 `mkcert` asks for the same thing, which makes it usual rather than acceptable.
 
-So the CA carries an X.509 `NameConstraints` extension permitting `.localhost`
-and `.test` and nothing else. Both are reserved by RFC 6761 and can never be a
-real public name, so what a leaked key could sign is nothing anybody could be
-fooled by. A leading dot is what makes the subtree cover everything *under* the
-suffix, which is the whole requirement — every worktree invents a name at a new
-depth.
+So the CA carries an X.509 `NameConstraints` extension permitting `localhost`
+and nothing else. It is reserved by RFC 6761 and can never be a real public
+name, so what a leaked key could sign is nothing anybody could be fooled by.
+
+**No leading dot, and that is not a detail.** RFC 5280 §4.2.1.10 says a DNS
+subtree is satisfied by the name itself *and* by anything with labels prepended
+— so `localhost` already covers `web.feat-1.myapp.localhost`, which is the
+whole requirement. `.localhost` is a different, non-standard form meaning
+strictly below, and it excludes `localhost` itself, which
+[the DNS server](#dns) answers for. The first version of this used the dot on
+the belief that it was what made subdomains work; OpenSSL and rustls-webpki
+both refuse `localhost` under it. Nothing caught that until a test asked a
+verifier instead of asking rcgen's own parser — the same mistake in the same
+shape as [§6's Apple Container fixtures](#what-running-apple-container-turned-up-m7).
+
+**Only what Minato actually serves.** `.test` was in this list briefly, on the
+strength of this document anticipating it — but nothing resolves it: the DNS
+server serves `localhost` alone and `minato setup` installs only
+`/etc/resolver/localhost`. Permitting a suffix that cannot resolve would have
+`minato doctor` report a working setup that is not one. It comes back when the
+resolver does.
 
 Two consequences, and both are `minato doctor`'s to report rather than
 anything's to fix silently.
 
 - **A CA made before this has no constraint**, and is left alone. Replacing a
   certificate the user trusted would break every URL until they noticed and
-  trusted the new one, which is a worse day than the one it prevents
-- **`[project] domain` can name a suffix outside it.** That configuration is
-  supported — `/etc/resolver/{suffix}` is written per suffix — so the check
-  says which domain and which suffixes, because the browser error for it names
-  neither
+  trusted the new one, which is a worse day than the one it prevents. The fix
+  it prints stops trusting the old one *first*, while the file naming it is
+  still on disk
+- **`[project] domain` can name a suffix outside it**, and the browser error
+  for that names neither Minato nor the constraint. The check says which domain
+  and which suffixes — and does not offer regenerating the CA, because what a
+  new one permits is compiled in and a replacement would be identical
 
 The proxy still issues for a name outside the constraint rather than refusing
 the handshake: the constraint is enforced by whoever verifies, which is what
 X.509 is for, and a certificate error says far more than a dropped connection.
-It logs a line saying so.
+It logs a line saying so, once — SNI is unauthenticated, so one line per
+distinct name is a way to write into the log for free.
 
 #### Listen on both IPv4 and IPv6 (found in M1)
 

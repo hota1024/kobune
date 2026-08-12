@@ -231,14 +231,20 @@ impl Supervisor {
         // the launchd check says, and those two have to agree.
         let launchd_installed = minato_core::launchd::is_installed();
 
-        // Which runtime this project runs on. Diagnosing a machine with no
-        // project is still worth doing — that is often *why* someone runs
-        // doctor — so failing to resolve falls back to the default.
-        let configured = self
-            .resolve_project_only(&target)
-            .await
+        // **Resolved once.** This walks git, finds the configuration and
+        // registers the project in the state store — a write, under the
+        // state lock — so asking twice would do all of it twice to learn
+        // two fields of the same answer.
+        //
+        // Diagnosing a machine with no project is still worth doing —
+        // that is often *why* someone runs doctor — so failing to resolve
+        // is not an error here.
+        let project = self.resolve_project_only(&target).await.ok();
+
+        let configured = project
+            .as_ref()
             .map(|context| context.config.runtime.default.clone())
-            .unwrap_or_else(|_| "docker".to_string());
+            .unwrap_or_else(|| "docker".to_string());
 
         checks.extend(self.runtime_checks(&configured).await);
 
@@ -406,7 +412,9 @@ impl Supervisor {
 
         // What that CA may sign for, which is the difference between a
         // key that is worth stealing and one that is not.
-        if let Some(check) = self.ca_scope_check(&target).await {
+        if let Some(check) =
+            self.ca_scope_check(project.as_ref().map(|context| context.config.domain()))
+        {
             checks.push(check);
         }
 
@@ -1309,7 +1317,6 @@ impl Supervisor {
         checks
     }
 
-    /// Diagnoses the tunnel, or nothing when there is none to diagnose.
     /// What the local CA is allowed to sign for, and whether that covers
     /// this project.
     ///
@@ -1324,7 +1331,7 @@ impl Supervisor {
     /// every HTTPS URL it issues will be refused — and the browser error
     /// for it names neither Minato nor the constraint. A failure, with
     /// the two ways out.
-    async fn ca_scope_check(&self, target: &Target) -> Option<Check> {
+    fn ca_scope_check(&self, domain: Option<String>) -> Option<Check> {
         // Nothing to say before there is a CA at all; the check above
         // has already said that.
         self.gateway.ca_path()?;
@@ -1343,17 +1350,15 @@ impl Supervisor {
                         .to_string(),
                 )
                 .with_fix(
-                    "delete ~/.minato/ca/, restart the daemon, and run \
-                     `minato setup` again to trust the replacement",
+                    "stop trusting it first — `minato uninstall` prints the \
+                     command, and it names the file, so it has to run while \
+                     the file is still there. Then delete ~/.minato/ca/, \
+                     restart the daemon, and run `minato setup` to trust the \
+                     replacement. Leaving the old one trusted keeps every \
+                     certificate its key ever signed working",
                 ),
             );
         }
-
-        let domain = self
-            .resolve_project_only(target)
-            .await
-            .ok()
-            .map(|context| context.config.domain());
 
         // A machine with no project is a perfectly ordinary thing to run
         // doctor on, and there is no domain to check against.
@@ -1380,13 +1385,15 @@ impl Supervisor {
                 ),
             )
             .with_fix(format!(
-                "put [project] domain under one of {}, or delete \
-                 ~/.minato/ca/ and trust a replacement that covers {domain}",
-                permitted.join(" / ")
+                "put [project] domain under {}. Regenerating the CA will not \
+                 help: what it may sign for is compiled in, so a replacement \
+                 carries the same constraint",
+                permitted.join(" or ")
             )),
         )
     }
 
+    /// Diagnoses the tunnel, or nothing when there is none to diagnose.
     async fn tunnel_check(&self) -> Option<Check> {
         let record = self.tunnel_record().await.ok().flatten()?;
 
@@ -3249,6 +3256,7 @@ impl Supervisor {
 mod tests {
     use super::*;
     use crate::gateway::Gateway;
+    use minato_api::CheckStatus;
     use std::net::SocketAddr;
     use std::path::Path;
 
@@ -3262,6 +3270,101 @@ mod tests {
             TunnelHandle::new(),
             Arc::new(tokio::sync::Notify::new()),
         )
+    }
+
+    #[test]
+    fn no_ca_means_nothing_to_say_about_its_scope() {
+        // The check above it already reports that there is no CA. Two
+        // lines about the same absence is noise on a screen people are
+        // meant to read.
+        let supervisor = supervisor(Gateway::inert());
+
+        assert!(
+            supervisor
+                .ca_scope_check(Some("myapp.localhost".to_string()))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_unconstrained_ca_is_a_warning_that_says_how_to_replace_it() {
+        // Every installation made before the rule. Nothing is broken, so
+        // not a failure — but the key is worth more to an attacker than
+        // it needs to be, and replacing it is the user's call.
+        let supervisor = supervisor(Gateway::inert().with_ca("/tmp/ca.crt"));
+
+        let check = supervisor
+            .ca_scope_check(Some("myapp.localhost".to_string()))
+            .expect("reports");
+
+        assert_eq!(check.status, CheckStatus::Warn);
+        let fix = check.fix.expect("has a fix");
+
+        // **The order matters and the text has to carry it.** The
+        // command names the file, so it cannot run after the delete.
+        assert!(fix.contains("uninstall"), "got: {fix}");
+        assert!(
+            fix.find("trusting it first").unwrap() < fix.find("delete").unwrap(),
+            "untrusting has to come before deleting: {fix}"
+        );
+    }
+
+    #[test]
+    fn a_domain_the_ca_covers_is_reported_as_covered() {
+        let supervisor = supervisor(
+            Gateway::inert()
+                .with_ca("/tmp/ca.crt")
+                .with_ca_permitting(&["localhost"]),
+        );
+
+        let check = supervisor
+            .ca_scope_check(Some("myapp.localhost".to_string()))
+            .expect("reports");
+
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert!(check.detail.contains("myapp.localhost"), "{}", check.detail);
+    }
+
+    #[test]
+    fn a_domain_outside_the_constraint_fails_with_a_fix_that_can_be_carried_out() {
+        // The fix used to offer regenerating the CA. It cannot help:
+        // what a new one permits is compiled in, so the replacement is
+        // as constrained as the one deleted and the user loops.
+        let supervisor = supervisor(
+            Gateway::inert()
+                .with_ca("/tmp/ca.crt")
+                .with_ca_permitting(&["localhost"]),
+        );
+
+        let check = supervisor
+            .ca_scope_check(Some("myapp.example.com".to_string()))
+            .expect("reports");
+
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains("myapp.example.com"));
+
+        let fix = check.fix.expect("has a fix");
+        assert!(fix.contains("[project] domain"), "got: {fix}");
+        assert!(
+            !fix.contains("delete"),
+            "offering to regenerate the CA sends them somewhere that cannot work: {fix}"
+        );
+    }
+
+    #[test]
+    fn no_project_still_reports_what_the_ca_covers() {
+        // `doctor` on a machine with no project is a perfectly ordinary
+        // thing to run, and often why somebody runs it.
+        let supervisor = supervisor(
+            Gateway::inert()
+                .with_ca("/tmp/ca.crt")
+                .with_ca_permitting(&["localhost"]),
+        );
+
+        let check = supervisor.ca_scope_check(None).expect("reports");
+
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert_eq!(check.detail, "localhost");
     }
 
     fn ready(key: minato_runtime::ServiceKey, port: u16, scope: ServiceScope) -> ServiceStatus {

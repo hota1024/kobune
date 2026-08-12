@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use rcgen::{
@@ -38,15 +39,28 @@ const CA_VALIDITY_YEARS: i64 = 10;
 /// `mkcert` asks for the same bargain, which makes it usual rather than
 /// good, and X.509 has had the answer since 1999.
 ///
-/// Both of these are reserved by RFC 6761 and can never be a real public
-/// name, so what a leaked key could sign is nothing anybody could be
-/// fooled by. `.test` is here because `docs/DESIGN.md` §5 anticipates it
-/// for anyone wanting a TLD of their own.
+/// **No leading dot.** RFC 5280 §4.2.1.10 says a DNS subtree is satisfied
+/// by the name itself and by anything with labels prepended, so
+/// `localhost` already covers `web.feat-1.myapp.localhost` — which is the
+/// whole requirement, since every worktree invents a name at a new depth.
+/// `.localhost` is a different, non-standard form that means *strictly*
+/// below, and it excludes `localhost` itself. Measured, not assumed:
+/// against OpenSSL, `DNS:.localhost` refuses a leaf for `localhost` with
+/// "permitted subtree violation" while `DNS:localhost` accepts both. And
+/// `localhost` is a name Minato really serves — [`minato_dns`] answers for
+/// the apex — so the dot broke a working URL and bought nothing.
 ///
-/// A leading dot is what makes a subtree match everything *under* the
-/// suffix as well as the suffix itself — which is the whole point, since
-/// every worktree invents a name at a new depth.
-pub const PERMITTED_SUFFIXES: [&str; 2] = [".localhost", ".test"];
+/// `localhost` is reserved by RFC 6761 and can never be a real public
+/// name, so what a leaked key could sign is nothing anybody could be
+/// fooled by.
+///
+/// **Only what Minato actually serves.** `.test` was here for a moment,
+/// on the strength of `docs/DESIGN.md` §5 anticipating it — but nothing
+/// resolves it today: the DNS server serves `localhost` alone, and the
+/// CLI only ever installs `/etc/resolver/localhost`. Permitting a suffix
+/// that cannot resolve would let `minato doctor` report a working setup
+/// that is not one. It comes back when the resolver does.
+pub const PERMITTED_SUFFIXES: [&str; 1] = ["localhost"];
 
 /// How long an issued leaf certificate is valid, in days.
 ///
@@ -152,9 +166,9 @@ impl LocalCa {
                 source,
             })?;
 
-        // Read before signing: `self_signed` consumes the params, and the
-        // constraint they carry is what tells an old CA from a new one.
-        let params_for_reading = params.clone();
+        // Before signing, which consumes them. The constraint they carry
+        // is what tells a CA made under this rule from one made before it.
+        let permitted = permitted_from(&params);
 
         // Only ever used as the signing issuer. Its signature bytes do not
         // match the ones on disk, so it must not go out as the chain.
@@ -164,7 +178,7 @@ impl LocalCa {
         let der = pem_to_der(&cert_pem, dir.join(CA_CERT_FILE))?;
 
         Ok(Self {
-            permitted: permitted_from(&params_for_reading),
+            permitted,
             certificate,
             key_pair,
             der,
@@ -205,6 +219,14 @@ impl LocalCa {
         params.not_before = now();
         params.not_after = now() + time::Duration::days(365 * CA_VALIDITY_YEARS);
 
+        // **Read back rather than assumed.** Taking the constant here
+        // would have `create` report a constraint whose presence in the
+        // certificate nothing checked — and rcgen declines to emit the
+        // extension at all when both subtree lists are empty, so the two
+        // really can differ. `load` reads the same way, so a fresh CA and
+        // a reloaded one cannot disagree about the same file.
+        let permitted = permitted_from(&params);
+
         let key_pair = KeyPair::generate().map_err(CaError::Generate)?;
         let certificate = params.self_signed(&key_pair).map_err(CaError::Generate)?;
 
@@ -224,7 +246,7 @@ impl LocalCa {
             key_pair,
             der,
             pem,
-            permitted: PERMITTED_SUFFIXES.iter().map(|s| s.to_string()).collect(),
+            permitted,
             dir: dir.to_path_buf(),
         })
     }
@@ -390,10 +412,17 @@ pub fn permits(permitted: &[String], host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
 
     permitted.iter().any(|suffix| {
-        // `.localhost` covers `localhost` and everything under it, which
-        // is what a leading-dot subtree means in X.509.
+        // RFC 5280 §4.2.1.10: the subtree name itself, and anything with
+        // labels prepended. A leading dot would be the non-standard form
+        // that drops the first half, and is tolerated here only so that a
+        // CA carrying one is read the way its verifier will read it.
         let bare = suffix.trim_start_matches('.').to_ascii_lowercase();
-        host == bare || host.ends_with(&format!(".{bare}"))
+        let strictly_below = suffix.starts_with('.');
+
+        host.strip_suffix(&bare).is_some_and(|rest| match rest {
+            "" => !strictly_below,
+            rest => rest.ends_with('.'),
+        })
     })
 }
 
@@ -420,6 +449,14 @@ fn now() -> time::OffsetDateTime {
 pub struct DynamicCertResolver {
     ca: Arc<LocalCa>,
     cache: RwLock<HashMap<String, Arc<CertifiedKey>>>,
+    /// Whether the out-of-scope warning has already been said.
+    ///
+    /// **SNI is unauthenticated and attacker-chosen.** Anything that can
+    /// reach the HTTPS port can ask for a name outside the constraint,
+    /// and one log line per distinct name is a way to write into the
+    /// daemon's log for free. The first one carries everything a person
+    /// needs; the rest are the same sentence.
+    warned_out_of_scope: AtomicBool,
 }
 
 impl DynamicCertResolver {
@@ -427,6 +464,7 @@ impl DynamicCertResolver {
         Self {
             ca,
             cache: RwLock::new(HashMap::new()),
+            warned_out_of_scope: AtomicBool::new(false),
         }
     }
 
@@ -443,7 +481,7 @@ impl DynamicCertResolver {
             return Some(existing.clone());
         }
 
-        if !self.ca.permits(&key) {
+        if !self.ca.permits(&key) && !self.warned_out_of_scope.swap(true, Ordering::Relaxed) {
             // Issued anyway: the constraint is enforced by whoever
             // verifies, which is correct X.509, and refusing here would
             // turn a legible certificate error into a bare handshake
@@ -593,13 +631,17 @@ mod tests {
     }
 
     #[test]
-    fn a_new_ca_is_narrowed_to_the_development_tlds() {
+    fn a_new_ca_is_narrowed_to_what_minato_serves() {
         // The whole point. This certificate goes into the system trust
         // store, and without this the key behind it signs `google.com`
         // as readily as anything of Minato's.
         let (_dir, ca) = temp_ca();
 
-        assert_eq!(ca.permitted_suffixes(), [".localhost", ".test"]);
+        assert_eq!(ca.permitted_suffixes(), ["localhost"]);
+        assert!(
+            !ca.permitted_suffixes()[0].starts_with('.'),
+            "a leading dot is the non-standard form, and it excludes the apex"
+        );
     }
 
     #[test]
@@ -621,6 +663,13 @@ mod tests {
 
     #[test]
     fn a_constraint_covers_every_depth_a_worktree_invents() {
+        // Including the apex. `minato-dns` answers for `localhost`
+        // itself, so `https://localhost` is a URL somebody really opens
+        // — and the leading-dot form this started with refused it.
+        //
+        // Agreement with a real verifier is
+        // `the_constrained_ca_verifies_for_every_name_it_covers`, in
+        // tests/proxy_e2e.rs. This one alone would pass either way.
         let (_dir, ca) = temp_ca();
 
         for host in [
@@ -628,14 +677,30 @@ mod tests {
             "myapp.localhost",
             "web.myapp.localhost",
             "web.feature-user-auth.myapp.localhost",
-            "web.myapp.test",
         ] {
             assert!(ca.permits(host), "{host} should be covered");
         }
 
-        for host in ["google.com", "myapp.localhost.evil.com", "localhostx"] {
+        for host in [
+            "google.com",
+            "myapp.localhost.evil.com",
+            "localhostx",
+            "notlocalhost",
+        ] {
             assert!(!ca.permits(host), "{host} must not be");
         }
+    }
+
+    #[test]
+    fn a_leading_dot_is_read_the_way_its_verifier_reads_it() {
+        // Not a form Minato writes, but one a CA on disk could carry.
+        // X.509 treats it as strictly-below, so reporting the apex as
+        // covered would put `doctor` at odds with the browser.
+        assert!(!permits(&[".localhost".to_string()], "localhost"));
+        assert!(permits(&[".localhost".to_string()], "web.localhost"));
+
+        assert!(permits(&["localhost".to_string()], "localhost"));
+        assert!(permits(&["localhost".to_string()], "web.localhost"));
     }
 
     #[test]

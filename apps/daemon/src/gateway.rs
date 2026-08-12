@@ -640,6 +640,14 @@ impl Gateway {
         self
     }
 
+    /// The suffixes the CA reports. Empty is what a CA made before the
+    /// name-constraint rule looks like.
+    #[cfg(test)]
+    pub(crate) fn with_ca_permitting(mut self, suffixes: &[&str]) -> Self {
+        self.ca_permitted = suffixes.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
     pub fn routes(&self) -> &Routes {
         &self.routes
     }
