@@ -727,9 +727,17 @@ impl Gateway {
     /// URLs — nothing a container could verify. Mounting the file and
     /// naming it then would be arranging trust for a connection that is
     /// never made.
+    ///
+    /// **Nor "was there one when the daemon started".** The file can be
+    /// removed under a running daemon — `minato setup` undone, the
+    /// directory cleared — and what is mounted is decided from this, so
+    /// answering from the start would name a certificate no container
+    /// has. Node reads `NODE_EXTRA_CA_CERTS` by name and warns on every
+    /// start about a file it cannot load, which is the whole of what the
+    /// variable was set to avoid.
     pub fn trusted_ca(&self) -> Option<&std::path::Path> {
         self.https_port()?;
-        self.ca_path()
+        self.ca_path().filter(|path| path.is_file())
     }
 
     /// The URL for a hostname, or `None` when the proxy is not running.
