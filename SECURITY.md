@@ -41,16 +41,20 @@ Worth reading before `curl … | sh`, and the context a report lands in.
 what makes `https://web.feat-1.myapp.localhost` work without a warning. The
 private key is `0600` and never leaves the machine.
 
-**That CA is not constrained to Minato's own hostnames.** Anything that can
-read the key can mint a certificate for any name at all, and your browser will
-believe it. This is the same bargain `mkcert` and every other local-HTTPS tool
-asks for, and narrowing it with a name constraint is known work that has not
-been done — but it is a bargain, so it is written down here rather than left
-to be discovered.
+**It carries a name constraint**, so it may sign only for `localhost` and
+names under it, and a verifier refuses anything else it signs. `localhost` is
+reserved and can never be a real public name, so a key that escaped would be
+worth close to nothing — which is not the bargain `mkcert` and most
+local-HTTPS tools ask for.
 
-`minato doctor` says whether it is currently trusted, and `minato uninstall`
-hands you the command to stop — printed for you to run, since removing it
-needs root and nothing here runs `sudo` unasked.
+A CA generated before that rule has no constraint and can still sign for
+anything. It is not replaced automatically: swapping a certificate you trusted
+would break every URL until you noticed. `minato doctor` reports it, under
+"what the local CA may sign for", along with how to replace it.
+
+`minato doctor` also says whether the CA is currently trusted, and
+`minato uninstall` hands you the command to stop — printed for you to run,
+since removing it needs root and nothing here runs `sudo` unasked.
 
 ### A daemon that runs commands for whoever reaches its socket
 

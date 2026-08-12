@@ -1,4 +1,8 @@
-//! Scale-to-zero, against a real Docker.
+//! Starting and stopping services, against a real Docker.
+//!
+//! Mostly scale-to-zero, which is where the bugs were; also the one thing
+//! about `up` that cannot be seen from a unit test, which is whether two
+//! services actually come up at the same time.
 //!
 //! **Nothing else here runs against a container runtime.** `docker.rs` is
 //! most of two thousand lines with a dozen tests, all of them parsing
@@ -134,23 +138,47 @@ impl Harness {
     }
 
     async fn request(&self, request: Request) -> minato_api::Response {
+        self.request_watching(request, &EventSink::discard()).await
+    }
+
+    async fn request_watching(&self, request: Request, events: &EventSink) -> minato_api::Response {
         // Nothing here types at a terminal, so the keyboard channel is
         // only ever the shape the signature wants.
         let (_keys, from_client) = tokio::sync::mpsc::unbounded_channel();
 
         self.supervisor
-            .handle(request, &EventSink::discard(), from_client)
+            .handle(request, events, from_client)
             .await
             .unwrap_or_else(|err| panic!("{err:?}"))
     }
 
-    async fn up(&self) {
-        self.request(Request::Up {
+    fn up_request(&self) -> Request {
+        Request::Up {
             target: self.target(),
             services: Vec::new(),
             rebuild: false,
-        })
-        .await;
+        }
+    }
+
+    async fn up(&self) {
+        self.request(self.up_request()).await;
+    }
+
+    /// One `up`, and everything it said while doing it.
+    ///
+    /// Drained rather than awaited: the sends are synchronous and the
+    /// request has already returned, so everything is queued by now. A
+    /// `recv` loop would instead hang on any clone of the sink the daemon
+    /// happens to be holding.
+    async fn up_watching(&self) -> Vec<minato_api::Event> {
+        let (events, mut received) = EventSink::channel();
+        self.request_watching(self.up_request(), &events).await;
+
+        let mut all = Vec::new();
+        while let Ok(event) = received.try_recv() {
+            all.push(event);
+        }
+        all
     }
 
     async fn down(&self) {
@@ -168,7 +196,16 @@ impl Harness {
         format!("{service}.{}.localhost", self.project)
     }
 
-    /// Which of the project's services the runtime says are up.
+    /// Which of the project's services the runtime says are up, right
+    /// now.
+    ///
+    /// **A snapshot of an asynchronous system, so not a thing to assert
+    /// on.** `up` and `down` return when the runtime has been asked; a
+    /// container is neither running nor stopped the instant it is asked,
+    /// and a loaded runner is where that gap becomes visible. Build a
+    /// wait out of this — [`Harness::wait_until_running`] — rather than
+    /// comparing it to what you expect. Three unrelated pull requests
+    /// were held up by assertions that did the latter.
     async fn running(&self) -> Vec<String> {
         let runtime = minato_runtime::docker::DockerRuntime::connect().expect("Docker answers");
 
@@ -330,11 +367,13 @@ async fn waking_a_service_brings_up_what_it_depends_on() {
 
     harness.up().await;
     harness.down().await;
-    let running = harness.running().await;
-    assert!(
-        running.is_empty(),
-        "nothing should be up to start: {running:?}"
-    );
+
+    // **Waited for, not asserted.** `down` asks the runtime to stop and
+    // a container is not stopped the instant it is asked; a busy runner
+    // is where that gap shows. The same shape of assertion was what made
+    // `a_swept_service_comes_back_on_the_next_request` flaky, and this
+    // one was left behind when that was fixed.
+    harness.wait_until_running(&[]).await;
 
     let activation = harness
         .supervisor
@@ -345,11 +384,9 @@ async fn waking_a_service_brings_up_what_it_depends_on() {
         matches!(activation, minato_proxy::Activation::Ready(_)),
         "the request should have been answered: {activation:?}"
     );
-    assert_eq!(
-        harness.running().await,
-        vec!["db".to_string(), "web".to_string()],
-        "a service with no URL has no request of its own to arrive"
-    );
+    // A service with no URL has no request of its own to arrive, so it
+    // comes up only if the wake brought it.
+    harness.wait_until_running(&["db", "web"]).await;
 }
 
 #[tokio::test]
@@ -363,10 +400,7 @@ async fn an_internal_service_follows_its_last_dependent_down() {
     let harness = Harness::new("mnte2eidle", &web_and_db("mnte2eidle"));
 
     harness.up().await;
-    assert_eq!(
-        harness.running().await,
-        vec!["db".to_string(), "web".to_string()]
-    );
+    harness.wait_until_running(&["db", "web"]).await;
 
     // Past the 1s timeout in the configuration above.
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -377,12 +411,9 @@ async fn an_internal_service_follows_its_last_dependent_down() {
     let stopped = harness.supervisor.sweep_idle().await;
     assert_eq!(stopped, 2, "web and the db behind it");
 
-    let running = harness.running().await;
-    assert!(
-        running.is_empty(),
-        "a database per worktree, running for ever, is what this exists to \
-         prevent; still running: {running:?}"
-    );
+    // The count above is what pins "in the same sweep". This is only
+    // the state settling afterwards, so it waits.
+    harness.wait_until_running(&[]).await;
 }
 
 #[tokio::test]
@@ -421,14 +452,13 @@ idle_timeout = "1s"
     );
 
     harness.up().await;
+    harness.wait_until_running(&["db", "web"]).await;
+
     tokio::time::sleep(Duration::from_secs(2)).await;
     harness.supervisor.sweep_idle().await;
 
-    assert_eq!(
-        harness.running().await,
-        vec!["db".to_string()],
-        "nothing would ever start it again"
-    );
+    // `web` goes; `db` stays, because nothing would ever start it again.
+    harness.wait_until_running(&["db"]).await;
 }
 
 #[tokio::test]
@@ -456,10 +486,7 @@ async fn a_swept_service_comes_back_on_the_next_request() {
         matches!(activation, minato_proxy::Activation::Ready(_)),
         "{activation:?}"
     );
-    assert_eq!(
-        harness.running().await,
-        vec!["db".to_string(), "web".to_string()]
-    );
+    harness.wait_until_running(&["db", "web"]).await;
 }
 
 #[tokio::test]
@@ -473,7 +500,7 @@ async fn starting_twice_leaves_one_container() {
     let harness = Harness::new("mnte2erepeat", &web_and_db("mnte2erepeat"));
 
     harness.up().await;
-    let first = harness.running().await;
+    harness.wait_until_running(&["db", "web"]).await;
 
     harness.up().await;
     harness
@@ -481,5 +508,92 @@ async fn starting_twice_leaves_one_container() {
         .activate(&harness.host("web"), START_WAIT)
         .await;
 
-    assert_eq!(harness.running().await, first, "no second copy of anything");
+    // Still two, and the same two. A second copy would show up here as a
+    // duplicate service name, since `running` reads the runtime's labels.
+    harness.wait_until_running(&["db", "web"]).await;
+}
+
+/// Two services that know nothing of each other, each slow to answer.
+///
+/// The sleep is what makes the difference visible: a start is only slow
+/// because of the readiness wait behind it, and with nothing to wait for
+/// both orders finish at once and prove nothing.
+fn two_slow_services(project: &str) -> String {
+    format!(
+        r#"
+[project]
+name = "{project}"
+
+[runtime]
+default = "docker"
+
+[services.web]
+image = "busybox:latest"
+port = 8000
+command = "sh -c 'sleep 4; echo ok > /tmp/index.html; httpd -f -p 8000 -h /tmp'"
+
+[services.api]
+image = "busybox:latest"
+port = 8080
+command = "sh -c 'sleep 4; echo ok > /tmp/index.html; httpd -f -p 8080 -h /tmp'"
+"#
+    )
+}
+
+/// Where the first event saying `step` reached a matching status sits.
+fn step_at(
+    events: &[minato_api::Event],
+    step: &str,
+    matching: impl Fn(&minato_api::StepStatus) -> bool,
+) -> usize {
+    events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                minato_api::Event::Step { id, status, .. } if id == step && matching(status)
+            )
+        })
+        .unwrap_or_else(|| panic!("no matching `{step}` in {events:#?}"))
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon"]
+async fn independent_services_do_not_wait_for_each_other() {
+    require_docker!();
+
+    // Read off the event stream rather than a stopwatch. Overlap is the
+    // claim — that neither service's readiness wait had finished before
+    // the other's began — and a wall-clock bound would only be that claim
+    // measured through a busy CI runner.
+    let harness = Harness::new("mnte2epar", &two_slow_services("mnte2epar"));
+
+    let events = harness.up_watching().await;
+
+    use minato_api::StepStatus;
+    let started = |service: &str| {
+        step_at(&events, &format!("await-{service}"), |status| {
+            matches!(status, StepStatus::Started)
+        })
+    };
+    // Spelled out rather than "anything but `Started`": a wait that
+    // reported `Progress` would satisfy that and be read as finished.
+    let settled = |service: &str| {
+        step_at(&events, &format!("await-{service}"), |status| {
+            matches!(
+                status,
+                StepStatus::Done | StepStatus::Skipped { .. } | StepStatus::Failed { .. }
+            )
+        })
+    };
+
+    assert!(
+        started("api") < settled("web") && started("web") < settled("api"),
+        "the two waits did not overlap, so one service waited out the \
+         other: {events:#?}"
+    );
+
+    // The ordering above is the point; this is only that nothing fell
+    // over on the way.
+    harness.wait_until_running(&["api", "web"]).await;
 }

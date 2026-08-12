@@ -150,6 +150,14 @@ anything it names in `depends_on` is already up. Migrations against a `db`
 work; what does not is a `setup` that expects its *own* service to be
 running, because that is the thing it is about to start.
 
+**One `setup` runs at a time**, even where the services around it start
+together. Every service mounts the same project-wide cache volume, so two
+installs at once would be two arbitrary commands writing to one directory —
+safe for a package manager's own store, which is built for it, and not
+something Minato can promise for whatever else a `setup` does. So it does
+not: the first `up` after `minato new` pays for its setups end to end, and
+later ones find them recorded and skip straight past.
+
 Waking a stopped service with a request does not run `setup` — only `minato
 up` does, so an edit takes effect on the next `up` rather than on the next
 request.

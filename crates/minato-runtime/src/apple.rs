@@ -15,6 +15,12 @@
 //! all** — no aliases, and no DNS either. A container's nameserver is its
 //! network gateway, which answers NXDOMAIN for every container name. So a
 //! peer's IP address is injected as `MINATO_HOST_<SERVICE>` instead.
+//!
+//! That last one is why this backend leaves
+//! [`Runtime::starts_concurrently`] alone: an address can only be read off
+//! a peer that is already running, so services started side by side would
+//! each be handed nothing for the other. Docker has the DNS that makes the
+//! question moot; here the sequence *is* the mechanism.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -870,6 +876,12 @@ impl Runtime for AppleContainerRuntime {
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
         let name = names::container(&spec.key);
 
+        // Scoped as the Docker backend scopes it. Nothing here starts two
+        // services at once — see the module header — but a step id that
+        // means something different depending on the backend is a trap for
+        // whoever changes that.
+        let events = &events.for_service(spec.name());
+
         if let Some(existing) = self.find_container(&spec.key).await? {
             // A built image is tagged with a fingerprint of its inputs, so
             // an edited Dockerfile produces a new tag. Leaving the old
@@ -1004,6 +1016,9 @@ impl Runtime for AppleContainerRuntime {
     }
 
     async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        // Scoped like `start`: a step id names the one service it is
+        // tracking, whether or not anything overlaps today.
+        let events = &events.for_service(&key.service);
         let Some(record) = self.find_container(key).await? else {
             events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
@@ -1027,6 +1042,7 @@ impl Runtime for AppleContainerRuntime {
     }
 
     async fn remove(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        let events = &events.for_service(&key.service);
         self.forget_terminal(key);
 
         if self.find_container(key).await?.is_none() {

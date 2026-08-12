@@ -24,7 +24,11 @@ use std::path::Path;
 use std::process::Command;
 
 /// Crates that must never reach the daemon's own.
-const CLIENTS: &[&str] = &["minato-client", "minato-desktop"];
+///
+/// `minato` is `apps/cli`. It belongs here more than either of the others
+/// do — it is the client almost everyone runs — and the diagram above has
+/// listed it since this module was written.
+const CLIENTS: &[&str] = &["minato", "minato-client", "minato-desktop"];
 
 /// The daemon's own. Docker, the proxy, DNS and the tunnel process.
 const DAEMON_ONLY: &[&str] = &[
@@ -66,10 +70,22 @@ pub fn check(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Every crate `package` pulls in, normal dependencies only.
+/// Every crate `package` pulls in, on any platform.
 ///
-/// Dev-dependencies are excluded on purpose: a test reaching for a
-/// runtime says nothing about what ships.
+/// **Dev-dependencies are excluded, build-dependencies are not.** A test
+/// reaching for a runtime says nothing about what ships; a build script
+/// that pulls one in compiles the whole of Docker as part of building the
+/// client, which is the thing being ruled out.
+///
+/// **`--target all`, because the graph does differ by platform.** A
+/// `[target.'cfg(target_os = "linux")'.dependencies]` is invisible to a
+/// `cargo tree` run with the default host target, and the check runs on
+/// one machine.
+///
+/// No `--no-dedupe`: dedupe collapses *repeated* subtrees to `name v1.2.3
+/// (*)` and always prints the first occurrence in full, so every package
+/// still appears. Measured on `minato-desktop`, both give the same 430
+/// names — from 1,160 lines rather than 43,598.
 fn dependencies_of(root: &Path, package: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO"))
         .current_dir(root)
@@ -78,10 +94,11 @@ fn dependencies_of(root: &Path, package: &str) -> Result<Vec<String>, Box<dyn st
             "-p",
             package,
             "-e",
-            "normal",
+            "normal,build",
+            "--target",
+            "all",
             "--prefix",
             "none",
-            "--no-dedupe",
         ])
         .output()
         .map_err(|err| format!("cannot run cargo tree: {err}"))?;
@@ -123,11 +140,6 @@ mod tests {
         // The check checking itself. If this ever fails, either the rule
         // was broken or `cargo tree`'s output changed shape — and both
         // are worth finding out about here rather than in CI.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("xtask/ has a parent")
-            .to_path_buf();
-
-        check(&root).expect("the direction of dependencies holds");
+        check(&crate::repo_root()).expect("the direction of dependencies holds");
     }
 }
