@@ -35,6 +35,13 @@ less accurately.
 
 ### Added
 
+- `docs/AGENT-RUN.md` — the record of driving a real two-service task with
+  nothing but the Skill, and the four places the instructions did not say
+  enough. All four are fixed: verifying with `--cacert` rather than waiting on
+  `sudo`, what to do after editing source, that there is no `minato restart`,
+  and that `state` in `--json` is an object rather than the string its example
+  showed
+
 - A container verifies Minato's own HTTPS URLs without being told to. The CA is
   mounted read-only, named as `MINATO_CA_FILE`, and handed to Node as
   `NODE_EXTRA_CA_CERTS`, so a service reaching another over

@@ -140,3 +140,12 @@ minato doctor                              # when the environment is at fault
 
 There isn't one, and that is intentional. With `--json` on every command, Bash
 is enough, and a second surface would be another thing to keep correct.
+
+## Does it actually work?
+
+Fair question to ask of anything that calls itself agent-friendly.
+[`docs/AGENT-RUN.md`](https://github.com/hota1024/minato/blob/main/docs/AGENT-RUN.md)
+is the record of driving a two-service project through a real task with
+nothing but the Skill — what worked first time, and the four places the
+instructions did not say enough. The four have been fixed; the record is kept
+so the next run can be compared against it.
