@@ -261,6 +261,10 @@ macOS and Linux, plus the desktop app — has to pass. Merging replaces the
 A pull request that touches `docs/` gets its own preview URL, so prose can be
 reviewed by reading the rendered page.
 
+Anything a user would notice goes in [CHANGELOG.md](CHANGELOG.md). Nothing has
+been released yet, so it is all one `Unreleased` section — which is the point
+at which it becomes worth having.
+
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 The subject says what changed; the body says why, where the diff does not
 already make that plain. History before `chore: install caveman-commit skill`
