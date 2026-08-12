@@ -1217,10 +1217,15 @@ apps/daemon ─────────────────────>  mi
 `minato-api` is the only point of contact between the daemon and its clients.
 **No client-side crate may depend on `minato-runtime` or its neighbours** —
 that would leak Docker logic into the GUI and break the rule that everything
-goes through the daemon. `cargo xtask deps check` walks each client's
-dependencies with `cargo tree` and fails if one of them reaches
-`minato-runtime`, `-proxy`, `-dns` or `-tunnel`; CI runs it alongside
-`fmt` and `clippy`.
+goes through the daemon. `cargo xtask deps check` walks the dependencies of
+all three clients — the CLI, `minato-client` and the desktop app — with
+`cargo tree` and fails if one of them reaches `minato-runtime`, `-proxy`,
+`-dns` or `-tunnel`; CI runs it alongside `fmt` and `clippy`.
+
+It asks for every target rather than the one it happens to run on, and
+counts build-dependencies as well as normal ones. Both are ways a crate can
+be reached without appearing in an ordinary host build, and a check that
+only looks where it is standing is the kind that reports success for years.
 
 ### Versioning
 
