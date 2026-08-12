@@ -39,6 +39,13 @@ use minatod::tunnel::TunnelHandle;
 /// Long enough for `busybox` to be pulled on a cold runner.
 const START_WAIT: Duration = Duration::from_secs(180);
 
+/// Long enough for a container to start or stop on a busy runner.
+///
+/// Generous on purpose. Every use of it is a wait for something that has
+/// already been asked for, so the only thing a tight bound buys is a
+/// failure that says nothing about the code.
+const SETTLE_WAIT: Duration = Duration::from_secs(90);
+
 /// Skips the test when there is no runtime to talk to.
 ///
 /// **Reported, not silently passed.** A suite that quietly does nothing
@@ -177,6 +184,64 @@ impl Harness {
         names.sort();
         names
     }
+
+    /// Waits until the project is running exactly `expected`.
+    ///
+    /// **The precondition, established rather than assumed.** A test that
+    /// starts its clock believing everything is up reports the wrong
+    /// thing when it is not, and CI is where that happens.
+    ///
+    /// Nothing is swept here. These services have an `idle_timeout` of a
+    /// second, so a sweep inside a wait for a *start* would take away
+    /// what the wait is waiting for.
+    async fn wait_until_running(&self, expected: &[&str]) {
+        let deadline = std::time::Instant::now() + SETTLE_WAIT;
+
+        loop {
+            let running = self.running().await;
+            if running == expected {
+                return;
+            }
+
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waited {}s for {expected:?} to be up; running: {running:?}",
+                SETTLE_WAIT.as_secs()
+            );
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Sweeps until nothing is left, and says what survived if that never
+    /// happens.
+    ///
+    /// **Not a single sweep.** That one pass takes a service and the
+    /// database behind it is a real guarantee, and
+    /// `an_internal_service_follows_its_last_dependent_down` is where it
+    /// is pinned — deterministically, on a count rather than on the state
+    /// of a container afterwards. Asserting it again here only gives the
+    /// round trip a second way to fail for somebody else's reason.
+    async fn sweep_until_empty(&self) {
+        let deadline = std::time::Instant::now() + SETTLE_WAIT;
+
+        loop {
+            self.supervisor.sweep_idle().await;
+
+            let running = self.running().await;
+            if running.is_empty() {
+                return;
+            }
+
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waited {}s for the sweep to take everything; still running: {running:?}",
+                SETTLE_WAIT.as_secs()
+            );
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
 }
 
 /// Leaves nothing of this project behind, **whatever the test did**.
@@ -265,7 +330,11 @@ async fn waking_a_service_brings_up_what_it_depends_on() {
 
     harness.up().await;
     harness.down().await;
-    assert!(harness.running().await.is_empty(), "nothing is up to start");
+    let running = harness.running().await;
+    assert!(
+        running.is_empty(),
+        "nothing should be up to start: {running:?}"
+    );
 
     let activation = harness
         .supervisor
@@ -308,9 +377,11 @@ async fn an_internal_service_follows_its_last_dependent_down() {
     let stopped = harness.supervisor.sweep_idle().await;
     assert_eq!(stopped, 2, "web and the db behind it");
 
+    let running = harness.running().await;
     assert!(
-        harness.running().await.is_empty(),
-        "a database per worktree, running for ever, is what this exists to prevent"
+        running.is_empty(),
+        "a database per worktree, running for ever, is what this exists to \
+         prevent; still running: {running:?}"
     );
 }
 
@@ -370,9 +441,11 @@ async fn a_swept_service_comes_back_on_the_next_request() {
     let harness = Harness::new("mnte2ecycle", &web_and_db("mnte2ecycle"));
 
     harness.up().await;
+    harness.wait_until_running(&["db", "web"]).await;
+
+    // Past the 1s timeout in the configuration above.
     tokio::time::sleep(Duration::from_secs(2)).await;
-    harness.supervisor.sweep_idle().await;
-    assert!(harness.running().await.is_empty(), "swept");
+    harness.sweep_until_empty().await;
 
     let activation = harness
         .supervisor
