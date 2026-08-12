@@ -71,6 +71,17 @@ less accurately.
 
 ### Fixed
 
+- `minato init --from-compose` rewrites a sibling's URL — compose's
+  `http://api:8080` — into `${MINATO_URL_API}`. Carried across verbatim it
+  bypasses the proxy, hands the application a different URL from the
+  browser's, and does not resolve under Apple Container at all. Found by an
+  agent that had never seen this codebase: it got this right writing the
+  configuration by hand, where the converter did not
+- The Skill tells an agent to look for a compose file before writing a
+  configuration by hand. `--from-compose` had shipped without being mentioned
+  in the one file an agent reads, so the first independent run of it never
+  used the feature built for exactly its situation
+
 - Waking a service starts what it `depends_on`. A request is the only thing
   that wakes a service and only an exposed one has a URL for a request to
   name, so an unexposed dependency was left stopped behind whatever needed it.
