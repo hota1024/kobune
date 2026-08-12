@@ -1,0 +1,58 @@
+name: Audit
+
+# **Its own workflow, on its own clock.** An advisory arrives because
+# somebody else published one, not because anything here changed, so
+# tying this to the ordinary CI run would answer the question only when
+# a pull request happened to be open — and would put a red cross on that
+# pull request for something its author did not do.
+on:
+  schedule:
+    # Monday morning, at a minute nobody else picked.
+    - cron: '17 4 * * 1'
+  # And whenever the set of dependencies actually moves, which is the
+  # other moment the answer can change.
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: Advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # A prebuilt binary. Building cargo-audit from source costs several
+      # minutes for a check that takes seconds.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Vulnerabilities fail; warnings — a crate gone unmaintained, a
+      # yanked version — are reported and do not. The two deserve
+      # different answers, and treating them alike is how a job like this
+      # ends up permanently red and therefore ignored.
+      - name: Vulnerabilities
+        run: cargo audit
+
+      # **On every run, whether or not anything failed.** An ignore list
+      # nobody sees is how an advisory that was once reasoned about
+      # becomes one nobody remembers. `.cargo/audit.toml` carries the
+      # reasoning; this carries the fact that there is any.
+      - name: What is being passed over
+        if: always()
+        run: |
+          echo "Ignored, with reasons in .cargo/audit.toml:"
+          grep -oE 'RUSTSEC-[0-9]{4}-[0-9]{4}' .cargo/audit.toml \
+            | sort -u | sed 's/^/  /'

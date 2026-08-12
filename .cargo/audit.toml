@@ -1,0 +1,49 @@
+# What `cargo audit` is told to pass over, and why.
+#
+# **Every entry here is a decision, not a dismissal.** An advisory left
+# unignored turns the Audit job permanently red, and a job that is always
+# red is one nobody reads — which costs more than the advisory. So each
+# one is either fixed or written down here with what was checked.
+#
+# Reviewed 2026-08-12. Anything added later belongs beside a reason of the
+# same shape: where it reaches, who could reach it, and what would clear
+# it.
+
+[advisories]
+ignore = [
+    # ---------------------------------------------------------------
+    # hickory-proto 0.24.4 — RUSTSEC-2026-0119
+    # CPU exhaustion during message encoding (O(n²) name compression).
+    #
+    # **This one is real and it is in the product.** hickory-server is
+    # the DNS server in `minato-dns`, and it ships inside `minatod`.
+    #
+    # What bounds it: the server binds 127.0.0.1 only, deliberately
+    # (`GatewaySettings::dns_bind`, and `docs/DESIGN.md` §5), so
+    # reaching it means already having an account on the machine. And
+    # nothing inside a container asks it anything — the hostnames a
+    # container resolves are written into its `/etc/hosts`.
+    #
+    # Clearing it means hickory 0.24 → 0.26, which is two minor
+    # versions of a pre-1.0 crate and an API change rather than a bump.
+    # That is its own piece of work; it is not being done quietly here.
+    "RUSTSEC-2026-0119",
+
+    # ---------------------------------------------------------------
+    # quick-xml 0.30.0 and 0.38.4 — RUSTSEC-2026-0194, RUSTSEC-2026-0195
+    # Quadratic run time on duplicate attribute names, and unbounded
+    # allocation on namespace declarations. Both denial of service.
+    #
+    # Neither reaches anything that ships. `cargo tree -p minato -e
+    # normal` and the same for `minatod` find no quick-xml at all: it
+    # arrives through GPUI, so it exists only in `minato-desktop` —
+    # which is not distributed, because an unsigned .app is stopped by
+    # Gatekeeper outright (`docs/DESIGN.md` §14).
+    #
+    # Nor is there anything to update. Both versions come from inside
+    # the Zed dependency graph, and the fix is >= 0.41.
+    #
+    # Revisit if the desktop app is ever signed and shipped.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
