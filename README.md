@@ -270,6 +270,14 @@ The subject says what changed; the body says why, where the diff does not
 already make that plain. History before `chore: install caveman-commit skill`
 predates the rule and is not worth matching.
 
+## Security
+
+A vulnerability goes [here](https://github.com/hota1024/minato/security/advisories/new),
+privately, rather than into an issue. [SECURITY.md](SECURITY.md) says what to
+put in a report — and, worth reading before `curl … | sh`, what Minato asks of
+a machine: a CA in the system trust store, a daemon that runs commands in your
+containers, and a flag that publishes an environment to the internet.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
