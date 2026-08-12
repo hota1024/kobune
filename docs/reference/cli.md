@@ -444,6 +444,10 @@ $ minato uninstall
 │ myapp / main               db                                              │
 │ myapp / feature-user-auth  web                                             │
 │                                                                            │
+│ storage — the data in it goes too:                                         │
+│ myapp  minato-myapp-pgdata                                                 │
+│ myapp  minato-myapp-feature-user-auth.node-modules                         │
+│                                                                            │
 │ files:                                                                     │
 │ state, logs and the local CA  /home/u/.minato                              │
 │ shell completions             /home/u/.config/fish/completions/minato.fish │
@@ -473,6 +477,15 @@ Remove all of this? [y/N]
 uncommitted work in them; `minato rm` removes one at a time, and asks for
 `--force` when git objects. They are listed so you can see what is being left
 behind.
+
+**Named volumes go, and are named before they do.** A project volume is
+shared between worktrees and outlives every one of them, so nothing on the
+`minato rm` path ever removes it — an uninstall is where it finally goes. It
+is listed under the name the runtime knows it by, the one `docker volume ls`
+prints, so a database worth keeping can be copied out before you answer. They
+are found by that label rather than from the daemon's records, which is how
+the storage of a project whose repository you deleted months ago is reclaimed
+too.
 
 Nothing is listed that is not there, so the list is what is actually on the
 machine rather than everywhere Minato might have put something. The binaries

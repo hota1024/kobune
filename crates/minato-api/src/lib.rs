@@ -19,8 +19,9 @@ pub use event::{Event, LogLevel, OutputStream, StepStatus, decode_bytes, encode_
 pub use protocol::{ClientMessage, Outcome, PROTOCOL_VERSION, RequestId, ServerMessage, Typed};
 pub use request::{Request, Target, Window};
 pub use response::{
-    EnvInfo, Pong, PurgeFailure, PurgeProject, PurgeReport, PurgeWorkspace, Response, ServiceInfo,
-    TunnelInfo, TunnelLeftover, TunnelState, Unsettled, UnsettledReason, WorkspaceInfo,
+    EnvInfo, Pong, PurgeFailure, PurgeProject, PurgeReport, PurgeVolume, PurgeWorkspace, Response,
+    ServiceInfo, TunnelInfo, TunnelLeftover, TunnelState, Unsettled, UnsettledReason,
+    WorkspaceInfo,
 };
 
 /// Re-exported for convenience, so clients need not pull in `minato-core`.

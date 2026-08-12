@@ -24,8 +24,8 @@ pub use runtime::{
     Sizing, labels, names,
 };
 pub use spec::{
-    BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
-    VolumeScope, WorkspaceKey, WorkspaceSpec,
+    BuildSpec, ManagedVolume, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount,
+    VolumeMount, VolumeScope, WorkspaceKey, WorkspaceSpec,
 };
 
 /// Builds a runtime implementation from its identifier.

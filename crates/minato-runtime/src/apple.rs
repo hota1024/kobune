@@ -46,8 +46,8 @@ use crate::runtime::{
     Throwaway, labels, names,
 };
 use crate::spec::{
-    BuildSpec, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount, VolumeMount,
-    WorkspaceKey, WorkspaceSpec,
+    BuildSpec, ManagedVolume, RunningService, ServiceKey, ServiceSpec, ServiceStatus, SourceMount,
+    VolumeMount, WorkspaceKey, WorkspaceSpec,
 };
 use crate::terminal::Terminal;
 
@@ -1315,6 +1315,83 @@ impl Runtime for AppleContainerRuntime {
             .map(|record| record.to_status())
             .collect())
     }
+
+    /// The directories under the volume root, which is all a volume is here.
+    ///
+    /// **No `container` command is run, and none has to be.** These are
+    /// Minato's own directories: they can be listed with the service down,
+    /// with the CLI uninstalled, or on a machine that never had it — which
+    /// is the point, since somebody who has switched to Docker still has
+    /// what Apple Container left behind.
+    ///
+    /// Only the two levels [`Self::ensure_volume_dir`] writes —
+    /// `<root>/<project>/<volume>` — and only directories. A stray file
+    /// under the volume root is not something Minato put there, and this is
+    /// a listing whose entries get deleted.
+    async fn managed_volumes(&self) -> Result<Vec<ManagedVolume>> {
+        let Ok(projects) = std::fs::read_dir(&self.volume_root) else {
+            return Ok(Vec::new());
+        };
+
+        let mut found = Vec::new();
+
+        for project in projects.flatten() {
+            if !project.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+
+            let name = project.file_name().to_string_lossy().to_string();
+
+            let Ok(volumes) = std::fs::read_dir(project.path()) else {
+                continue;
+            };
+
+            for volume in volumes.flatten() {
+                if !volume.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    continue;
+                }
+
+                found.push(ManagedVolume {
+                    project: name.clone(),
+                    id: volume.path().to_string_lossy().to_string(),
+                });
+            }
+        }
+
+        Ok(found)
+    }
+
+    async fn remove_managed_volume(&self, volume: &ManagedVolume) -> Result<()> {
+        let path = PathBuf::from(&volume.id);
+
+        // The trait says the volume has to be one this runtime listed, and
+        // this is what happens when it is not. A Docker volume's `id` is a
+        // name rather than a path — `minato-myapp-pgdata` — and handing one
+        // here would otherwise have `remove_dir_all` resolve it against the
+        // daemon's working directory and delete whatever it found.
+        if !path.starts_with(&self.volume_root) {
+            return Err(RuntimeError::failed(
+                format!("removing {}", path.display()),
+                "that is not this runtime's storage",
+            ));
+        }
+
+        std::fs::remove_dir_all(&path)
+            .map_err(|err| RuntimeError::failed(format!("removing {}", path.display()), err))?;
+
+        // The project's own directory, once its last volume has gone. It is
+        // empty by then and means nothing on its own; leaving it would have
+        // an uninstall report that everything went and leave a tree of
+        // directories named after projects that no longer exist.
+        if let Some(parent) = path.parent()
+            && parent.starts_with(&self.volume_root)
+            && parent != self.volume_root
+        {
+            let _ = std::fs::remove_dir(parent);
+        }
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2124,5 +2201,129 @@ mod tests {
             "a named volume maps to a host directory: {args:?}"
         );
         assert!(expected.is_dir(), "the directory behind it is created");
+    }
+
+    /// Writes what `ensure_volume_dir` would, without a `container` to run.
+    fn volume_dir(root: &std::path::Path, project: &str, name: &str) -> PathBuf {
+        let path = root.join(project).join(name);
+        std::fs::create_dir_all(&path).expect("creates the volume directory");
+        path
+    }
+
+    #[tokio::test]
+    async fn finds_the_storage_of_every_project_under_the_root() {
+        // What an uninstall works from. The project a volume belongs to is
+        // the directory it sits in — there are no labels here — and both
+        // scopes are storage that has to be found, whatever shape the name
+        // is in.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+
+        volume_dir(&root, "myapp", "pgdata");
+        volume_dir(&root, "myapp", "feat-1.node-modules");
+        volume_dir(&root, "other", "cache");
+
+        let runtime = AppleContainerRuntime::with_settings(PROGRAM.into(), root.clone());
+        let mut found = runtime.managed_volumes().await.expect("lists");
+        found.sort();
+
+        assert_eq!(
+            found,
+            vec![
+                ManagedVolume {
+                    project: "myapp".into(),
+                    id: root
+                        .join("myapp")
+                        .join("feat-1.node-modules")
+                        .display()
+                        .to_string(),
+                },
+                ManagedVolume {
+                    project: "myapp".into(),
+                    id: root.join("myapp").join("pgdata").display().to_string(),
+                },
+                ManagedVolume {
+                    project: "other".into(),
+                    id: root.join("other").join("cache").display().to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_root_that_was_never_written_to_is_not_an_error() {
+        // Somebody who has only ever run Docker still gets asked, and the
+        // answer is "nothing" rather than a failed uninstall.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().join("never-created"));
+
+        assert_eq!(runtime.managed_volumes().await.expect("lists"), vec![]);
+    }
+
+    #[tokio::test]
+    async fn a_stray_file_under_the_root_is_not_taken_for_storage() {
+        // This listing is what gets deleted, so it holds to the layout
+        // `ensure_volume_dir` writes rather than to whatever is there.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+
+        std::fs::write(root.join("stray.txt"), "not ours").expect("writes");
+        std::fs::create_dir_all(root.join("myapp")).expect("creates");
+        std::fs::write(root.join("myapp").join("notes.txt"), "not ours").expect("writes");
+
+        let runtime = AppleContainerRuntime::with_settings(PROGRAM.into(), root);
+
+        assert_eq!(runtime.managed_volumes().await.expect("lists"), vec![]);
+    }
+
+    #[tokio::test]
+    async fn refuses_to_remove_anything_outside_the_volume_root() {
+        // A Docker volume's `id` is a name, not a path. Resolved here it
+        // would be relative to the daemon's working directory, and this is
+        // a call that deletes recursively.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = dir.path().join("not-storage");
+        std::fs::create_dir_all(&outside).expect("creates");
+
+        let runtime =
+            AppleContainerRuntime::with_settings(PROGRAM.into(), dir.path().join("volumes"));
+
+        let refused = runtime
+            .remove_managed_volume(&ManagedVolume {
+                project: "myapp".into(),
+                id: outside.display().to_string(),
+            })
+            .await;
+
+        assert!(refused.is_err(), "it should have been refused");
+        assert!(outside.is_dir(), "and nothing should have been removed");
+    }
+
+    #[tokio::test]
+    async fn removing_the_last_volume_takes_the_project_directory() {
+        // An empty directory named after a project that no longer exists
+        // is not what "everything went" should leave behind.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+
+        volume_dir(&root, "myapp", "pgdata");
+        volume_dir(&root, "myapp", "cache");
+
+        let runtime = AppleContainerRuntime::with_settings(PROGRAM.into(), root.clone());
+
+        for volume in runtime.managed_volumes().await.expect("lists") {
+            runtime
+                .remove_managed_volume(&volume)
+                .await
+                .expect("removes");
+        }
+
+        assert_eq!(runtime.managed_volumes().await.expect("lists"), vec![]);
+        assert!(
+            !root.join("myapp").exists(),
+            "the project directory outlived its last volume"
+        );
+        assert!(root.is_dir(), "the root itself stays");
     }
 }

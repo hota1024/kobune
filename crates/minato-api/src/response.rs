@@ -83,6 +83,16 @@ pub struct PurgeReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelLeftover>,
 
+    /// The storage Minato made, and is taking with it.
+    ///
+    /// **Listed, not swept along quietly.** A project volume outlives the
+    /// worktrees that used it — that is what it is for — so what is in one
+    /// is often the only copy of a development database somebody has been
+    /// filling for months. Uninstall asks before it removes anything, and a
+    /// question is only worth asking if what is going is on the list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<PurgeVolume>,
+
     /// Projects whose containers could not be taken down, and why.
     ///
     /// A runtime that is not running is the usual cause. These keep their
@@ -110,15 +120,30 @@ pub struct PurgeFailure {
     pub reason: String,
 }
 
+/// One volume, named the way its runtime names it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PurgeVolume {
+    /// The project whose storage it is, empty when it belongs to none.
+    pub project: String,
+
+    /// What the runtime calls it: the name `docker volume ls` prints, or
+    /// the directory Apple Container's bind mount lives in.
+    ///
+    /// The real name rather than the one written in `minato.toml`, so that
+    /// somebody who wants to keep one can find it before saying yes.
+    pub name: String,
+}
+
 impl PurgeReport {
     /// Whether the daemon has anything of its own left.
     pub fn is_empty(&self) -> bool {
-        self.projects.iter().all(|project| {
-            project
-                .workspaces
-                .iter()
-                .all(|workspace| workspace.services.is_empty())
-        })
+        self.volumes.is_empty()
+            && self.projects.iter().all(|project| {
+                project
+                    .workspaces
+                    .iter()
+                    .all(|workspace| workspace.services.is_empty())
+            })
     }
 
     pub fn service_count(&self) -> usize {
@@ -459,6 +484,25 @@ mod tests {
         };
 
         assert!(report.is_empty());
+        assert_eq!(report.service_count(), 0);
+    }
+
+    #[test]
+    fn storage_left_over_is_not_an_empty_report() {
+        // The state a machine is usually in by the time anyone uninstalls:
+        // every worktree `minato rm`ed, so no containers left, and the
+        // project volumes they shared still there. `uninstall` asks this
+        // before deciding it has nothing to do — and there is a database
+        // to remove.
+        let report = PurgeReport {
+            volumes: vec![PurgeVolume {
+                project: "myapp".into(),
+                name: "minato-myapp-pgdata".into(),
+            }],
+            ..PurgeReport::default()
+        };
+
+        assert!(!report.is_empty());
         assert_eq!(report.service_count(), 0);
     }
 

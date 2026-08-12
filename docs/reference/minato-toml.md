@@ -321,6 +321,12 @@ along with the containers, since there is no longer a worktree it belongs to.
 Project volumes are left alone — they are shared, and outlive any one
 worktree.
 
+That leaves [`minato uninstall`](./cli#taking-it-off-again) as the only
+command that removes a project volume, and it lists every one it found before
+asking. To remove one on its own, remove it where it lives: `docker volume rm
+minato-{project}-{name}`, or the directory under `~/.minato/volumes/` on
+Apple Container.
+
 ::: warning Changing the scope of an existing volume
 The scope is part of the real name, so adding or removing `@workspace` points
 the service at different storage. Nothing is deleted, but whatever the old

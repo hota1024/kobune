@@ -4,7 +4,7 @@
 //! [`EventSink`], and how to show it is the CLI's and the GUI's own
 //! decision (`docs/DESIGN.md` §3).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -1028,6 +1028,17 @@ impl Supervisor {
             });
         }
 
+        // Everything above worked from the state file, project by project.
+        // The storage is swept afterwards and machine-wide, for the reason
+        // `purge_volumes` gives.
+        let stranded: BTreeSet<String> = report
+            .stranded
+            .iter()
+            .map(|failure| failure.project.clone())
+            .collect();
+
+        report.volumes = self.purge_volumes(dry_run, &stranded, events).await;
+
         // The tunnel is machine-wide rather than per project, so it is
         // dealt with once, here.
         report.tunnel = self.purge_tunnel(dry_run, events).await;
@@ -1039,12 +1050,6 @@ impl Supervisor {
             // finish the job. Clearing the lot would forget the name of
             // every container that is still up, and there would be nothing
             // left that knew how to find them.
-            let stranded: std::collections::BTreeSet<&str> = report
-                .stranded
-                .iter()
-                .map(|failure| failure.project.as_str())
-                .collect();
-
             let _guard = self.state_lock.lock().await;
             self.store
                 .update(|state| {
@@ -1062,6 +1067,79 @@ impl Supervisor {
         report.worktrees.dedup();
 
         Ok(Response::Purge(report))
+    }
+
+    /// Takes the storage Minato made, whichever runtime is holding it.
+    ///
+    /// **Asked of every runtime, not of the projects in the state file.**
+    /// A project volume is deliberately longer-lived than any worktree, so
+    /// by the time somebody uninstalls, the state file may have forgotten
+    /// the project that owns it — its repository deleted, its worktrees
+    /// `minato rm`ed one by one. Sweeping per known project would leave
+    /// exactly those behind, under a name Minato chose and nobody else
+    /// knows to look for. A runtime that cannot be reached, or was never
+    /// installed, has nothing to say and is skipped.
+    ///
+    /// **A stranded project keeps its storage.** Its containers are still
+    /// up and its state entry is kept for a later run; removing the data
+    /// underneath them would be the one irreversible half of a purge that
+    /// admits it did not finish.
+    ///
+    /// Failing to remove one is reported and passed over, like every other
+    /// failure here: what is left is disk, and an uninstall that stopped
+    /// over it would leave the daemon, the binaries and the trusted CA in
+    /// place — all of which matter more.
+    async fn purge_volumes(
+        &self,
+        dry_run: bool,
+        stranded: &BTreeSet<String>,
+        events: &EventSink,
+    ) -> Vec<minato_api::PurgeVolume> {
+        const STEP: &str = "volumes";
+
+        if !dry_run {
+            events.step_started(STEP, "removing the storage");
+        }
+
+        let mut found = Vec::new();
+
+        for id in minato_runtime::AVAILABLE_RUNTIMES {
+            let Ok(runtime) = self.runtime(id).await else {
+                continue;
+            };
+
+            let volumes = match runtime.managed_volumes().await {
+                Ok(volumes) => volumes,
+                Err(err) => {
+                    events.debug(format!("cannot list {id}'s volumes: {err}"));
+                    continue;
+                }
+            };
+
+            for volume in volumes {
+                if stranded.contains(&volume.project) {
+                    continue;
+                }
+
+                if !dry_run && let Err(err) = runtime.remove_managed_volume(&volume).await {
+                    events.warn(format!("{} was not removed: {err}", volume.id));
+                    continue;
+                }
+
+                found.push(minato_api::PurgeVolume {
+                    project: volume.project,
+                    name: volume.id,
+                });
+            }
+        }
+
+        found.sort();
+
+        if !dry_run {
+            events.step_done(STEP, "removing the storage");
+        }
+
+        found
     }
 
     /// The runtime to tear a project down with.

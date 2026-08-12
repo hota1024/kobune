@@ -446,6 +446,10 @@ $ minato uninstall
 │ myapp / main               db                                              │
 │ myapp / feature-user-auth  web                                             │
 │                                                                            │
+│ storage — the data in it goes too:                                         │
+│ myapp  minato-myapp-pgdata                                                 │
+│ myapp  minato-myapp-feature-user-auth.node-modules                         │
+│                                                                            │
 │ files:                                                                     │
 │ state, logs and the local CA  /home/u/.minato                              │
 │ shell completions             /home/u/.config/fish/completions/minato.fish │
@@ -475,6 +479,14 @@ Remove all of this? [y/N]
 いない変更が入っているためです。削除は `minato rm` が 1 つずつ行い、git が
 拒否する場合は `--force` を求めます。何が残るかが分かるよう、一覧には表示
 します。
+
+**名前付きボリュームも削除しますが、その前に必ず名前を挙げます。** プロジェクト
+スコープのボリュームは worktree 間で共有され、そのすべてより長く残ります。
+つまり `minato rm` の経路では決して消えず、アンインストールが唯一の削除機会
+です。表示されるのはランタイムが知っている名前——`docker volume ls` が出力する
+もの——なので、取っておきたいデータベースは答える前に退避できます。探すのは
+デーモンの記録ではなくラベルなので、リポジトリを何か月も前に削除したプロジェ
+クトのストレージも回収できます。
 
 存在しないものは一覧に出しません。つまりこの一覧は「Minato が置いた可能性の
 ある場所」ではなく、実際にこのマシンにあるものです。`cargo build` の出力に

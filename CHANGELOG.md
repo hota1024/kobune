@@ -71,6 +71,14 @@ less accurately.
 
 ### Fixed
 
+- `minato uninstall` takes the named volumes with it, and lists them before
+  asking. A project volume is shared between worktrees and outlives all of
+  them, so nothing on the `minato rm` path ever removed one — a command that
+  says it takes Minato off the machine left behind storage only Minato knew
+  the name of. They are found by label rather than from the daemon's records,
+  which also reaches the storage of a project whose repository has already
+  been deleted; a project whose containers could not be taken down keeps its
+  data, along with the state entry that will finish the job later (#84)
 - `minato init --from-compose` rewrites a sibling's URL — compose's
   `http://api:8080` — into `${MINATO_URL_API}`. Carried across verbatim it
   bypasses the proxy, hands the application a different URL from the
