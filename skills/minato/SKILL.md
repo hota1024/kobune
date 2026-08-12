@@ -285,20 +285,18 @@ Removes the worktree and its environment. The branch stays.
 
 **Work through these in order.** Do not fall back to `docker` on a hunch.
 
-1. `minato status --json` — look at each service's `state`.
-
-   **It is an object, not a string**, so `.state` on its own is
-   `{"state":"ready"}` and never equal to `"ready"`. Read `.state.state`:
+1. `minato status --json` — look at each service's `state`, which is a
+   plain string:
 
    ```bash
-   minato status --json | jq -r '.workspace.services[] | "\(.name) \(.state.state)"'
+   minato status --json | jq -r '.workspace.services[] | "\(.name) \(.state)"'
    ```
 
    - `stopped` → reach for it, or run `minato up`
    - `starting` → wait. The container is up but its `health` check is not
      answering, which is what a dev server still building looks like
-   - `failed` → `.state.reason` says why, in the same object. A container
-     that exited non-zero lands here, so this is what a start-up script that
+   - `failed` → `reason`, beside the state, says why. A container that
+     exited non-zero lands here, so this is what a start-up script that
      died looks like
 2. `minato logs <service>` — errors from the app itself
 3. `minato env ls --service <name>` — what that container is actually given,

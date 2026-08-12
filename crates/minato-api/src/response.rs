@@ -315,7 +315,16 @@ impl WorkspaceInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceInfo {
     pub name: String,
+    /// `stopped` | `starting` | `ready` | `idle` | `failed` | `unknown`,
+    /// as a plain string.
     pub state: ServiceState,
+    /// Why, when `state` is `failed`. Absent otherwise.
+    ///
+    /// **Beside the state rather than inside it.** That is what lets
+    /// `state` be a string an agent can compare — see
+    /// [`minato_core::ServiceState`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub scope: ServiceScope,
 
     /// The issued URL. Present once the proxy is listening.
@@ -362,6 +371,7 @@ mod tests {
         ServiceInfo {
             name: name.into(),
             state: ServiceState::Ready,
+            reason: None,
             scope: ServiceScope::Workspace,
             url: None,
             tunnel_url: None,

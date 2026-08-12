@@ -53,14 +53,16 @@ $ minato status --json
   "workspace": {
     "project": "myapp",
     "services": [
-      { "name": "web", "state": { "state": "ready" },
+      { "name": "web", "state": "ready",
         "url": "https://web.feature-auth.myapp.localhost" }
     ]
   }
 }
 ```
 
-人間向けに整形されたテキストから情報を抽出する必要がありません。
+人間向けに整形されたテキストから情報を抽出する必要がありません。`state` は
+オブジェクトではなく文字列なので、`.state == "ready"` がそのまま成立します。
+`failed` の場合は、状態の隣に `reason` が付きます。
 
 `--json` を付けない場合も、剥がすべき装飾はありません。端末に向けて出力する
 ときの CLI は結果を描画します——枠、桁の揃った表、意味を持つ部分への色付け

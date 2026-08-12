@@ -12,7 +12,6 @@ use minato_api::{
     Check, Diagnostics, EnvInfo, Pong, ServiceInfo, TunnelInfo, TunnelState, Unsettled,
     UnsettledReason, WorkspaceInfo,
 };
-use minato_core::ServiceState;
 use ratatui::text::{Line, Span};
 
 use super::panel::{Grid, Panel};
@@ -73,16 +72,21 @@ pub fn workspace(info: &WorkspaceInfo, decor: Decor) -> Panel {
     panel.lines(
         info.services
             .iter()
-            .filter_map(|service| match &service.state {
-                ServiceState::Failed { reason } => Some(Line::from(vec![
+            // **From `reason`, not from inside the state.** The state
+            // arrives from the daemon as a plain string, so the text is
+            // beside it — reading the enum's payload here would show an
+            // empty line for every failure.
+            .filter_map(|service| {
+                let reason = service.reason.as_ref()?;
+
+                Some(Line::from(vec![
                     Span::styled(
                         format!("{} ", theme::service_symbol(&service.state)),
                         theme::bad(),
                     ),
                     Span::styled(format!("{}: ", service.name), theme::subject()),
                     Span::styled(reason.clone(), theme::bad()),
-                ])),
-                _ => None,
+                ]))
             })
             .collect(),
     )
@@ -922,11 +926,13 @@ mod tests {
     use super::*;
     use crate::ui::test_support::render;
     use minato_api::CheckStatus;
+    use minato_core::ServiceState;
     use minato_core::{EnvScope, ServiceScope};
     use std::path::PathBuf;
 
     fn service(name: &str, state: ServiceState, url: Option<&str>) -> ServiceInfo {
         ServiceInfo {
+            reason: state.reason().map(str::to_string),
             name: name.into(),
             state,
             scope: ServiceScope::Workspace,

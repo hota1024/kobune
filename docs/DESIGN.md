@@ -1043,6 +1043,27 @@ minato tunnel status
 `minato doctor` ranks high because the initial setup involves sudo and outside
 dependencies (Docker, cloudflared). On failure it says what to do about it.
 
+#### `state` is a string, and `reason` sits beside it (settled after M7)
+
+`ServiceState` is an enum with a payload on one variant, and serde's
+internally tagged form wrote that as `{"state":"ready"}`. Which is a
+faithful encoding and the wrong one: `.state == "ready"` is never true, on
+the first command [the Skill](#11-skills) tells an agent to run. §10's own
+example here said `"state": "ready"`, so an agent reading the design wrote
+exactly the comparison that could not work.
+
+Found by running a real task through the Skill rather than by reading the
+code — `docs/AGENT-RUN.md`.
+
+**The Rust type is unchanged.** `Failed { reason }` is right for Rust: the
+CLI and the GUI match on it and the runtime builds it. What changed is how
+it is written down — a plain string — and every API type carrying a state
+now carries an optional `reason` next to it. The cost lands on whoever
+builds the value, once, instead of on every reader.
+
+A state read back off the wire therefore has an empty reason, which is
+pinned by a test rather than left to be discovered.
+
 ### An example of the JSON
 
 ```jsonc
@@ -1055,17 +1076,14 @@ dependencies (Docker, cloudflared). On failure it says what to do about it.
   "services": [
     {
       "name": "web",
-      // An object, not a string: `ServiceState` is an internally tagged
-      // enum, so `failed` carries its `reason` in the same place. Worth
-      // spelling out here because an agent reading this example writes
-      // `.state == "ready"` and gets nothing.
-      "state": { "state": "ready" },
+      "state": "ready",
       "url": "https://web.feat-1.myapp.localhost",
       "tunnel_url": "https://web-feat-1.myapp.example.com",
       "endpoint": "127.0.0.1:49312",
       "last_access": "2026-08-07T09:12:44Z"
     },
-    { "name": "db", "state": { "state": "ready" }, "url": null, "scope": "project" }
+    { "name": "db", "state": "ready", "url": null, "scope": "project" },
+    { "name": "api", "state": "failed", "reason": "the container exited with code 3" }
   ]
 }
 ```
