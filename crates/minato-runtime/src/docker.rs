@@ -169,6 +169,8 @@ pub struct DockerRuntime {
     docker: Docker,
     /// The services Minato itself stopped. See [`DockerRuntime::stop`].
     asked_to_stop: Mutex<HashSet<ServiceKey>>,
+    /// Held across [`DockerRuntime::ensure_network`]. See there for why.
+    network_lock: tokio::sync::Mutex<()>,
 }
 
 impl DockerRuntime {
@@ -191,6 +193,7 @@ impl DockerRuntime {
         Self {
             docker,
             asked_to_stop: Mutex::new(HashSet::new()),
+            network_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -207,7 +210,16 @@ impl DockerRuntime {
     }
 
     /// Creates the network if it is not there.
+    ///
+    /// **One caller at a time.** This looks and then creates, and two
+    /// services starting side by side share a network — so both would look
+    /// before either created, and both would then create. Docker does not
+    /// refuse a name it already has: it makes a second network with the
+    /// same name and a different id, and the two services end up on
+    /// networks that cannot reach each other. The lock is held over a list
+    /// and, at most once per workspace, a create.
     async fn ensure_network(&self, key: &WorkspaceKey) -> Result<String> {
+        let _guard = self.network_lock.lock().await;
         let name = names::network(key);
 
         let mut filters = HashMap::new();
@@ -970,8 +982,17 @@ impl Runtime for DockerRuntime {
         Ok(())
     }
 
+    fn starts_concurrently(&self) -> bool {
+        true
+    }
+
     async fn start(&self, spec: &ServiceSpec, events: &EventSink) -> Result<RunningService> {
         let name = names::container(&spec.key);
+
+        // **Named after the service, not after the operation.** Two
+        // services can be starting at once, and a display that tracks a
+        // step by its id would have one of them finish the other's.
+        let step = format!("start-{}", spec.name());
 
         // Whatever it exits with next is nothing to do with the last stop.
         self.asked_to_stop.lock().expect("lock").remove(&spec.key);
@@ -1010,7 +1031,7 @@ impl Runtime for DockerRuntime {
 
             if !wrong_image && !wrong_terminal && existing.state.as_deref() == Some("running") {
                 events.step_skipped(
-                    "start",
+                    &step,
                     format!("starting {}", spec.name()),
                     "already running",
                 );
@@ -1044,7 +1065,7 @@ impl Runtime for DockerRuntime {
                 .map_err(|e| RuntimeError::failed(format!("removing container {name}"), e))?;
         }
 
-        events.step_started("start", format!("starting {}", spec.name()));
+        events.step_started(&step, format!("starting {}", spec.name()));
         events.service_state(spec.name(), ServiceState::Starting);
 
         let network = names::network(&spec.attached_to);
@@ -1077,7 +1098,7 @@ impl Runtime for DockerRuntime {
             .start_container(&id, None::<StartContainerOptions<String>>)
             .await
             .map_err(|e| {
-                events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
+                events.step_failed(&step, format!("starting {}", spec.name()), e.to_string());
                 RuntimeError::failed(format!("starting container {name}"), e)
             })?;
 
@@ -1108,7 +1129,7 @@ impl Runtime for DockerRuntime {
 
         let endpoint = self.resolve_endpoint(&id, spec.port).await?;
 
-        events.step_done("start", format!("starting {}", spec.name()));
+        events.step_done(&step, format!("starting {}", spec.name()));
 
         // A container being up does not mean the app inside is listening.
         // Without this wait, the curl right after `minato new` fails with

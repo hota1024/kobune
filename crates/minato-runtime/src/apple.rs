@@ -15,6 +15,12 @@
 //! all** — no aliases, and no DNS either. A container's nameserver is its
 //! network gateway, which answers NXDOMAIN for every container name. So a
 //! peer's IP address is injected as `MINATO_HOST_<SERVICE>` instead.
+//!
+//! That last one is why this backend leaves
+//! [`Runtime::starts_concurrently`] alone: an address can only be read off
+//! a peer that is already running, so services started side by side would
+//! each be handed nothing for the other. Docker has the DNS that makes the
+//! question moot; here the sequence *is* the mechanism.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

@@ -241,16 +241,20 @@ pub async fn await_service(
         };
     };
 
+    // Named after the service: several of these can be running at once,
+    // and a step tracked by its id has to name the one thing it is
+    // tracking. See [`crate::Runtime::starts_concurrently`].
+    let step = format!("await-{service}");
     let label = format!("waiting for {service}");
-    events.step_started("await", &label);
+    events.step_started(&step, &label);
 
     if wait_until_ready(addr, health, exec, timeout).await {
-        events.step_done("await", &label);
+        events.step_done(&step, &label);
         return true;
     }
 
     events.step_skipped(
-        "await",
+        &step,
         &label,
         format!("no answer within {} seconds", timeout.as_secs()),
     );
@@ -274,8 +278,9 @@ async fn await_command_only(
     timeout: Duration,
     events: &EventSink,
 ) -> bool {
+    let step = format!("await-{service}");
     let label = format!("waiting for {service}");
-    events.step_started("await", &label);
+    events.step_started(&step, &label);
 
     let deadline = tokio::time::Instant::now() + timeout;
 
@@ -285,11 +290,11 @@ async fn await_command_only(
 
         match probe(unused, health, exec).await {
             Ok(true) => {
-                events.step_done("await", &label);
+                events.step_done(&step, &label);
                 return true;
             }
             Err(_) => {
-                events.step_skipped("await", &label, "the check cannot run here");
+                events.step_skipped(&step, &label, "the check cannot run here");
                 return false;
             }
             Ok(false) => {}
@@ -297,7 +302,7 @@ async fn await_command_only(
 
         if tokio::time::Instant::now() >= deadline {
             events.step_skipped(
-                "await",
+                &step,
                 &label,
                 format!("no answer within {} seconds", timeout.as_secs()),
             );

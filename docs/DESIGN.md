@@ -509,7 +509,8 @@ URL can be woken at all**. `expose = false` — what a database is — leaves on
 with no name for a request to carry, and that one fact decides both halves of
 this section.
 
-**Waking starts the whole `depends_on` closure**, in `startup_order`. Starting
+**Waking starts the whole `depends_on` closure**, in the same waves `up`
+uses (see §7, "Making starts faster"). Starting
 the single service the host named would hand the app a dependency that is not
 there, and no request would ever arrive to fix it. `up` had always done this;
 the wake path was the one way in that did not, so it worked under `minato up`
@@ -550,6 +551,36 @@ to the wrong conclusion — "the server is broken".
 - `node_modules` and the like live in a named volume per workspace, installed
   once
 - `minato new` runs `prepare` ahead of time (`--no-warm` turns it off)
+
+**Services start a wave at a time, not one at a time.** A start does not
+return until the service answers or gives up waiting on it — up to 15
+seconds each — so a `web`, an `api` and a `cache` that know nothing of each
+other used to spend that wait three times over for no reason. `depends_on`
+is a partial order, and the sequence it was being flattened into invented
+constraints it never asked for.
+
+So `startup_waves` groups services by depth in the dependency graph: wave 0
+depends on nothing, wave *n* depends only on earlier waves. Everything in a
+wave starts at once, and the next wave waits for it. Nothing within a wave
+depends on anything else in it, by construction — which is the whole
+argument for why this is safe, and what the tests pin. `setup` still runs
+immediately before its own service, so a migration against `db` keeps the
+ordering it needs. The same grouping drives the wake path, where the wait
+saved is one somebody is sitting through.
+
+**Whether it is safe to overlap is the runtime's answer, not the
+supervisor's** (`Runtime::starts_concurrently`, off unless a backend says
+otherwise). Docker says yes: a peer is reached by name on the network, so
+when it started makes no difference. Apple Container says no — it has no
+such DNS and injects a peer's address at creation, read from the peer
+running by then, so two services started together would each be handed
+nothing for the other. There the sequence *is* the mechanism.
+
+One consequence worth stating: two services starting at once share a
+network, so `ensure_network` — which looks and then creates — had to become
+one-caller-at-a-time. Docker does not refuse a name it already has; it makes
+a second network with the same name and a different id, and the two services
+end up unable to reach each other.
 
 ### Building rather than pulling (M0.5)
 

@@ -765,6 +765,44 @@ impl MinatoConfig {
 
         ordered
     }
+
+    /// Groups services so that everything in one wave can start at once.
+    ///
+    /// Wave 0 is what depends on nothing. Wave *n* is what depends only on
+    /// services in earlier waves — so nothing within a wave depends on
+    /// anything else in it, which is what makes starting them together
+    /// safe.
+    ///
+    /// Flattened, this reads exactly as [`Self::startup_order`] does, and
+    /// within a wave the names keep that order too. A caller that starts
+    /// them one at a time therefore behaves as it always has.
+    pub fn startup_waves(&self) -> Vec<Vec<&str>> {
+        // One pass is enough because `startup_order` has already put every
+        // dependency in front of the service that names it: by the time a
+        // service is reached, each of its dependencies has a depth.
+        let mut depths: IndexMap<&str, usize> = IndexMap::with_capacity(self.services.len());
+
+        for name in self.startup_order() {
+            let depth = self.services[name]
+                .depends_on
+                .iter()
+                .map(|dep| depths.get(dep.as_str()).map_or(0, |depth| depth + 1))
+                .max()
+                .unwrap_or(0);
+
+            depths.insert(name, depth);
+        }
+
+        let mut waves: Vec<Vec<&str>> = Vec::new();
+        for (name, depth) in depths {
+            if waves.len() <= depth {
+                waves.resize_with(depth + 1, Vec::new);
+            }
+            waves[depth].push(name);
+        }
+
+        waves
+    }
 }
 
 #[cfg(test)]
@@ -1387,6 +1425,141 @@ mod tests {
         assert!(pos("db") < pos("worker"));
         assert!(pos("api") < pos("web"));
         assert!(pos("worker") < pos("web"));
+    }
+
+    #[test]
+    fn services_that_need_nothing_share_the_first_wave() {
+        // The point of the whole thing: three services that know nothing
+        // of each other are one wave, not three.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            [services.api]
+            image = "x"
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(config.startup_waves(), vec![vec!["web", "api", "db"]]);
+    }
+
+    #[test]
+    fn a_chain_gets_a_wave_each() {
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["api"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api"], vec!["web"]]
+        );
+    }
+
+    #[test]
+    fn a_diamond_puts_the_two_middles_together() {
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["api", "worker"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.worker]
+            image = "x"
+            depends_on = ["db"]
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api", "worker"], vec!["web"]]
+        );
+    }
+
+    #[test]
+    fn a_wave_waits_for_the_furthest_of_its_dependencies() {
+        // `web` depends on `db` directly as well as through `api`. Put in
+        // wave 1 it would start alongside `api`, which is the one thing
+        // `depends_on` promises it will not do.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["db", "api"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api"], vec!["web"]]
+        );
+    }
+
+    #[test]
+    fn flattened_waves_are_a_startup_order() {
+        // The waves are meant to be a regrouping of the order, not a
+        // different answer: a caller that walks them one at a time has to
+        // see what it always saw.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["api", "cache"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.worker]
+            image = "x"
+            depends_on = ["db"]
+            [services.cache]
+            image = "x"
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        let flattened: Vec<&str> = config.startup_waves().concat();
+        let pos = |name: &str| flattened.iter().position(|s| *s == name).expect("present");
+
+        assert_eq!(flattened.len(), config.services.len());
+        assert!(pos("db") < pos("api"));
+        assert!(pos("db") < pos("worker"));
+        assert!(pos("api") < pos("web"));
+        assert!(pos("cache") < pos("web"));
     }
 
     #[test]
