@@ -358,11 +358,13 @@ async fn waking_a_service_brings_up_what_it_depends_on() {
 
     harness.up().await;
     harness.down().await;
-    let running = harness.running().await;
-    assert!(
-        running.is_empty(),
-        "nothing should be up to start: {running:?}"
-    );
+
+    // **Waited for, not asserted.** `down` asks the runtime to stop and
+    // a container is not stopped the instant it is asked; a busy runner
+    // is where that gap shows. The same shape of assertion was what made
+    // `a_swept_service_comes_back_on_the_next_request` flaky, and this
+    // one was left behind when that was fixed.
+    harness.wait_until_running(&[]).await;
 
     let activation = harness
         .supervisor

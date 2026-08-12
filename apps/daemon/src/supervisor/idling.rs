@@ -19,9 +19,9 @@ use minato_runtime::{EventSink, Runtime, WorkspaceKey};
 use crate::env;
 use crate::spec;
 
-use super::{
-    ServiceKeyRef, Supervisor, run_wave, select_with_dependencies, waves, write_env_file_for,
-};
+use super::environment::write_env_file_for;
+use super::lifecycle::{run_wave, select_with_dependencies, waves};
+use super::{ServiceKeyRef, Supervisor};
 
 impl Supervisor {
     /// Rebuilds every project's routing table at daemon start.
