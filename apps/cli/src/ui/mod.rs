@@ -164,6 +164,27 @@ pub fn note(text: &str) -> Line<'static> {
     views::note(text)
 }
 
+/// A heading and the lines under it.
+///
+/// For what a command has to say *besides* what it did — the keys a
+/// conversion could not carry, and why. A panel would compete with the
+/// one above it; a bare list would not say what it was a list of.
+pub fn note_lines(heading: &str, lines: &[String]) {
+    let mut out = vec![Line::from(vec![
+        Span::styled("› ", theme::muted()),
+        Span::styled(heading.to_string(), theme::subject()),
+    ])];
+
+    out.extend(lines.iter().map(|line| {
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(line.clone(), theme::muted()),
+        ])
+    }));
+
+    Surface::stdout().print(|_| Loose(out.clone()));
+}
+
 /// A command that did what it was asked and has nothing to report.
 ///
 /// `rm` is the whole of it: a panel with a title and no contents would say

@@ -35,6 +35,14 @@ less accurately.
 
 ### Added
 
+- `minato init --from-compose` converts a `docker-compose.yml`, turning the
+  entry cost from rewriting a working file into reviewing a generated one.
+  Deliberately not a complete conversion: what has no equivalent is named per
+  service, and what compose cannot express is left as a `TODO` beside the
+  service it belongs to. Compose's `env_file` becomes `carry` — the key means
+  the opposite in the two formats, and mapping it across would have
+  overwritten the file it names
+
 - `docs/AGENT-RUN.md` — the record of driving a real two-service task with
   nothing but the Skill, and the four places the instructions did not say
   enough. All four are fixed: verifying with `--cacert` rather than waiting on

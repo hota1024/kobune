@@ -185,6 +185,40 @@ volumes = ["pgdata:/var/lib/postgresql/data"]
 expose = false                  # no URL; internal traffic only
 ```
 
+### Coming from compose
+
+The schema being Minato's own is right for the long run and is the whole of
+the entry cost: trying it means throwing away a working `docker-compose.yml`
+and hand-writing a new format, for URLs. Most people stop there.
+
+`minato init --from-compose` makes that a review rather than a rewrite. It is
+deliberately **not** a complete conversion — compose is enormous and half of
+it means nothing here — so every key lands in one of three places and none of
+them is silence:
+
+- **converted**: `image`, `build`, `ports`, `expose`, `command`,
+  `environment`, `depends_on`, `volumes`, `healthcheck`, `working_dir`, `tty`
+- **left as a `TODO` beside its service**: what compose cannot express —
+  whether a database is `scope = "project"`, what `setup` should run
+- **named in the report**: `restart`, `deploy`, `networks`, `profiles`,
+  `logging` and the rest, per service
+
+A generated file that looks finished and is not costs more than no conversion:
+the failure arrives later, somewhere else, as a service behaving differently
+from the one that ran yesterday.
+
+**`env_file` means the opposite in the two formats**, and mapping it across
+would have destroyed data. Compose *reads* the file into the environment;
+Minato *writes* the settled environment out to it, so the first `up` would
+overwrite the user's `.env`. It converts to `carry`, which is what compose's
+`env_file` actually implies here: a file the worktree needs and git does not
+bring.
+
+`ports: ["3000:8000"]` takes the **container** side. Minato publishes on a
+port it chooses; what it needs to know is where the app listens inside. And
+compose's `expose` — reachable by other services, not by the host — is exactly
+`expose = false`.
+
 ### The parts that matter
 
 **`scope`**: `workspace`, the default, gives each worktree its own instance.
@@ -1453,9 +1487,10 @@ and the docs site follows it — `main` carrying the nightly while also meaning
   database per worktree — separate database names inside one instance — is the
   leading idea, but how to implement it without depending on the runtime is
   undecided
-- **How well `minato.toml` can be generated**: `minato init` could infer one
-  from an existing project by reading compose, package.json and Dockerfiles.
-  How far to take that is open
+- **How far `minato init` should infer**: reading compose is done —
+  `--from-compose`, and §4's note on it. Inferring from `package.json` and
+  Dockerfiles is still open, and a harder question, because neither says
+  what a *service* is
 - **Worktree directory conventions**: `{repo}.wt/{name}` is the default, but how
   it should sit alongside existing habits — under ghq, next to `.git/worktrees`
   — is unsettled

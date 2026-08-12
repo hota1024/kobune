@@ -4,6 +4,7 @@
 //! requests and prints results (`docs/DESIGN.md` §3).
 
 mod attach;
+mod compose;
 mod init;
 mod launchd;
 mod output;
@@ -63,6 +64,14 @@ enum Command {
         /// Overwrite an existing minato.toml
         #[arg(long)]
         force: bool,
+
+        /// Convert a compose file instead of writing a starter one.
+        ///
+        /// Without a path, the usual names are tried. What has no
+        /// equivalent here is reported rather than dropped quietly, and
+        /// what compose cannot express is left as a TODO in the file.
+        #[arg(long, value_name = "FILE", num_args = 0..=1)]
+        from_compose: Option<Option<std::path::PathBuf>>,
     },
 
     /// Check that the daemon answers
@@ -636,23 +645,54 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
         .map_err(|err| CliError::Local(format!("cannot read the working directory: {err}")))?;
 
     // `init` needs no daemon.
-    if let Command::Init { force } = &cli.command {
-        let outcome = init::run(&cwd, *force).map_err(|err| CliError::Local(err.to_string()))?;
+    if let Command::Init {
+        force,
+        from_compose,
+    } = &cli.command
+    {
+        let outcome = match from_compose {
+            // `--from-compose` alone means "find it yourself"; with a
+            // path, that one.
+            Some(named) => init::from_compose(&cwd, named.as_deref(), *force),
+            None => init::run(&cwd, *force),
+        }
+        .map_err(|err| CliError::Local(err.to_string()))?;
 
         if cli.json {
             output::print_json(&serde_json::json!({
                 "path": outcome.path,
                 "project": outcome.project,
+                "from": outcome.from,
+                "carried": outcome.carried,
+                "dropped": outcome
+                    .dropped
+                    .iter()
+                    .map(|(service, key)| serde_json::json!({ "service": service, "key": key }))
+                    .collect::<Vec<_>>(),
             }));
         } else {
-            ui::done(
-                "init",
-                &[
-                    ("created", outcome.path.display().to_string()),
-                    ("project", outcome.project),
-                ],
-                vec![ui::hint("bring the environment up with", "minato up")],
-            );
+            let mut fields = vec![
+                ("created", outcome.path.display().to_string()),
+                ("project", outcome.project.clone()),
+            ];
+
+            if let Some(from) = &outcome.from {
+                fields.push(("converted from", from.display().to_string()));
+            }
+
+            let next = if outcome.from.is_some() {
+                vec![ui::note(
+                    "read the TODOs in it before the first `minato up`",
+                )]
+            } else {
+                vec![ui::hint("bring the environment up with", "minato up")]
+            };
+
+            ui::done("init", &fields, next);
+
+            if outcome.from.is_some() {
+                report_conversion(&outcome);
+            }
         }
 
         return Ok(ExitCode::SUCCESS);
@@ -1416,6 +1456,50 @@ fn confirm(question: &str) -> Result<bool, CliError> {
         .map_err(|err| CliError::Local(format!("cannot read the answer: {err}")))?;
 
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
+}
+
+/// What a conversion could not carry across.
+///
+/// **Printed every time, even when there is nothing.** "Nothing was
+/// dropped" is a different sentence from silence, and only one of them
+/// can be trusted.
+fn report_conversion(outcome: &init::InitOutcome) {
+    if !outcome.carried.is_empty() {
+        ui::note_lines(
+            "compose's `env_file` became `carry`",
+            &[format!(
+                "{} — copied into each new worktree. Minato's own `env_file` \
+                 writes rather than reads, so mapping it across would have \
+                 overwritten these",
+                outcome.carried.join(", ")
+            )],
+        );
+    }
+
+    if outcome.dropped.is_empty() {
+        ui::note_lines(
+            "nothing was dropped",
+            &["every key had an equivalent".to_string()],
+        );
+        return;
+    }
+
+    let mut by_service: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+
+    for (service, key) in &outcome.dropped {
+        by_service
+            .entry(service.as_str())
+            .or_default()
+            .push(key.as_str());
+    }
+
+    let lines: Vec<String> = by_service
+        .into_iter()
+        .map(|(service, keys)| format!("{service}: {}", keys.join(", ")))
+        .collect();
+
+    ui::note_lines("no equivalent here, so left out", &lines);
 }
 
 /// Installing the Skill. Needs no daemon.

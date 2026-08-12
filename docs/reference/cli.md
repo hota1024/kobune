@@ -40,6 +40,37 @@ $ minato init
 $ minato init --force    # overwrite an existing file
 ```
 
+#### Converting a compose file
+
+```console
+$ minato init --from-compose              # finds compose.yaml, docker-compose.yml, …
+$ minato init --from-compose infra.yml    # or that one
+```
+
+**Not a complete conversion, on purpose.** Compose is large and half of it has
+no meaning here, so every key lands in one of three places and none of them is
+silence:
+
+- **converted** — `image`, `build`, `ports`, `expose`, `command`,
+  `environment`, `depends_on`, `volumes`, `healthcheck`, `working_dir`, `tty`
+- **left as a `TODO` beside its service** — what compose cannot express:
+  whether a database is shared between worktrees, what `setup` should run
+- **named in the report** — `restart`, `deploy`, `networks`, `logging` and the
+  rest, per service
+
+Read the TODOs before the first `minato up`. A generated file that looks
+finished and is not costs more than no conversion at all.
+
+Two conversions are worth knowing about:
+
+- **`env_file` becomes `carry`.** The key means the opposite in the two
+  formats — compose *reads* the file, Minato *writes* it — so mapping it
+  across would overwrite your `.env` on the first `up`. `carry` is what it
+  actually implies: a file each new worktree needs and git does not bring
+- **`ports: ["3000:8000"]` takes the container side**, `8000`. Minato
+  publishes on a port it chooses; what it needs is where the app listens
+  inside
+
 ### `minato doctor`
 
 Diagnoses the environment and prints a fix for anything that is not `✓`. It
