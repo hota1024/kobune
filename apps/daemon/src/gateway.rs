@@ -755,31 +755,82 @@ fn format_url(scheme: &str, host: &str, port: u16, default_port: u16) -> String 
     }
 }
 
-/// Turns a descriptor from launchd into a tokio listener.
-fn adopt_listeners(name: &str) -> Vec<TcpListener> {
-    activation::tcp_listeners(name)
+/// The sockets among those launchd handed over that it managed to bind.
+///
+/// **A descriptor arrives even when the bind failed.** A plist naming an
+/// address the machine does not have — Apple Container's gateway, on a
+/// host whose container network is down — costs that socket and nothing
+/// else, which is what writing the plist counts on. But launchd still
+/// hands the descriptor over, and the socket behind it never bound:
+/// `getsockname` answers `0.0.0.0:0` instead of failing, so it reads as
+/// an address like any other.
+///
+/// **Dropped here, before anything else sees it.** It would otherwise be
+/// served — an `accept` that can only fail — counted as the proxy
+/// listening, and, since launchd does not hand the descriptors back in
+/// any particular order, be the address [`Gateway::https_port`] speaks
+/// for. Every service is then told to reach the proxy on port 0, which a
+/// browser refuses outright.
+fn bound_only<S>(
+    name: &str,
+    taken: Vec<S>,
+    address: impl Fn(&S) -> std::io::Result<SocketAddr>,
+) -> Vec<S> {
+    taken
         .into_iter()
-        .filter_map(|listener| match TcpListener::from_std(listener) {
-            Ok(listener) => Some(listener),
+        .filter(|socket| match address(socket) {
+            Ok(addr) if addr.port() != 0 => true,
+            Ok(_) => {
+                // The address it was meant to hold is not recoverable from
+                // an unbound socket, so the plist is where to look. Most
+                // often it names one this machine does not have.
+                tracing::warn!(
+                    "leaving out one of {name}'s sockets: launchd handed it over without \
+                     binding it. Check the addresses in its plist"
+                );
+                false
+            }
             Err(err) => {
-                tracing::warn!("cannot take over {name}'s socket: {err}");
-                None
+                tracing::warn!("leaving out one of {name}'s sockets: no address ({err})");
+                false
             }
         })
         .collect()
 }
 
+/// Turns a descriptor from launchd into a tokio listener.
+fn adopt_listeners(name: &str) -> Vec<TcpListener> {
+    bound_only(
+        name,
+        activation::tcp_listeners(name),
+        std::net::TcpListener::local_addr,
+    )
+    .into_iter()
+    .filter_map(|listener| match TcpListener::from_std(listener) {
+        Ok(listener) => Some(listener),
+        Err(err) => {
+            tracing::warn!("cannot take over {name}'s socket: {err}");
+            None
+        }
+    })
+    .collect()
+}
+
 fn adopt_udp(name: &str) -> Vec<tokio::net::UdpSocket> {
-    activation::udp_sockets(name)
-        .into_iter()
-        .filter_map(|socket| match tokio::net::UdpSocket::from_std(socket) {
-            Ok(socket) => Some(socket),
-            Err(err) => {
-                tracing::warn!("cannot take over {name}'s socket: {err}");
-                None
-            }
-        })
-        .collect()
+    bound_only(
+        name,
+        activation::udp_sockets(name),
+        std::net::UdpSocket::local_addr,
+    )
+    .into_iter()
+    .filter_map(|socket| match tokio::net::UdpSocket::from_std(socket) {
+        Ok(socket) => Some(socket),
+        Err(err) => {
+            tracing::warn!("cannot take over {name}'s socket: {err}");
+            None
+        }
+    })
+    .collect()
 }
 
 /// Binds `port` on every wanted address.
@@ -1393,6 +1444,45 @@ mod tests {
     fn nothing_bound_is_reported_separately() {
         // Everything failing is not the "only one family" problem.
         assert!(Gateway::inert().missing_families().is_empty());
+    }
+
+    #[test]
+    fn a_socket_launchd_could_not_bind_is_left_out() {
+        use std::os::fd::FromRawFd;
+
+        // What went wrong: the plist named Apple Container's gateway on a
+        // machine whose container network was down, launchd handed the
+        // descriptor over anyway, and the socket behind it answered
+        // `0.0.0.0:0` rather than failing. Coming back first, that 0 was
+        // the port every service was then told to reach the proxy on —
+        // and a browser refuses port 0 as unsafe.
+        let listening = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(fd >= 0, "no socket to stand in for the one launchd lost");
+
+        // SAFETY: a socket this process just made and owns, still unbound
+        // — the same state launchd's descriptor arrives in.
+        let never_bound = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+
+        assert_eq!(
+            never_bound.local_addr().ok().map(|addr| addr.port()),
+            Some(0),
+            "the premise: an unbound socket has an address, and its port is 0"
+        );
+
+        let kept = bound_only(
+            "https",
+            vec![never_bound, listening],
+            std::net::TcpListener::local_addr,
+        );
+
+        assert_eq!(kept.len(), 1, "only the socket that bound is kept");
+        assert_ne!(
+            kept[0].local_addr().unwrap().port(),
+            0,
+            "and it is the one with a port to speak for the proxy"
+        );
     }
 
     #[test]
