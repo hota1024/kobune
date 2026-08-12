@@ -263,6 +263,11 @@ pub struct Gateway {
     https_addrs: Vec<SocketAddr>,
     dns_port: Option<u16>,
     ca_path: Option<PathBuf>,
+    /// The DNS suffixes the local CA may sign for.
+    ///
+    /// Empty for a CA with no name constraint — one made before the rule
+    /// existed. `doctor` is where that gets said out loud.
+    ca_permitted: Vec<String>,
     /// The addresses that were meant to be bound, for working out which
     /// were missed.
     wanted: Vec<IpAddr>,
@@ -305,15 +310,16 @@ impl Gateway {
             shutdown.clone(),
         )
         .await;
-        let (https_addrs, ca_path, https_failure, https_fell_back) = Self::start_https(
-            paths,
-            &routes,
-            settings,
-            launchd_installed,
-            activator,
-            shutdown.clone(),
-        )
-        .await;
+        let (https_addrs, ca_path, ca_permitted, https_failure, https_fell_back) =
+            Self::start_https(
+                paths,
+                &routes,
+                settings,
+                launchd_installed,
+                activator,
+                shutdown.clone(),
+            )
+            .await;
         let (dns_port, dns_failure) = Self::start_dns(settings, shutdown).await;
 
         Self {
@@ -322,6 +328,7 @@ impl Gateway {
             https_addrs,
             dns_port,
             ca_path,
+            ca_permitted,
             wanted: settings.bind.clone(),
             extra_wanted: settings.extra_bind.clone(),
             http_failure,
@@ -414,16 +421,29 @@ impl Gateway {
         launchd_installed: bool,
         activator: Arc<dyn Activator>,
         shutdown: Arc<Notify>,
-    ) -> (Vec<SocketAddr>, Option<PathBuf>, Option<BindFailure>, bool) {
+    ) -> (
+        Vec<SocketAddr>,
+        Option<PathBuf>,
+        Vec<String>,
+        Option<BindFailure>,
+        bool,
+    ) {
         let ca = match LocalCa::load_or_create(&paths.ca_dir()) {
             Ok(ca) => Arc::new(ca),
             Err(err) => {
                 tracing::warn!("no CA available, so HTTPS stays off: {err}");
-                return (Vec::new(), None, Some(BindFailure::Other), false);
+                return (
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                    Some(BindFailure::Other),
+                    false,
+                );
             }
         };
 
         let ca_path = ca.certificate_path();
+        let ca_permitted = ca.permitted_suffixes().to_vec();
         let tls = server_config(ca);
 
         let activated = adopt_listeners(activation::HTTPS_SOCKET);
@@ -454,7 +474,7 @@ impl Gateway {
             }
 
             tracing::info!("HTTPS proxy: inherited from launchd ({addrs:?})");
-            return (addrs, Some(ca_path), None, false);
+            return (addrs, Some(ca_path), ca_permitted, None, false);
         }
 
         let listening = bind_with_fallback(
@@ -492,7 +512,13 @@ impl Gateway {
             });
         }
 
-        (bound, Some(ca_path), listening.failure, listening.fell_back)
+        (
+            bound,
+            Some(ca_path),
+            ca_permitted,
+            listening.failure,
+            listening.fell_back,
+        )
     }
 
     async fn start_dns(
@@ -565,6 +591,7 @@ impl Gateway {
             https_addrs: Vec::new(),
             dns_port: None,
             ca_path: None,
+            ca_permitted: Vec::new(),
             wanted: Vec::new(),
             extra_wanted: Vec::new(),
             http_failure: Some(BindFailure::Other),
@@ -591,6 +618,7 @@ impl Gateway {
             https_addrs: https.map(both).unwrap_or_default(),
             dns_port: None,
             ca_path: None,
+            ca_permitted: Vec::new(),
             wanted: vec![
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -609,6 +637,14 @@ impl Gateway {
     #[cfg(test)]
     pub(crate) fn with_ca(mut self, path: &str) -> Self {
         self.ca_path = Some(PathBuf::from(path));
+        self
+    }
+
+    /// The suffixes the CA reports. Empty is what a CA made before the
+    /// name-constraint rule looks like.
+    #[cfg(test)]
+    pub(crate) fn with_ca_permitting(mut self, suffixes: &[&str]) -> Self {
+        self.ca_permitted = suffixes.iter().map(|s| s.to_string()).collect();
         self
     }
 
@@ -712,6 +748,12 @@ impl Gateway {
 
     pub fn ca_path(&self) -> Option<&std::path::Path> {
         self.ca_path.as_deref()
+    }
+
+    /// The DNS suffixes the local CA may sign for. Empty when it carries
+    /// no name constraint at all.
+    pub fn ca_permitted(&self) -> &[String] {
+        &self.ca_permitted
     }
 
     /// Whether the proxy is running. No URLs are issued when it is not.
@@ -1296,6 +1338,7 @@ mod tests {
             https_addrs: https,
             dns_port: None,
             ca_path: None,
+            ca_permitted: Vec::new(),
             wanted: vec![
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 IpAddr::V6(Ipv6Addr::LOCALHOST),

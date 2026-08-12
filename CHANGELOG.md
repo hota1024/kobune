@@ -14,6 +14,12 @@ less accurately.
 
 ### Security
 
+- The local CA is narrowed to `localhost` with an X.509 name constraint, so a
+  key that escaped could sign nothing anyone could be fooled by. `minato setup` puts this certificate in the system trust store, and
+  without the constraint the key behind it signed any host at all. A CA
+  generated before this is left alone rather than replaced — swapping a
+  trusted certificate breaks every URL until somebody notices — and
+  `minato doctor` reports it
 - The daemon's control socket is the owner's alone. `MINATO_HOME` is `0700`
   and the socket `0600`, narrowed on every start rather than only at
   creation, and the uid on the other end is checked on connect. The socket
