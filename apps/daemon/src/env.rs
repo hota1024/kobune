@@ -623,16 +623,28 @@ mod tests {
         );
     }
 
+    /// A gateway serving HTTPS with a certificate that is really on disk,
+    /// as production's is. A path nobody created names a file no
+    /// container will have mounted.
+    fn ca_on_disk(dir: &tempfile::TempDir) -> Gateway {
+        let ca = dir.path().join("minato-ca.crt");
+        std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").expect("writes");
+
+        Gateway::with_ports(Some(80), Some(443)).with_ca(&ca.to_string_lossy())
+    }
+
     #[test]
     fn tells_a_container_which_certificate_to_trust() {
         // Without this the URL connects and then fails to verify, and the
         // way out everyone finds is turning verification off entirely.
+        let dir = tempfile::tempdir().expect("tempdir");
+
         let values = injected(
             &config(SAMPLE),
             "myapp",
             &record("feat-1", false),
             Some("web"),
-            &Gateway::with_ports(Some(80), Some(443)).with_ca("/home/me/.minato/ca/ca.crt"),
+            &ca_on_disk(&dir),
         );
 
         assert_eq!(
@@ -664,6 +676,8 @@ mod tests {
         "#,
         );
 
+        let dir = tempfile::tempdir().expect("tempdir");
+
         let layers = layers_for_service(
             &config,
             "myapp",
@@ -671,7 +685,7 @@ mod tests {
             std::path::Path::new("/repo"),
             Some("web"),
             &Paths::with_root(std::path::PathBuf::from("/nowhere")),
-            &Gateway::with_ports(Some(80), Some(443)).with_ca("/home/me/.minato/ca/ca.crt"),
+            &ca_on_disk(&dir),
         )
         .expect("builds");
 
@@ -710,21 +724,55 @@ mod tests {
         // The CA loads whether or not :443 could be held. With HTTPS down
         // the URLs are http://, so there is nothing for a container to
         // verify — and the file would still be mounted for it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ca = dir.path().join("minato-ca.crt");
+        std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").expect("writes");
+
         let values = injected(
             &config(SAMPLE),
             "myapp",
             &record("feat-1", false),
             Some("web"),
-            &Gateway::with_ports(Some(80), None).with_ca("/home/me/.minato/ca/minato-ca.crt"),
+            &Gateway::with_ports(Some(80), None).with_ca(&ca.to_string_lossy()),
         );
 
         assert!(
             values
                 .get("MINATO_URL_WEB")
                 .is_some_and(|url| url.starts_with("http://")),
-            "the state under test is HTTP-only"
+            "the state under test is HTTP-only, with the certificate there"
         );
         assert!(!values.contains_key("MINATO_CA_FILE"));
+        assert!(!values.contains_key(NODE_CA_VAR));
+    }
+
+    #[test]
+    fn names_no_certificate_once_the_file_is_gone() {
+        // It can be removed under a running daemon — `minato setup`
+        // undone, the directory cleared — and what is mounted is decided
+        // from the same answer. A name that outlives the mount is Node
+        // warning on every start about a certificate it cannot load.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gateway = ca_on_disk(&dir);
+
+        std::fs::remove_file(dir.path().join("minato-ca.crt")).expect("removes");
+
+        let values = injected(
+            &config(SAMPLE),
+            "myapp",
+            &record("feat-1", false),
+            Some("web"),
+            &gateway,
+        );
+
+        assert!(
+            values
+                .get("MINATO_URL_WEB")
+                .is_some_and(|url| url.starts_with("https://")),
+            "HTTPS is still being served; it is the file that went"
+        );
+        assert!(!values.contains_key("MINATO_CA_FILE"));
+        assert!(!values.contains_key(NODE_CA_VAR));
     }
 
     #[test]
