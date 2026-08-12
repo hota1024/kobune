@@ -1016,6 +1016,9 @@ impl Runtime for AppleContainerRuntime {
     }
 
     async fn stop(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        // Scoped like `start`: a step id names the one service it is
+        // tracking, whether or not anything overlaps today.
+        let events = &events.for_service(&key.service);
         let Some(record) = self.find_container(key).await? else {
             events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
@@ -1039,6 +1042,7 @@ impl Runtime for AppleContainerRuntime {
     }
 
     async fn remove(&self, key: &ServiceKey, events: &EventSink) -> Result<()> {
+        let events = &events.for_service(&key.service);
         self.forget_terminal(key);
 
         if self.find_container(key).await?.is_none() {

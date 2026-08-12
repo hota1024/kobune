@@ -1556,10 +1556,11 @@ impl Supervisor {
         // A wave at a time, as `up` does. This one is on the path of a
         // request that is being held open, so the wait saved is a wait
         // somebody is sitting through.
+        let concurrently = runtime.starts_concurrently();
         let mut endpoint = None;
-        for wave in waves(&config, &specs) {
+        for wave in waves(&config, &specs, concurrently)? {
             let started = run_wave(
-                runtime.starts_concurrently(),
+                concurrently,
                 wave.iter()
                     .map(|spec| runtime.start(spec, &events))
                     .collect(),
@@ -2418,9 +2419,10 @@ impl Supervisor {
         // dependency — migrations against `db` — has to run after the
         // thing it depends on is up, and the waves already put them in
         // that order.
-        for wave in waves(&resolved.config, &filtered) {
+        let concurrently = runtime.starts_concurrently();
+        for wave in waves(&resolved.config, &filtered, concurrently)? {
             run_wave(
-                runtime.starts_concurrently(),
+                concurrently,
                 wave.iter()
                     .map(|service| {
                         self.setup_and_start(resolved, service, runtime.as_ref(), events)
@@ -2880,12 +2882,27 @@ fn unreached_internal_services(
 /// half-created for no gain. In sequence there is nothing already in
 /// flight to see out, so the first failure stops it — which is what this
 /// path has always done.
-async fn run_wave<T, E>(
+///
+/// **Only one error can be returned, and a wave can produce several.** The
+/// rest have already gone out as `step_failed`, so the client has seen
+/// them; they are logged here too, because the response alone would say
+/// one service failed when more did.
+async fn run_wave<T, E: std::fmt::Display>(
     concurrently: bool,
     work: Vec<impl std::future::Future<Output = Result<T, E>>>,
 ) -> Result<Vec<T>, E> {
     if concurrently {
-        return futures::future::join_all(work).await.into_iter().collect();
+        let outcomes = futures::future::join_all(work).await;
+
+        for also in outcomes
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().err())
+            .skip(1)
+        {
+            tracing::warn!("another service in the same wave failed: {also}");
+        }
+
+        return outcomes.into_iter().collect();
     }
 
     let mut done = Vec::with_capacity(work.len());
@@ -2903,6 +2920,17 @@ async fn run_wave<T, E>(
 /// entirely is dropped rather than left empty, which keeps "one wave, one
 /// round of starts" true.
 ///
+/// **A runtime that starts in sequence is not regrouped at all.** Grouping
+/// by depth is a different topological order from `startup_order` — both
+/// are correct, but they are not the same list, and flattening one back
+/// out does not recover the other. That distinction is invisible where a
+/// wave starts at once and decisive where it does not: Apple Container
+/// reads a peer's address off whatever is running when a container is
+/// created, and `peers` is every other service in the workspace rather
+/// than only `depends_on`, so a service reordered past a neighbour is
+/// handed a different set of `MINATO_HOST_<PEER>` variables. Sequential
+/// backends therefore keep the order they have always had.
+///
 /// **Depth is read off the whole configuration, not the selection.** That
 /// is the same answer, because a selection always arrives closed over its
 /// dependencies (see [`select_with_dependencies`]) — so every dependency
@@ -2911,7 +2939,12 @@ async fn run_wave<T, E>(
 fn waves<'a>(
     config: &MinatoConfig,
     specs: &'a [minato_runtime::ServiceSpec],
-) -> Vec<Vec<&'a minato_runtime::ServiceSpec>> {
+    concurrently: bool,
+) -> Result<Vec<Vec<&'a minato_runtime::ServiceSpec>>, ApiError> {
+    if !concurrently {
+        return Ok(specs.iter().map(|spec| vec![spec]).collect());
+    }
+
     let grouped: Vec<Vec<&minato_runtime::ServiceSpec>> = config
         .startup_waves()
         .into_iter()
@@ -2926,16 +2959,23 @@ fn waves<'a>(
 
     // Every spec was built by walking this same configuration — through
     // `build_workspace_spec` or through `wake_order`, both of which read
-    // `startup_order` — so `startup_waves` names all of them and nothing
-    // is dropped here. Stated rather than guarded: the guard would be a
-    // branch no caller can reach.
-    debug_assert_eq!(
-        grouped.iter().map(Vec::len).sum::<usize>(),
-        specs.len(),
-        "every spec is a service the configuration names"
-    );
+    // `startup_order` — so `startup_waves` names all of them.
+    //
+    // **Said out loud rather than left to a `debug_assert`.** The daemon
+    // people run is a release build, and there the assertion is compiled
+    // out: a spec that fell through would simply never be started, and
+    // `up` would report success for a service that is not running.
+    let placed: usize = grouped.iter().map(Vec::len).sum();
+    if placed != specs.len() {
+        return Err(ApiError::new(
+            ErrorCode::Internal,
+            "some services could not be ordered against the configuration \
+             they came from"
+                .to_string(),
+        ));
+    }
 
-    grouped
+    Ok(grouped)
 }
 
 /// The named services, plus everything they depend on.
@@ -3320,6 +3360,30 @@ mod tests {
         config
     }
 
+    /// A graph where the two topological orders differ: `cache` and
+    /// `worker` hang off the side of the `web` -> `api` -> `db` chain.
+    const FORK: &str = r#"
+        [project]
+        name = "myapp"
+        [services.web]
+        image = "node:22"
+        port = 3000
+        depends_on = ["api", "cache"]
+        [services.api]
+        image = "node:22"
+        port = 8080
+        depends_on = ["db"]
+        [services.worker]
+        image = "node:22"
+        depends_on = ["db"]
+        [services.cache]
+        image = "redis:7"
+        port = 6379
+        [services.db]
+        image = "postgres:16"
+        port = 5432
+    "#;
+
     const SAMPLE: &str = r#"
         [project]
         name = "myapp"
@@ -3663,7 +3727,7 @@ mod tests {
         let specs = specs_for(&config, &["api"]);
 
         assert_eq!(
-            wave_names(&waves(&config, &specs)),
+            wave_names(&waves(&config, &specs, true).expect("orders")),
             vec![vec!["db"], vec!["api"]]
         );
     }
@@ -3673,31 +3737,9 @@ mod tests {
         // The one invariant the whole thing rests on: everything in a wave
         // starts at once, so a dependency sharing a wave with what depends
         // on it would be the ordering `depends_on` exists to give.
-        let config = config(
-            r#"
-            [project]
-            name = "myapp"
-            [services.web]
-            image = "node:22"
-            port = 3000
-            depends_on = ["api", "cache"]
-            [services.api]
-            image = "node:22"
-            port = 8080
-            depends_on = ["db"]
-            [services.worker]
-            image = "node:22"
-            depends_on = ["db"]
-            [services.cache]
-            image = "redis:7"
-            port = 6379
-            [services.db]
-            image = "postgres:16"
-            port = 5432
-        "#,
-        );
+        let config = config(FORK);
         let specs = specs_for(&config, &[]);
-        let grouped = waves(&config, &specs);
+        let grouped = waves(&config, &specs, true).expect("orders");
 
         let mut started: Vec<&str> = Vec::new();
         for wave in &grouped {
@@ -3720,6 +3762,80 @@ mod tests {
             "every service still starts: {:?}",
             wave_names(&grouped)
         );
+    }
+
+    #[test]
+    fn a_sequential_runtime_starts_in_startup_order() {
+        // The regression this file's `waves` argument exists for. Grouping
+        // by depth is a different topological order, and a backend that
+        // opted out of concurrency did so to keep the order it had —
+        // Apple Container reads a peer's address off whatever is already
+        // running, so being reordered past a neighbour changes what a
+        // service is told about it.
+        let config = config(FORK);
+        let specs = specs_for(&config, &[]);
+
+        let sequential = wave_names(&waves(&config, &specs, false).expect("orders"));
+
+        assert_eq!(
+            sequential.concat(),
+            config.startup_order(),
+            "a sequential backend must see exactly what it saw before"
+        );
+        assert!(
+            sequential.iter().all(|wave| wave.len() == 1),
+            "and one at a time: {sequential:?}"
+        );
+
+        // Worth stating beside it: the concurrent grouping really is a
+        // different list, so the two branches are not interchangeable.
+        assert_ne!(
+            wave_names(&waves(&config, &specs, true).expect("orders")).concat(),
+            config.startup_order()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wave_reports_the_first_failure_in_wave_order() {
+        // Both branches, because the promise is that which error comes
+        // back does not depend on which future happened to finish first.
+        let failing = |names: [&'static str; 3]| {
+            names.map(|name| async move {
+                match name {
+                    "ok" => Ok(name),
+                    _ => Err(ApiError::new(ErrorCode::RuntimeFailed, name.to_string())),
+                }
+            })
+        };
+
+        for concurrently in [true, false] {
+            let outcome = run_wave(
+                concurrently,
+                failing(["ok", "second", "third"]).into_iter().collect(),
+            )
+            .await;
+
+            assert_eq!(
+                outcome.expect_err("one of them failed").message,
+                "second",
+                "concurrently = {concurrently}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_wave_that_works_keeps_what_it_produced_in_order() {
+        for concurrently in [true, false] {
+            let work = ["a", "b", "c"].map(|name| async move { Ok::<_, ApiError>(name) });
+
+            assert_eq!(
+                run_wave(concurrently, work.into_iter().collect())
+                    .await
+                    .expect("all fine"),
+                vec!["a", "b", "c"],
+                "concurrently = {concurrently}"
+            );
+        }
     }
 
     #[test]

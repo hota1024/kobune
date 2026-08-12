@@ -773,9 +773,21 @@ impl MinatoConfig {
     /// anything else in it, which is what makes starting them together
     /// safe.
     ///
-    /// Flattened, this reads exactly as [`Self::startup_order`] does, and
-    /// within a wave the names keep that order too. A caller that starts
-    /// them one at a time therefore behaves as it always has.
+    /// **Flattened, this is a valid startup order but not the same one
+    /// [`Self::startup_order`] gives.** Bucketing by depth necessarily
+    /// pulls every independent service ahead of every service one level
+    /// down, and `startup_order`'s depth-first walk does not. For
+    /// `web -> {api, cache}`, `api -> db`, `worker -> db`:
+    ///
+    /// ```text
+    /// startup_order  db, api, cache, web, worker
+    /// flattened      db, cache, api, worker, web
+    /// ```
+    ///
+    /// Both put every dependency in front of what needs it, which is all
+    /// either promises. A caller that cares which of the two it walks —
+    /// because something reads the state of whatever is already running —
+    /// wants `startup_order`, not this flattened.
     pub fn startup_waves(&self) -> Vec<Vec<&str>> {
         // One pass is enough because `startup_order` has already put every
         // dependency in front of the service that names it: by the time a
@@ -1502,13 +1514,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn flattened_waves_are_a_startup_order() {
-        // The waves are meant to be a regrouping of the order, not a
-        // different answer: a caller that walks them one at a time has to
-        // see what it always saw.
-        let config = parse(
-            r#"
+    /// `web` over `api` and `cache`; `api` and `worker` over `db`. The
+    /// point of it is that `cache` and `worker` are independent of the
+    /// chain through `api`, which is where the two orders come apart.
+    const FORK: &str = r#"
             [project]
             name = "myapp"
             [services.web]
@@ -1524,9 +1533,11 @@ mod tests {
             image = "x"
             [services.db]
             image = "x"
-        "#,
-        )
-        .expect("valid");
+        "#;
+
+    #[test]
+    fn every_dependency_still_comes_first_when_the_waves_are_flattened() {
+        let config = parse(FORK).expect("valid");
 
         let flattened: Vec<&str> = config.startup_waves().concat();
         let pos = |name: &str| flattened.iter().position(|s| *s == name).expect("present");
@@ -1536,6 +1547,25 @@ mod tests {
         assert!(pos("db") < pos("worker"));
         assert!(pos("api") < pos("web"));
         assert!(pos("cache") < pos("web"));
+    }
+
+    #[test]
+    fn flattening_the_waves_is_not_the_same_list_as_startup_order() {
+        // Pinned because it is easy to assume otherwise, and something
+        // did: the two are both valid, and a caller that reads the state
+        // of whatever is already running can tell them apart. See the
+        // note on `startup_waves`, and `supervisor::waves`, which keeps
+        // sequential backends on `startup_order` for this reason.
+        let config = parse(FORK).expect("valid");
+
+        assert_eq!(
+            config.startup_order(),
+            vec!["db", "api", "cache", "web", "worker"]
+        );
+        assert_eq!(
+            config.startup_waves().concat(),
+            vec!["db", "cache", "api", "worker", "web"]
+        );
     }
 
     #[test]
