@@ -1,5 +1,5 @@
 //! The types at the bottom of Minato's dependency graph: configuration,
-//! naming, and state.
+//! naming, state, and what a program makes of a terminal.
 //!
 //! This crate stays a mostly side-effect-free foundation. Container
 //! operations and networking belong to `minato-runtime` / `minato-proxy`
@@ -15,6 +15,7 @@ pub mod naming;
 pub mod paths;
 pub mod service;
 pub mod state;
+pub mod terminal;
 
 pub use config::{HealthCheck, MinatoConfig, RuntimeSection, ServiceConfig, ServiceScope};
 pub use env::{EnvEntry, EnvLayers, EnvScope, SecretRef};
@@ -23,6 +24,7 @@ pub use git::Repository;
 pub use paths::Paths;
 pub use service::ServiceState;
 pub use state::{ProjectRecord, State, StateStore, TunnelRecord, WorkspaceRecord};
+pub use terminal::Modes;
 
 /// The commit this was built from, or `unknown`.
 ///

@@ -1231,7 +1231,7 @@ minato/
 ├── Cargo.toml            # [workspace] members + workspace.dependencies
 ├── rust-toolchain.toml
 ├── crates/               # libraries, not shipped
-│   ├── minato-core/      #   spec, config, naming, state store (the bottom of the graph)
+│   ├── minato-core/      #   spec, config, naming, state store, terminal modes (the bottom of the graph)
 │   ├── minato-api/       #   RPC request/response/event types (one source)
 │   ├── minato-client/    #   the RPC client, shared by the CLI and the GUI
 │   ├── minato-runtime/   #   the Runtime trait plus the Docker implementation

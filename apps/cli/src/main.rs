@@ -920,6 +920,15 @@ async fn run_attached(
     // pump rather than kept alive here beside it.
     let mut typed = Some(typed);
     let mut session = None;
+    let mut screen = attach::Screen::new();
+
+    // **Whether the terminal was handed over, not whether taking it
+    // worked.** The daemon starts the service's terminal talking the
+    // moment it says this, and what it sends first is what the program
+    // made of its own — the alternate screen, the mouse. Those arrive
+    // even when raw mode could not be entered, so what has to be put back
+    // afterwards is decided here rather than by whether a session started.
+    let mut attached = false;
 
     let outcome = connection
         .call_attached(
@@ -927,6 +936,7 @@ async fn run_attached(
             |event| match event {
                 Event::Attached { service } => {
                     attach::announce(&service);
+                    attached = true;
 
                     match typed.take().map(attach::Session::start) {
                         Some(Ok(started)) => session = Some(started),
@@ -934,7 +944,7 @@ async fn run_attached(
                         None => {}
                     }
                 }
-                Event::Bytes { data } => attach::show(&minato_api::decode_bytes(&data)),
+                Event::Bytes { data } => screen.show(&minato_api::decode_bytes(&data)),
                 other => output::print_output_event(&other),
             },
             keys,
@@ -944,18 +954,17 @@ async fn run_attached(
     // **Before anything else is printed.** Raw mode is still on until the
     // session is dropped, and a message written under it comes out as a
     // staircase.
-    let was_attached = session.is_some();
     drop(session);
 
-    if was_attached {
-        attach::restore();
+    if attached {
+        screen.restore();
     }
 
     // **Detaching says nothing**, because whoever pressed the keys knows
     // what they did. The terminal closing on its own does: the last frame
     // is still on screen, and without a word it reads as the session
     // having frozen rather than the service having gone.
-    if was_attached && matches!(outcome, Ok(minato_client::Attached::Finished(_))) {
+    if attached && matches!(outcome, Ok(minato_client::Attached::Finished(_))) {
         eprintln!("the service's terminal closed. `minato status` says why");
     }
 

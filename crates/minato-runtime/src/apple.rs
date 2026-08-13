@@ -1171,7 +1171,7 @@ impl Runtime for AppleContainerRuntime {
     }
 
     async fn attach(&self, key: &ServiceKey) -> Result<Attachment> {
-        let (output, keyboard) = {
+        let (output, keyboard, preamble) = {
             let terminals = self.terminals.lock().expect("lock");
             let terminal = terminals
                 .get(key)
@@ -1187,7 +1187,11 @@ impl Runtime for AppleContainerRuntime {
                     )
                 })?;
 
-            (terminal.subscribe(), terminal.keyboard())
+            (
+                terminal.subscribe(),
+                terminal.keyboard(),
+                terminal.preamble(),
+            )
         };
 
         // A subscriber that falls too far behind is told how much it
@@ -1198,14 +1202,15 @@ impl Runtime for AppleContainerRuntime {
         let output = tokio_stream::wrappers::BroadcastStream::new(output)
             .filter_map(|chunk| async move { chunk.ok() });
 
-        Ok(Attachment {
-            output: Box::pin(output),
-            input: Box::pin(keyboard),
+        Ok(Attachment::opening_with(
+            preamble,
+            Box::pin(output),
+            Box::pin(keyboard),
             // Measured, not assumed: a resize on this side reaches
             // `container start` and goes no further, so the program inside
             // keeps the size the terminal was opened with.
-            sizing: Sizing::Fixed(crate::runtime::DEFAULT_WINDOW),
-        })
+            Sizing::Fixed(crate::runtime::DEFAULT_WINDOW),
+        ))
     }
 
     async fn exec(
