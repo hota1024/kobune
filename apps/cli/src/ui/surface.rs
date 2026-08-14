@@ -142,6 +142,10 @@ impl Surface {
 /// Cells sharing a style are written as one run, and trailing blanks are
 /// dropped: a line of padding out to the buffer's width would break `git
 /// diff --check` on a captured log, and it is invisible either way.
+///
+/// A blank cell with a background is *not* invisible, so it stays. That is
+/// the right-hand quiet zone of a QR code, and a code with three sides of
+/// margin is one a scanner has to guess the edge of.
 pub(super) fn render_to_string(buffer: &Buffer, styled: bool) -> String {
     let mut out = String::new();
 
@@ -168,7 +172,7 @@ pub(super) fn render_to_string(buffer: &Buffer, styled: bool) -> String {
 
         while cells
             .last()
-            .is_some_and(|cell| cell.symbol().trim().is_empty())
+            .is_some_and(|cell| cell.symbol().trim().is_empty() && cell.bg == Color::Reset)
         {
             cells.pop();
         }
@@ -285,6 +289,17 @@ mod tests {
         // The buffer is 40 wide; "web" is not.
         let buffer = draw(40, 1, &[Line::raw("web")]);
         assert_eq!(render_to_string(&buffer, false), "web\n");
+    }
+
+    #[test]
+    fn a_blank_that_paints_is_not_padding() {
+        // A QR code's right-hand quiet zone is blank cells with a white
+        // ground. Trimmed away with the padding, the code loses the margin
+        // on one side and a scanner has no edge to find there.
+        let buffer = draw(8, 1, &[Line::from(vec!["x".into(), "  ".bg(Color::White)])]);
+        let text = render_to_string(&buffer, true);
+
+        assert!(text.contains("  "), "the painted blanks stay: {text:?}");
     }
 
     #[test]

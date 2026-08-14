@@ -41,14 +41,23 @@ pub fn command() -> Style {
     Style::new().fg(Color::Magenta)
 }
 
+/// It worked, or it is where it should be.
 pub fn good() -> Style {
     Style::new().fg(Color::Green)
 }
 
+/// It worked, and wants looking at: a service still starting, an
+/// environment now on the internet.
+///
+/// **Not [`bad`].** These are printed by commands that succeeded, and a
+/// red line under a ✓ is read as the command having failed — which is
+/// what happened to `tunnel enable --public`.
 pub fn warn() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
+/// Something failed: a service that will not start, work a command could
+/// not finish. Nothing that merely deserves care.
 pub fn bad() -> Style {
     Style::new().fg(Color::Red)
 }

@@ -35,6 +35,13 @@ less accurately.
 
 ### Added
 
+- `minato url --qr` draws the URL as a QR code, for opening an environment on
+  a phone. It uses the tunnel URL when there is one, since a `.localhost` name
+  resolves through this machine's resolver and nowhere else, and says so when
+  the local URL is all there is. Drawn black on white rather than in the
+  terminal's own colours: a code in a dark theme's foreground is inverted, and
+  an inverted code is one iOS' camera will not read
+
 - The mouse and the trackpad reach a service you have `minato logs -f`
   attached to, so turborepo's log pane scrolls under the pointer as it does
   when you run it yourself. A full-screen program asks for mouse reports once,
@@ -166,6 +173,18 @@ less accurately.
 - A service is not called ready before the application inside it answers (#32)
 
 ### Changed
+
+- **`minato url` with no service named lists every service**, where it used to
+  print the first reachable one's URL on a bare line. Answering "which URL"
+  with one of several is how a request ends up at the wrong service. Naming a
+  service is unchanged — one bare line, for `curl "$(minato url web)/"` — so
+  the substitution to fix is the one that named nothing. `--json` returns an
+  array of the same objects the single form returns
+
+- A warning is yellow and carries `!`; red is kept for something that failed.
+  `minato tunnel enable --public` printed "this environment is reachable from
+  the internet" in red on its way out of a command that had worked, and it was
+  read as the command having failed
 
 - **`state` in `--json` is a plain string**, and `reason` sits beside it
   rather than inside it, so `.state == "ready"` is true where it used to be

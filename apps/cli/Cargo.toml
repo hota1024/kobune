@@ -18,6 +18,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete.workspace = true
 ratatui.workspace = true
+qrcode.workspace = true
 # To tell a wide glyph's cells apart when a drawn buffer is written out.
 # ratatui's own backends count columns with it for the same reason.
 unicode-width = "0.2"
