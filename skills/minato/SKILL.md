@@ -16,8 +16,8 @@ at.
 visible through Minato too. Touching it directly puts the real state at odds
 with the state Minato knows about.
 
-**Never guess a port.** Ask `minato url`. Ports change from one start to the
-next; the URL does not.
+**Never guess a port.** Ask `minato url <service>`. Ports change from one start
+to the next; the URL does not.
 
 **Confirm by actually reaching it.** "It should be up" is not a check.
 
@@ -133,10 +133,14 @@ curl -sS --fail-with-body "$URL/api/health"
 that looks like anything but an empty response. Use `-sS --fail-with-body`, or
 check the exit code.
 
-`minato url` returns one line, something like
-`https://web.feature-user-auth.myapp.localhost`. **That URL works while the
-service is stopped** — a request wakes the environment up. It can take a few
-seconds, but `curl` waits for readiness, so use it as-is.
+**Name the service.** `minato url web` returns one line, something like
+`https://web.feature-user-auth.myapp.localhost`. `minato url` with no name
+lists every service instead, which is for reading rather than substituting —
+`$(minato url)` puts a table where a URL was expected.
+
+**That URL works while the service is stopped** — a request wakes the
+environment up. It can take a few seconds, but `curl` waits for readiness, so
+use it as-is.
 
 **`curl: (60)` does not mean you are stuck.** It means the local CA is not in
 the system trust store, and putting it there needs sudo — which is a person's
@@ -340,7 +344,7 @@ Removes the worktree and its environment. The branch stays.
 | --- | --- |
 | `curl` exits 60 | The CA is not in the system trust store. Verify with `--cacert` against the path `minato doctor --json` reports; trusting it needs sudo, so that is the user's to run |
 | The URL does not connect | `minato doctor`. Usually DNS or the proxy is not set up yet |
-| A 404 comes back | Wrong hostname. Get it again from `minato url` |
+| A 404 comes back | Wrong hostname. Get it again from `minato url <service>` |
 | A 502 comes back | The service is registered but not answering. `minato logs` |
 | `MINATO_URL_*: parameter not set` | The proxy is not listening, so no URL was injected. `minato doctor` |
 | `minato exec` says the container is not running | It died. `minato logs` for why, `minato exec --fresh` to get inside anyway |

@@ -121,6 +121,25 @@ impl Routes {
 
         for (host, route) in entries {
             if let Some(key) = normalize_host(&host) {
+                // A tunnel hostname joins project, workspace and service
+                // into one label (`minato_core::naming::tunnel_host`), so
+                // two of them can come out the same — across projects, and
+                // within one, where `web` of `feat-1` and `web-feat` of `1`
+                // both give `web-feat-1-…`. Whichever is registered last
+                // would otherwise serve both URLs with nothing said.
+                //
+                // **Any key already taken**, not only another project's:
+                // this project's own entries were just dropped by `retain`,
+                // so anything still here clashes for real.
+                if let Some(taken) = guard.get(&key) {
+                    tracing::warn!(
+                        "{key} is claimed twice — by {} and by {}; it now \
+                         serves the latter",
+                        describe(taken),
+                        describe(&route)
+                    );
+                }
+
                 guard.insert(key, route);
             }
         }
@@ -152,6 +171,11 @@ impl Routes {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Names a route the way someone reading the log would look for it.
+fn describe(route: &Route) -> String {
+    format!("{}/{}/{}", route.project, route.workspace, route.service)
 }
 
 /// Normalises a `Host` header or SNI name into a table key.
@@ -285,6 +309,39 @@ mod tests {
             routes.get("web.other.localhost").is_some(),
             "other projects are untouched"
         );
+    }
+
+    #[test]
+    fn a_hostname_two_projects_both_claim_goes_to_the_later_one() {
+        // Tunnel hostnames put the project inside a single label, so two
+        // projects can produce the same one. Pinning the behaviour down:
+        // last write wins, deterministically, and the daemon log says so.
+        let routes = Routes::new();
+        routes.insert(
+            "web-myapp-x.example.com",
+            Route::new(
+                SocketAddr::from(([127, 0, 0, 1], 3000)),
+                "x",
+                "myapp",
+                "web",
+            ),
+        );
+
+        routes.replace_project(
+            "myapp-x",
+            vec![(
+                "web-myapp-x.example.com".to_string(),
+                Route::new(
+                    SocketAddr::from(([127, 0, 0, 1], 4000)),
+                    "myapp-x",
+                    "main",
+                    "web",
+                ),
+            )],
+        );
+
+        let route = routes.get("web-myapp-x.example.com").expect("registered");
+        assert_eq!(route.project, "myapp-x", "the later refresh holds it");
     }
 
     #[test]

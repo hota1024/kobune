@@ -41,14 +41,23 @@ pub fn command() -> Style {
     Style::new().fg(Color::Magenta)
 }
 
+/// It worked, or it is where it should be.
 pub fn good() -> Style {
     Style::new().fg(Color::Green)
 }
 
+/// It worked, and wants looking at: a service still starting, an
+/// environment now on the internet.
+///
+/// **Not [`bad`].** These are printed by commands that succeeded, and a
+/// red line under a ✓ is read as the command having failed — which is
+/// what happened to `tunnel enable --public`.
 pub fn warn() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
+/// Something failed: a service that will not start, work a command could
+/// not finish. Nothing that merely deserves care.
 pub fn bad() -> Style {
     Style::new().fg(Color::Red)
 }
@@ -97,11 +106,34 @@ pub fn check_status(status: CheckStatus) -> Style {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decor {
     pub borders: bool,
+    /// Whether colour reaches a person, rather than a log file.
+    ///
+    /// **Not for picking colours.** A view names its intent and this file
+    /// decides, and a style that is never written costs nothing. It is for
+    /// the one thing a view cannot say in colour and cannot say in words
+    /// either: a QR code drawn without one is at the mercy of the
+    /// terminal's own, and on a dark theme that is an inverted code.
+    pub styled: bool,
 }
 
 impl Decor {
-    pub const FRAMED: Self = Self { borders: true };
-    pub const PLAIN: Self = Self { borders: false };
+    pub const FRAMED: Self = Self {
+        borders: true,
+        styled: true,
+    };
+    pub const PLAIN: Self = Self {
+        borders: false,
+        styled: false,
+    };
+
+    /// The same, with the colour dropped: `NO_COLOR` on a terminal that
+    /// can otherwise take everything.
+    pub fn unstyled(self) -> Self {
+        Self {
+            styled: false,
+            ..self
+        }
+    }
 
     /// The rows the frame costs. One for the title either way; a bordered
     /// frame pays for its bottom edge too.

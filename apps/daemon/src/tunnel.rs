@@ -7,14 +7,18 @@
 //!
 //! Enabling is idempotent. `cloudflared tunnel create` and `route dns` are
 //! both run on every enable and on every daemon start, and "it already
-//! exists" reads as success — the alternative is a flag in the state file
-//! that can disagree with what Cloudflare actually has.
+//! exists" reads as success — skipping the call on a stored flag instead
+//! would mean trusting the flag over Cloudflare, which can disagree.
+//!
+//! `TunnelRecord.zone_routed` is a stored flag, but it gates nothing: the
+//! calls still run, and it only says whether an "already exists" is
+//! Minato's own record or a stranger's.
 
 use std::sync::Arc;
 
 use minato_api::{TunnelInfo, TunnelState};
 use minato_core::TunnelRecord;
-use minato_tunnel::{Readiness, TunnelProcess, TunnelSettings};
+use minato_tunnel::{Readiness, StepOutcome, TunnelProcess, TunnelSettings};
 use tokio::sync::Mutex;
 
 /// The tunnel, as the daemon holds it.
@@ -78,8 +82,7 @@ impl TunnelHandle {
     pub async fn start(
         &self,
         settings: TunnelSettings,
-        projects: Vec<String>,
-    ) -> Result<(), minato_tunnel::TunnelError> {
+    ) -> Result<StepOutcome, minato_tunnel::TunnelError> {
         let mut guard = self.running.lock().await;
 
         if let Some(existing) = guard.take() {
@@ -87,10 +90,11 @@ impl TunnelHandle {
         }
 
         let domain = settings.domain.clone();
-        *guard = Some(TunnelProcess::start(settings, &projects).await?);
+        let (process, dns) = TunnelProcess::start(settings).await?;
+        *guard = Some(process);
         self.set_domain(Some(domain));
 
-        Ok(())
+        Ok(dns)
     }
 
     /// Stops the tunnel. Doing nothing when it is already down.
@@ -121,7 +125,16 @@ pub async fn info(
     record: Option<&TunnelRecord>,
     handle: &TunnelHandle,
     settings: Option<&TunnelSettings>,
-    project: &str,
+) -> TunnelInfo {
+    info_with_notes(record, handle, settings, Vec::new()).await
+}
+
+/// [`info`], plus what the call that produced it changed about the zone.
+pub async fn info_with_notes(
+    record: Option<&TunnelRecord>,
+    handle: &TunnelHandle,
+    settings: Option<&TunnelSettings>,
+    notes: Vec<String>,
 ) -> TunnelInfo {
     let Some(record) = record else {
         return TunnelInfo::disabled();
@@ -152,8 +165,9 @@ pub async fn info(
     TunnelInfo {
         state,
         domain: Some(record.domain.clone()),
-        record: settings.map(|settings| settings.dns_record(project)),
+        record: settings.map(|settings| settings.dns_record()),
         setup,
+        notes,
         // Minato cannot apply an Access policy through the CLI, so it
         // cannot claim one is in place. Anything it did enable was
         // acknowledged with `--public`.
@@ -164,21 +178,20 @@ pub async fn info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     fn record(enabled: bool) -> TunnelRecord {
         TunnelRecord {
             name: "minato".into(),
             domain: "example.com".into(),
             enabled,
-            routed: BTreeSet::new(),
+            zone_routed: true,
         }
     }
 
     #[tokio::test]
     async fn no_record_reads_as_disabled() {
         let handle = TunnelHandle::default();
-        let info = info(None, &handle, None, "myapp").await;
+        let info = info(None, &handle, None).await;
 
         assert_eq!(info.state, TunnelState::Disabled);
         assert!(info.domain.is_none());
@@ -192,7 +205,7 @@ mod tests {
         let settings = TunnelSettings::new("example.com", "/tmp", 80)
             .with_program("minato-definitely-not-a-real-program");
 
-        let info = info(Some(&record(true)), &handle, Some(&settings), "myapp").await;
+        let info = info(Some(&record(true)), &handle, Some(&settings)).await;
 
         assert_eq!(info.state, TunnelState::NotInstalled);
         assert!(!info.setup.is_empty(), "it says what to install");
@@ -205,22 +218,22 @@ mod tests {
         let handle = TunnelHandle::default();
         let settings = TunnelSettings::new("example.com", "/tmp", 80).with_program("/bin/sh");
 
-        let info = info(Some(&record(false)), &handle, Some(&settings), "myapp").await;
+        let info = info(Some(&record(false)), &handle, Some(&settings)).await;
 
         assert_eq!(info.state, TunnelState::Disabled);
         assert_eq!(info.domain.as_deref(), Some("example.com"));
     }
 
     #[tokio::test]
-    async fn status_names_the_record_this_project_needs() {
+    async fn status_names_the_record_the_zone_needs() {
         // "Nothing resolves" usually means the DNS route is missing, and
         // the answer is the record to look for.
         let handle = TunnelHandle::default();
         let settings = TunnelSettings::new("example.com", "/tmp", 80).with_program("/bin/sh");
 
-        let info = info(Some(&record(true)), &handle, Some(&settings), "myapp").await;
+        let info = info(Some(&record(true)), &handle, Some(&settings)).await;
 
-        assert_eq!(info.record.as_deref(), Some("*.myapp.example.com"));
+        assert_eq!(info.record.as_deref(), Some("*.example.com"));
     }
 
     #[tokio::test]

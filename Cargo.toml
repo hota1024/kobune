@@ -84,6 +84,11 @@ clap_complete = "4"
 # keep in step (ratatui re-exports it as `ratatui::crossterm`).
 ratatui = "0.30"
 
+# `minato url --qr`. The encoder only — the default features add PNG and
+# SVG writers, and what this needs is the module grid, which it draws with
+# ratatui like everything else the CLI shows.
+qrcode = { version = "0.14", default-features = false }
+
 # Networking
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }

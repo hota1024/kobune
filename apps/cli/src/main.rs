@@ -160,10 +160,20 @@ enum Command {
     /// Show the current state
     Status,
 
-    /// Print where a service can be reached, one line
+    /// Print where services can be reached
+    ///
+    /// Naming one prints its URL and nothing else, for
+    /// `curl "$(minato url web)/"`. Naming none lists them all.
     Url {
-        /// The service name. The first reachable one when left out
+        /// The service name. Every service when left out
         service: Option<String>,
+
+        /// Draw the URL as a QR code, to open on a phone
+        ///
+        /// The tunnel URL when there is one: a `.localhost` name resolves
+        /// on this machine and nowhere else.
+        #[arg(long)]
+        qr: bool,
     },
 
     /// Show logs
@@ -285,6 +295,11 @@ enum TunnelCommand {
     /// Set the tunnel up and start it
     Enable {
         /// The Cloudflare zone the hostnames live under
+        ///
+        /// The zone itself — `example.com`, not `dev.example.com`. A
+        /// hostname one level below the zone is covered by the zone's
+        /// Universal SSL certificate; one below that is not, and fails at
+        /// the TLS handshake with the tunnel up and working.
         #[arg(long)]
         domain: Option<String>,
 
@@ -1729,8 +1744,8 @@ fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, Cl
 /// non-zero is a failure however well it is presented.
 fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
     // `url` prints differently: one line, ready to pipe.
-    if let Command::Url { service } = &cli.command {
-        return present_url(cli, response, service.as_deref());
+    if let Command::Url { service, qr } = &cli.command {
+        return present_url(cli, response, service.as_deref(), *qr);
     }
 
     // `env get` prints one line too, for the same reason.
@@ -1786,31 +1801,34 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// What `minato url` prints.
+///
+/// **Naming a service and naming none are different questions.** One is
+/// "give me the address", asked from inside `$(…)` and answered with a
+/// bare line. The other is "what is there", which the first reachable
+/// service used to answer on behalf of all of them — and answering *which
+/// URL* with one of several is how a request ends up at the wrong service.
 fn present_url(
     cli: &Cli,
     response: &Response,
     service: Option<&str>,
+    qr: bool,
 ) -> Result<ExitCode, CliError> {
     let Response::Workspace { workspace } = response else {
         return Err(CliError::Local("cannot read the workspace".to_string()));
     };
 
-    let target = match service {
-        Some(name) => workspace.service(name).ok_or_else(|| {
-            let available: Vec<&str> = workspace.services.iter().map(|s| s.name.as_str()).collect();
-            CliError::Local(format!(
-                "no service named `{name}`. Available: {}",
-                available.join(", ")
-            ))
-        })?,
-        None => workspace
-            .services
-            .iter()
-            .find(|s| s.access().is_some())
-            .ok_or_else(|| {
-                CliError::Local("no service is reachable. Start one with `minato up`".to_string())
-            })?,
+    let Some(name) = service else {
+        return present_urls(cli, workspace, qr);
     };
+
+    let target = workspace.service(name).ok_or_else(|| {
+        let available: Vec<&str> = workspace.services.iter().map(|s| s.name.as_str()).collect();
+        CliError::Local(format!(
+            "no service named `{name}`. Available: {}",
+            available.join(", ")
+        ))
+    })?;
 
     let access = target.access().ok_or_else(|| {
         CliError::Local(format!(
@@ -1821,17 +1839,61 @@ fn present_url(
     })?;
 
     if cli.json {
-        output::print_json(&serde_json::json!({
-            "service": target.name,
-            "url": access,
-            "state": target.state,
-        }));
+        output::print_json(&url_json(target));
+    } else if qr {
+        ui::url(target);
     } else {
         // One undecorated line, ready to pipe.
         ui::value(&access);
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// The listing, when no service was named.
+///
+/// Every service, including the ones with nowhere to go: a listing that
+/// silently leaves those out reads as a workspace that does not define
+/// them. Nothing reachable at all is still an error, so a script that
+/// waits on `minato url` keeps its signal.
+fn present_urls(
+    cli: &Cli,
+    workspace: &minato_api::WorkspaceInfo,
+    qr: bool,
+) -> Result<ExitCode, CliError> {
+    if !workspace.services.iter().any(|s| s.access().is_some()) {
+        return Err(CliError::Local(
+            "no service is reachable. Start one with `minato up`".to_string(),
+        ));
+    }
+
+    if cli.json {
+        let urls: Vec<serde_json::Value> = workspace.services.iter().map(url_json).collect();
+        output::print_json(&urls);
+    } else {
+        ui::urls(workspace, qr);
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// One service, as `--json` has it.
+///
+/// `url` is absent rather than null when there is nowhere to go, which is
+/// the shape every optional field in the API already has.
+fn url_json(service: &minato_api::ServiceInfo) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    fields.insert("service".into(), service.name.clone().into());
+    fields.insert("state".into(), serde_json::json!(service.state));
+
+    if let Some(url) = service.access() {
+        fields.insert("url".into(), url.into());
+    }
+    if let Some(url) = &service.tunnel_url {
+        fields.insert("tunnel_url".into(), url.clone().into());
+    }
+
+    serde_json::Value::Object(fields)
 }
 
 /// What `minato env get` prints: the value, on one line.
@@ -2517,6 +2579,80 @@ mod tests {
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
         assert!(matches!(request, Request::Status { .. }));
+    }
+
+    #[test]
+    fn a_code_is_asked_for_and_never_assumed() {
+        // Plain `minato url web` goes inside `$(…)`. A QR code there
+        // would be a screenful of blocks where a URL was expected.
+        let plain = Cli::try_parse_from(["minato", "url", "web"]).expect("parses");
+        assert!(matches!(plain.command, Command::Url { qr: false, .. }));
+
+        let asked = Cli::try_parse_from(["minato", "url", "web", "--qr"]).expect("parses");
+        assert!(matches!(asked.command, Command::Url { qr: true, .. }));
+    }
+
+    #[test]
+    fn a_code_can_be_asked_for_without_naming_a_service() {
+        let cli = Cli::try_parse_from(["minato", "url", "--qr"]).expect("parses");
+
+        match cli.command {
+            Command::Url { service, qr } => {
+                assert!(service.is_none());
+                assert!(qr);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_json_for_a_service_carries_both_urls() {
+        let mut web = minato_api::ServiceInfo {
+            name: "web".into(),
+            state: minato_core::ServiceState::Ready,
+            reason: None,
+            scope: minato_core::ServiceScope::Workspace,
+            url: Some("https://web.localhost".into()),
+            tunnel_url: None,
+            endpoint: None,
+            port: None,
+            container_id: None,
+            image: None,
+        };
+
+        let json = url_json(&web);
+        assert_eq!(json["service"], "web");
+        assert_eq!(json["url"], "https://web.localhost");
+        assert!(json.get("tunnel_url").is_none(), "got: {json}");
+
+        web.tunnel_url = Some("https://web.myapp.example.com".into());
+        assert_eq!(
+            url_json(&web)["tunnel_url"],
+            "https://web.myapp.example.com"
+        );
+    }
+
+    #[test]
+    fn a_service_with_nowhere_to_go_carries_no_url_at_all() {
+        // Absent rather than null, which is the shape every optional field
+        // in the API already has — `.url // empty` in jq works either way,
+        // and `has("url")` is the question being asked.
+        let db = minato_api::ServiceInfo {
+            name: "db".into(),
+            state: minato_core::ServiceState::Ready,
+            reason: None,
+            scope: minato_core::ServiceScope::Workspace,
+            url: None,
+            tunnel_url: None,
+            endpoint: None,
+            port: None,
+            container_id: None,
+            image: None,
+        };
+
+        let json = url_json(&db);
+        assert!(json.get("url").is_none(), "got: {json}");
+        assert_eq!(json["state"], "ready");
     }
 
     #[test]
