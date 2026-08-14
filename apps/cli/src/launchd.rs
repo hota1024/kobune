@@ -123,7 +123,7 @@ pub fn uninstall_commands() -> Vec<String> {
 /// where the two agree on the shape of the answer, and it stays clear of
 /// running container tooling itself.
 fn container_gateway() -> Option<Ipv4Addr> {
-    let output = std::process::Command::new(minato_core::apple::PROGRAM)
+    let output = std::process::Command::new(minato_core::apple::program())
         .args(minato_core::apple::LIST_ARGS)
         .output()
         .ok()?;

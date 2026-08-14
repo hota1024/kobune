@@ -30,26 +30,18 @@ pub const PROGRAM: &str = "cloudflared";
 
 /// Overrides which binary is run.
 ///
-/// For a cloudflared that is installed somewhere off `PATH`, and for
-/// exercising the daemon's tunnel path without a Cloudflare account.
+/// For a cloudflared that is installed somewhere [`minato_core::program`]
+/// does not think to look, and for exercising the daemon's tunnel path
+/// without a Cloudflare account.
 pub const PROGRAM_ENV: &str = "MINATO_CLOUDFLARED";
 
 /// The command to run, honouring [`PROGRAM_ENV`].
-pub fn program() -> String {
-    program_from(std::env::var(PROGRAM_ENV).ok().as_deref())
-}
-
-/// Picks the command from an override, if there is a usable one.
 ///
-/// Split out from [`program`] so it can be tested without setting a process
-/// variable. A test that did would race every other test in the crate:
-/// they all build settings, and building settings reads this. That race
-/// existed, passed on macOS, and failed under Linux's scheduling.
-fn program_from(override_value: Option<&str>) -> String {
-    override_value
-        .filter(|value| !value.is_empty())
-        .unwrap_or(PROGRAM)
-        .to_string()
+/// Looked up rather than left as a name: the daemon is started by launchd,
+/// whose `PATH` holds nothing a package manager can install into, so a bare
+/// `cloudflared` reads as missing on a machine that has it.
+pub fn program() -> String {
+    minato_core::program::resolve_with(std::env::var(PROGRAM_ENV).ok().as_deref(), PROGRAM)
 }
 
 /// Where `cloudflared tunnel login` leaves its certificate.
@@ -172,7 +164,9 @@ impl TunnelSettings {
 
 /// Whether the machine is set up far enough for the daemon to proceed.
 pub fn readiness(settings: &TunnelSettings) -> Readiness {
-    if which(&settings.program).is_none() {
+    // Looked up rather than spawned: readiness is reported before anything
+    // is run, and "not installed" has to be answerable without running it.
+    if minato_core::program::find(&settings.program).is_none() {
         return Readiness::NotInstalled;
     }
 
@@ -182,24 +176,6 @@ pub fn readiness(settings: &TunnelSettings) -> Readiness {
         // be, so treat it as absent rather than guess.
         _ => Readiness::NeedsLogin,
     }
-}
-
-/// Looks a program up on `PATH`.
-///
-/// `Command::spawn` would answer this too, but only by running the thing.
-/// Readiness is reported before anything is run, so the lookup happens
-/// here.
-fn which(program: &str) -> Option<PathBuf> {
-    if program.contains('/') {
-        let path = PathBuf::from(program);
-        return path.is_file().then_some(path);
-    }
-
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths).find_map(|dir| {
-        let candidate = dir.join(program);
-        candidate.is_file().then_some(candidate)
-    })
 }
 
 #[cfg(test)]
@@ -242,16 +218,22 @@ mod tests {
 
     #[test]
     fn the_program_can_be_pointed_elsewhere() {
-        // For a cloudflared installed off PATH, and the hook the daemon's
-        // own tunnel path is exercised through.
+        use minato_core::program::resolve_with;
+
+        // For a cloudflared installed somewhere the lookup does not think
+        // to look, and the hook the daemon's own tunnel path is exercised
+        // through. Read through the helper rather than the variable: a test
+        // that set one would race every other test in the crate, since they
+        // all build settings and building settings reads it.
         assert_eq!(
-            program_from(Some("/opt/custom/cloudflared")),
+            resolve_with(Some("/opt/custom/cloudflared"), PROGRAM),
             "/opt/custom/cloudflared"
         );
-        assert_eq!(program_from(None), PROGRAM);
 
-        // An exported-but-empty variable is how a shell says "unset".
-        assert_eq!(program_from(Some("")), PROGRAM);
+        // Whichever way it lands, it is cloudflared: an absolute path on a
+        // machine that has one, the bare name on a machine that does not.
+        assert!(resolve_with(None, PROGRAM).ends_with(PROGRAM));
+        assert!(resolve_with(Some(""), PROGRAM).ends_with(PROGRAM));
     }
 
     #[test]

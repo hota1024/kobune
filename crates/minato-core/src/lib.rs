@@ -13,6 +13,7 @@ pub mod git;
 pub mod launchd;
 pub mod naming;
 pub mod paths;
+pub mod program;
 pub mod service;
 pub mod state;
 pub mod terminal;

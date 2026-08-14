@@ -17,6 +17,21 @@ use serde::Deserialize;
 /// The Apple Container CLI.
 pub const PROGRAM: &str = "container";
 
+/// Overrides which binary is run.
+///
+/// For a `container` installed somewhere [`crate::program`] does not think
+/// to look, and for exercising the runtime against a stub.
+pub const PROGRAM_ENV: &str = "MINATO_CONTAINER";
+
+/// The command to run, honouring [`PROGRAM_ENV`].
+///
+/// The installer puts `container` in `/usr/local/bin`, which is not on the
+/// `PATH` a launchd daemon is handed — so the daemon has to look it up
+/// rather than spawn the bare name.
+pub fn program() -> String {
+    crate::program::resolve_with(std::env::var(PROGRAM_ENV).ok().as_deref(), PROGRAM)
+}
+
 /// The arguments that print the networks as JSON.
 pub const LIST_ARGS: [&str; 4] = ["network", "list", "--format", "json"];
 

@@ -178,7 +178,10 @@ impl GatewaySettings {
     /// hold up the whole daemon. Giving up costs the addresses in
     /// containers and nothing else, and `minato doctor` says so.
     pub async fn with_container_gateway(mut self) -> Self {
-        let asked = tokio::process::Command::new(minato_core::apple::PROGRAM)
+        // Looked up rather than spawned by name: launchd's `PATH` does not
+        // reach `/usr/local/bin`, where the installer puts it, so the bare
+        // name is a spawn that always fails here.
+        let asked = tokio::process::Command::new(minato_core::apple::program())
             .args(minato_core::apple::LIST_ARGS)
             .output();
 
