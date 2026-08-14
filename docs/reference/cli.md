@@ -23,7 +23,7 @@ URL is. So `minato status | grep web` reads the same as it always did.
 | `--json` | Never decorated, whatever it is printing to |
 | `NO_COLOR` | Set to anything: keeps the layout, drops the colour |
 | `TERM=dumb` | Treated as a pipe throughout |
-| `minato url`, `minato env get` | One bare line, always. They exist to be substituted into other commands |
+| `minato url <service>`, `minato env get` | One bare line, always. They exist to be substituted into other commands |
 | `minato logs`, `minato exec` | Passed through verbatim, stdout and stderr kept apart |
 | `minato logs -f <service>` | With `tty`, the terminal is the service's — see [Typing at a service](#typing-at-a-service) |
 
@@ -209,13 +209,31 @@ $ minato down --all    # every workspace in the project
 A shared service only stops when you name it, because other worktrees may be
 using it.
 
-### `minato url [service]`
+### `minato url [service] [--qr]`
 
-Prints one line and nothing else. The first reachable service when none is
-named.
+Naming a service prints one line and nothing else, to be substituted into
+another command:
 
 ```console
 $ curl -sS --fail-with-body "$(minato url web)/api/health"
+```
+
+Naming none lists every service and where it can be reached, including the
+ones with no way in and the tunnel URLs when a tunnel is up:
+
+```console
+$ minato url
+web   https://web.feat-1.myapp.localhost
+api   https://api.feat-1.myapp.localhost
+db    internal only
+```
+
+`--qr` draws the URL as a QR code, for opening on a phone. The tunnel URL
+is used when there is one — a `.localhost` name resolves on this machine
+and nowhere else, and the code says so when that is all there is.
+
+```console
+$ minato url web --qr
 ```
 
 The URL works while the service is stopped — a request starts it.
@@ -375,6 +393,10 @@ $ minato tunnel status
 `--public` is required, and acknowledges that the environment goes on the
 internet with no Access policy Minato can verify. The domain is remembered
 after the first time.
+
+`--domain` takes the zone itself — `example.com`, not `dev.example.com`. One
+level below the zone is what its Universal SSL certificate covers, and a tunnel
+hostname sits exactly there.
 
 ## Agents
 

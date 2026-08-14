@@ -75,11 +75,11 @@ $ minato status    # 対象 workspace の詳細（状態、URL、アドレス）
 ## URL を取得する
 
 ```console
-$ minato url          # 最初にアクセス可能なサービス
+$ minato url          # 全サービスとアクセス先
 $ minato url web      # サービス名を指定
 ```
 
-出力は 1 行のみのため、そのまま埋め込めます。
+サービス名を指定した場合は出力が 1 行のみになるため、そのまま埋め込めます。
 
 ```console
 $ curl -sS --fail-with-body "$(minato url web)/api/health"
@@ -87,6 +87,14 @@ $ curl -sS --fail-with-body "$(minato url web)/api/health"
 
 **URL は直接記述せず、このコマンドで取得してください。** 再起動しても URL は
 変わりませんが、内部のポート番号は変わります。
+
+スマートフォンで開くには `--qr` を使います。URL を QR コードとして描画します。
+スマートフォンから解決できる URL が必要なため、[トンネル](/ja/guide/tunnel)が
+有効な場合はトンネル URL を使います。
+
+```console
+$ minato url web --qr
+```
 
 ## 起動と停止
 
