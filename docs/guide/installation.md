@@ -93,8 +93,9 @@ It installs the `nightly` build, which is replaced on every merge to `main`.
 That is the latest build rather than a release: nothing in it carries a version,
 and what it contains changes without notice.
 
-Rerunning it upgrades in place. So does [`minato update`](#keeping-it-up-to-date),
-without needing the network twice or a shell pipeline.
+Rerunning it upgrades in place. So does
+[`minato update`](#keeping-it-up-to-date), without needing the network twice or
+a shell pipeline.
 
 ## A prebuilt binary, by hand
 
