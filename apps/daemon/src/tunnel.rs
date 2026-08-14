@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use minato_api::{TunnelInfo, TunnelState};
 use minato_core::TunnelRecord;
-use minato_tunnel::{DnsOutcome, Readiness, TunnelProcess, TunnelSettings};
+use minato_tunnel::{Readiness, StepOutcome, TunnelProcess, TunnelSettings};
 use tokio::sync::Mutex;
 
 /// The tunnel, as the daemon holds it.
@@ -82,7 +82,7 @@ impl TunnelHandle {
     pub async fn start(
         &self,
         settings: TunnelSettings,
-    ) -> Result<DnsOutcome, minato_tunnel::TunnelError> {
+    ) -> Result<StepOutcome, minato_tunnel::TunnelError> {
         let mut guard = self.running.lock().await;
 
         if let Some(existing) = guard.take() {

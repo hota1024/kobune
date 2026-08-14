@@ -51,7 +51,7 @@ impl TunnelProcess {
     /// The DNS outcome comes back with the process because the caller is
     /// the only one that knows whether Minato has routed this zone before,
     /// and so whether "already existed" is its own record or a stranger's.
-    pub async fn start(settings: TunnelSettings) -> Result<(Self, DnsOutcome)> {
+    pub async fn start(settings: TunnelSettings) -> Result<(Self, StepOutcome)> {
         ensure_tunnel(&settings).await?;
         let dns = ensure_dns(&settings).await?;
 
@@ -117,7 +117,7 @@ pub async fn ensure_tunnel(settings: &TunnelSettings) -> Result<()> {
 /// with "already exists" without saying what holds the name — a record
 /// that is not this tunnel means every Minato hostname silently goes
 /// nowhere, which is worth saying out loud.
-pub async fn ensure_dns(settings: &TunnelSettings) -> Result<DnsOutcome> {
+pub async fn ensure_dns(settings: &TunnelSettings) -> Result<StepOutcome> {
     let record = settings.dns_record();
 
     run(
@@ -145,28 +145,29 @@ pub async fn delete_tunnel(settings: &TunnelSettings) -> Result<()> {
 
 /// What a setup step actually did.
 ///
-/// Both steps run every time, so "already exists" is success — but for the
-/// DNS record it is also the one case Minato cannot see past, so the two
-/// are told apart rather than collapsed.
+/// Every step runs every time, so "already exists" is success — but for
+/// the DNS record it is also the one case Minato cannot see past, so the
+/// two are told apart rather than collapsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DnsOutcome {
-    /// cloudflared accepted the route, so the record reaches this tunnel.
+pub enum StepOutcome {
+    /// cloudflared did it, or confirmed it was already so.
     ///
-    /// Not the same as "created it": a record already pointing at this
-    /// tunnel is accepted too, and exit 0 does not say which happened. It
-    /// does not need to — either way the name arrives here.
-    Routed,
+    /// Not the same as "created it": `route dns` accepts a record that
+    /// already points at this tunnel too, and exit 0 does not say which
+    /// happened. It does not need to — either way the name arrives here.
+    Done,
     /// cloudflared refused because the name is taken.
     ///
-    /// By what, it does not say. This is the case Minato cannot see past.
-    AlreadyExisted,
+    /// By what, it does not say. For the DNS record that is the case
+    /// Minato cannot see past.
+    AlreadyThere,
 }
 
 async fn run(
     settings: &TunnelSettings,
     args: &[&str],
     operation: impl Into<String>,
-) -> Result<DnsOutcome> {
+) -> Result<StepOutcome> {
     let operation = operation.into();
 
     let output = tokio::time::timeout(
@@ -186,7 +187,7 @@ async fn run(
     .map_err(|err| spawn_error(&settings.program, err))?;
 
     if output.status.success() {
-        return Ok(DnsOutcome::Routed);
+        return Ok(StepOutcome::Done);
     }
 
     let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -198,7 +199,7 @@ async fn run(
 
     if is_already_done(&message) {
         tracing::debug!("{operation}: already in place");
-        return Ok(DnsOutcome::AlreadyExisted);
+        return Ok(StepOutcome::AlreadyThere);
     }
 
     if message.contains("cert.pem") || message.contains("origincert") {

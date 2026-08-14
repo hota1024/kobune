@@ -38,6 +38,10 @@ $ minato tunnel enable --domain example.com --public
 │                                                                         │
 │ DNS  *.example.com                                                      │
 │                                                                         │
+│ ! *.example.com now points here.                                        │
+│ ! Names with a record of their own are unaffected;                      │
+│ ! any other name in the zone reaches this machine.                      │
+│                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
@@ -53,8 +57,8 @@ named tunnel の作成、ゾーン全体のワイルドカード DNS レコー�
 
 レコードはゾーン全体を覆いますが、明示的なレコードはワイルドカードより優先
 されるため、そのドメインで既に公開しているものはそのまま応答します。Minato が
-知らないホスト名はローカルのプロキシに到達し、404 が返ります。この点は、その
-ドメインで最初に `enable` を実行したときに画面にも表示されます。
+知らないホスト名はローカルのプロキシに到達し、404 が返ります。上の出力にある
+注記がこれで、そのドメインで最初に `enable` を実行したときにだけ表示されます。
 
 `*` レコードが既に存在していた場合は、代わりにその旨が表示されます。Cloudflare
 は「その名前は使用済み」としか返さず、何を指しているかは分からないため、Minato

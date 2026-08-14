@@ -84,11 +84,20 @@ $ minato status -w feature-checkout --json \
 ## Access を設定する
 
 この作業は Minato では実行できません。Cloudflare のダッシュボードで
-Zero Trust → Access → Applications を開き、`*.example.com` に対する
-self-hosted application とポリシーを作成してください。メールドメインによる
-制限や、社外の相手にはワンタイム PIN が利用できます。
+Zero Trust → Access → Applications を開き、共有するホスト名——
+`web-feature-checkout-myapp.example.com`——に対する self-hosted application と
+ポリシーを作成してください。メールドメインによる制限や、社外の相手にはワンタイム
+PIN が利用できます。
 
 公開 Web サーバに置けないものを共有する前に、必ず設定してください。
+
+**`*.example.com` ではなくホスト名ごとに設定してください。** トンネルの
+ホスト名は 1 ラベルなので、`*.myapp.example.com` のようにプロジェクト単位で
+スコープを切ることはできません。ゾーン全体のパターンを指定すると、そのドメインが
+配信している他のもの——Minato とは無関係な本番のホスト名を含む——すべての前に
+Access が挟まります。そのゾーンをこの用途にしか使っていないのであれば
+`*.example.com` が全 worktree をまとめて覆う近道になりますが、他のものも
+配信しているゾーンでは自分の訪問者を締め出すことになります。
 
 ## 停止する
 

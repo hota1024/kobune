@@ -80,11 +80,19 @@ $ minato status -w feature-checkout --json \
 ## Add Access
 
 Minato cannot do this part. In the Cloudflare dashboard, under Zero Trust →
-Access → Applications, add a self-hosted application for
-`*.example.com` and a policy — an email domain, or a one-time PIN for
-someone outside your organisation.
+Access → Applications, add a self-hosted application for the hostname you are
+sharing — `web-feature-checkout-myapp.example.com` — and a policy: an email
+domain, or a one-time PIN for someone outside your organisation.
 
 Do it before sharing anything you would not put on a public web server.
+
+**Per hostname, not `*.example.com`.** A tunnel hostname is one label, so
+there is no `*.myapp.example.com` to scope an application to any more, and the
+zone-wide pattern would put Access in front of everything else the domain
+serves — including production hostnames that have nothing to do with Minato.
+If the zone is only ever used for this, `*.example.com` is the shorter way to
+cover every worktree at once; on a zone that serves anything else it locks out
+your own visitors.
 
 ## Turn it off
 

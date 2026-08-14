@@ -122,6 +122,14 @@ pub struct TunnelLeftover {
     pub domain: Option<String>,
     /// What to run to remove it, if that is wanted.
     pub commands: Vec<String>,
+    /// What is left that no command here removes.
+    ///
+    /// The DNS record has no `cloudflared` command — `route dns` creates
+    /// and never deletes — so it can only be described. Kept apart from
+    /// [`Self::commands`] so that list stays runnable: a prose line with a
+    /// `#` in front of it is not a command, and reads as one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// A project that survived the purge, and what stopped it.

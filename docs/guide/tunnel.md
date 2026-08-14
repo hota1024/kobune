@@ -37,6 +37,10 @@ $ minato tunnel enable --domain example.com --public
 │                                                                         │
 │ DNS  *.example.com                                                      │
 │                                                                         │
+│ ! *.example.com now points here.                                        │
+│ ! Names with a record of their own are unaffected;                      │
+│ ! any other name in the zone reaches this machine.                      │
+│                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
@@ -52,8 +56,8 @@ below that is not.
 The record covers the whole zone, so it is worth knowing what that does and
 does not claim. An explicit record wins over a wildcard, so anything already
 published under the domain keeps answering as before. A name Minato does not
-know reaches the local proxy and gets a 404. The first `enable` for a domain
-says so on screen.
+know reaches the local proxy and gets a 404. That is what the note above says,
+and it appears on the first `enable` for a domain and not again.
 
 If a `*` record was already in the zone, `enable` says that instead. Cloudflare
 reports only that the name is taken, not what it points at, so Minato cannot

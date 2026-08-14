@@ -121,18 +121,22 @@ impl Routes {
 
         for (host, route) in entries {
             if let Some(key) = normalize_host(&host) {
-                // Two projects can produce the same tunnel hostname, since
-                // that joins project, workspace and service into one label
-                // (`minato_core::naming::tunnel_host`). Whoever refreshed
-                // last would otherwise serve both URLs with nothing said.
-                if let Some(taken) = guard.get(&key)
-                    && taken.project != route.project
-                {
+                // A tunnel hostname joins project, workspace and service
+                // into one label (`minato_core::naming::tunnel_host`), so
+                // two of them can come out the same — across projects, and
+                // within one, where `web` of `feat-1` and `web-feat` of `1`
+                // both give `web-feat-1-…`. Whichever is registered last
+                // would otherwise serve both URLs with nothing said.
+                //
+                // **Any key already taken**, not only another project's:
+                // this project's own entries were just dropped by `retain`,
+                // so anything still here clashes for real.
+                if let Some(taken) = guard.get(&key) {
                     tracing::warn!(
-                        "{key} is claimed by project `{}` and project `{}`; \
-                         it now serves the latter",
-                        taken.project,
-                        route.project
+                        "{key} is claimed twice — by {} and by {}; it now \
+                         serves the latter",
+                        describe(taken),
+                        describe(&route)
                     );
                 }
 
@@ -167,6 +171,11 @@ impl Routes {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Names a route the way someone reading the log would look for it.
+fn describe(route: &Route) -> String {
+    format!("{}/{}/{}", route.project, route.workspace, route.service)
 }
 
 /// Normalises a `Host` header or SNI name into a table key.
