@@ -166,6 +166,19 @@ function overWide(line) {
   return width(line) > MAX_WIDTH && width(line.replace(URL, 'URL')) > MAX_WIDTH
 }
 
+/**
+ * `**term** — gloss` and `- [page](x) — gloss` separate a label from what it
+ * means. That is layout, shared with the English page, and not the sentence
+ * dash japanese.md is about. A table's `—` means "no default" and is not a dash
+ * at all. Everything else counts.
+ */
+const LABEL_DASH = /^\s*(?:[-*]\s+)?(?:\*\*.+?\*\*|\[.+?\]|x)\s—\s/
+
+function loneDash(read, isTable) {
+  if (isTable) return false
+  return /(?<!—)—(?!—)/.test(read.replace(LABEL_DASH, ''))
+}
+
 function checkFile(path, add) {
   const rel = relative(ROOT, path)
   const text = readFileSync(path, 'utf8')
@@ -186,7 +199,9 @@ function checkFile(path, add) {
       const linked = unlink(line)
       if (JA_LATIN.test(linked)) add(rel, n, 'ja/space', 'no space before half-width text')
       if (LATIN_JA.test(linked)) add(rel, n, 'ja/space', 'no space after half-width text')
-      if (/(?<!—)—(?!—)/.test(read)) add(rel, n, 'ja/dash', 'a lone — ; recast the sentence, see japanese.md')
+      if (loneDash(read, mark.table)) {
+        add(rel, n, 'ja/dash', 'a lone — in a sentence; recast it, see japanese.md')
+      }
       if (JA_PAREN.test(read)) add(rel, n, 'ja/paren', 'half-width ( ) in Japanese text; use （ ）')
       if (/[Ａ-Ｚａ-ｚ０-９　]/.test(line)) add(rel, n, 'ja/fullwidth', 'full-width alphanumeric or space')
       if (/[｡-ﾟ]/.test(line)) add(rel, n, 'ja/kana', 'half-width katakana')
