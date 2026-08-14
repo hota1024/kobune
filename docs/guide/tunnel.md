@@ -53,6 +53,15 @@ starts `cloudflared`. All of it is idempotent, so running it again is fine.
 one level below the zone is covered by its Universal SSL certificate, and one
 below that is not.
 
+It also has to be **the zone your `cloudflared tunnel login` covers**. That
+login writes a certificate scoped to one zone, and `cloudflared tunnel route
+dns` takes a hostname outside it as a name *relative* to that zone: naming
+`other.com` on a login for `example.com` creates `*.other.com.example.com`,
+exits successfully, and leaves `*.other.com` never having existed. Minato
+checks the name resolves after routing it and says so when it does not,
+because nothing else about that state looks wrong — the tunnel is up, `status`
+says `running`, and no URL ever arrives. Log in again to switch zones.
+
 The record covers the whole zone, so it is worth knowing what that does and
 does not claim. An explicit record wins over a wildcard, so anything already
 published under the domain keeps answering as before. A name Minato does not

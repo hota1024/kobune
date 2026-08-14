@@ -128,6 +128,35 @@ pub async fn ensure_dns(settings: &TunnelSettings) -> Result<StepOutcome> {
     .await
 }
 
+/// Whether anything under the domain actually resolves.
+///
+/// **`route dns` exiting 0 does not mean the name exists.** The
+/// certificate `cloudflared tunnel login` leaves behind is scoped to one
+/// zone, and a hostname outside it is taken as a name *relative to* that
+/// zone: `--domain 1024.works` against a login for `example.com` creates
+/// `*.1024.works.example.com`, reports success, and leaves `*.1024.works`
+/// never having existed. Every layer above then says `running` about a
+/// tunnel no URL reaches.
+///
+/// Asking the resolver is the cheapest thing that can tell the difference,
+/// and it needs no API token. A name nothing else would answer is used, so
+/// what comes back is the wildcard or nothing.
+///
+/// `false` is "it did not answer", which a moment after the write can also
+/// mean a cached NXDOMAIN — so the caller reports it as something to look
+/// at rather than as a failure.
+pub async fn wildcard_resolves(settings: &TunnelSettings) -> bool {
+    let probe = format!("minato-probe.{}:443", settings.domain);
+
+    match tokio::net::lookup_host(&probe).await {
+        Ok(mut addresses) => addresses.next().is_some(),
+        Err(err) => {
+            tracing::debug!("{probe} does not resolve: {err}");
+            false
+        }
+    }
+}
+
 /// Deletes the named tunnel.
 ///
 /// `disable` does not call this: the tunnel is machine-wide and cheap to

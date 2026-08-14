@@ -114,15 +114,26 @@ impl Supervisor {
             }
         };
 
-        let notes = zone_notes(&record, dns);
+        // Only asked when there is something to say. Once a zone is known
+        // to be routed, the answer changes nothing and a lookup on every
+        // enable is a round trip for nobody.
+        let resolves = if record.zone_routed {
+            true
+        } else {
+            minato_tunnel::process::wildcard_resolves(&settings).await
+        };
+
+        let notes = zone_notes(&record, dns, resolves);
 
         let mut record = record;
-        // **Only when cloudflared accepted the route.** Setting it after an
+        // **Only when the route took effect**, which means both that
+        // cloudflared accepted it and that the name answers. Either half
+        // alone silences the warning for a zone that is still broken:
         // `AlreadyThere` would claim a record Minato did not put there,
-        // and silence the warning about it from the second run onwards —
-        // for the one case where nothing arrives and everything still
-        // reports `running`.
-        record.zone_routed = record.zone_routed || dns == StepOutcome::Done;
+        // and `Done` on its own is what a domain outside the login's zone
+        // returns while resolving nowhere. The warning has to outlast one
+        // run, because so does the problem.
+        record.zone_routed = record.zone_routed || (dns == StepOutcome::Done && resolves);
         self.save_tunnel_record(Some(record.clone())).await?;
 
         // The routing table is rebuilt so the tunnel hostnames resolve.
@@ -335,7 +346,7 @@ impl Supervisor {
 /// panel's preferred width, and `panel::wrap` breaks at the column rather
 /// than at a space — deliberately, since what usually overflows a panel is
 /// a path or a command. Prose has to arrive pre-broken.
-fn zone_notes(record: &TunnelRecord, dns: StepOutcome) -> Vec<String> {
+fn zone_notes(record: &TunnelRecord, dns: StepOutcome, resolves: bool) -> Vec<String> {
     // Nothing to report about a zone Minato has already routed.
     if record.zone_routed {
         return Vec::new();
@@ -343,11 +354,28 @@ fn zone_notes(record: &TunnelRecord, dns: StepOutcome) -> Vec<String> {
 
     let wildcard = format!("*.{}", record.domain);
 
+    // **The name does not answer, whatever cloudflared said.** This is
+    // what a domain that is not the login's zone looks like from here:
+    // `route dns` takes the hostname as relative to the zone the
+    // certificate covers, creates `*.{domain}.{that zone}`, and exits 0.
+    // Nothing else in the response can tell — `running` is true, the
+    // tunnel is up, and no URL under `domain` will ever arrive.
+    if !resolves {
+        return vec![
+            format!("{wildcard} does not resolve, so nothing arrives."),
+            "The likely cause is that it is not the zone your".to_string(),
+            "`cloudflared tunnel login` covers: the record is then".to_string(),
+            format!("created as {wildcard}.<that zone> and this reports"),
+            "success. Check the zone in the Cloudflare dashboard.".to_string(),
+        ];
+    }
+
     let mut notes = match dns {
-        // The record reaches this tunnel. Worth saying once what that now
-        // covers: it answers for every name in the zone that has none of
-        // its own, so a name that used to be NXDOMAIN now reaches this
-        // machine — including the ones an ACME HTTP-01 challenge uses.
+        // The record reaches this tunnel and the name answers. Worth
+        // saying once what that covers: it answers for every name in the
+        // zone with none of its own, so a name that used to be NXDOMAIN
+        // now reaches this machine — including the ones an ACME HTTP-01
+        // challenge uses.
         StepOutcome::Done => vec![
             format!("{wildcard} now points here."),
             "Names with a record of their own are unaffected;".to_string(),
@@ -355,9 +383,9 @@ fn zone_notes(record: &TunnelRecord, dns: StepOutcome) -> Vec<String> {
         ],
 
         // Someone else's record, or one from an earlier install Minato has
-        // no memory of. cloudflared only says the name is taken, not what
-        // it points at, and if it is not this tunnel then nothing arrives
-        // and everything above still reports `running`.
+        // no memory of. It resolves, but cloudflared only says the name is
+        // taken, not what it points at, and if it is not this tunnel then
+        // nothing arrives and everything above still reports `running`.
         StepOutcome::AlreadyThere => vec![
             format!("a DNS record for {wildcard} was already there,"),
             "and Minato did not create it. If it does not point".to_string(),
@@ -365,9 +393,10 @@ fn zone_notes(record: &TunnelRecord, dns: StepOutcome) -> Vec<String> {
         ],
     };
 
-    // The certificate reaches one level below the zone and no further, so
-    // a domain that is not the zone puts every hostname out of its range —
-    // which fails at the TLS handshake with everything here still saying
+    // A resolving wildcard says the zone is right, but not that the
+    // certificate reaches. Universal SSL covers one level below the zone,
+    // so a domain that is itself a subdomain puts every hostname out of
+    // range — a TLS handshake failure with everything here still saying
     // `running`. Minato cannot tell a zone from a subdomain of one without
     // the public suffix list, so this asks rather than refuses: getting
     // `example.co.uk` wrong would be worse than the question.
@@ -414,6 +443,9 @@ mod tests {
         }
     }
 
+    /// The wildcard answers — the case where the note is about scope.
+    const RESOLVES: bool = true;
+
     fn joined(notes: &[String]) -> String {
         notes.join(" ")
     }
@@ -423,11 +455,33 @@ mod tests {
         // The failure this prevents is total and silent: the tunnel runs,
         // `status` says running, and every hostname resolves to whatever
         // the pre-existing record points at instead.
-        let notes = zone_notes(&record(false), StepOutcome::AlreadyThere);
+        let notes = zone_notes(&record(false), StepOutcome::AlreadyThere, RESOLVES);
         let text = joined(&notes);
 
         assert!(text.contains("*.example.com"), "got: {notes:?}");
         assert!(text.contains("did not create it"), "got: {notes:?}");
+    }
+
+    #[test]
+    fn a_wildcard_that_does_not_resolve_outranks_cloudflared_s_success() {
+        // Seen in the wild: `--domain` naming a zone the cloudflared login
+        // does not cover. `route dns` takes the hostname as relative to
+        // the zone the certificate is scoped to, creates
+        // `*.other.example.com`, and exits 0 — so `Done` here means
+        // nothing, and every URL under `other` is unreachable while the
+        // tunnel reports `running`.
+        let notes = zone_notes(&record_for("other", false), StepOutcome::Done, false);
+        let text = joined(&notes);
+
+        assert!(text.contains("does not resolve"), "got: {notes:?}");
+        assert!(
+            text.contains("login"),
+            "it names the likely cause: {notes:?}"
+        );
+        assert!(
+            !text.contains("now points here"),
+            "it must not also claim success: {notes:?}"
+        );
     }
 
     #[test]
@@ -436,8 +490,10 @@ mod tests {
         // the column rather than at a space, so a long line is rendered
         // hyphen-free mid-word.
         for outcome in [StepOutcome::Done, StepOutcome::AlreadyThere] {
-            for note in zone_notes(&record(false), outcome) {
-                assert!(note.len() <= 64, "{} chars: {note}", note.len());
+            for resolves in [true, false] {
+                for note in zone_notes(&record(false), outcome, resolves) {
+                    assert!(note.len() <= 64, "{} chars: {note}", note.len());
+                }
             }
         }
     }
@@ -446,7 +502,11 @@ mod tests {
     fn a_domain_below_the_zone_is_questioned() {
         // Getting this wrong reproduces the handshake failure the flat
         // hostname exists to avoid, and nothing else would show it.
-        let notes = zone_notes(&record_for("dev.example.com", false), StepOutcome::Done);
+        let notes = zone_notes(
+            &record_for("dev.example.com", false),
+            StepOutcome::Done,
+            RESOLVES,
+        );
 
         assert!(
             joined(&notes).contains("is not the zone itself"),
@@ -456,7 +516,7 @@ mod tests {
 
     #[test]
     fn a_two_label_domain_is_not_questioned() {
-        let notes = zone_notes(&record(false), StepOutcome::Done);
+        let notes = zone_notes(&record(false), StepOutcome::Done, RESOLVES);
 
         assert!(
             !joined(&notes).contains("is not the zone"),
@@ -466,7 +526,7 @@ mod tests {
 
     #[test]
     fn routing_the_record_says_what_it_now_covers() {
-        let notes = zone_notes(&record(false), StepOutcome::Done);
+        let notes = zone_notes(&record(false), StepOutcome::Done, RESOLVES);
 
         assert!(joined(&notes).contains("*.example.com"), "got: {notes:?}");
     }
@@ -476,11 +536,11 @@ mod tests {
         // Both steps run on every enable and on every daemon start. A
         // warning that appears every time is a warning nobody reads.
         assert!(
-            zone_notes(&record(true), StepOutcome::AlreadyThere).is_empty(),
+            zone_notes(&record(true), StepOutcome::AlreadyThere, RESOLVES).is_empty(),
             "the usual case is silent"
         );
         assert!(
-            zone_notes(&record(true), StepOutcome::Done).is_empty(),
+            zone_notes(&record(true), StepOutcome::Done, RESOLVES).is_empty(),
             "re-routed after being deleted by hand is still not news"
         );
     }
