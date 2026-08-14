@@ -53,8 +53,18 @@ use crate::terminal::Terminal;
 
 const RUNTIME_ID: &str = "apple";
 
-/// The CLI to invoke.
-const PROGRAM: &str = minato_core::apple::PROGRAM;
+/// The CLI, looked up and ready to be given arguments.
+///
+/// **Looked up afresh each time rather than once at construction.** The
+/// installer puts `container` in `/usr/local/bin`, which a launchd daemon
+/// does not have on its `PATH`; and launchd starts the daemon at boot,
+/// which is before anybody installs Apple Container. A daemon that had
+/// settled on "nowhere to be found" would stay wrong until it was
+/// restarted. The cost is a handful of `stat` calls in front of a process
+/// spawn.
+fn cli(program: &str) -> Command {
+    Command::new(minato_core::program::resolve(program))
+}
 
 /// Where the generated `/etc/hosts` files live, under the volume storage.
 ///
@@ -108,7 +118,7 @@ impl AppleContainerRuntime {
     /// somewhere nobody chose — a daemon test, which is handed a temporary
     /// home, would have swept the developer's real storage.
     pub fn for_home(root: &std::path::Path) -> Self {
-        Self::with_settings(PROGRAM.to_string(), root.join("volumes"))
+        Self::with_settings(minato_core::apple::program(), root.join("volumes"))
     }
 
     pub fn with_settings(program: String, volume_root: PathBuf) -> Self {
@@ -122,7 +132,7 @@ impl AppleContainerRuntime {
 
     /// Runs the CLI and returns its stdout.
     async fn run(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new(&self.program)
+        let output = cli(&self.program)
             .args(args)
             .output()
             .await
@@ -161,7 +171,7 @@ impl AppleContainerRuntime {
     /// Only whether it worked. For cases where failure means "this
     /// feature is not available".
     async fn succeeds(&self, args: &[&str]) -> bool {
-        Command::new(&self.program)
+        cli(&self.program)
             .args(args)
             .output()
             .await
@@ -591,7 +601,7 @@ impl AppleContainerRuntime {
     /// wait for. It is spawned instead, and the container itself is what
     /// says whether the start worked.
     async fn start_on_a_terminal(&self, spec: &ServiceSpec, name: &str) -> Result<()> {
-        let mut command = tokio::process::Command::new(&self.program);
+        let mut command = cli(&self.program);
         command.args(["start", "--attach", "--interactive", name]);
 
         let terminal = Terminal::open(command).map_err(|err| {
@@ -767,7 +777,7 @@ struct AppleCommandProbe {
 #[async_trait]
 impl crate::health::CommandProbe for AppleCommandProbe {
     async fn succeeds(&self, command: &[String]) -> bool {
-        Command::new(&self.program)
+        cli(&self.program)
             .arg("exec")
             .arg(&self.container)
             .args(command)
@@ -1116,7 +1126,7 @@ impl Runtime for AppleContainerRuntime {
         args.push(name);
 
         // It is a CLI, so read the child's stdout line by line.
-        let mut child = Command::new(&self.program)
+        let mut child = cli(&self.program)
             .args(&args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -1247,7 +1257,7 @@ impl Runtime for AppleContainerRuntime {
 
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-        let output = Command::new(&self.program)
+        let output = cli(&self.program)
             .args(&arg_refs)
             .output()
             .await
@@ -1292,7 +1302,7 @@ impl Runtime for AppleContainerRuntime {
 
         // `run` blocks until the command exits and `--rm` takes the
         // container away with it, so there is nothing to clean up here.
-        let output = Command::new(&self.program)
+        let output = cli(&self.program)
             .args(&arg_refs)
             .output()
             .await
@@ -1650,6 +1660,9 @@ fn parse_version(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The name the runtime is built with when nothing overrides it.
+    use minato_core::apple::PROGRAM;
 
     /// Captured from a real container on Apple Container 1.2.1.
     ///

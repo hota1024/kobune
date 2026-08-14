@@ -552,6 +552,7 @@ expects it; the install script does this already.
 | `MINATO_HTTP_PORT` | Proxy HTTP port. Default 80, falling back to 18080. A port named here is used as given |
 | `MINATO_HTTPS_PORT` | Proxy HTTPS port. Default 443, falling back to 18443. A port named here is used as given |
 | `MINATO_DNS_PORT` | DNS port. Default 53 |
-| `MINATO_CLOUDFLARED` | A `cloudflared` binary somewhere other than `PATH` |
+| `MINATO_CLOUDFLARED` | A `cloudflared` binary somewhere neither `PATH` nor the usual install prefixes reach |
+| `MINATO_CONTAINER` | The same, for Apple Container's `container` |
 | `MINATO_LOG` | Log filter for the daemon, e.g. `debug` |
 | `MINATO_NO_UPDATE_CHECK` | Set to anything to stop the update check, both the daily one and `--version`'s |

@@ -550,6 +550,7 @@ $ minato completions <bash|zsh|fish|elvish|powershell>
 | `MINATO_HTTP_PORT` | プロキシの HTTP ポート。既定値 80、確保できない場合は 18080。明示した場合はその値がそのまま使われます |
 | `MINATO_HTTPS_PORT` | プロキシの HTTPS ポート。既定値 443、確保できない場合は 18443。明示した場合はその値がそのまま使われます |
 | `MINATO_DNS_PORT` | DNS のポート。既定値 53 |
-| `MINATO_CLOUDFLARED` | `PATH` 以外に配置された `cloudflared` のパス |
+| `MINATO_CLOUDFLARED` | `PATH` にも主要なインストール先にも無い `cloudflared` のパス |
+| `MINATO_CONTAINER` | Apple Container の `container` について同じもの |
 | `MINATO_LOG` | daemon のログフィルタ。例: `debug` |
 | `MINATO_NO_UPDATE_CHECK` | 何か値を設定すると更新チェックを行いません（1 日 1 回のものと `--version` のもの、どちらも） |
