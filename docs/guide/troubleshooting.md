@@ -123,10 +123,10 @@ Stopping alone would work eventually, since the next request to arrive wakes the
 job, but it leaves the machine with no daemon in the meantime and `minato daemon
 status` reporting it stopped.
 
-If `minato doctor` still says the same thing afterwards, reaching :80 did not
-find launchd there — something else holds the port, or the job's socket never
-bound — and the start fell through to a daemon of its own. That is the case for
-forcing it:
+The restart says so when that does not work: reaching :80 found nothing to wake
+— something else holds the port, or the job's socket never bound — and the start
+fell through to a daemon of its own. It exits non-zero and names what is left,
+so neither you nor a script has to run `minato doctor` to find out.
 
 ```console
 $ sudo launchctl kickstart -k system/dev.minato.daemon
@@ -135,6 +135,32 @@ $ sudo launchctl kickstart -k system/dev.minato.daemon
 **Installing it again is not the fix**, and `minato setup` no longer offers to:
 launchd answers a second `bootstrap` of a label it already has with `Bootstrap
 failed: 5: Input/output error`.
+
+### launchd's job is for a different `MINATO_HOME`
+
+```console
+$ minato doctor
+│ !  launchd socket activation  inactive: launchd's job serves MINATO_HOME=/Users/hotaka/.minato, and this daemon runs under /tmp/minato-elsewhere
+```
+
+The plist carries the home it was installed for, and this shell is using another
+one. launchd holds 80, 443 and 53 for the job it has, that job serves the other
+home, and nothing run from here takes them away from it.
+
+```console
+$ minato daemon restart
+✗ error: started a daemon outside launchd, so 80 and 443 are out and no URL will answer
+  hint: launchd's job serves MINATO_HOME=/Users/hotaka/.minato, so those ports are held for a daemon that is not this one. Point MINATO_HOME there to reach it, or keep the ports this daemon fell back to
+```
+
+The other two commands are no better. A `launchctl kickstart` starts that same
+job again, for that same home, and `minato setup` offers no launchd step here at
+all — a second `bootstrap` of a label launchd already has comes back as
+`Input/output error`, so it says what the state is and leaves the rest alone.
+
+Point `MINATO_HOME` at the home the job serves to reach the daemon those ports
+belong to. Otherwise this is a second instance, deliberately, and it keeps the
+fallback ports every URL then carries.
 
 ### "the Unix socket path is too long"
 

@@ -434,6 +434,12 @@ talk to. Restart it with `minato daemon restart`
 
 Updating the binaries does not replace the process that is already running.
 
+`start` and `restart` fail when what came up is not launchd's job. The daemon is
+running, launchd still holds 80, 443 and 53 for the job that did not, and no URL
+answers — so the exit code says 1 and the hint says which of those states the
+machine is in. Nothing else changes its exit code over this: `minato up` and the
+rest did what they were asked, and print the same wording as a notice.
+
 ## Keeping it current
 
 ```console

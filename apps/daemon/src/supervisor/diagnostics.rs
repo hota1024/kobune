@@ -58,13 +58,13 @@ impl Supervisor {
         // Read once: it decides both what the proxy checks advise and what
         // the launchd check says, and those two have to agree.
         //
-        // **`is_loaded`, not `is_installed`**, which is what the launchd
-        // check below has always asked. A plist copied in without a
-        // `bootstrap` behind it leaves launchd holding nothing, so a port
-        // in use is somebody else's — and the two checks in one `doctor`
-        // used to answer that machine with "launchd may be holding this
-        // port" and "launchd does not have the job" at once.
-        let launchd_has_the_job = minato_core::launchd::is_loaded();
+        // **Asked for this daemon's home**, because that is what makes the
+        // answer true of this daemon. A job registered for another
+        // `MINATO_HOME` holds 80, 443 and 53 and hands none of them here,
+        // so blaming it for a port in use would name a cause that cannot
+        // be acted on from inside this instance.
+        let job = minato_core::launchd::job(self.paths.root());
+        let launchd_has_the_job = job == minato_core::launchd::Job::Registered;
 
         // **Resolved once.** This walks git, finds the configuration and
         // registers the project in the state store — a write, under the
@@ -94,7 +94,7 @@ impl Supervisor {
                 Check::fail("proxy-http", "HTTP proxy", detail_for(failure)).with_fix(bind_fix(
                     failure,
                     crate::gateway::HTTP_PORT_ENV,
-                    launchd_has_the_job,
+                    &job,
                 ))
             }
         });
@@ -143,11 +143,7 @@ impl Supervisor {
                     "HTTPS proxy",
                     format!("{}; HTTP only", detail_for(failure)),
                 )
-                .with_fix(bind_fix(
-                    failure,
-                    crate::gateway::HTTPS_PORT_ENV,
-                    launchd_has_the_job,
-                ))
+                .with_fix(bind_fix(failure, crate::gateway::HTTPS_PORT_ENV, &job))
             }
         });
 
@@ -187,11 +183,7 @@ impl Supervisor {
                     "DNS server",
                     format!("{}; *.localhost will not resolve", detail_for(failure)),
                 )
-                .with_fix(bind_fix(
-                    failure,
-                    crate::gateway::DNS_PORT_ENV,
-                    launchd_has_the_job,
-                ))
+                .with_fix(bind_fix(failure, crate::gateway::DNS_PORT_ENV, &job))
             }
         });
 
@@ -206,14 +198,40 @@ impl Supervisor {
         // The plist being on disk is not enough to say which it is: one
         // copied in without a `bootstrap` behind it leaves launchd knowing
         // nothing about the job, and `kickstart` no service to name. That is
-        // the install case, so `is_loaded` rather than `is_installed` — and
-        // it keeps this in step with what `minato setup` offers.
+        // the install case — and the job being registered for another home
+        // is a third, where neither command reaches this daemon at all.
+        // [`minato_core::launchd::Job`] is that distinction, and it keeps
+        // this in step with what `minato setup` offers.
         checks.push(if crate::activation::is_active() {
             Check::ok(
                 "launchd",
                 "launchd socket activation",
                 "active (privileged ports are available)".to_string(),
             )
+        } else if let minato_core::launchd::Job::Elsewhere(home) = &job {
+            Check::warn(
+                "launchd",
+                "launchd socket activation",
+                format!(
+                    "inactive: launchd's job serves MINATO_HOME={}, and this daemon \
+                     runs under {}",
+                    home.display(),
+                    self.paths.root().display()
+                ),
+            )
+            // **Nothing here can move those ports**, which is why this is
+            // not the state above with a different sentence. Restarting
+            // reaches :80 and finds a daemon serving the other home;
+            // `kickstart` starts that same job again; and `minato setup`
+            // asks launchd to bootstrap a label it already has, which comes
+            // back `Input/output error`. What is left is a choice about
+            // which home this machine is being run under.
+            .with_fix(format!(
+                "launchd holds 80, 443 and 53 for that home and no command here moves \
+                 them. Point MINATO_HOME at {} to reach the daemon they belong to, or \
+                 leave this one on the ports above",
+                home.display()
+            ))
         } else if launchd_has_the_job {
             Check::warn(
                 "launchd",
@@ -459,10 +477,16 @@ fn detail_for(failure: Option<BindFailure>) -> String {
 /// use — and the old advice, "a port below 1024 needs privileges, follow
 /// `minato setup`", names neither the cause nor a step that helps.
 ///
-/// `launchd_has_the_job` is passed in rather than read here, so the advice
-/// can be checked without a LaunchDaemon on the machine running the tests.
-fn bind_fix(failure: Option<BindFailure>, port_env: &str, launchd_has_the_job: bool) -> String {
-    if failure == Some(BindFailure::InUse) && launchd_has_the_job {
+/// The `job` is passed in rather than read here, so the advice can be
+/// checked without a LaunchDaemon on the machine running the tests.
+fn bind_fix(
+    failure: Option<BindFailure>,
+    port_env: &str,
+    job: &minato_core::launchd::Job,
+) -> String {
+    use minato_core::launchd::Job;
+
+    if failure == Some(BindFailure::InUse) && *job == Job::Registered {
         return format!(
             "launchd may be holding this port for a job it is not running. \
              `{}` hands the socket back and starts the job, and needs no \
@@ -470,6 +494,20 @@ fn bind_fix(failure: Option<BindFailure>, port_env: &str, launchd_has_the_job: b
              unrelated has the port, name another with {port_env}",
             minato_core::launchd::RESTART_COMMAND,
             minato_core::launchd::kickstart_command()
+        );
+    }
+
+    // **A privileged port is not coming back here.** launchd holds it for
+    // a job serving another home, and every command that would hand it
+    // over hands it to that one — so sending the reader to `minato setup`
+    // is sending them to a step it will decline to offer.
+    if let Job::Elsewhere(home) = job
+        && matches!(failure, Some(BindFailure::Privileged | BindFailure::InUse))
+    {
+        return format!(
+            "launchd holds this port for MINATO_HOME={}, so nothing this \
+             daemon can run will take it. Name another with {port_env}",
+            home.display()
         );
     }
 
@@ -587,7 +625,11 @@ mod tests {
         // The state `minato daemon stop` leaves behind: the job is idle,
         // launchd still holds 80. Advising `minato setup` here sends
         // someone to re-run what they have already done.
-        let fix = bind_fix(Some(BindFailure::InUse), "MINATO_HTTP_PORT", true);
+        let fix = bind_fix(
+            Some(BindFailure::InUse),
+            "MINATO_HTTP_PORT",
+            &minato_core::launchd::Job::Registered,
+        );
 
         assert!(fix.contains("launchd"), "name the cause: {fix}");
         assert!(fix.contains(minato_core::launchd::RESTART_COMMAND), "{fix}");
@@ -609,17 +651,43 @@ mod tests {
     }
     #[test]
     fn a_privileged_port_still_points_at_setup() {
-        let fix = bind_fix(Some(BindFailure::Privileged), "MINATO_HTTP_PORT", false);
+        let fix = bind_fix(
+            Some(BindFailure::Privileged),
+            "MINATO_HTTP_PORT",
+            &minato_core::launchd::Job::Missing,
+        );
 
         assert!(fix.contains("minato setup"), "{fix}");
         assert!(fix.contains("MINATO_HTTP_PORT"), "{fix}");
     }
     #[test]
     fn a_port_in_use_without_launchd_blames_the_other_process() {
-        let fix = bind_fix(Some(BindFailure::InUse), "MINATO_DNS_PORT", false);
+        let fix = bind_fix(
+            Some(BindFailure::InUse),
+            "MINATO_DNS_PORT",
+            &minato_core::launchd::Job::Missing,
+        );
 
         assert!(!fix.contains("launchd"), "{fix}");
         assert!(fix.contains("MINATO_DNS_PORT"), "{fix}");
+    }
+    #[test]
+    fn a_port_held_for_another_home_is_not_answered_with_setup() {
+        // `minato setup` declines to offer the launchd step in this state,
+        // launchd having a job under that label already — so a fix naming
+        // it sends the reader to a command that will tell them the same
+        // thing again. The port this daemon can have is another one.
+        let fix = bind_fix(
+            Some(BindFailure::Privileged),
+            "MINATO_DNS_PORT",
+            &minato_core::launchd::Job::Elsewhere(std::path::PathBuf::from(
+                "/Users/someone/.minato",
+            )),
+        );
+
+        assert!(fix.contains("/Users/someone/.minato"), "{fix}");
+        assert!(fix.contains("MINATO_DNS_PORT"), "{fix}");
+        assert!(!fix.contains("minato setup"), "{fix}");
     }
     #[test]
     fn the_detail_says_which_kind_of_failure_it_was() {
