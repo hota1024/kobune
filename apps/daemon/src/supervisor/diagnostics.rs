@@ -376,7 +376,7 @@ impl Supervisor {
         let record = self.tunnel_record().await.ok().flatten()?;
 
         let settings = self.tunnel_settings(&record).ok();
-        let info = tunnel::info(Some(&record), &self.tunnel, settings.as_ref(), "").await;
+        let info = tunnel::info(Some(&record), &self.tunnel, settings.as_ref()).await;
         let title = "Cloudflare Tunnel";
         let domain = record.domain.clone();
 

@@ -36,16 +36,45 @@ $ minato tunnel enable --domain example.com --public
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
 │                                                                         │
-│ DNS  *.myapp.example.com                                                │
+│ DNS  *.example.com                                                      │
+│                                                                         │
+│ ! *.example.com now points here.                                        │
+│ ! Names with a record of their own are unaffected;                      │
+│ ! any other name in the zone reaches this machine.                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
-named tunnel の作成、プロジェクト用ワイルドカード DNS レコードの登録、
+named tunnel の作成、ゾーン全体のワイルドカード DNS レコードの登録、
 `cloudflared` の起動をまとめて実行します。いずれも冪等なため、繰り返し実行して
 も問題ありません。
+
+`--domain` にはゾーン自体を指定します（`dev.example.com` ではなく
+`example.com`）。ゾーンの 1 階層下のホスト名は Universal SSL 証明書に覆われ
+ますが、その下は覆われないためです。
+
+さらに、**`cloudflared tunnel login` が対象としたゾーン**である必要があります。
+login が書き出す証明書は 1 つのゾーンに紐づいており、`cloudflared tunnel route
+dns` はその外側のホスト名を*そのゾーンからの相対名*として扱います。
+`example.com` に対する login のまま `other.com` を指定すると、作られるのは
+`*.other.com.example.com` で、コマンドは成功し、`*.other.com` は存在しないまま
+になります。Minato はレコードを登録したあとに名前が解決するか確認し、解決しない
+場合はその旨を表示します。この状態は、他のどこを見ても異常に見えないためです。
+トンネルは起動し、`status` は `running` を返し、URL にはいつまでも何も届き
+ません。ゾーンを切り替えるには login をやり直してください。
+
+レコードはゾーン全体を覆いますが、明示的なレコードはワイルドカードより優先
+されるため、そのドメインで既に公開しているものはそのまま応答します。Minato が
+知らないホスト名はローカルのプロキシに到達し、404 が返ります。上の出力にある
+注記がこれで、そのドメインで最初に `enable` を実行したときにだけ表示されます。
+
+`*` レコードが既に存在していた場合は、代わりにその旨が表示されます。Cloudflare
+は「その名前は使用済み」としか返さず、何を指しているかは分からないため、Minato
+にはそのレコードがこのトンネルに向いているか判断できません。向いていなければ、
+ここまでの表示が `running` のままで、すべてのホスト名が別の場所へ流れます。
+URL を信用する前に、ダッシュボードでそのレコードを確認してください。
 
 ## URL
 
@@ -57,12 +86,16 @@ $ minato status
 │ ● web  ready  https://web.feature-auth.myapp.localhost │
 │                                                        │
 │ shared over the tunnel:                                │
-│ web  https://web-feature-auth.myapp.example.com        │
+│ web  https://web-feature-auth-myapp.example.com        │
 ╰────────────────────────────────────────────────────────╯
 ```
 
-トンネル側のホスト名は、サービス名と workspace 名を `-` で連結します。トンネル
-のホスト名では、サブドメインを 1 階層しか確実に扱えないためです。
+トンネル側のホスト名は、サービス名・workspace 名・プロジェクト名を `-` で連結
+した 1 ラベルになります。ローカルの URL はパートごとにサブドメインを分けますが、
+トンネル側はそうしません。これは証明書の都合です。Cloudflare の Universal SSL
+が覆うのは 1 階層目のサブドメインまでで、それより深いホスト名は TLS の
+ハンドシェイクで拒否されます。トンネルは起動していて平文 HTTP なら応答するので、
+証明書の問題にはまず見えません。1 ラベルなら無料の証明書の範囲に収まります。
 
 `expose = false` のサービスにはトンネル側のホスト名が割り当てられません。
 データベースは、ホスト名を推測されても外部から到達できません。
@@ -120,18 +153,18 @@ daemon は再起動時に、有効化されていたトンネルを復元しま�
 
 1 台のマシンにつき 1 本の named tunnel が、すべてのプロジェクトを中継します。
 ingress ルールは 1 つのみで、ゾーン全体をローカルのプロキシへ転送し、Host に
-よる振り分けはプロキシが担当します。DNS レコードはプロジェクトごとに
-ワイルドカード 1 件（`*.myapp.example.com`）のみのため、worktree が増減しても
-DNS の更新も `cloudflared` の再読み込みも発生しません。
+よる振り分けはプロキシが担当します。DNS レコードもワイルドカード 1 件
+（`*.example.com`）のみのため、プロジェクトや worktree が増減しても DNS の更新も
+`cloudflared` の再読み込みも発生しません。
 
 `cloudflared` からプロキシまでの区間は、ループバック上の平文 HTTP です。TLS は
 Cloudflare のエッジで終端されており、また `cloudflared` にローカル CA を信頼
 させる理由もないためです。
 
-::: tip 検証はスタブによるものです
+::: tip 実際のゾーンで確認済みです
 ホスト名のルーティング、生成される設定ファイル、CLI に渡す引数、トンネル経由
-での自動起動については、テストで検証しています。未検証なのは、実際のゾーンに
-対する実際の named tunnel での動作です。想定と異なる挙動があった場合は、
-Cloudflare のプランがワイルドカード DNS レコードに対応しているか確認して
-ください。
+での自動起動については、スタブを使ったテストで検証しています。加えて `enable`
+は実際の Cloudflare ゾーン（Free プラン）に対しても実行済みで、ワイルドカード
+レコードが作成され、トンネルの URL がゾーンの Universal SSL 証明書のまま https
+で応答することを確認しています。追加の購入も手動設定も必要ありません。
 :::

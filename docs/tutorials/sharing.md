@@ -34,15 +34,15 @@ $ minato tunnel enable --domain example.com --public
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
 │                                                                         │
-│ DNS  *.myapp.example.com                                                │
+│ DNS  *.example.com                                                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
-Behind that: a named tunnel created, a wildcard DNS record routed for the
-project, `cloudflared` started. All idempotent, so running it again is fine.
+Behind that: a named tunnel created, one wildcard DNS record routed for the
+zone, `cloudflared` started. All idempotent, so running it again is fine.
 
 ## The link
 
@@ -54,12 +54,13 @@ $ minato status -w feature-checkout
 │ ● web  ready  https://web.feature-checkout.myapp.localhost │
 │                                                            │
 │ shared over the tunnel:                                    │
-│ web  https://web-feature-checkout.myapp.example.com        │
+│ web  https://web-feature-checkout-myapp.example.com        │
 ╰────────────────────────────────────────────────────────────╯
 ```
 
-Send the second one. Service and workspace are joined with `-` because tunnel
-hostnames only reliably support one level of subdomain.
+Send the second one. Service, workspace and project are joined with `-` into a
+single label, because Cloudflare's Universal SSL covers first-level subdomains
+only — a deeper hostname would be refused at the TLS handshake.
 
 ```console
 $ minato status -w feature-checkout --json \
@@ -79,11 +80,19 @@ $ minato status -w feature-checkout --json \
 ## Add Access
 
 Minato cannot do this part. In the Cloudflare dashboard, under Zero Trust →
-Access → Applications, add a self-hosted application for
-`*.myapp.example.com` and a policy — an email domain, or a one-time PIN for
-someone outside your organisation.
+Access → Applications, add a self-hosted application for the hostname you are
+sharing — `web-feature-checkout-myapp.example.com` — and a policy: an email
+domain, or a one-time PIN for someone outside your organisation.
 
 Do it before sharing anything you would not put on a public web server.
+
+**Per hostname, not `*.example.com`.** A tunnel hostname is one label, so
+there is no `*.myapp.example.com` to scope an application to any more, and the
+zone-wide pattern would put Access in front of everything else the domain
+serves — including production hostnames that have nothing to do with Minato.
+If the zone is only ever used for this, `*.example.com` is the shorter way to
+cover every worktree at once; on a zone that serves anything else it locks out
+your own visitors.
 
 ## Turn it off
 

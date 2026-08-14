@@ -83,8 +83,9 @@ $ minato url web
 https://web.myapp.localhost
 ```
 
-`minato url` prints one line and nothing else, so it pipes and substitutes
-cleanly. This is the command to reach for instead of writing a URL by hand.
+With a service named, `minato url` prints one line and nothing else, so it
+pipes and substitutes cleanly. This is the command to reach for instead of
+writing a URL by hand. Leave the name out and it lists them all.
 
 ::: tip Certificate errors
 `curl` exiting with code 60 means the local CA is not trusted yet. Run

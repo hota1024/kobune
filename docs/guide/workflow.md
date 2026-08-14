@@ -74,11 +74,12 @@ look like.
 ## Getting a URL
 
 ```console
-$ minato url          # the first reachable service
+$ minato url          # every service, and the way in
 $ minato url web      # a specific one
 ```
 
-One line, nothing else, so it substitutes cleanly:
+Naming a service prints one line and nothing else, so it substitutes
+cleanly:
 
 ```console
 $ curl -sS --fail-with-body "$(minato url web)/api/health"
@@ -86,6 +87,14 @@ $ curl -sS --fail-with-body "$(minato url web)/api/health"
 
 **Ask for the URL rather than writing one.** It survives restarts; the port
 underneath does not.
+
+To open one on a phone, `--qr` draws it as a code to photograph. That wants
+a URL a phone can resolve, so it uses the [tunnel](/guide/tunnel) URL when
+there is one:
+
+```console
+$ minato url web --qr
+```
 
 ## Starting and stopping
 
@@ -119,7 +128,7 @@ service it came from.
 
 ### Interactive services
 
-A service that runs something you would normally interact with — turborepo's
+A service that runs something you would normally interact with — Turborepo's
 task switcher, a test runner in watch mode — needs a terminal to draw on and
 a keyboard to answer. Give it one:
 
