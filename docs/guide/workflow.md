@@ -138,8 +138,9 @@ $ minato logs -f dev
 ```
 
 Ctrl-P Ctrl-Q gives the terminal back and leaves the service running.
-Everything else, Ctrl-C included, goes to the program. The details, and how
-to turn it off, are in [the CLI reference](../reference/cli#typing-at-a-service).
+Everything else, Ctrl-C included, goes to the program. The details, and how to
+turn it off, are in
+[the CLI reference](../reference/cli#typing-at-a-service).
 
 ## Running things inside a container
 

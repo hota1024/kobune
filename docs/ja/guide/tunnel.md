@@ -44,8 +44,8 @@ $ minato tunnel enable --domain example.com --public
 ```
 
 named tunnel の作成、プロジェクト用ワイルドカード DNS レコードの登録、
-`cloudflared` の起動を行います。いずれも冪等なため、繰り返し実行しても問題
-ありません。
+`cloudflared` の起動をまとめて実行します。いずれも冪等なため、繰り返し実行して
+も問題ありません。
 
 ## URL
 

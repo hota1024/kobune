@@ -24,7 +24,7 @@ $ minato env ls
 ```
 
 **The layer is always shown**, because with three of them the hardest bug is a
-value winning from somewhere you weren't looking.
+value winning from somewhere you were not looking.
 
 ## Setting them
 
