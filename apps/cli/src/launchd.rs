@@ -401,6 +401,33 @@ mod tests {
     }
 
     #[test]
+    fn the_home_it_writes_is_the_one_read_back_out() {
+        // **Two sides of one file.** This writes the home; the daemon and
+        // `minato setup` read it back through
+        // `minato_core::launchd::job` to tell a job that serves them from
+        // one installed for somewhere else. A change to the shape of this
+        // block that the reader does not follow makes every machine look
+        // like the second kind.
+        assert_eq!(
+            minato_core::launchd::job_home(&sample()),
+            Some(PathBuf::from("/Users/someone/.minato"))
+        );
+
+        let escaped = plist(
+            Path::new("/usr/local/bin/minatod"),
+            Path::new("/Users/a&b/.minato"),
+            "someone",
+            Ports::default(),
+            None,
+        );
+
+        assert_eq!(
+            minato_core::launchd::job_home(&escaped),
+            Some(PathBuf::from("/Users/a&b/.minato"))
+        );
+    }
+
+    #[test]
     fn escapes_paths_that_would_break_the_xml() {
         let xml = plist(
             Path::new("/tmp/a&b/minatod"),

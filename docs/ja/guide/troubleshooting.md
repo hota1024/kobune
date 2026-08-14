@@ -125,10 +125,12 @@ $ minato daemon restart
 が、それまでのあいだ daemon は不在で、`minato daemon status` も停止と報告
 します。
 
-実行後も `minato doctor` の表示が変わらない場合、:80 に到達しても launchd が
-そこにいなかった——別のプロセスがポートを保持している、あるいはジョブの
-ソケットが bind できていない——ということで、起動は独自の daemon にフォール
-バックしています。その場合は強制的に起動します。
+これで復旧しない場合は、restart 自体がそう報告します。:80 に到達しても
+launchd がそこにいなかった——別のプロセスがポートを保持している、あるいは
+ジョブのソケットが bind できていない——ということで、起動は独自の daemon に
+フォールバックしています。終了コードは 0 以外になり、次に何をすべきかも表示
+されるため、`minato doctor` を実行しなくても——スクリプトからでも——判断
+できます。
 
 ```console
 $ sudo launchctl kickstart -k system/dev.minato.daemon
@@ -137,6 +139,33 @@ $ sudo launchctl kickstart -k system/dev.minato.daemon
 **再インストールは解決になりません。** launchd は登録済みのラベルに対する 2 度目
 の `bootstrap` を `Bootstrap failed: 5: Input/output error` として拒否するため、
 `minato setup` もこの状態では再インストールを提示しません。
+
+### launchd のジョブが別の `MINATO_HOME` のものである
+
+```console
+$ minato doctor
+│ !  launchd socket activation  inactive: launchd's job serves MINATO_HOME=/Users/hotaka/.minato, and this daemon runs under /tmp/minato-elsewhere
+```
+
+plist にはインストール時の home が書き込まれており、いま使っている home は
+それとは別のものです。launchd が 80・443・53 を保持しているのは登録済みの
+ジョブのためで、そのジョブが対象にしているのは別の home です。こちらから
+実行できるコマンドでそれを奪うことはできません。
+
+```console
+$ minato daemon restart
+✗ error: started a daemon outside launchd, so 80 and 443 are out and no URL will answer
+  hint: launchd's job serves MINATO_HOME=/Users/hotaka/.minato, so those ports are held for a daemon that is not this one. Point MINATO_HOME there to reach it, or keep the ports this daemon fell back to
+```
+
+残りの 2 つも同様です。`launchctl kickstart` は同じ home 向けの同じジョブを
+起動し直すだけで、`minato setup` はこの状態では launchd のステップを提示
+しません。登録済みのラベルに対する 2 度目の `bootstrap` は
+`Input/output error` になるためで、状態だけを伝えて何もしません。
+
+そのジョブの home を `MINATO_HOME` に指定すれば、ポートを保持している daemon
+に到達できます。そうでなければこれは意図的な 2 つ目のインスタンスであり、
+フォールバックのポートのまま——URL にもそのポートが付いたまま——動作します。
 
 ### 「the Unix socket path is too long」と表示される
 

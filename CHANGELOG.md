@@ -108,6 +108,24 @@ less accurately.
 
 ### Fixed
 
+- **`minato daemon start` and `restart` say whether launchd took the
+  sockets.** A start that fell back to a daemon of its own leaves 80, 443 and
+  53 with the job that did not come up, so no URL answers — and every caller
+  reading the exit code was told it had worked. They exit 1 now, with a hint
+  naming which of the states the machine is in, and `minato setup`'s wake step
+  reads that rather than asking launchd a second question of its own. Nothing
+  else changes its exit code over this: `minato up` and the rest did what they
+  were asked, and keep printing the same wording as a notice (#103)
+
+- **launchd's job serving a different `MINATO_HOME` is its own state.** It
+  holds 80, 443 and 53 for a daemon that is not this one, and every command
+  the other states take is wrong here — a restart falls back, a `kickstart`
+  starts that same job again, and `minato setup` would ask launchd to
+  bootstrap a label it already has. `doctor` names the home the job serves and
+  the one this daemon runs under, `setup` offers no launchd step and leaves
+  the resolver on the port DNS is actually on, and the notice after a direct
+  start says there is nothing to run (#102)
+
 - **`minato setup` no longer reports a wake that did not happen.** Its wake
   step is `minato daemon restart`, which exits 0 whether launchd's job came up
   or a daemon started directly in its place — throttled after the stop,

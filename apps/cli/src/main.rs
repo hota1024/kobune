@@ -564,44 +564,107 @@ fn restore_sigpipe() {
     }
 }
 
-/// Says so when the daemon that just started cannot hold 80 or 443.
+/// A daemon that started where the privileged ports are not.
+struct Unprivileged {
+    /// What happened.
+    said: String,
+    /// What to do about it.
+    next: String,
+    /// The command that does it, where a command does.
+    command: Option<String>,
+}
+
+/// What to say about a daemon that started outside launchd.
 ///
 /// **Only when a LaunchDaemon is installed.** Without one, listening
 /// elsewhere is the normal arrangement and saying so every time would be
 /// noise. With one, it means launchd was meant to hand the ports over and
 /// did not — the state that leaves every URL dead while `minato up` still
 /// reports success.
-fn warn_if_unprivileged(cli: &Cli, start: DaemonStart) {
-    if cli.json || start != DaemonStart::Direct || !minato_core::launchd::is_installed() {
+///
+/// The three states it can be are three different answers, and the home is
+/// what tells the last one apart: launchd's job may be holding those ports
+/// for a `MINATO_HOME` that is not this daemon's, in which case nothing
+/// here can move them — see [`minato_core::launchd::Job`].
+fn unprivileged_start(start: DaemonStart, home: &std::path::Path) -> Option<Unprivileged> {
+    // Asked only where the answer can matter: this runs `launchctl print`,
+    // and most commands on the machine start a daemon one way or another.
+    if start != DaemonStart::Direct {
+        return None;
+    }
+
+    unprivileged(minato_core::launchd::job(home))
+}
+
+/// The same, for a state that has already been read.
+///
+/// Split out so each state's wording can be tested on a machine with no
+/// LaunchDaemon on it, which is every machine that runs the tests.
+fn unprivileged(job: minato_core::launchd::Job) -> Option<Unprivileged> {
+    use minato_core::launchd::Job;
+
+    let said = "started a daemon outside launchd, so 80 and 443 are out and no URL will answer"
+        .to_string();
+
+    match job {
+        // No plist. Listening elsewhere is the arrangement, not a fault.
+        Job::Missing => None,
+
+        // Reaching :80 is what has just failed — `wake_launchd` runs
+        // before the fall-back to a direct start — so naming
+        // `minato daemon restart` here would hand back the step that was
+        // taken. Forcing the job is what is left, and it needs root.
+        Job::Registered => Some(Unprivileged {
+            said,
+            next: "reaching :80 did not wake launchd's job. Force it with".to_string(),
+            command: Some(minato_core::launchd::kickstart_command()),
+        }),
+
+        // `kickstart` has no service to name here and comes back
+        // `Could not find service`. What is missing is the installation.
+        Job::Unregistered => Some(Unprivileged {
+            said,
+            next: "the plist is on disk but launchd does not have the job. Register it with"
+                .to_string(),
+            command: Some("minato setup".to_string()),
+        }),
+
+        // Nothing to run. The job holds 80, 443 and 53 for another home,
+        // `minato setup` would ask launchd to bootstrap a label it already
+        // has, and a `kickstart` starts that same job again.
+        Job::Elsewhere(other) => Some(Unprivileged {
+            said,
+            next: format!(
+                "launchd's job serves MINATO_HOME={}, so those ports are held for a daemon \
+                 that is not this one. Point MINATO_HOME there to reach it, or keep the \
+                 ports this daemon fell back to",
+                other.display()
+            ),
+            command: None,
+        }),
+    }
+}
+
+/// Says so when the daemon that just started cannot hold 80 or 443.
+///
+/// A notice rather than a failure: the command that was asked for did
+/// happen. [`start_daemon`] is the one place where this state *is* the
+/// failure, because starting the daemon was the whole request.
+fn warn_if_unprivileged(cli: &Cli, client: &Client, start: DaemonStart) {
+    if cli.json {
         return;
     }
 
-    // **The two states this covers take opposite steps**, and until now
-    // both were told to run `kickstart`. Where launchd does not have the
-    // job — a plist copied in, or one whose `bootstrap` was declined — it
-    // has no service to name and comes back `Could not find service`, and
-    // what is missing is the installation.
-    //
-    // Where launchd does have it, forcing the job is what is left. This is
-    // reached only after the client reached for :80 and found launchd not
-    // answering there (`minato-client`, `wake_launchd`), which is the same
-    // thing `minato daemon restart` does — so naming the restart here would
-    // hand back the step that has just been taken.
-    let (what, command) = if minato_core::launchd::is_loaded() {
-        (
-            "reaching :80 did not wake launchd's job, so forcing it is what is left",
-            minato_core::launchd::kickstart_command(),
-        )
-    } else {
-        (
-            "the plist is on disk but launchd does not have the job. Register it with",
-            "minato setup".to_string(),
-        )
+    let Some(unprivileged) = unprivileged_start(start, client.home()) else {
+        return;
     };
 
     ui::notice(vec![
-        ui::note("started a daemon outside launchd, so 80 and 443 are out and no URL will answer"),
-        ui::hint(what, &command),
+        ui::note(&unprivileged.said),
+        match &unprivileged.command {
+            Some(command) => ui::hint(&unprivileged.next, command),
+            None => ui::note(&unprivileged.next),
+        },
     ]);
 }
 
@@ -744,6 +807,15 @@ enum CliError {
 
     #[error("{0}")]
     Local(String),
+
+    /// The daemon started, but not where the ports are.
+    ///
+    /// Its own kind because it is the one failure that leaves something
+    /// running: the message says what happened, and the hint is what to do
+    /// about the state the machine is actually in — which of the three it
+    /// is, [`unprivileged`] decides.
+    #[error("{message}")]
+    Unprivileged { message: String, hint: String },
 }
 
 fn as_api_error(err: &CliError) -> Option<&minato_api::ApiError> {
@@ -757,13 +829,14 @@ fn hint_for(err: &CliError) -> Option<&str> {
     match err {
         CliError::Client(client) => client.hint(),
         CliError::Local(_) => None,
+        CliError::Unprivileged { hint, .. } => Some(hint),
     }
 }
 
 fn exit_code_for(err: &CliError) -> i32 {
     match err {
         CliError::Client(client) => client.exit_code(),
-        CliError::Local(_) => 1,
+        CliError::Local(_) | CliError::Unprivileged { .. } => 1,
     }
 }
 
@@ -861,7 +934,7 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     let request = build_request(cli, target)?;
 
     let (mut connection, start) = client.connect_or_spawn().await?;
-    warn_if_unprivileged(cli, start);
+    warn_if_unprivileged(cli, &client, start);
 
     // An interactive `logs` runs its own way: the terminal goes into raw
     // mode, and what comes back is not lines but a screen.
@@ -2033,15 +2106,45 @@ fn present_setup(
     let mut steps: Vec<ui::SetupStep> = Vec::new();
     let launchd_pending = pending("launchd");
 
-    // Privileged ports being unavailable has two causes, and they take
-    // opposite steps. **Whether launchd already has the job is what tells
-    // them apart** — see [`minato_core::launchd::is_loaded`]. Asked only
+    // Privileged ports being unavailable has more than one cause, and they
+    // take different steps — see [`minato_core::launchd::Job`]. Asked only
     // where the answer can matter: with the sockets already handed over
     // there is nothing to install and nothing to wake.
-    let wakes_launchd = launchd_pending && minato_core::launchd::is_loaded();
+    //
+    // The home is this CLI's, the same one [`prepare_launchd`] writes into
+    // the plist. Where launchd's job serves another, it holds 80, 443 and
+    // 53 for a daemon that is not the one being set up, and neither step
+    // below is the answer.
+    let job = launchd_pending.then(|| {
+        minato_core::Paths::resolve()
+            .map(|paths| minato_core::launchd::job(paths.root()))
+            .unwrap_or(minato_core::launchd::Job::Missing)
+    });
+
+    let elsewhere = match &job {
+        Some(minato_core::launchd::Job::Elsewhere(home)) => Some(home.clone()),
+        _ => None,
+    };
+
+    let wakes_launchd = job == Some(minato_core::launchd::Job::Registered);
     let mut launchd_step = None;
 
-    if wakes_launchd {
+    if let Some(home) = &elsewhere {
+        // Nothing is offered, because nothing here helps: `setup` would
+        // ask launchd to bootstrap a label it already has, and a kickstart
+        // would start the job serving that other home again.
+        ui::notice(vec![
+            ui::note(&format!(
+                "launchd's job serves MINATO_HOME={}, so 80, 443 and 53 are held for a \
+                 daemon that is not this one",
+                home.display()
+            )),
+            ui::note(
+                "point MINATO_HOME there to reach it, or leave this home on the ports it \
+                 fell back to",
+            ),
+        ]);
+    } else if wakes_launchd {
         launchd_step = Some(steps.len());
         steps.push(ui::SetupStep {
             description: "wake launchd's job, so it hands over 80/443/53".to_string(),
@@ -2079,7 +2182,12 @@ fn present_setup(
 
     // Installing launchd moves DNS to :53. A resolver still naming the
     // old port would stop resolving the moment it lands.
-    let effective_dns_port = if launchd_pending {
+    //
+    // **The step, not the state.** With the job serving another home — or
+    // with no plist that could be written — nothing here will ever take
+    // :53, and a plan naming it is what `--json` and a run with no terminal
+    // print to be followed by hand.
+    let effective_dns_port = if launchd_step.is_some() {
         launchd::Ports::default().dns
     } else {
         dns_port.unwrap_or(53)
@@ -2166,10 +2274,13 @@ fn present_setup(
         if Some(index) == resolver_step && launchd_pending && !launchd_landed {
             let port = dns_port.unwrap_or(53);
             step.commands = vec![system::resolver_command(DEFAULT_DOMAIN_SUFFIX, port)];
-            step.note = Some(if wakes_launchd {
-                format!("launchd's job is not awake, so DNS stays on :{port}")
-            } else {
-                format!("launchd was not installed, so DNS stays on :{port}")
+            step.note = Some(match (&elsewhere, wakes_launchd) {
+                (Some(home), _) => format!(
+                    "launchd's job serves {}, so DNS here stays on :{port}",
+                    home.display()
+                ),
+                (None, true) => format!("launchd's job is not awake, so DNS stays on :{port}"),
+                (None, false) => format!("launchd was not installed, so DNS stays on :{port}"),
             });
         }
 
@@ -2190,46 +2301,34 @@ fn present_setup(
             .iter()
             .all(|command| run_shell(command, cli.json));
 
-        let mut outcome = if ran {
+        let outcome = if ran {
             ui::SetupOutcome::Ran
         } else {
             ui::SetupOutcome::Failed
         };
 
-        if Some(index) == launchd_step && outcome == ui::SetupOutcome::Ran {
-            // **Running the command is not the same as launchd taking the
-            // ports.** The wake step is `minato daemon restart`, which exits
-            // 0 whether the job came up or a daemon started directly in its
-            // place — throttled after the stop, disabled, its program moved.
-            // Believing it there writes `/etc/resolver/localhost` for :53
-            // while DNS is still on the fallback port, which is the failure
-            // the resolver step's own note exists to prevent.
+        if Some(index) == launchd_step {
+            // **The step's own exit status says.** `minato daemon start`
+            // fails where it could not go through launchd, and the
+            // installation's commands are `bootstrap`, whose status has
+            // always said — so a step that ran is a step that landed.
             //
-            // The installation is not asked the same question: its commands
-            // are `bootstrap` and their exit status does say. A job it has
-            // just registered is idle by design until a request arrives.
-            launchd_landed = !wakes_launchd || minato_core::launchd::is_running();
+            // It did not always: the wake exited 0 whether the job came up
+            // or a daemon started directly in its place, and believing it
+            // there wrote `/etc/resolver/localhost` for :53 while DNS was
+            // still on the fallback port.
+            launchd_landed = outcome == ui::SetupOutcome::Ran;
 
-            if !launchd_landed {
-                // **A step that did not do what it is for is a failed
-                // step**, whatever its commands exited with — the machine
-                // is not set up, and an agent reading the exit code of
-                // `minato setup --yes` would otherwise be told it is by
-                // the very run that printed this.
-                outcome = ui::SetupOutcome::Failed;
-
+            if wakes_launchd && outcome == ui::SetupOutcome::Failed {
                 // What is left to run is the escalation, not the command
                 // that has just been run to no effect. The summary prints
                 // a step's commands under "still to run", so this is what
-                // it has to be carrying by then.
+                // it has to be carrying by then; the command itself has
+                // already said why it failed.
                 step.commands = vec![minato_core::launchd::kickstart_command()];
 
-                // launchd is still holding 80, 443 and 53 — it does that
-                // whether or not the job runs, which is why nothing else
-                // can have them. What is missing is something behind them.
                 ui::error(
-                    "the job did not come up, so nothing is answering on 80/443/53. \
-                     The resolver step names the port DNS is on now, so run \
+                    "the resolver step below names the port DNS is on now, so run \
                      `minato setup` again once the job is up",
                     None,
                 );
@@ -2344,9 +2443,30 @@ async fn handle_daemon(
 }
 
 /// Starts the daemon and says what answered.
+///
+/// **A start that could not go through launchd is a failed start.** The
+/// daemon is running, and holds none of the ports it was installed to hold,
+/// so no URL answers — and the exit code is the only part of this that
+/// `minato setup`'s wake step, an agent, or a script reads. Saying 0 there
+/// is how a `setup` run came to write `/etc/resolver/localhost` for a port
+/// nothing was listening on.
+///
+/// Only here, and in the `restart` that runs through it. Every other
+/// command carries on and prints the notice: what they were asked to do
+/// did happen.
 async fn start_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError> {
     let (mut connection, start) = client.connect_or_spawn().await?;
-    warn_if_unprivileged(cli, start);
+
+    if let Some(unprivileged) = unprivileged_start(start, client.home()) {
+        return Err(CliError::Unprivileged {
+            message: unprivileged.said,
+            hint: match unprivileged.command {
+                Some(command) => format!("{} {command}", unprivileged.next),
+                None => unprivileged.next,
+            },
+        });
+    }
+
     let pong = connection.handshake().await?;
 
     if cli.json {
@@ -2459,6 +2579,69 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn a_machine_with_no_launchdaemon_is_not_told_anything() {
+        // Listening on the fallback ports is the whole arrangement on
+        // Linux, and on a Mac that never ran `minato setup`. Saying it
+        // every time the daemon starts would be noise.
+        assert!(unprivileged(minato_core::launchd::Job::Missing).is_none());
+    }
+
+    #[test]
+    fn a_job_launchd_has_is_answered_with_the_kickstart() {
+        // **Not `minato daemon restart`.** This is only reached after
+        // starting already reached for :80 and found nothing to wake, and
+        // the restart does exactly that — so naming it hands back the step
+        // that has just been taken.
+        let said = unprivileged(minato_core::launchd::Job::Registered).expect("says something");
+
+        assert_eq!(
+            said.command.as_deref(),
+            Some(minato_core::launchd::kickstart_command().as_str())
+        );
+    }
+
+    #[test]
+    fn a_plist_launchd_does_not_have_is_answered_with_setup() {
+        // `kickstart` has no service to name here: launchd was never asked
+        // to take the job, so what is missing is the installation.
+        let said = unprivileged(minato_core::launchd::Job::Unregistered).expect("says something");
+
+        assert_eq!(said.command.as_deref(), Some("minato setup"));
+    }
+
+    #[test]
+    fn a_job_for_another_home_is_answered_with_no_command_at_all() {
+        // Every command the other states take is wrong here, and offering
+        // one anyway is how somebody ends up running `minato setup` into
+        // launchd's `Input/output error` for a label it already has.
+        let said = unprivileged(minato_core::launchd::Job::Elsewhere(PathBuf::from(
+            "/Users/someone/.minato",
+        )))
+        .expect("says something");
+
+        assert!(said.command.is_none(), "{:?}", said.command);
+        assert!(
+            said.next.contains("/Users/someone/.minato"),
+            "name the home the ports are held for: {}",
+            said.next
+        );
+    }
+
+    #[test]
+    fn a_start_that_could_not_reach_launchd_fails_with_its_hint() {
+        // The exit code is the whole point: `minato setup`'s wake step
+        // reads it, and so does anything else driving the CLI. 1 is the
+        // generic failure, and 2 belongs to clap.
+        let err = CliError::Unprivileged {
+            message: "started a daemon outside launchd".to_string(),
+            hint: "force the job".to_string(),
+        };
+
+        assert_eq!(exit_code_for(&err), 1);
+        assert_eq!(hint_for(&err), Some("force the job"));
     }
 
     #[test]

@@ -85,7 +85,17 @@ pub fn is_installed() -> bool {
 /// password.
 #[cfg(target_os = "macos")]
 pub fn is_loaded() -> bool {
-    print_job().is_some()
+    if !is_installed() {
+        return false;
+    }
+
+    std::process::Command::new("launchctl")
+        .arg("print")
+        .arg(format!("system/{LABEL}"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Always false where there is no launchd.
@@ -94,74 +104,122 @@ pub fn is_loaded() -> bool {
     false
 }
 
-/// Whether launchd's job is running, rather than only registered.
+/// What launchd has, for the home the caller is asking about.
 ///
-/// **Three states, not two.** [`is_installed`] is the plist on disk,
-/// [`is_loaded`] is launchd knowing the job, and this is something actually
-/// behind the sockets. After `minato daemon stop` the middle one still
-/// holds while nothing answers, which is the state [`RESTART_COMMAND`]
-/// exists to leave.
+/// **Four states, and each one takes a different step.** Every site that
+/// advises anything about launchd is deciding between these, and composing
+/// the decision out of [`is_installed`], [`is_loaded`] and the plist at
+/// each site is how two of them came to answer one machine differently.
 ///
-/// It is what tells a wake that worked from one that did not.
-/// `minato daemon restart` exits 0 either way — a daemon started directly,
-/// outside launchd, is still a daemon — so its exit status cannot answer
-/// this and asking launchd is the only thing that can.
-///
-/// `launchctl print` names a `pid` only while the job has one. Asking needs
-/// no privileges; being told the state should never cost a password.
-#[cfg(target_os = "macos")]
-pub fn is_running() -> bool {
-    print_job().is_some_and(|job| names_a_pid(&job))
+/// | State | What helps |
+/// | --- | --- |
+/// | [`Job::Missing`] | `minato setup`, which writes the plist |
+/// | [`Job::Unregistered`] | `minato setup`; `kickstart` has no service to name |
+/// | [`Job::Registered`] | [`RESTART_COMMAND`], then [`kickstart_command`] |
+/// | [`Job::Elsewhere`] | neither: the ports are held for another home |
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Job {
+    /// No plist, so launchd was never asked to hold anything.
+    Missing,
+    /// A plist on disk that launchd does not have — copied in, or with its
+    /// `bootstrap` declined.
+    Unregistered,
+    /// launchd has the job, and it serves this home.
+    Registered,
+    /// launchd has the job, but its plist names another `MINATO_HOME`.
+    Elsewhere(PathBuf),
 }
 
-/// Always false where there is no launchd.
-#[cfg(not(target_os = "macos"))]
-pub fn is_running() -> bool {
-    false
-}
-
-/// What launchd has to say about the job, or nothing where it has no job.
+/// Which of the four states this machine is in, for `home`.
 ///
-/// **One place runs `launchctl print`.** [`is_loaded`] and [`is_running`]
-/// are two readings of the same answer, and asking twice spawns the same
-/// process to be told the same thing — or, across the gap between the two
-/// calls, something else.
-#[cfg(target_os = "macos")]
-fn print_job() -> Option<String> {
+/// The home is asked for rather than resolved here: the answer belongs to
+/// the daemon a caller is talking about, and under `MINATO_HOME` that is
+/// not the same as the one launchd's job serves.
+pub fn job(home: &Path) -> Job {
     if !is_installed() {
-        return None;
+        return Job::Missing;
     }
 
-    let output = std::process::Command::new("launchctl")
-        .arg("print")
-        .arg(format!("system/{LABEL}"))
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    if !is_loaded() {
+        return Job::Unregistered;
+    }
 
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    match job_elsewhere(home) {
+        Some(other) => Job::Elsewhere(other),
+        None => Job::Registered,
+    }
 }
 
-/// Whether that output names a running process.
+/// The `MINATO_HOME` launchd's job serves, when it is not this one.
 ///
-/// **Split out because it is the half that can be tested** — the rest is
-/// `launchctl` itself, which no CI runner has a job for. `launchctl` leaves
-/// the line out entirely rather than naming an absent pid, so the property
-/// is a `pid` key with a number after it, read loosely enough to survive
-/// the spacing changing: reading it wrong the other way says a wake landed
-/// when it did not, and writes `/etc/resolver/localhost` for a port nothing
-/// is listening on.
+/// **A fourth state.** The plist carries the home it was installed for, and
+/// a machine can be running under another one — `MINATO_HOME` set for a
+/// second instance, or a plist installed from a different account. launchd
+/// has a job and holds 80, 443 and 53 for it, and none of that reaches the
+/// daemon this process is talking to.
+///
+/// It is worth its own answer because every command the other three states
+/// take is wrong here. `minato daemon restart` reaches for :80 and gets a
+/// daemon serving somewhere else, so it falls back to a direct one;
+/// `kickstart` starts that same job again; and `minato setup` writes a
+/// plist for this home whose `bootstrap` launchd answers with `Input/output
+/// error`, the label being one it already has. What is left is to point
+/// `MINATO_HOME` at the home the job serves, or to accept the fallback
+/// ports.
+///
+/// `None` where there is nothing to say: no plist, one for this home, or
+/// one from before the home was written into it — an installation that
+/// works is not worth inventing a state over.
 #[cfg(target_os = "macos")]
-fn names_a_pid(job: &str) -> bool {
-    job.lines().any(|line| {
-        line.trim()
-            .strip_prefix("pid")
-            .and_then(|rest| rest.trim_start().strip_prefix('='))
-            .is_some_and(|value| value.trim().parse::<u32>().is_ok())
-    })
+fn job_elsewhere(home: &Path) -> Option<PathBuf> {
+    let plist = std::fs::read_to_string(plist_path()).ok()?;
+    let job = job_home(&plist)?;
+
+    (!same_path(&job, home)).then_some(job)
+}
+
+/// Always nothing where there is no launchd.
+#[cfg(not(target_os = "macos"))]
+fn job_elsewhere(_home: &Path) -> Option<PathBuf> {
+    None
+}
+
+/// The `MINATO_HOME` a plist names.
+///
+/// The CLI writes it into `EnvironmentVariables`, which is how the job
+/// finds its home at all. Read back here rather than in the CLI, because
+/// the daemon compares it against its own root as well.
+pub fn job_home(plist: &str) -> Option<PathBuf> {
+    let (_, rest) = plist.split_once("<key>MINATO_HOME</key>")?;
+    let (_, value) = rest.split_once("<string>")?;
+    let (value, _) = value.split_once("</string>")?;
+
+    let value = unescape_xml(value.trim());
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+/// The five entities the plist is written with.
+fn unescape_xml(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        // Last: an escaped `&amp;lt;` is the text `&lt;`, not a `<`.
+        .replace("&amp;", "&")
+}
+
+/// Whether two paths are the same directory.
+///
+/// Resolved where they exist, since `/tmp` and `/private/tmp` are the same
+/// home on macOS and a plist may name either. A path that does not resolve
+/// is compared as written — it is still an answer, and the alternative is
+/// calling two different homes the same one.
+#[cfg(target_os = "macos")]
+fn same_path(one: &Path, other: &Path) -> bool {
+    let resolved = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    resolved(one) == resolved(other)
 }
 
 /// The command that starts the job again, for a `fix` or a hint.
@@ -199,10 +257,9 @@ mod tests {
     fn nothing_is_installed_without_launchd() {
         assert!(!is_installed());
         assert!(!is_loaded());
-        // The third state is a state too. `setup` reads it to decide
-        // whether the resolver names :53, so a stub that ever answered
-        // otherwise would have it write one for a port nothing holds.
-        assert!(!is_running());
+        // There is no launchd to have a job, so the one state that leaves
+        // a caller with nothing to run must not be reachable here.
+        assert_eq!(job(Path::new("/home/someone/.minato")), Job::Missing);
     }
 
     #[cfg(target_os = "macos")]
@@ -210,43 +267,58 @@ mod tests {
     fn no_plist_means_launchd_does_not_have_the_job() {
         // The machine running the tests may well have one installed, so
         // this only pins the half that holds either way: without the file
-        // there is nothing to have been bootstrapped, and nothing
-        // bootstrapped is nothing running.
+        // there is nothing to have been bootstrapped, and nothing to read
+        // a home out of.
         if !is_installed() {
             assert!(!is_loaded());
-            assert!(!is_running());
+            assert_eq!(job(Path::new("/Users/someone/.minato")), Job::Missing);
         }
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn a_job_with_a_pid_is_running() {
-        // Trimmed from `launchctl print system/dev.minato.daemon`.
-        let job = "\tstate = running\n\tpid = 4821\n\tprogram = /usr/local/bin/minato-daemon\n";
+    fn the_home_comes_out_of_the_environment_block() {
+        let plist = "\
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MINATO_HOME</key>
+    <string>/Users/someone/.minato</string>
+  </dict>
+";
 
-        assert!(names_a_pid(job));
+        assert_eq!(
+            job_home(plist),
+            Some(PathBuf::from("/Users/someone/.minato"))
+        );
+    }
+
+    #[test]
+    fn a_plist_from_before_the_home_was_written_names_none() {
+        // Left alone deliberately, as with the revision marker: an
+        // installation that works is not worth a state of its own.
+        assert!(job_home("<key>Label</key>\n<string>dev.minato.daemon</string>").is_none());
+    }
+
+    #[test]
+    fn a_home_that_had_to_be_escaped_comes_back_as_it_was_written() {
+        // `escape_xml` on the way in, so a directory with an `&` in it
+        // would otherwise read as a different home every time.
+        let plist = "<key>MINATO_HOME</key>\n<string>/Users/a&amp;b/.minato</string>";
+
+        assert_eq!(job_home(plist), Some(PathBuf::from("/Users/a&b/.minato")));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_registered_job_with_no_pid_is_not_running() {
-        // What launchd prints for the job `minato daemon stop` left: it
-        // still has it, and the pid line is simply absent.
-        let job = "\tstate = not running\n\tprogram = /usr/local/bin/minato-daemon\n";
-
-        assert!(!names_a_pid(job));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_pid_is_read_loosely_enough_to_survive_the_spacing() {
-        // The output is `launchctl`'s to format, and a false negative here
-        // is the same failure as a false positive, from the other side.
-        assert!(names_a_pid("  pid   =   4821"));
-        assert!(names_a_pid("pid=4821"));
-
-        // Not every key that starts with those three letters.
-        assert!(!names_a_pid("\tpidfile = /var/run/minato.pid"));
-        assert!(!names_a_pid("\tpid = (none)"));
+    fn the_same_home_written_two_ways_is_one_home() {
+        // A trailing slash is not a different directory, and neither is a
+        // symlinked one — `/tmp` against `/private/tmp` on macOS.
+        assert!(same_path(
+            Path::new("/Users/someone/.minato/"),
+            Path::new("/Users/someone/.minato")
+        ));
+        assert!(!same_path(
+            Path::new("/Users/someone/.minato"),
+            Path::new("/Users/someone/.minato-test")
+        ));
     }
 }

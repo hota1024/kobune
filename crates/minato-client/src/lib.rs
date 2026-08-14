@@ -154,6 +154,21 @@ impl Client {
         &self.socket
     }
 
+    /// The home the daemon on the other end keeps its files in.
+    ///
+    /// The socket sits directly under it ([`minato_core::Paths::socket`]),
+    /// so this is that home however the client was built — and it is what
+    /// decides whether launchd's job is this daemon's at all. Asking the
+    /// environment instead would answer for the process, which under
+    /// `MINATO_HOME` is a different question.
+    ///
+    /// A socket path with no parent is not a home anyone set up, so it
+    /// answers with itself rather than making every caller carry an
+    /// `Option` for a path that cannot arrive from [`Self::from_env`].
+    pub fn home(&self) -> &Path {
+        self.socket.parent().unwrap_or(&self.socket)
+    }
+
     /// Connects to an already-running daemon.
     pub async fn connect(&self) -> Result<Connection, ClientError> {
         let stream =
