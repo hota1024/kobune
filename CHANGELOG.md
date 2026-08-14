@@ -101,6 +101,17 @@ less accurately.
 
 ### Fixed
 
+- The step after an update reads `minato daemon restart` on every machine,
+  rather than `minato daemon stop` where launchd holds the job. Stopping was
+  once the only safe way back — restarting by hand started a daemon outside
+  launchd, and 80 and 443 stayed with launchd — but starting one has gone
+  through launchd since #17, so the two end at the same daemon. Stopping is
+  the worse half of it: a clean exit is not restarted, so the daemon stays
+  down until something arrives on a port, and `minato daemon status` reports
+  it stopped in the meantime. It was also the only place saying `stop` — the
+  error a stale daemon produces has always answered `restart` — and the advice
+  no longer depends on a plist, so `--json` carries one command for one state
+
 - Ctrl-P Ctrl-Q detaches. It stopped passing keys on and then waited: the
   window watcher held a second sender for the channel whose closing *is* the
   message that somebody left, so the message was never sent and `minato logs`

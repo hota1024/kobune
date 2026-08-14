@@ -182,11 +182,11 @@ generator, but nothing is tested against them.
 ```console
 $ minato update
 › installing 9f3c1a2…
-╭ update ─────────────────────────────────────────────────────────────╮
-│ installed  9f3c1a2                                                  │
-│                                                                     │
-│ › the daemon is still the previous build, so run minato daemon stop │
-╰─────────────────────────────────────────────────────────────────────╯
+╭ update ────────────────────────────────────────────────────────────────╮
+│ installed  9f3c1a2                                                     │
+│                                                                        │
+│ › the daemon is still the previous build, so run minato daemon restart │
+╰────────────────────────────────────────────────────────────────────────╯
 ```
 
 `update` replaces the installation it is run from — the directory holding the
@@ -197,9 +197,10 @@ would not agree on the protocol between them.
 The new files are written beside the old ones and renamed into place. A running
 executable cannot be written to, but it can be replaced, so an update while the
 daemon is up leaves it running the old build until it is restarted. Which is
-what the last line is about: stopping it is how launchd picks the new one up,
-and without the LaunchDaemon installed it reads `minato daemon restart`
-instead, because nothing else would bring it back.
+what the last line is about. It says the same thing on every machine: starting
+the daemon asks launchd first where launchd has the job, so a restart there ends
+with a daemon launchd started, holding 80 and 443 and running the build that has
+just landed.
 
 That line is **worked out, not printed regardless**: with no daemon running
 there is nothing to replace, and the panel says only what it installed.
@@ -227,7 +228,7 @@ so it answers them itself, the first time you run it:
 $ minato url web
 https://web.myapp.localhost
 › minato changed to 9f3c1a2 since the last run
-› the daemon is not this build, so run minato daemon stop
+› the daemon is not this build, so run minato daemon restart
 › this repository's Skill is not this build's, so run minato skill install --force
 ```
 
@@ -268,7 +269,7 @@ the same steps as data instead:
   "commit": "9f3c1a2…",
   "next": [
     {
-      "command": "minato daemon stop",
+      "command": "minato daemon restart",
       "reason": "the daemon is still the previous build"
     }
   ]

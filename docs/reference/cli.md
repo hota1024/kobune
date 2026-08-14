@@ -394,10 +394,10 @@ $ minato daemon restart
 $ minato daemon status
 ```
 
-Any command starts the daemon if it is down, so these are rarely needed.
-`stop` on a machine with the LaunchDaemon installed is immediately followed by
-launchd starting it again — that is how it picks up new settings while keeping
-ports 80 and 443.
+Any command starts the daemon if it is down, so these are rarely needed. On a
+machine with the LaunchDaemon installed, starting one goes through launchd —
+which is how ports 80 and 443 stay held — so `stop` leaves the job idle until
+something arrives on a port, rather than leaving the machine without a daemon.
 
 `restart` is for the one case that does not fix itself: a daemon left running
 from an older build. It answers every command happily and speaks a protocol the
@@ -435,7 +435,7 @@ binaries have moved, each with the state that makes it worth running.
   "status": "installed",
   "commit": "…",
   "next": [
-    { "command": "minato daemon stop", "reason": "the daemon is still the previous build" }
+    { "command": "minato daemon restart", "reason": "the daemon is still the previous build" }
   ]
 }
 ```
