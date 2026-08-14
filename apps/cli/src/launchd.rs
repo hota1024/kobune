@@ -462,28 +462,15 @@ mod tests {
     }
 
     #[test]
-    fn waking_does_not_bootstrap_again() {
-        let commands = wake_commands();
-
-        assert!(
-            !commands.iter().any(|c| c.contains("bootstrap")),
-            "launchd fails a second bootstrap with EIO: {commands:?}"
-        );
-    }
-
-    #[test]
     fn waking_is_one_command_that_needs_no_root() {
         // It used to be a stop and a `sudo launchctl kickstart`, run with
         // `all(...)`. Declining the password prompt ran only the stop, so
         // saying no to a step left the machine with no daemon — the harm
-        // the step was offered to avoid.
-        let commands = wake_commands();
-
-        assert_eq!(commands, vec![minato_core::launchd::RESTART_COMMAND]);
-        assert!(
-            !commands.iter().any(|c| c.contains("sudo")),
-            "an agent has no password to give: {commands:?}"
-        );
+        // the step was offered to avoid. It also must not bootstrap:
+        // launchd answers a second one for a label it has with EIO.
+        //
+        // The equality carries all of that, so it is the only assertion.
+        assert_eq!(wake_commands(), vec![minato_core::launchd::RESTART_COMMAND]);
     }
 
     #[test]

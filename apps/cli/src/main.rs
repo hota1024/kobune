@@ -2025,10 +2025,17 @@ fn present_setup(
         launchd_step = Some(steps.len());
         steps.push(ui::SetupStep {
             description: "wake launchd's job, so it hands over 80/443/53".to_string(),
-            note: Some(
-                "the LaunchDaemon is installed already; its job is the part that is not running"
-                    .to_string(),
-            ),
+            // The escalation is a note rather than a second command. As a
+            // command it would ask for a password on every run, including
+            // the ones where restarting already did it — and the two ran
+            // with `all`, so declining that prompt used to leave the
+            // machine with no daemon at all.
+            note: Some(format!(
+                "the LaunchDaemon is installed already; its job is the part \
+                 that is not running. If it stays inactive afterwards, \
+                 `{}` forces it",
+                minato_core::launchd::kickstart_command()
+            )),
             commands: launchd::wake_commands(),
         });
     } else if launchd_pending {
@@ -2256,29 +2263,7 @@ async fn handle_daemon(
 
             Ok(ExitCode::SUCCESS)
         }
-        DaemonCommand::Restart => {
-            stop_daemon(client).await?;
-
-            // **Waited for.** The next start binds the same socket, and
-            // a daemon on its way out still holds it.
-            wait_until_stopped(client).await;
-
-            match start_daemon(cli, client).await {
-                // A daemon that outlived the wait is the one just asked to
-                // stop, and `connect_or_spawn` shakes hands with whatever
-                // answers — so the old build's protocol comes back as an
-                // error telling the user to run this very command.
-                //
-                // It is also the case restarting exists for: an old daemon
-                // is the usual reason to restart. So the wait is given a
-                // second run rather than the failure handed over.
-                Err(CliError::Client(ClientError::VersionMismatch { .. })) => {
-                    wait_until_stopped(client).await;
-                    start_daemon(cli, client).await
-                }
-                other => other,
-            }
-        }
+        DaemonCommand::Restart => restart_daemon(cli, client).await,
         DaemonCommand::Status => match client.connect().await {
             Ok(mut connection) => {
                 let pong = connection.handshake().await?;
@@ -2331,15 +2316,70 @@ async fn stop_daemon(client: &Client) -> Result<bool, CliError> {
     Ok(true)
 }
 
+/// Stops the daemon and starts one in its place.
+///
+/// **The stop's own failure is not a reason to abandon this.** The request
+/// has already gone by then, and what fails on the way back is the daemon
+/// going away mid-reply — or an old one whose reply this build cannot
+/// decode, which is the very thing being restarted. Returning there would
+/// leave the machine with no daemon at all, having run the harmful half of
+/// a fix that every other part of the CLI now recommends.
+///
+/// A second round exists because starting shakes hands with whatever
+/// answers ([`minato_client::Client::connect_or_spawn`]), so a daemon that
+/// outlived the wait is met, not replaced — and it is met exactly when it
+/// is too old to talk to, which is when someone is most likely to be
+/// restarting. The second round stops it again rather than only waiting
+/// longer: what answers may be a daemon this run started, which nobody has
+/// asked to stop, and no amount of waiting moves that one.
+async fn restart_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError> {
+    const ROUNDS: usize = 2;
+
+    let mut refused = None;
+
+    for round in 1..=ROUNDS {
+        let _ = stop_daemon(client).await;
+
+        // **Waited for.** The next start binds the same socket, and a
+        // daemon on its way out still holds it.
+        wait_until_stopped(client).await;
+
+        match start_daemon(cli, client).await {
+            Err(err) if round < ROUNDS && is_unspeakable(&err) => refused = Some(err),
+            result => return result,
+        }
+    }
+
+    Err(refused.expect("the loop only falls through after a refusal"))
+}
+
+/// Whether the daemon that answered is one this build cannot talk to.
+///
+/// Not only a protocol mismatch: that is what a *decodable* answer from
+/// another build looks like, and a build that changed the shape of the
+/// handshake itself fails earlier, as a codec or protocol error. Losing the
+/// connection reads the same way here — something was there and this build
+/// could not hold a conversation with it.
+fn is_unspeakable(err: &CliError) -> bool {
+    matches!(
+        err,
+        CliError::Client(
+            ClientError::VersionMismatch { .. }
+                | ClientError::Protocol(_)
+                | ClientError::Codec(_)
+                | ClientError::Disconnected
+        )
+    )
+}
+
 /// Waits for the socket to stop answering, within reason.
 ///
 /// Returning early would race the daemon's own shutdown for the socket.
 ///
-/// Giving up quietly is right too, but not because nothing goes wrong: a
-/// socket that still answers is *not* cleared by `connect_or_spawn` — that
-/// only happens for one nothing answers on — so a daemon still on its way
-/// out is shaken hands with instead. The caller runs this again when that
-/// produces a protocol mismatch.
+/// Giving up quietly is right, but not because nothing goes wrong: a socket
+/// that still answers is *not* cleared by `connect_or_spawn` — that only
+/// happens for one nothing answers on — so a daemon still on its way out is
+/// shaken hands with instead. [`restart_daemon`] is what handles that.
 async fn wait_until_stopped(client: &Client) {
     const PATIENCE: Duration = Duration::from_secs(5);
     const GLANCE: Duration = Duration::from_millis(50);
@@ -2363,6 +2403,40 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn a_daemon_that_cannot_be_talked_to_is_worth_another_round() {
+        // What restarting is usually *for*. A daemon from another build
+        // answers the socket, and how its refusal arrives depends on how
+        // far apart the builds are: a readable `Pong` with the wrong
+        // number is a mismatch, a changed message shape fails to decode,
+        // and one that goes away mid-reply is a lost connection. Keying
+        // the retry on the mismatch alone would miss the two that mean a
+        // bigger difference between the builds.
+        for err in [
+            ClientError::VersionMismatch {
+                client: 6,
+                server: 3,
+            },
+            ClientError::Protocol("something unexpected".into()),
+            ClientError::Disconnected,
+        ] {
+            assert!(is_unspeakable(&CliError::Client(err)), "one more round");
+        }
+    }
+
+    #[test]
+    fn a_daemon_that_simply_will_not_start_is_not_retried() {
+        // A second round costs another five seconds of waiting, and these
+        // say nothing about an old daemon holding the socket.
+        for err in [
+            CliError::Client(ClientError::SpawnTimeout),
+            CliError::Client(ClientError::Spawn("no such binary".into())),
+            CliError::Local("something else".into()),
+        ] {
+            assert!(!is_unspeakable(&err), "got: {err}");
+        }
     }
 
     #[test]

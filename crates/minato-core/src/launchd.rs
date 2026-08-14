@@ -35,11 +35,17 @@ pub const ACTIVATION_PORT: u16 = 80;
 /// each site they drift, and a rename leaves some of them advising a
 /// command that no longer parses.
 ///
-/// It replaces `minato daemon stop` plus a `sudo launchctl kickstart` for
-/// this: stopping alone leaves the machine with no daemon until something
-/// happens to reach a port, and the kickstart half needs root, which an
-/// agent cannot supply. Restarting does both and needs neither, because
-/// starting reaches for the socket launchd is holding.
+/// It replaces `minato daemon stop` plus a `sudo launchctl kickstart` as
+/// the *first* answer: stopping alone leaves the machine with no daemon
+/// until something happens to reach a port, and the kickstart needs root,
+/// which an agent cannot supply. Restarting does both halves and needs
+/// neither, because starting reaches for the socket launchd is holding.
+///
+/// It does not replace [`kickstart_command`] outright. Reaching for the
+/// socket only wakes something already listening on it, so where anything
+/// else holds :80 the start produces a daemon of its own instead — and
+/// forcing the job up from there still takes root. Sites that can be run
+/// again after a failure say so as the next step.
 pub const RESTART_COMMAND: &str = "minato daemon restart";
 
 /// Where the installed plist lives.

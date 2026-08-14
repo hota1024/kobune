@@ -332,18 +332,36 @@ mod tests {
         // been renamed out from under one of them fails at the prompt,
         // which is how `minato daemon restart` was once advised before it
         // existed.
-        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        //
+        // **Each step is built from an input that produces it**, not from
+        // whatever this machine happens to have. Through `steps` the setup
+        // and skill steps are `None` on any machine without an outdated
+        // plist and a stale Skill — which is every machine in CI — so the
+        // loop would run over one command and prove nothing about the
+        // other two.
+        let repository = tempfile::tempdir().expect("tempdir");
+        let stale_skill = crate::skill::path_in(repository.path());
+        std::fs::create_dir_all(stale_skill.parent().expect("has a parent")).expect("creates");
+        std::fs::write(&stale_skill, "not this build's Skill").expect("writes");
 
-        for step in steps(Daemon::Other, Some(repository))
-            .into_iter()
-            .chain(steps_after_replacing(Daemon::Other))
-        {
+        let older_plist = format!("<!-- minato plist revision {} -->", 0);
+
+        let steps = [
+            Some(daemon_step("the daemon is not this build")),
+            setup_step(Some(&older_plist)),
+            skill_step(repository.path()),
+        ];
+
+        let mut checked = Vec::new();
+        for step in steps.into_iter().flatten() {
             use clap::Parser;
-            let argv = step.command.split_whitespace();
 
-            crate::Cli::try_parse_from(argv)
+            crate::Cli::try_parse_from(step.command.split_whitespace())
                 .unwrap_or_else(|err| panic!("`{}` does not parse: {err}", step.command));
+            checked.push(step.command);
         }
+
+        assert_eq!(checked.len(), 3, "every step was built: {checked:?}");
     }
 
     #[test]
