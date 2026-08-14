@@ -48,8 +48,8 @@ that tells an agent which commands to reach for and which to avoid. An agent
 that follows it never touches `docker` directly, never guesses a port, and gets
 a real error instead of an empty response when something is wrong.
 
-None of that makes it worse to use by hand. The same commands, read by a
-person, print the same information without the JSON.
+None of it is at a person's expense: the same commands print the same
+information, laid out to be read rather than parsed.
 
 ## What it is not
 
