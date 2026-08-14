@@ -41,8 +41,8 @@ $ minato tunnel enable --domain example.com --public
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
-Behind that: a named tunnel created, a wildcard DNS record routed for the
-project, `cloudflared` started. All idempotent, so running it again is fine.
+Behind that: a named tunnel created, one wildcard DNS record routed for the
+zone, `cloudflared` started. All idempotent, so running it again is fine.
 
 ## The link
 
@@ -140,6 +140,7 @@ is a real named tunnel against a real zone.
 
 ## Next
 
-- [Sharing over Cloudflare Tunnel](../guide/tunnel) — how it is arranged, and why
+- [Sharing over Cloudflare Tunnel](../guide/tunnel) — how it is arranged, and
+  why
 - [Working with AI agents](../guide/agents) — including why an agent should
   never run `tunnel enable` itself
