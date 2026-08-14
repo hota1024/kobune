@@ -37,7 +37,10 @@ What an agent gets comes down to three things.
 | **Runtime** | A virtualisation backend (Docker, Firecracker, Apple Container) |
 | **Supervisor** | The component inside the daemon that owns a workspace's lifecycle |
 
-The word "environment" is avoided: it collides with environment variables.
+"Environment" and "workspace" name the same thing at different distances. The
+docs say environment, because that is what it is to a reader; this document
+says workspace where what matters is that it is the daemon's unit of lifecycle.
+The collision to watch for is environment *variables*, which are unrelated.
 
 ## 3. Architecture
 
@@ -230,7 +233,7 @@ one is there from the start.
 database sets it to `false` and gets no URL.
 
 **`build`**: a context to build instead of an image to pull. See
-[§7's note on building](#building-rather-than-pulling).
+[§7's note on building](#building-rather-than-pulling-m05).
 
 **`health`**: what scale-to-zero rests on. Without it the proxy 502s a service
 that has started but is not answering yet. Three forms are supported:
@@ -280,7 +283,7 @@ check connectivity with curl**, so this is fatal.
 
 The answer is a DNS server inside the daemon, plus `nameserver 127.0.0.1` in
 `/etc/resolver/localhost`. `minato setup` walks through it — installing it needs
-sudo, so it is shown and offered rather than simply run.
+sudo, so it is shown and offered rather than run unasked.
 
 ```
 /etc/resolver/localhost:
@@ -347,7 +350,8 @@ strictly below, and it excludes `localhost` itself, which
 the belief that it was what made subdomains work; OpenSSL and rustls-webpki
 both refuse `localhost` under it. Nothing caught that until a test asked a
 verifier instead of asking rcgen's own parser — the same mistake in the same
-shape as [§6's Apple Container fixtures](#what-running-apple-container-turned-up-m7).
+shape as
+[§6's Apple Container fixtures](#what-running-apple-container-turned-up-m7).
 
 **Only what Minato actually serves.** `.test` was in this list briefly, on the
 strength of this document anticipating it — but nothing resolves it: the DNS
@@ -603,12 +607,12 @@ read after that peer has started, so a service woken on its own gets no
 variable at all.
 
 **Stopping reads the same edges backwards.** An internal service has no
-last-access time of its own — nothing ever requests it — so the idle sweep, which
-walks the routing table, never saw it and it stayed up for as long as the daemon
-did. One database per worktree, running for ever, is the opposite of what makes
-a worktree cheap to create. It now follows the exposed services that depend on
-it: stopped ones are not using it, running ones are judged on their own last
-access.
+last-access time of its own — nothing ever requests it — so the idle sweep,
+which walks the routing table, never saw it and it stayed up for as long as the
+daemon did. One database per worktree, running for ever, is the opposite of
+what makes a worktree cheap to create. It now follows the exposed services that
+depend on it: stopped ones are not using it, running ones are judged on their
+own last access.
 
 **With no exposed dependent it is left alone.** There is then no signal to stop
 on and no way back up, and stopping it would be one-way. The configuration

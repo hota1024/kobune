@@ -148,6 +148,16 @@ function unmark(line) {
   return unlink(line).replace(CODE_SPAN, 'x')
 }
 
+/**
+ * Also drops what the line puts in quotation marks. `Report "it's up" without
+ * checking` is telling an agent what not to say, and the phrase has to sound
+ * like the thing it would have said. Same reason a `>` block is left alone,
+ * one scale down.
+ */
+function unquoted(line) {
+  return unmark(line).replace(/"[^"]*"/g, 'x')
+}
+
 // ── the rules ────────────────────────────────────────────────────────────────
 
 const JA = '\\u3041-\\u3096\\u30a1-\\u30fa\\u30fc\\u4e00-\\u9fff\\u3005'
@@ -218,12 +228,13 @@ function checkFile(path, add) {
         add(rel, n, 'ja/style', 'plain form in a ですます page')
       }
     } else {
-      const found = quoted ? null : read.match(CONTRACTIONS)
+      const said = quoted ? 'x' : unquoted(line)
+      const found = said.match(CONTRACTIONS)
       if (found) add(rel, n, 'en/contraction', `${found[0]}: write it out`)
-      if (!quoted && FIRST_PERSON.test(read)) {
+      if (FIRST_PERSON.test(said)) {
         add(rel, n, 'en/person', 'we/our/us: name the thing instead')
       }
-      const spelling = quoted ? null : read.match(AMERICAN)
+      const spelling = said.match(AMERICAN)
       if (spelling && !NOT_AMERICAN.test(spelling[0])) {
         add(rel, n, 'en/spelling', `${spelling[0]}: the docs are in British English`)
       }
