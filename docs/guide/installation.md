@@ -360,7 +360,7 @@ Then set it in `minato.toml`:
 default = "apple"
 ```
 
-There are two differences worth knowing before you choose it — see
+There are three differences worth knowing before you choose it — see
 [Runtimes](./runtimes).
 
 ## Start the daemon

@@ -141,7 +141,7 @@ minato doctor                              # when the environment is at fault
 
 ## Not an MCP server
 
-There isn't one, and that is intentional. With `--json` on every command, Bash
+There is not one, and that is intentional. With `--json` on every command, Bash
 is enough, and a second surface would be another thing to keep correct.
 
 ## Does it actually work?

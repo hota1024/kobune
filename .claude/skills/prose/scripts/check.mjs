@@ -337,24 +337,79 @@ function sidebar(add, docs) {
 
 // ── links ────────────────────────────────────────────────────────────────────
 
-function checkLinks(rel, { lines, marks }, add) {
-  if (!rel.startsWith('docs/')) return
+/**
+ * Two renderers, two slug rules, and the difference is not cosmetic.
+ *
+ * `srcExclude` in `config.ts` keeps `DESIGN.md`, `AGENT-RUN.md` and
+ * `docs/README.md` out of the site, so those are read on GitHub and take
+ * GitHub's rule. Everything else under `docs/` is a page and takes
+ * `@mdit-vue/shared`'s.
+ *
+ * They disagree on a leading digit — `## 3. Architecture` is `#3-architecture`
+ * on GitHub and `#_3-architecture` on the site — and on `_`, which GitHub keeps
+ * and mdit-vue turns into `-`.
+ */
+function servedByVitePress(rel) {
+  return rel.startsWith('docs/') &&
+    !['docs/README.md', 'docs/DESIGN.md', 'docs/AGENT-RUN.md'].includes(rel)
+}
+
+function stripMarkup(text) {
+  return text
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*?([^*]*)\*\*?/g, '$1')
+    .trim()
+    .toLowerCase()
+}
+
+/**
+ * Japanese is kept as it is rather than transliterated or percent-encoded, so
+ * `## ファイルに書き出す` is reached at `#ファイルに書き出す`. Compared in NFC
+ * because the built HTML and the Markdown do not always agree on the form —
+ * `プロキシ` composed and decomposed look identical and are not equal.
+ *
+ * Checked against every heading of every built page: 387 of 387.
+ */
+function anchor(text, vitepress) {
+  const plain = stripMarkup(text)
+  const slug = vitepress
+    ? plain.replace(/[\s\][!'"#$%&()*+,./:;<=>?@\\^_{|}~`…—-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .replace(/^(\d)/, '_$1')
+    : plain.replace(/[^\p{L}\p{N}\p{M}\p{Pc}\- ]/gu, '').replace(/ /g, '-')
+  return slug.normalize('NFC')
+}
+
+function checkLinks(rel, doc, add, docs) {
+  const { lines, marks } = doc
   for (let i = 0; i < lines.length; i++) {
     if (marks[i].code || marks[i].front) continue
     for (const [, target] of lines[i].matchAll(/\]\(([^)\s]+)\)/g)) {
-      if (/^(https?:|mailto:|#)/.test(target)) continue
-      const [path] = target.split('#')
-      if (!path) continue
-      const from = dirname(join(ROOT, rel))
-      const base = path.startsWith('/') ? join(ROOT, 'docs', path) : resolve(from, path)
-      const candidates = [base, `${base}.md`, join(base, 'index.md')]
-      if (!candidates.some((c) => existsSync(c))) {
-        add(rel, i + 1, 'link/missing', `${target} resolves to nothing`)
-        continue
+      if (/^(https?:|mailto:)/.test(target)) continue
+      const [path, fragment] = target.split('#')
+
+      let landed = rel
+      if (path) {
+        const from = dirname(join(ROOT, rel))
+        const base = path.startsWith('/') ? join(ROOT, 'docs', path) : resolve(from, path)
+        const found = [base, `${base}.md`, join(base, 'index.md')].find((c) => existsSync(c))
+        if (!found) {
+          add(rel, i + 1, 'link/missing', `${target} resolves to nothing`)
+          continue
+        }
+        landed = relative(ROOT, found)
+        if (rel.startsWith('docs/ja/') && !landed.startsWith('docs/ja/')) {
+          add(rel, i + 1, 'link/locale', `${target} leaves docs/ja/`)
+        }
       }
-      const landed = relative(ROOT, candidates.find((c) => existsSync(c)))
-      if (rel.startsWith('docs/ja/') && !landed.startsWith('docs/ja/')) {
-        add(rel, i + 1, 'link/locale', `${target} leaves docs/ja/`)
+
+      // Only for a page this run read, so a narrow run stays narrow.
+      const page = docs.get(landed)
+      if (!fragment || !page) continue
+      const ids = headings(page).map((h) => anchor(h.text, servedByVitePress(landed)))
+      if (!ids.includes(fragment.normalize('NFC'))) {
+        add(rel, i + 1, 'link/anchor', `#${fragment} is not a heading in ${landed}`)
       }
     }
   }
@@ -377,7 +432,7 @@ const add = (file, line, rule, message) => findings.push({ file, line, rule, mes
 
 const docs = new Map()
 for (const path of paths) docs.set(relative(ROOT, path), checkFile(path, add))
-for (const [rel, doc] of docs) checkLinks(rel, doc, add)
+for (const [rel, doc] of docs) checkLinks(rel, doc, add, docs)
 
 for (const [rel, doc] of docs) {
   if (rel.startsWith('docs/ja/') || !rel.startsWith('docs/')) continue

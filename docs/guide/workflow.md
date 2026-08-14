@@ -128,7 +128,7 @@ service it came from.
 
 ### Interactive services
 
-A service that runs something you would normally interact with — turborepo's
+A service that runs something you would normally interact with — Turborepo's
 task switcher, a test runner in watch mode — needs a terminal to draw on and
 a keyboard to answer. Give it one:
 
@@ -147,8 +147,9 @@ $ minato logs -f dev
 ```
 
 Ctrl-P Ctrl-Q gives the terminal back and leaves the service running.
-Everything else, Ctrl-C included, goes to the program. The details, and how
-to turn it off, are in [the CLI reference](../reference/cli#typing-at-a-service).
+Everything else, Ctrl-C included, goes to the program. The details, and how to
+turn it off, are in
+[the CLI reference](../reference/cli#typing-at-a-service).
 
 ## Running things inside a container
 

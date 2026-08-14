@@ -356,7 +356,7 @@ $ container system start
 default = "apple"
 ```
 
-選択する前に把握しておくべき制約が 2 点あります。
+選ぶ前に把握しておくべき違いが 3 点あります。
 [ランタイム](./runtimes) を参照してください。
 
 ## daemon の起動

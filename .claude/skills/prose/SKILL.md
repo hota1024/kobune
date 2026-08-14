@@ -112,8 +112,12 @@ $ node .claude/skills/prose/scripts/check.mjs --json      # for an agent
 
 It exits non-zero when it finds anything, and it only reports what needs no
 judgement: column width, the Japanese typographic rules, the English ones, the
-structural parity above, `PAGES` titles against each page's `H1`, and relative
-links that resolve to nothing.
+structural parity above, `PAGES` titles against each page's `H1`, and links —
+both the ones resolving to no file and the `#anchors` naming no heading.
+
+**Renaming a heading is what the anchor check is for.** It knows that a page on
+the site and a page read on GitHub slug their headings differently, so it can be
+trusted on `docs/DESIGN.md` as well as on the guide.
 
 **A silent checker does not mean the page is good.** Nothing here detects
 translationese, a wrong claim, or a paragraph that explains the mechanism before
