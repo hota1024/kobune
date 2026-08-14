@@ -64,16 +64,22 @@ impl Surface {
         // `TERM=dumb` is how emacs' shell and a handful of CI runners
         // announce that escape sequences arrive as literal text.
         let interactive = is_terminal && !is_dumb();
+        let styled = interactive && !no_color();
+
+        // Framed and coloured are not the same question: `NO_COLOR` on a
+        // terminal keeps the frame and drops the colour, and a view that
+        // draws something colour has to carry has to be told which.
+        let decor = if interactive {
+            Decor::FRAMED
+        } else {
+            Decor::PLAIN
+        };
 
         Self {
             stream,
             interactive,
-            styled: interactive && !no_color(),
-            decor: if interactive {
-                Decor::FRAMED
-            } else {
-                Decor::PLAIN
-            },
+            styled,
+            decor: if styled { decor } else { decor.unstyled() },
             // A pipe has no width to run out of, so a view is given
             // whatever it asks for: nothing that goes into a log, a
             // `grep` or an agent's transcript is ever wrapped or cut.
@@ -142,6 +148,13 @@ impl Surface {
 /// Cells sharing a style are written as one run, and trailing blanks are
 /// dropped: a line of padding out to the buffer's width would break `git
 /// diff --check` on a captured log, and it is invisible either way.
+///
+/// A blank cell with a background is *not* invisible, so it stays — that is
+/// the right-hand quiet zone of a QR code, and a code with three sides of
+/// margin is one a scanner has to guess the edge of. Only where the
+/// background will actually be written, though: with styling off it is a
+/// space like any other, and keeping it would be the trailing whitespace
+/// this trim exists to remove.
 pub(super) fn render_to_string(buffer: &Buffer, styled: bool) -> String {
     let mut out = String::new();
 
@@ -166,10 +179,9 @@ pub(super) fn render_to_string(buffer: &Buffer, styled: bool) -> String {
             cells.push(cell);
         }
 
-        while cells
-            .last()
-            .is_some_and(|cell| cell.symbol().trim().is_empty())
-        {
+        while cells.last().is_some_and(|cell| {
+            cell.symbol().trim().is_empty() && (!styled || cell.bg == Color::Reset)
+        }) {
             cells.pop();
         }
 
@@ -285,6 +297,26 @@ mod tests {
         // The buffer is 40 wide; "web" is not.
         let buffer = draw(40, 1, &[Line::raw("web")]);
         assert_eq!(render_to_string(&buffer, false), "web\n");
+    }
+
+    #[test]
+    fn a_blank_that_paints_is_not_padding() {
+        // A QR code's right-hand quiet zone is blank cells with a white
+        // ground. Trimmed away with the padding, the code loses the margin
+        // on one side and a scanner has no edge to find there.
+        let buffer = draw(8, 1, &[Line::from(vec!["x".into(), "  ".bg(Color::White)])]);
+        let text = render_to_string(&buffer, true);
+
+        assert!(text.contains("  "), "the painted blanks stay: {text:?}");
+    }
+
+    #[test]
+    fn a_background_nobody_will_write_is_padding_after_all() {
+        // Unstyled, that quiet zone reaches the file as two spaces at the
+        // end of a line — which is what this trim is for. `minato url --qr
+        // | tee log` should not be the one thing that leaves them behind.
+        let buffer = draw(8, 1, &[Line::from(vec!["x".into(), "  ".bg(Color::White)])]);
+        assert_eq!(render_to_string(&buffer, false), "x\n");
     }
 
     #[test]

@@ -1083,7 +1083,7 @@ minato up [--service web]         # start explicitly
 minato down [--all] [--service web]
 minato status [--json]
 
-minato url [service]              # the URL, one line on stdout
+minato url [service] [--qr]       # one line named, the listing otherwise
 minato open [service]             # open it in a browser
 minato logs <service> [-f] [--tail N] [--since 5m]
 minato exec <service> -- <cmd>
