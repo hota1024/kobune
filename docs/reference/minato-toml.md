@@ -102,8 +102,8 @@ What a program looks for before it draws anything. Turborepo, Vitest and the
 rest ask whether they are talking to a terminal and settle for plain
 scrolling text when they are not — which is what a container gives them
 without this. With it, colour comes through and
-[`minato logs -f dev`](./cli#logs) becomes that terminal: what you type
-reaches the program.
+[`minato logs -f dev`](./cli#typing-at-a-service) becomes that terminal: what
+you type reaches the program.
 
 ::: warning A terminal changes what the logs are
 The two output streams become one, so nothing tells stderr from stdout any

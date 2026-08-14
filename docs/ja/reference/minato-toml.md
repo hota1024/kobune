@@ -138,8 +138,8 @@ command = "sh -c 'pnpm dev'"
 - 失敗した `setup` は `up` を中断し、記録もされません。修正して `up` し直せば
   再試行されます
 - `minato rm` は記録を消します。`@workspace` ボリュームも一緒に消えます
-- `scope = "project"` のサービスは worktree ごとではなくプロジェクトで 1 回です。
-  コンテナがすべての worktree で 1 つだからです
+- `scope = "project"` のサービスは worktree ごとではなく、プロジェクトで 1 回
+  です。コンテナがすべての worktree で 1 つだからです
 
 実行されるのは `startup_order` の中、そのサービス自身が起動する直前です。
 そのため `depends_on` に挙げたサービスは既に起動しています。`db` に対する

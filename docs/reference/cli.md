@@ -259,7 +259,7 @@ Undecorated, with stdout and stderr kept separate.
 
 A service configured with [`tty`](./minato-toml#tty) has a terminal, and
 `minato logs -f` lends it this one: colour comes through, a full-screen
-interface draws itself, and keys reach the program. This is how turborepo's
+interface draws itself, and keys reach the program. This is how Turborepo's
 task switcher, a watching test runner and anything else interactive works
 under Minato.
 
@@ -279,7 +279,7 @@ without being able to type by accident.
 for mouse reports once, in the first bytes it writes, and attaching an hour
 later would otherwise miss the request — leaving a terminal that sends
 nothing and a wheel that does nothing. What the program made of its terminal
-is read back when you attach and set again here, so turborepo's log pane
+is read back when you attach and set again here, so Turborepo's log pane
 scrolls under the pointer as it does when you run it yourself. It is put
 back the way it was when you detach.
 
