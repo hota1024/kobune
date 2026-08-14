@@ -46,7 +46,7 @@ Each container gets its own IP on a `192.168.x.x` network, so nothing is
 published to the host and port collisions cannot happen. The proxy forwards
 straight to the container.
 
-There are two differences you have to design around.
+There are three differences worth knowing about before you choose it.
 
 ### No name resolution between containers
 

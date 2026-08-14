@@ -90,7 +90,7 @@ outbound call to anywhere but Minato stops working. Point them at a bundle you
 built, or use the system store below.
 
 `NODE_EXTRA_CA_CERTS` is the one injected value left out of
-[`env_file`](#env-file): that file is read on the *host*, where
+[`env_file`](#writing-it-to-a-file): that file is read on the *host*, where
 `/etc/minato/ca.crt` does not exist and Node would warn about it on every
 start. `MINATO_CA_FILE` is there, for a project that wants to name the path
 itself.
