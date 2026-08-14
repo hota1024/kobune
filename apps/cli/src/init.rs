@@ -1,12 +1,12 @@
-//! `minato init` — writes a starter `minato.toml`.
+//! `kobune init` — writes a starter `kobune.toml`.
 //!
 //! It never prompts; that would put it out of an agent's reach. Whatever
 //! can be inferred is inferred, and the rest is a commented template.
 
 use std::path::{Path, PathBuf};
 
-use minato_core::config::CONFIG_FILE;
-use minato_core::{Repository, naming};
+use kobune_core::config::CONFIG_FILE;
+use kobune_core::{Repository, naming};
 
 #[derive(Debug)]
 pub struct InitOutcome {
@@ -14,7 +14,7 @@ pub struct InitOutcome {
     pub project: String,
     /// The compose file it was converted from, when it was.
     pub from: Option<PathBuf>,
-    /// Keys compose had that Minato has no answer for, per service.
+    /// Keys compose had that Kobune has no answer for, per service.
     ///
     /// **Never empty because nothing was lost — empty because nothing
     /// was.** A conversion that quietly leaves things out produces a
@@ -132,7 +132,7 @@ fn project_name_from(root: &Path) -> String {
 
 fn template(project: &str) -> String {
     format!(
-        r#"# Every key: https://minato.1024.works/reference/minato-toml
+        r#"# Every key: https://minato.1024.works/reference/kobune-toml
 
 [project]
 name = "{project}"
@@ -140,7 +140,7 @@ name = "{project}"
 # The URL suffix. Defaults to {project}.localhost.
 # domain = "{project}.localhost"
 
-# Files `minato new` copies into a new worktree. `git worktree add` brings
+# Files `kobune new` copies into a new worktree. `git worktree add` brings
 # the tracked files and nothing else, so an untracked but required .env
 # would leave the new environment unable to start.
 # carry = [".env"]
@@ -155,7 +155,7 @@ default = "docker"
 [services.app]
 image = "node:22"
 port = 3000
-command = "sh -c 'echo minato ready; sleep infinity'"
+command = "sh -c 'echo kobune ready; sleep infinity'"
 
 # Run once before the service first starts, not on every up. Put installs
 # here so `command` is left doing nothing but starting the app.
@@ -168,19 +168,19 @@ command = "sh -c 'echo minato ready; sleep infinity'"
 # How long without a request before it stops itself.
 # idle_timeout = "30m"
 
-# Every service is told the others' URLs as MINATO_URL_<SERVICE>, and the
-# hostname on its own — no scheme, no port — as MINATO_HOSTNAME_<SERVICE>,
+# Every service is told the others' URLs as KOBUNE_URL_<SERVICE>, and the
+# hostname on its own — no scheme, no port — as KOBUNE_HOSTNAME_<SERVICE>,
 # which is what a CORS origin or a cookie domain wants. `${{...}}` puts one
 # under the name the app already reads; a bare $NAME does not.
-# env = {{ NEXT_PUBLIC_API_URL = "${{MINATO_URL_API}}" }}
+# env = {{ NEXT_PUBLIC_API_URL = "${{KOBUNE_URL_API}}" }}
 
 # For a tool that reads a file rather than its own environment — wrangler
 # dev, Vite, dotenvx — the same values, written before the service starts.
 # Secrets are left out of it, and a path git tracks is refused.
-# env_file = ".minato/env.app"
+# env_file = ".kobune/env.app"
 
 # A second service. `depends_on` starts db first and waits for it to be
-# ready. Each one gets its own URL — MINATO_URL_DB here.
+# ready. Each one gets its own URL — KOBUNE_URL_DB here.
 # [services.db]
 # image = "postgres:16"
 # port = 5432
@@ -192,10 +192,10 @@ command = "sh -c 'echo minato ready; sleep infinity'"
 # anything a branch changes the shape of, node_modules being the usual one.
 #
 # For caches there is nothing to declare: every service is given
-# MINATO_CACHE_DIR=/var/cache/minato, a volume shared by the project's
+# KOBUNE_CACHE_DIR=/var/cache/kobune, a volume shared by the project's
 # worktrees. Point package managers at it so they stop writing into the
 # repository. `${{...}}` refers to another variable; a bare $NAME does not.
-# env = {{ npm_config_store_dir = "${{MINATO_CACHE_DIR}}/pnpm" }}
+# env = {{ npm_config_store_dir = "${{KOBUNE_CACHE_DIR}}/pnpm" }}
 # env = {{ POSTGRES_PASSWORD = "postgres" }}
 "#
     )
@@ -204,14 +204,14 @@ command = "sh -c 'echo minato ready; sleep infinity'"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minato_core::MinatoConfig;
+    use kobune_core::KobuneConfig;
 
     #[test]
     fn generated_template_is_valid() {
         // A template that does not parse means `up` fails right after
         // `init`.
         let text = template("myapp");
-        let config: MinatoConfig = toml::from_str(&text).expect("is syntactically valid");
+        let config: KobuneConfig = toml::from_str(&text).expect("is syntactically valid");
         config.validate().expect("is semantically valid");
 
         assert_eq!(config.project.name, "myapp");

@@ -1,4 +1,4 @@
-//! The schema and validation of `minato.toml`.
+//! The schema and validation of `kobune.toml`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::naming;
 
 /// The name of the configuration file.
-pub const CONFIG_FILE: &str = "minato.toml";
+pub const CONFIG_FILE: &str = "kobune.toml";
 
 /// Where the worktree's source is mounted inside the container.
 pub const MOUNT_TARGET: &str = "/workspace";
@@ -23,8 +23,8 @@ pub const MOUNT_TARGET: &str = "/workspace";
 /// **Deliberately outside [`MOUNT_TARGET`].** Anywhere under the worktree
 /// is the host's disk, inside the repository — which is how a package
 /// store ends up as a gigabyte of untracked files in someone's checkout.
-/// Handed to every service as `MINATO_CACHE_DIR`.
-pub const CACHE_TARGET: &str = "/var/cache/minato";
+/// Handed to every service as `KOBUNE_CACHE_DIR`.
+pub const CACHE_TARGET: &str = "/var/cache/kobune";
 
 /// The name of the volume behind [`CACHE_TARGET`].
 ///
@@ -38,9 +38,9 @@ pub const CACHE_TARGET: &str = "/var/cache/minato";
 /// sort of migration nobody notices until the data looks gone.
 pub const CACHE_VOLUME: &str = "_cache";
 
-/// Where Minato's own CA certificate is mounted, read-only.
+/// Where Kobune's own CA certificate is mounted, read-only.
 ///
-/// **The browser trusts it and a container does not.** `minato setup`
+/// **The browser trusts it and a container does not.** `kobune setup`
 /// puts the CA in the host's keychain, which is what makes
 /// `https://api.myapp.localhost` load without a warning — but a container
 /// carries its own trust store, so the same URL called from inside one
@@ -49,20 +49,20 @@ pub const CACHE_VOLUME: &str = "_cache";
 ///
 /// Not under [`MOUNT_TARGET`]: it is not the worktree's, and a file that
 /// appeared in the repository would be committed by somebody. Handed to
-/// every service as `MINATO_CA_FILE`.
-pub const CA_TARGET: &str = "/etc/minato/ca.crt";
+/// every service as `KOBUNE_CA_FILE`.
+pub const CA_TARGET: &str = "/etc/kobune/ca.crt";
 
-/// The paths Minato mounts itself, and what to say when one is taken.
+/// The paths Kobune mounts itself, and what to say when one is taken.
 ///
-/// A table rather than a branch each: the next `MINATO_*` path should cost
+/// A table rather than a branch each: the next `KOBUNE_*` path should cost
 /// a line here, not another eight-line copy of the same check.
 const RESERVED_MOUNTS: [(&str, &str, &str); 2] = [
     (
         CACHE_TARGET,
-        "MINATO_CACHE_DIR",
-        "Write under $MINATO_CACHE_DIR, or mount yours somewhere else",
+        "KOBUNE_CACHE_DIR",
+        "Write under $KOBUNE_CACHE_DIR, or mount yours somewhere else",
     ),
-    (CA_TARGET, "MINATO_CA_FILE", "Mount yours somewhere else"),
+    (CA_TARGET, "KOBUNE_CA_FILE", "Mount yours somewhere else"),
 ];
 
 /// The default when `idle_timeout` is omitted.
@@ -70,7 +70,7 @@ pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct MinatoConfig {
+pub struct KobuneConfig {
     pub project: ProjectSection,
 
     #[serde(default)]
@@ -124,7 +124,7 @@ fn default_runtime() -> String {
 /// nobody wrote.
 ///
 /// Mirrors how `VolumeMount::parse` decides the same thing, in
-/// `minato-runtime`. It cannot be called from here — the runtime sits above
+/// `kobune-runtime`. It cannot be called from here — the runtime sits above
 /// this crate — so the one rule the two share is the prefix test, kept
 /// deliberately trivial so it can be read side by side.
 fn is_workspace_scoped(source: &str) -> bool {
@@ -137,7 +137,7 @@ fn is_workspace_scoped(source: &str) -> bool {
 /// An `env_file` entry as the file it names.
 ///
 /// **Drops `.` segments**, so that two spellings of one file compare as
-/// one. Refusing `.minato/env.local` while accepting `./.minato/env.local`
+/// one. Refusing `.kobune/env.local` while accepting `./.kobune/env.local`
 /// would not be much of a refusal, and two services claiming the same file
 /// under different spellings would go on overwriting each other.
 fn env_file_path(entry: &str) -> PathBuf {
@@ -201,13 +201,13 @@ pub struct ServiceConfig {
     /// **What a program looks for before it draws anything.** Turborepo,
     /// Vitest and the rest ask whether stdout is a terminal, and settle for
     /// plain scrolling text when it is not — which is what a container
-    /// without this gives them. With it, `minato logs -f <service>` becomes
+    /// without this gives them. With it, `kobune logs -f <service>` becomes
     /// that terminal: colour comes through and keys reach the program.
     ///
     /// Off by default, because a terminal changes what the logs *are*: the
     /// two output streams become one, so nothing separates stderr from
     /// stdout any more, and lines arrive ending `\r\n`. A pipeline that
-    /// greps `minato logs` should not have that happen to it unasked.
+    /// greps `kobune logs` should not have that happen to it unasked.
     #[serde(default)]
     pub tty: bool,
 
@@ -227,7 +227,7 @@ pub struct ServiceConfig {
     ///
     /// **For the tools that read a file rather than their process's
     /// environment.** `wrangler dev --env-file`, dotenvx and Vite all do,
-    /// and a variable Minato injects cannot reach them otherwise.
+    /// and a variable Kobune injects cannot reach them otherwise.
     ///
     /// Secrets are left out of it. Written before the service starts, and
     /// again whenever it is started.
@@ -332,8 +332,8 @@ impl From<HealthCheck> for String {
     }
 }
 
-impl MinatoConfig {
-    /// Searches upwards from `start` for `minato.toml`.
+impl KobuneConfig {
+    /// Searches upwards from `start` for `kobune.toml`.
     ///
     /// Returns the path found along with the parsed configuration.
     pub fn find(start: &Path) -> Result<(PathBuf, Self)> {
@@ -433,11 +433,11 @@ impl MinatoConfig {
 
     /// Checks one `carry` entry before anything is copied.
     ///
-    /// **These name files Minato reads on the user's behalf**, and a
-    /// `minato.toml` arrives with a cloned repository as readily as it is
+    /// **These name files Kobune reads on the user's behalf**, and a
+    /// `kobune.toml` arrives with a cloned repository as readily as it is
     /// written by hand. Anything reaching outside the repository is refused
     /// here rather than at copy time, so a bad entry is a configuration error
-    /// with a clear message instead of a surprise during `minato new`.
+    /// with a clear message instead of a surprise during `kobune new`.
     ///
     /// Syntax only. A symlink inside the repository can still point out of it,
     /// and that is caught where the copy happens, against the resolved path.
@@ -458,7 +458,7 @@ impl MinatoConfig {
         // Its own message: `~/x` is not an absolute path, and saying it is
         // sends someone looking for a leading slash they never wrote.
         if entry.starts_with('~') {
-            return refuse("starts with ~, which Minato does not expand");
+            return refuse("starts with ~, which Kobune does not expand");
         }
 
         if path.is_absolute() {
@@ -477,14 +477,14 @@ impl MinatoConfig {
 
     /// Checks where a service wants its environment written.
     ///
-    /// Syntax and scope only. Whether the path is one Minato may write —
+    /// Syntax and scope only. Whether the path is one Kobune may write —
     /// tracked by git, or holding a file it did not write — is decided
     /// against the worktree at start, where those questions can be asked.
     fn validate_env_file(&self, name: &str, entry: &str, scope: ServiceScope) -> Result<()> {
         let refuse = |why: &str| {
             Err(Error::ConfigInvalid(format!(
                 "service `{name}`: env_file `{entry}` {why}. Use a path \
-                 relative to the worktree, like \".minato/env.api\" or \
+                 relative to the worktree, like \".kobune/env.api\" or \
                  \"apps/web/.env.local\""
             )))
         };
@@ -502,7 +502,7 @@ impl MinatoConfig {
         let path = Path::new(entry);
 
         if entry.starts_with('~') {
-            return refuse("starts with ~, which Minato does not expand");
+            return refuse("starts with ~, which Kobune does not expand");
         }
 
         if path.is_absolute() {
@@ -516,11 +516,11 @@ impl MinatoConfig {
             return refuse("leaves the worktree");
         }
 
-        // **Minato reads these two itself**, so writing one would feed the
+        // **Kobune reads these two itself**, so writing one would feed the
         // generated file back in as a layer — and the workspace layer is
-        // the most specific there is. Last run's `MINATO_URL_*` would then
+        // the most specific there is. Last run's `KOBUNE_URL_*` would then
         // outrank the one being injected now, and a value put there with
-        // `minato env set --workspace` would be overwritten at the next
+        // `kobune env set --workspace` would be overwritten at the next
         // start, since the header it keeps still reads as generated.
         let reserved = [
             Path::new(env::ENV_DIR).join(env::PROJECT_ENV_FILE),
@@ -531,8 +531,8 @@ impl MinatoConfig {
         // spelling could walk around would not be much of a refusal.
         if reserved.iter().any(|held| env_file_path(entry) == *held) {
             return refuse(
-                "is a file Minato reads as an environment layer of its own. \
-                 Write beside it instead, like \".minato/env.api\"",
+                "is a file Kobune reads as an environment layer of its own. \
+                 Write beside it instead, like \".kobune/env.api\"",
             );
         }
 
@@ -827,8 +827,8 @@ impl MinatoConfig {
 mod tests {
     use super::*;
 
-    fn parse(text: &str) -> Result<MinatoConfig> {
-        let config: MinatoConfig = toml::from_str(text).expect("syntax is assumed valid");
+    fn parse(text: &str) -> Result<KobuneConfig> {
+        let config: KobuneConfig = toml::from_str(text).expect("syntax is assumed valid");
         config.validate()?;
         Ok(config)
     }
@@ -966,15 +966,15 @@ mod tests {
 
     #[test]
     fn refuses_carry_entries_that_leave_the_repository() {
-        // These name files Minato reads on someone's behalf, and a
-        // minato.toml arrives with a clone as readily as it is hand-written.
+        // These name files Kobune reads on someone's behalf, and a
+        // kobune.toml arrives with a clone as readily as it is hand-written.
         // Asserted per entry: a message that is true of one of these and
         // not the others is exactly the drift worth catching.
         let cases = [
             ("../.env", "leaves the repository"),
             ("a/../../b", "leaves the repository"),
             ("/etc/passwd", "is an absolute path"),
-            ("~/.aws/credentials", "which Minato does not expand"),
+            ("~/.aws/credentials", "which Kobune does not expand"),
         ];
 
         for (entry, expected) in cases {
@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn accepts_an_env_file_anywhere_in_the_worktree() {
         // Anywhere, because the tools that need this read a path of their
-        // own choosing: `.env.local` beside the app, not `.minato/`.
+        // own choosing: `.env.local` beside the app, not `.kobune/`.
         let config = parse(
             r#"
             [project]
@@ -1021,7 +1021,7 @@ mod tests {
         let cases = [
             ("../.env", "leaves the worktree"),
             ("/etc/environment", "is an absolute path"),
-            ("~/.env", "which Minato does not expand"),
+            ("~/.env", "which Kobune does not expand"),
             ("  ", "is empty"),
             (" .env ", "has whitespace around it"),
         ];
@@ -1045,12 +1045,12 @@ mod tests {
     }
 
     #[test]
-    fn refuses_an_env_file_minato_reads_as_a_layer_of_its_own() {
+    fn refuses_an_env_file_kobune_reads_as_a_layer_of_its_own() {
         // Writing one feeds the generated file back in as input, and the
         // workspace layer is the most specific there is: last run's
-        // MINATO_URL_* would outrank the one being injected now, and a
-        // `minato env set --workspace` value would be overwritten.
-        for entry in [".minato/env", ".minato/env.local", "./.minato/env.local"] {
+        // KOBUNE_URL_* would outrank the one being injected now, and a
+        // `kobune env set --workspace` value would be overwritten.
+        for entry in [".kobune/env", ".kobune/env.local", "./.kobune/env.local"] {
             let err = parse(&format!(
                 r#"
                 [project]
@@ -1077,10 +1077,10 @@ mod tests {
             name = "myapp"
             [services.web]
             image = "node:22"
-            env_file = ".minato/env.shared"
+            env_file = ".kobune/env.shared"
             [services.api]
             image = "node:22"
-            env_file = ".minato/env.shared"
+            env_file = ".kobune/env.shared"
         "#,
         )
         .unwrap_err();
@@ -1104,7 +1104,7 @@ mod tests {
             [services.db]
             image = "postgres:16"
             scope = "project"
-            env_file = ".minato/env.db"
+            env_file = ".kobune/env.db"
         "#,
         )
         .unwrap_err();
@@ -1271,7 +1271,7 @@ mod tests {
         .unwrap_err();
 
         let message = err.to_string();
-        assert!(message.contains("MINATO_CACHE_DIR"), "{message}");
+        assert!(message.contains("KOBUNE_CACHE_DIR"), "{message}");
         assert!(!message.contains("  "), "run-together spacing: {message}");
     }
 
@@ -1292,7 +1292,7 @@ mod tests {
         .unwrap_err();
 
         let message = err.to_string();
-        assert!(message.contains("MINATO_CA_FILE"), "{message}");
+        assert!(message.contains("KOBUNE_CA_FILE"), "{message}");
     }
 
     #[test]
@@ -1372,7 +1372,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_field() {
-        let result: std::result::Result<MinatoConfig, _> = toml::from_str(
+        let result: std::result::Result<KobuneConfig, _> = toml::from_str(
             r#"
             [project]
             name = "myapp"

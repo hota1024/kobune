@@ -5,7 +5,7 @@
 //! concern in a development environment.
 //!
 //! **WebSocket and SSE must always get through.** Dev-server HMR depends on
-//! them, and Minato is useless if they do not work.
+//! them, and Kobune is useless if they do not work.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -75,7 +75,7 @@ pub async fn handle(
     let Some(host) = normalize_host(&raw_host) else {
         return error_response(
             StatusCode::BAD_REQUEST,
-            format!("Minato: cannot make sense of the Host header `{raw_host}`.\n"),
+            format!("Kobune: cannot make sense of the Host header `{raw_host}`.\n"),
         );
     };
 
@@ -84,8 +84,8 @@ pub async fn handle(
         return error_response(
             StatusCode::NOT_FOUND,
             format!(
-                "Minato: there is no environment behind `{host}`.\n\
-                 Run `minato ls` to see which workspaces are up.\n"
+                "Kobune: there is no environment behind `{host}`.\n\
+                 Run `kobune ls` to see which workspaces are up.\n"
             ),
         );
     };
@@ -116,8 +116,8 @@ pub async fn handle(
             error_response(
                 StatusCode::BAD_GATEWAY,
                 format!(
-                    "Minato: cannot forward to {} of {}/{} ({endpoint}).\n\
-                     Run `minato status` to check whether the service is up.\n\
+                    "Kobune: cannot forward to {} of {}/{} ({endpoint}).\n\
+                     Run `kobune status` to check whether the service is up.\n\
                      Details: {err}\n",
                     route.service, route.project, route.workspace
                 ),
@@ -150,22 +150,22 @@ async fn wake(
             error_response(
                 StatusCode::GATEWAY_TIMEOUT,
                 format!(
-                    "Minato: `{host}` did not come up within {} seconds.\n\
-                     Check the state with `minato status` and the cause with `minato logs`.\n",
+                    "Kobune: `{host}` did not come up within {} seconds.\n\
+                     Check the state with `kobune status` and the cause with `kobune logs`.\n",
                     CLIENT_WAIT.as_secs()
                 ),
             )
         }),
         Activation::Unknown => Err(error_response(
             StatusCode::NOT_FOUND,
-            format!("Minato: there is no environment behind `{host}`.\n"),
+            format!("Kobune: there is no environment behind `{host}`.\n"),
         )),
         Activation::Failed(reason) => Err(error_response(
             StatusCode::BAD_GATEWAY,
             format!(
-                "Minato: cannot start `{host}`.\n\
+                "Kobune: cannot start `{host}`.\n\
                  {reason}\n\
-                 Run `minato logs` for the details.\n"
+                 Run `kobune logs` for the details.\n"
             ),
         )),
     }
@@ -367,7 +367,7 @@ async fn splice_upgrade(
         connection_task.abort();
         return error_response(
             StatusCode::BAD_GATEWAY,
-            "Minato: the upstream returned 101 without an upgrade request\n".to_string(),
+            "Kobune: the upstream returned 101 without an upgrade request\n".to_string(),
         );
     };
 

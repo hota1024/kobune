@@ -1,12 +1,12 @@
 //! Exercises worktree handling against a real git repository.
 //!
-//! Worktrees are the core of Minato, so this verifies against git's actual
+//! Worktrees are the core of Kobune, so this verifies against git's actual
 //! output rather than testing the parser in isolation.
 
 use std::path::Path;
 use std::process::Command;
 
-use minato_core::git::Repository;
+use kobune_core::git::Repository;
 
 fn run(dir: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -26,7 +26,7 @@ fn run(dir: &Path, args: &[&str]) {
 fn init_repo(dir: &Path) {
     run(dir, &["init", "--initial-branch=main"]);
     run(dir, &["config", "user.email", "test@example.com"]);
-    run(dir, &["config", "user.name", "Minato Test"]);
+    run(dir, &["config", "user.name", "Kobune Test"]);
     run(dir, &["config", "commit.gpgsign", "false"]);
 
     std::fs::write(dir.join("README.md"), "hello").expect("writes");

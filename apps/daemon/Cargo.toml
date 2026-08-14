@@ -1,5 +1,5 @@
 [package]
-name = "minatod"
+name = "kobuned"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,16 +7,16 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "minatod"
+name = "kobuned"
 path = "src/main.rs"
 
 [dependencies]
-minato-core.workspace = true
-minato-api.workspace = true
-minato-runtime.workspace = true
-minato-proxy.workspace = true
-minato-dns.workspace = true
-minato-tunnel.workspace = true
+kobune-core.workspace = true
+kobune-api.workspace = true
+kobune-runtime.workspace = true
+kobune-proxy.workspace = true
+kobune-dns.workspace = true
+kobune-tunnel.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["full"] }

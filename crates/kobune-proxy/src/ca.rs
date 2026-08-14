@@ -23,10 +23,10 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
 /// The CA certificate. This is the file the user tells the system to trust.
-pub const CA_CERT_FILE: &str = "minato-ca.crt";
+pub const CA_CERT_FILE: &str = "kobune-ca.crt";
 
 /// The CA's private key.
-pub const CA_KEY_FILE: &str = "minato-ca.key";
+pub const CA_KEY_FILE: &str = "kobune-ca.key";
 
 /// How long the CA certificate is valid, in years.
 const CA_VALIDITY_YEARS: i64 = 10;
@@ -35,7 +35,7 @@ const CA_VALIDITY_YEARS: i64 = 10;
 ///
 /// **This is what keeps a stolen key from being worth anything.** The
 /// certificate goes into the system trust store, so without a constraint
-/// whoever reads `minato-ca.key` can mint `google.com` and be believed.
+/// whoever reads `kobune-ca.key` can mint `google.com` and be believed.
 /// `mkcert` asks for the same bargain, which makes it usual rather than
 /// good, and X.509 has had the answer since 1999.
 ///
@@ -47,18 +47,18 @@ const CA_VALIDITY_YEARS: i64 = 10;
 /// below, and it excludes `localhost` itself. Measured, not assumed:
 /// against OpenSSL, `DNS:.localhost` refuses a leaf for `localhost` with
 /// "permitted subtree violation" while `DNS:localhost` accepts both. And
-/// `localhost` is a name Minato really serves — [`minato_dns`] answers for
+/// `localhost` is a name Kobune really serves — [`kobune_dns`] answers for
 /// the apex — so the dot broke a working URL and bought nothing.
 ///
 /// `localhost` is reserved by RFC 6761 and can never be a real public
 /// name, so what a leaked key could sign is nothing anybody could be
 /// fooled by.
 ///
-/// **Only what Minato actually serves.** `.test` was here for a moment,
+/// **Only what Kobune actually serves.** `.test` was here for a moment,
 /// on the strength of `docs/DESIGN.md` §5 anticipating it — but nothing
 /// resolves it today: the DNS server serves `localhost` alone, and the
 /// CLI only ever installs `/etc/resolver/localhost`. Permitting a suffix
-/// that cannot resolve would let `minato doctor` report a working setup
+/// that cannot resolve would let `kobune doctor` report a working setup
 /// that is not one. It comes back when the resolver does.
 pub const PERMITTED_SUFFIXES: [&str; 1] = ["localhost"];
 
@@ -118,7 +118,7 @@ pub struct LocalCa {
     /// [`PERMITTED_SUFFIXES`] existed looks like. Those are left alone
     /// rather than replaced — swapping a certificate the user trusted
     /// would break every URL until they noticed and trusted the new one
-    /// — so `minato doctor` reports them instead.
+    /// — so `kobune doctor` reports them instead.
     permitted: Vec<String>,
     dir: PathBuf,
 }
@@ -208,8 +208,8 @@ impl LocalCa {
 
         let mut name = DistinguishedName::new();
         // A name the user can find in Keychain.
-        name.push(DnType::CommonName, "Minato Local CA");
-        name.push(DnType::OrganizationName, "Minato");
+        name.push(DnType::CommonName, "Kobune Local CA");
+        name.push(DnType::OrganizationName, "Kobune");
         params.distinguished_name = name;
 
         params.not_before = now();
@@ -252,7 +252,7 @@ impl LocalCa {
     /// The DNS suffixes this CA may sign for.
     ///
     /// Empty for a CA that carries no name constraint at all — one made
-    /// before the rule existed. `minato doctor` is what says so.
+    /// before the rule existed. `kobune doctor` is what says so.
     pub fn permitted_suffixes(&self) -> &[String] {
         &self.permitted
     }
@@ -504,7 +504,7 @@ impl DynamicCertResolver {
             tracing::warn!(
                 "{key} is outside what this CA may sign for ({}), so the \
                  certificate will be refused by anything that checks it. \
-                 `minato doctor` says what to do about it",
+                 `kobune doctor` says what to do about it",
                 self.ca.permitted_suffixes().join(", ")
             );
         }
@@ -645,10 +645,10 @@ mod tests {
     }
 
     #[test]
-    fn a_new_ca_is_narrowed_to_what_minato_serves() {
+    fn a_new_ca_is_narrowed_to_what_kobune_serves() {
         // The whole point. This certificate goes into the system trust
         // store, and without this the key behind it signs `google.com`
-        // as readily as anything of Minato's.
+        // as readily as anything of Kobune's.
         let (_dir, ca) = temp_ca();
 
         assert_eq!(ca.permitted_suffixes(), ["localhost"]);
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn a_constraint_covers_every_depth_a_worktree_invents() {
-        // Including the apex. `minato-dns` answers for `localhost`
+        // Including the apex. `kobune-dns` answers for `localhost`
         // itself, so `https://localhost` is a URL somebody really opens
         // — and the leading-dot form this started with refused it.
         //
@@ -707,7 +707,7 @@ mod tests {
 
     #[test]
     fn a_leading_dot_is_read_the_way_its_verifier_reads_it() {
-        // Not a form Minato writes, but one a CA on disk could carry.
+        // Not a form Kobune writes, but one a CA on disk could carry.
         // X.509 treats it as strictly-below, so reporting the apex as
         // covered would put `doctor` at odds with the browser.
         assert!(!permits(&[".localhost".to_string()], "localhost"));

@@ -1,4 +1,4 @@
-//! Finding the programs Minato shells out to.
+//! Finding the programs Kobune shells out to.
 //!
 //! A daemon launchd starts inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and
 //! nothing else. Those four directories are on macOS's sealed system volume,
@@ -11,9 +11,9 @@
 //! Looking the name up here and spawning the absolute path is what closes
 //! that gap. **Not a `PATH` in the plist**: that file is installed with
 //! `sudo`, so every addition to the list would put a privileged step in
-//! front of everyone who already has Minato working.
+//! front of everyone who already has Kobune working.
 //!
-//! Docker needs none of this. `minato-runtime`'s Docker backend talks to the
+//! Docker needs none of this. `kobune-runtime`'s Docker backend talks to the
 //! Engine API over a socket and spawns nothing, which is why it is the one
 //! runtime this was never noticed on.
 
@@ -64,7 +64,7 @@ pub fn resolve(program: &str) -> String {
 
 /// The same, letting an override stand in for `program`.
 ///
-/// For the `MINATO_*` variables that point at a binary Minato would not find
+/// For the `KOBUNE_*` variables that point at a binary Kobune would not find
 /// on its own, and that tests point at a stub. An exported-but-empty
 /// variable is how a shell says "unset", so it does not count as one.
 pub fn resolve_with(override_value: Option<&str>, program: &str) -> String {
@@ -270,8 +270,8 @@ mod tests {
         // The spawn that follows fails with "no such file", and the name is
         // what makes that message worth reading.
         assert_eq!(
-            resolve("minato-definitely-not-a-real-program"),
-            "minato-definitely-not-a-real-program"
+            resolve("kobune-definitely-not-a-real-program"),
+            "kobune-definitely-not-a-real-program"
         );
     }
 }

@@ -1,4 +1,4 @@
-//! The results of `minato doctor`.
+//! The results of `kobune doctor`.
 //!
 //! "It is broken" helps nobody. **Always attach the fix.** A human runs it;
 //! an agent reads `fix` and decides what to do next.
@@ -137,7 +137,7 @@ mod tests {
         let diagnostics = Diagnostics::new(vec![
             // A passing check offers no fix.
             Check::ok("a", "A", "fine").with_fix("nothing to do"),
-            Check::fail("b", "B", "broken").with_fix("sudo minato setup"),
+            Check::fail("b", "B", "broken").with_fix("sudo kobune setup"),
             Check::fail("c", "C", "no known fix"),
         ]);
 
@@ -150,7 +150,7 @@ mod tests {
     fn roundtrips_on_the_wire() {
         let diagnostics = Diagnostics::new(vec![
             Check::ok("runtime", "Docker", "29.4.0"),
-            Check::fail("resolver", "DNS resolver", "not installed").with_fix("sudo minato setup"),
+            Check::fail("resolver", "DNS resolver", "not installed").with_fix("sudo kobune setup"),
         ]);
 
         let json = serde_json::to_string(&diagnostics).expect("serializes");

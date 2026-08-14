@@ -1,6 +1,6 @@
 //! Connecting to the daemon. Shared by the CLI and the GUI.
 //!
-//! This crate does not depend on `minato-runtime`. Letting a client touch
+//! This crate does not depend on `kobune-runtime`. Letting a client touch
 //! the runtime directly would undo the principle that the daemon's API is
 //! the product (`docs/DESIGN.md` §3, §13).
 
@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use minato_api::{
+use kobune_api::{
     ApiError, ClientMessage, Event, MessageStream, PROTOCOL_VERSION, Pong, Request, RequestId,
     Response, ServerMessage, Typed, write_message,
 };
@@ -49,10 +49,10 @@ pub enum DaemonStart {
 }
 
 /// The daemon's executable name.
-const DAEMON_PROGRAM: &str = "minatod";
+const DAEMON_PROGRAM: &str = "kobuned";
 
 /// Points at the daemon explicitly.
-pub const DAEMON_ENV: &str = "MINATO_DAEMON";
+pub const DAEMON_ENV: &str = "KOBUNE_DAEMON";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -73,7 +73,7 @@ pub enum ClientError {
     Disconnected,
 
     #[error(transparent)]
-    Codec(#[from] minato_api::CodecError),
+    Codec(#[from] kobune_api::CodecError),
 
     /// The daemon refused. Callers can display this as-is.
     #[error("{0}")]
@@ -83,9 +83,9 @@ pub enum ClientError {
     Protocol(String),
 
     #[error(
-        "the daemon speaks protocol {server}, which this minato (protocol \
+        "the daemon speaks protocol {server}, which this kobune (protocol \
          {client}) cannot talk to. Restart it with `{}`",
-        minato_core::launchd::RESTART_COMMAND
+        kobune_core::launchd::RESTART_COMMAND
     )]
     VersionMismatch { client: u32, server: u32 },
 }
@@ -103,7 +103,7 @@ impl ClientError {
     pub fn hint(&self) -> Option<&str> {
         match self {
             Self::Api(err) => err.hint.as_deref(),
-            Self::Connect { .. } => Some("start it with `minato daemon start`"),
+            Self::Connect { .. } => Some("start it with `kobune daemon start`"),
             _ => None,
         }
     }
@@ -133,12 +133,12 @@ impl Client {
         }
     }
 
-    /// Builds one from the default paths (`$MINATO_HOME` or `~/.minato`).
+    /// Builds one from the default paths (`$KOBUNE_HOME` or `~/.kobune`).
     ///
     /// Also checks the socket path length: when it is too long the daemon
     /// dies right after starting, and from here that looks like silence.
-    pub fn from_env() -> minato_core::Result<Self> {
-        let paths = minato_core::Paths::resolve()?;
+    pub fn from_env() -> kobune_core::Result<Self> {
+        let paths = kobune_core::Paths::resolve()?;
         paths.check_socket_length()?;
         Ok(Self::new(paths.socket()))
     }
@@ -156,11 +156,11 @@ impl Client {
 
     /// The home the daemon on the other end keeps its files in.
     ///
-    /// The socket sits directly under it ([`minato_core::Paths::socket`]),
+    /// The socket sits directly under it ([`kobune_core::Paths::socket`]),
     /// so this is that home however the client was built — and it is what
     /// decides whether launchd's job is this daemon's at all. Asking the
     /// environment instead would answer for the process, which under
-    /// `MINATO_HOME` is a different question.
+    /// `KOBUNE_HOME` is a different question.
     ///
     /// A socket path with no parent is not a home anyone set up, so it
     /// answers with itself rather than making every caller carry an
@@ -211,9 +211,9 @@ impl Client {
         // launchd holds 80, 443 and 53 whether or not the job is running,
         // so a daemon started any other way can never serve a URL — and
         // once it owns the socket, every later command reaches it instead.
-        // That is the state `minato daemon stop` used to leave behind for
+        // That is the state `kobune daemon stop` used to leave behind for
         // good.
-        if minato_core::launchd::is_installed()
+        if kobune_core::launchd::is_installed()
             && let Some(connection) = self.wake_launchd().await
         {
             return Ok((connection, DaemonStart::Launchd));
@@ -245,7 +245,7 @@ impl Client {
     /// but was never bootstrapped, or something unrelated holds the port.
     /// The caller falls back to starting one directly.
     async fn wake_launchd(&self) -> Option<Connection> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], minato_core::launchd::ACTIVATION_PORT));
+        let addr = SocketAddr::from(([127, 0, 0, 1], kobune_core::launchd::ACTIVATION_PORT));
 
         // Connecting is the whole trigger; nothing needs to be sent. A
         // refusal means launchd is not holding the port after all.
@@ -254,7 +254,7 @@ impl Client {
             _ => {
                 tracing::debug!(
                     "nothing is holding :{}",
-                    minato_core::launchd::ACTIVATION_PORT
+                    kobune_core::launchd::ACTIVATION_PORT
                 );
                 return None;
             }
@@ -371,7 +371,7 @@ impl Connection {
     /// the work was stopped or had already finished.
     ///
     /// Work already done is not undone. A cancelled `up` can leave a
-    /// container running, which `minato status` shows and `minato down`
+    /// container running, which `kobune status` shows and `kobune down`
     /// clears.
     pub async fn call_until<F, C>(
         &mut self,
@@ -529,12 +529,12 @@ where
 /// by peer (os error 104)" where a macOS one gets "the connection to the
 /// daemon was closed".
 fn as_message<T>(
-    read: std::result::Result<Option<T>, minato_api::CodecError>,
+    read: std::result::Result<Option<T>, kobune_api::CodecError>,
 ) -> Result<T, ClientError> {
     match read {
         Ok(Some(message)) => Ok(message),
         Ok(None) => Err(ClientError::Disconnected),
-        Err(minato_api::CodecError::Io(err)) if is_disconnect(&err) => {
+        Err(kobune_api::CodecError::Io(err)) if is_disconnect(&err) => {
             Err(ClientError::Disconnected)
         }
         Err(err) => Err(ClientError::Codec(err)),
@@ -555,7 +555,7 @@ fn is_disconnect(err: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minato_api::{ErrorCode, Outcome};
+    use kobune_api::{ErrorCode, Outcome};
     use tokio::net::UnixListener;
 
     /// A stand-in daemon that replays canned responses.
@@ -578,7 +578,7 @@ mod tests {
     }
 
     fn socket_path(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path().join("minatod.sock")
+        dir.path().join("kobuned.sock")
     }
 
     fn pong(protocol: u32) -> Response {
@@ -704,7 +704,7 @@ mod tests {
                 id: RequestId(1),
                 outcome: Outcome::Error {
                     error: ApiError::not_found("no such workspace")
-                        .with_hint("run minato ls to check"),
+                        .with_hint("run kobune ls to check"),
                 },
             }]],
         ));
@@ -713,7 +713,7 @@ mod tests {
         let err = connection.request(Request::Ping).await.unwrap_err();
 
         assert_eq!(err.exit_code(), ErrorCode::NotFound.exit_code());
-        assert_eq!(err.hint(), Some("run minato ls to check"));
+        assert_eq!(err.hint(), Some("run kobune ls to check"));
     }
 
     #[tokio::test]

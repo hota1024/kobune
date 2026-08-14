@@ -89,7 +89,7 @@ pub async fn serve_https(
             let _ = stream.set_nodelay(true);
 
             // An untrusted CA fails right here. That is common enough not
-            // to shout about; `minato doctor` diagnoses it.
+            // to shout about; `kobune doctor` diagnoses it.
             let stream = match acceptor.accept(stream).await {
                 Ok(stream) => stream,
                 Err(err) => {

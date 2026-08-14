@@ -4,8 +4,8 @@
 $ curl -fsSL https://minato.1024.works/install.sh | sh
 ```
 
-環境に合ったアーカイブを選び、公開されている `.sha256` と照合し、`minato` と
-`minatod` を `~/.local/bin` に配置します。bash / zsh / fish のうちインストール
+環境に合ったアーカイブを選び、公開されている `.sha256` と照合し、`kobune` と
+`kobuned` を `~/.local/bin` に配置します。bash / zsh / fish のうちインストール
 済みのシェルには、補完スクリプトも書き込みます。
 
 root 権限は一切必要ありません。`PATH` の設定が必要な場合は、いま使っている
@@ -30,11 +30,11 @@ fish が受け付けない `export` 行を渡されることはありません�
 
 | | |
 | --- | --- |
-| `MINATO_INSTALL_DIR` | バイナリの配置先。既定は `~/.local/bin` |
-| `MINATO_NO_COMPLETIONS` | 何か値を設定すると補完スクリプトを書き込みません |
+| `KOBUNE_INSTALL_DIR` | バイナリの配置先。既定は `~/.local/bin` |
+| `KOBUNE_NO_COMPLETIONS` | 何か値を設定すると補完スクリプトを書き込みません |
 
 ```console
-$ curl -fsSL https://minato.1024.works/install.sh | MINATO_INSTALL_DIR=/usr/local/bin sh
+$ curl -fsSL https://minato.1024.works/install.sh | KOBUNE_INSTALL_DIR=/usr/local/bin sh
 ```
 
 ### PATH の設定
@@ -92,7 +92,7 @@ fish で `export PATH` を渡されると、そのまま設定ファイルに貼
 られる最新ビルドであり、リリースではありません。バージョンは付かず、内容は
 予告なく変わります。
 
-再実行すればその場で更新されます。[`minato update`](#最新に保つ) でも同じこと
+再実行すればその場で更新されます。[`kobune update`](#最新に保つ) でも同じこと
 ができ、こちらはシェルのパイプも 2 回のダウンロードも要りません。
 
 ## 手動でビルド済みバイナリを取得する
@@ -101,21 +101,21 @@ fish で `export PATH` を渡されると、そのまま設定ファイルに貼
 
 | | |
 | --- | --- |
-| Apple Silicon | `minato-aarch64-apple-darwin.tar.gz` |
-| Intel Mac | `minato-x86_64-apple-darwin.tar.gz` |
-| Linux x86_64 | `minato-x86_64-unknown-linux-gnu.tar.gz` |
+| Apple Silicon | `kobune-aarch64-apple-darwin.tar.gz` |
+| Intel Mac | `kobune-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `kobune-x86_64-unknown-linux-gnu.tar.gz` |
 
 ```console
-$ gh release download nightly --repo hota1024/minato \
-    --pattern 'minato-aarch64-apple-darwin.tar.gz*'
-$ shasum -a 256 -c minato-aarch64-apple-darwin.tar.gz.sha256
-$ tar xzf minato-aarch64-apple-darwin.tar.gz
-$ cd minato-aarch64-apple-darwin
+$ gh release download nightly --repo hota1024/kobune \
+    --pattern 'kobune-aarch64-apple-darwin.tar.gz*'
+$ shasum -a 256 -c kobune-aarch64-apple-darwin.tar.gz.sha256
+$ tar xzf kobune-aarch64-apple-darwin.tar.gz
+$ cd kobune-aarch64-apple-darwin
 ```
 
 ::: warning macOS は未署名バイナリを隔離します
 ```console
-$ xattr -d com.apple.quarantine minato minatod
+$ xattr -d com.apple.quarantine kobune kobuned
 ```
 インストールスクリプトはこれを自動で実行します。署名は未解決のため、手動なら
 このコマンドを実行するか、ソースからビルドしてください。同じ理由でデスクトップ
@@ -125,24 +125,24 @@ $ xattr -d com.apple.quarantine minato minatod
 
 ## ビルド
 
-Minato はまだ crates.io に公開していないため、ビルドするにはリポジトリを
+Kobune はまだ crates.io に公開していないため、ビルドするにはリポジトリを
 クローンします。
 
 ```console
-$ git clone https://github.com/hota1024/minato
-$ cd minato
+$ git clone https://github.com/hota1024/kobune
+$ cd kobune
 $ cargo build --release --workspace
 ```
 
 `target/release` に 2 つのバイナリが生成されます。
 
-- `minato` — 操作に使う CLI
-- `minatod` — CLI が通信する daemon
+- `kobune` — 操作に使う CLI
+- `kobuned` — CLI が通信する daemon
 
 `PATH` の通ったディレクトリに配置します。
 
 ```console
-$ cp target/release/minato target/release/minatod ~/.local/bin/
+$ cp target/release/kobune target/release/kobuned ~/.local/bin/
 ```
 
 この 2 つは同じディレクトリに置いてください。CLI は自身と同じ場所を参照して
@@ -155,18 +155,18 @@ daemon を起動します。
 
 ::: code-group
 ```console [fish]
-$ minato completions fish > ~/.config/fish/completions/minato.fish
+$ kobune completions fish > ~/.config/fish/completions/kobune.fish
 ```
 
 ```console [zsh]
 $ mkdir -p ~/.local/share/zsh/site-functions
-$ minato completions zsh > ~/.local/share/zsh/site-functions/_minato
+$ kobune completions zsh > ~/.local/share/zsh/site-functions/_kobune
 $ echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
 ```
 
 ```console [bash]
 $ mkdir -p ~/.local/share/bash-completion/completions
-$ minato completions bash > ~/.local/share/bash-completion/completions/minato
+$ kobune completions bash > ~/.local/share/bash-completion/completions/kobune
 ```
 :::
 
@@ -180,16 +180,16 @@ fish は追加設定なしで読み込みます。zsh はディレクトリを `
 ## 最新に保つ
 
 ```console
-$ minato update
+$ kobune update
 › installing 9f3c1a2…
 ╭ update ────────────────────────────────────────────────────────────────╮
 │ installed  9f3c1a2                                                     │
 │                                                                        │
-│ › the daemon is still the previous build, so run minato daemon restart │
+│ › the daemon is still the previous build, so run kobune daemon restart │
 ╰────────────────────────────────────────────────────────────────────────╯
 ```
 
-`update` は、実行した `minato` が置かれているディレクトリを対象に、現在の
+`update` は、実行した `kobune` が置かれているディレクトリを対象に、現在の
 `nightly` へ差し替えます。設定で指定した場所ではなく、いま動かしているものを
 更新します。CLI と daemon は必ず一緒に入れ替えます。ビルドが揃っていないと、
 両者のあいだのプロトコルが噛み合わなくなるからです。
@@ -210,12 +210,12 @@ $ minato update
 インストールせずに確認するだけなら次のようにします。
 
 ```console
-$ minato update --check
+$ kobune update --check
 ╭ update ─────────────────────────╮
 │ available  9f3c1a2              │
 │ running    c7282b8              │
 │                                 │
-│ › install it with minato update │
+│ › install it with kobune update │
 ╰─────────────────────────────────╯
 ```
 
@@ -227,16 +227,16 @@ $ minato update --check
 そこで、そのビルドが最初に実行されたときに自分で答えます。
 
 ```console
-$ minato url web
+$ kobune url web
 https://web.myapp.localhost
-› minato changed to 9f3c1a2 since the last run
-› the daemon is not this build, so run minato daemon restart
-› this repository's Skill is not this build's, so run minato skill install --force
+› kobune changed to 9f3c1a2 since the last run
+› the daemon is not this build, so run kobune daemon restart
+› this repository's Skill is not this build's, so run kobune skill install --force
 ```
 
 どの行も、このマシンの状態がそう言っているから出ています。daemon が応答して、
 返ってきたバージョンがこのビルドのものではなかった、
-`.claude/skills/minato/SKILL.md` がこのバイナリの持つものと違う、入っている
+`.claude/skills/kobune/SKILL.md` がこのバイナリの持つものと違う、入っている
 plist が古い形で書かれている。推測はしません。Skill を一度も入れていない
 リポジトリに勧めることはなく、記録が始まる前に書かれた plist を古いと
 決めつけることもありません。daemon の行が「前のビルド」ではなく「このビルド
@@ -249,17 +249,17 @@ Skill の行について 2 点。対象は **いまいるリポジトリ** で�
 と同様に置き換わります。どちらにせよ差分は `git diff` に出ます。
 
 表示は **ビルドごとに 1 回**、`--json` ではない最初の実行時です。これは
-`minato update` が関与しない更新、つまり `install.sh` の再実行、パッケージ
+`kobune update` が関与しない更新、つまり `install.sh` の再実行、パッケージ
 マネージャ、自分でのビルドも同じようにカバーします。状態として持つのは
-`~/.minato/build.json` にある「最後に動いたコミット」だけで、これを書くのは上の
+`~/.kobune/build.json` にある「最後に動いたコミット」だけで、これを書くのは上の
 行を表示したあとです。途中で中断された実行は、次にまた見つけ直します。
 
-`minato daemon` 自身には通知を付けません。`stop` は依頼を書いた時点で戻るため、
+`kobune daemon` 自身には通知を付けません。`stop` は依頼を書いた時点で戻るため、
 直後に確認すると「いま止めたプロセスがまだ動いている」と報告してしまうからです。
 記録もしないので、次のコマンドがまとめて表示します。
 
 CLI 自身の発言と同じく stderr へ出し、`--json` では出しません。エージェントの
-ストリームは 1 つのドキュメントのままです。`minato update --json` は同じ内容を
+ストリームは 1 つのドキュメントのままです。`kobune update --json` は同じ内容を
 データとして返します。
 
 ```json
@@ -268,7 +268,7 @@ CLI 自身の発言と同じく stderr へ出し、`--json` では出しませ�
   "commit": "9f3c1a2…",
   "next": [
     {
-      "command": "minato daemon restart",
+      "command": "kobune daemon restart",
       "reason": "the daemon is still the previous build"
     }
   ]
@@ -281,7 +281,7 @@ CLI 自身の発言と同じく stderr へ出し、`--json` では出しませ�
 実行中のものと違えば **stderr** に 1 行だけ表示します。
 
 ```
-a newer build is available (9f3c1a2). Run `minato update`
+a newer build is available (9f3c1a2). Run `kobune update`
 ```
 
 コマンドの前ではなく後に実行するため、通信が遅くても待っている出力が遅れる
@@ -292,14 +292,14 @@ a newer build is available (9f3c1a2). Run `minato update`
 止めるときは環境変数を設定します。
 
 ```console
-$ export MINATO_NO_UPDATE_CHECK=1
+$ export KOBUNE_NO_UPDATE_CHECK=1
 ```
 
-結果は `~/.minato/update-check.json` に 24 時間キャッシュし、その間はキャッシュ
+結果は `~/.kobune/update-check.json` に 24 時間キャッシュし、その間はキャッシュ
 から同じ 1 行を出し続けます。1 日に 1 度しか出ない警告は、たいてい見落とされる
 からです。
 
-### `minato --version`
+### `kobune --version`
 
 このフラグでも同じチェックをします。自動チェックと違って毎回問い合わせます。
 `--version` は目の前のビルドについての質問であり、最大 1 日古いキャッシュから
@@ -307,14 +307,14 @@ $ export MINATO_NO_UPDATE_CHECK=1
 チェックするので、求めた出力が通信を待つことはありません。
 
 ```console
-$ minato --version
-minato 0.1.0 (c7282b8)
-› a newer build is available (9f3c1a2). Install it with minato update
+$ kobune --version
+kobune 0.1.0 (c7282b8)
+› a newer build is available (9f3c1a2). Install it with kobune update
 ```
 
 公開されているビルドと同じなら何も足しません。どのビルドかはバージョンの行が
 すでに答えており、訊かれたのはそれだけだからです。`--json` と
-`MINATO_NO_UPDATE_CHECK` は自動チェックと同じように省略し、GitHub に到達でき
+`KOBUNE_NO_UPDATE_CHECK` は自動チェックと同じように省略し、GitHub に到達でき
 なかったときも同様です。
 
 ソースからビルドしたものについては、どちらとも言いません。バイナリはビルド元の
@@ -323,21 +323,21 @@ minato 0.1.0 (c7282b8)
 引き剥がしてしまいます。
 
 ```console
-$ minato --version
-minato 0.1.0 (9f3c1a2)
+$ kobune --version
+kobune 0.1.0 (9f3c1a2)
 ```
 
 ## コンテナランタイムの選択
 
 ### Docker
 
-追加の設定は不要です。Minato は Docker API を直接利用し、`docker` CLI を
+追加の設定は不要です。Kobune は Docker API を直接利用し、`docker` CLI を
 呼び出しません。そのため CLI 自体はインストールされていなくても、API に
 到達できれば動作します。Docker Desktop、OrbStack、colima のいずれでも
 構いません。
 
 ```console
-$ minato doctor
+$ kobune doctor
 │ …
 │ ✓  container runtime  docker 29.4.0
 │ …
@@ -351,7 +351,7 @@ macOS 26 以降と、サービスの起動が必要です。
 $ container system start
 ```
 
-`minato.toml` で指定します。
+`kobune.toml` で指定します。
 
 ```toml
 [runtime]
@@ -364,15 +364,15 @@ default = "apple"
 ## daemon の起動
 
 ```console
-$ minato daemon start
-╭ minatod ───────────────────────────────╮
+$ kobune daemon start
+╭ kobuned ───────────────────────────────╮
 │ running                                │
 │                                        │
 │ version   0.1.0                        │
 │ protocol  1                            │
 │ runtime   docker 29.4.0                │
 │ uptime    0s                           │
-│ socket    ~/.minato/minatod.sock       │
+│ socket    ~/.kobune/kobuned.sock       │
 ╰────────────────────────────────────────╯
 ```
 
@@ -386,24 +386,24 @@ $ minato daemon start
 管理者権限が必要です。設定は初回の 1 度だけです。
 
 ```console
-$ minato setup
+$ kobune setup
 ╭ setup ─────────────────────────────────────────────────────────────────╮
 │ the URLs need 3 steps, and they need root.                             │
 │ each one is shown before it is run, and nothing runs until you say so. │
 │                                                                        │
 │ 1. let launchd hold 80/443/53 (the daemon itself stays non-root)       │
-│ 2. point *.localhost at Minato's DNS                                   │
+│ 2. point *.localhost at Kobune's DNS                                   │
 │ 3. trust the local CA, so HTTPS stops warning                          │
 ╰────────────────────────────────────────────────────────────────────────╯
 
 1/3 let launchd hold 80/443/53 (the daemon itself stays non-root)
-  generated plist: ~/.minato/dev.minato.daemon.plist
-  sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…
+  generated plist: ~/.kobune/dev.kobune.daemon.plist
+  sudo cp ~/.kobune/dev.kobune.daemon.plist /Library/LaunchDaemons/…
   …
 run this? [y/N] y
   ✓ done
 
-2/3 point *.localhost at Minato's DNS
+2/3 point *.localhost at Kobune's DNS
   sudo mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\n' | sudo tee …
 run this? [y/N] n
   – skipped
@@ -414,8 +414,8 @@ run this? [y/N] n
 表示されるため、同意する対象は直前に読んだものそのものです。実行しなかった手順
 は、最後にまとめて再表示されます。
 
-すべてに同意するなら `minato setup --yes`、一度も訊かれずにコマンドを読むだけ
-なら `minato setup --dry-run` です。
+すべてに同意するなら `kobune setup --yes`、一度も訊かれずにコマンドを読むだけ
+なら `kobune setup --dry-run` です。
 
 **応答できる端末がないとき、つまりエージェント・パイプ・`--json` では、
 コマンドを表示するだけで何も実行しません。** 自動で `sudo` を実行すると
@@ -425,8 +425,8 @@ run this? [y/N] n
 実行後は次のようにします。
 
 ```console
-$ minato daemon restart   # launchd のジョブとして戻り、標準ポートを確保します
-$ minato doctor
+$ kobune daemon restart   # launchd のジョブとして戻り、標準ポートを確保します
+$ kobune doctor
 ```
 
 ### 設定を省略する場合
@@ -435,36 +435,36 @@ $ minato doctor
 場合、プロキシは代わりに 18080/18443 を使用し、URL にポート番号が付きます。
 
 ```console
-$ minato url web
+$ kobune url web
 https://web.feat-1.myapp.localhost:18443
 ```
 
-この状態であることは `minato doctor` が明示します。
+この状態であることは `kobune doctor` が明示します。
 
 ポートを自分で決める場合は明示的に指定してください。**明示したポートはその
 まま使われ、フォールバックしません。**
 
 ```console
-$ export MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353
-$ minato daemon start
+$ export KOBUNE_HTTP_PORT=8080 KOBUNE_HTTPS_PORT=8443 KOBUNE_DNS_PORT=15353
+$ kobune daemon start
 ```
 
 **DNS にフォールバックはありません。** `/etc/resolver` にポート番号を書く
 必要があり、その書き込みにはいずれにせよ root 権限が要るため、DNS だけを
-動かしても意味がないためです。これは Minato ではなく macOS 側の仕様です。
-`minato doctor` が、指定したポートを含んだコマンドをそのまま出力します。
+動かしても意味がないためです。これは Kobune ではなく macOS 側の仕様です。
+`kobune doctor` が、指定したポートを含んだコマンドをそのまま出力します。
 
-::: tip `minato setup` を実行済みの場合
+::: tip `kobune setup` を実行済みの場合
 プロキシはフォールバック**しません**。launchd はジョブが起動しているか
 どうかに関わらず 80 を保持し続けるため、ここでのバインド失敗は「ジョブを
 起こす必要がある」という意味になります。別のポートで待ち受けてしまうと、
-その状態が隠れてしまいます。どちらであるかは `minato doctor` が示します。
+その状態が隠れてしまいます。どちらであるかは `kobune doctor` が示します。
 :::
 
 ## 動作確認
 
 ```console
-$ minato doctor
+$ kobune doctor
 ```
 
 `✓` 以外の行には、必ず対処方法が併記されます。ここに問題が残ったまま先に
@@ -473,17 +473,17 @@ $ minato doctor
 
 ## ファイルの配置場所
 
-`MINATO_HOME`（既定値 `~/.minato`）に、daemon のソケット、状態ファイル、
+`KOBUNE_HOME`（既定値 `~/.kobune`）に、daemon のソケット、状態ファイル、
 ログ、ローカル CA、生成されたトンネル設定が保存されます。
 
-Unix ソケットのパスは約 100 バイトまでという制限があるため、`MINATO_HOME` に
-深い階層のディレクトリは指定できません。Minato は起動時にこれを検証し、
+Unix ソケットのパスは約 100 バイトまでという制限があるため、`KOBUNE_HOME` に
+深い階層のディレクトリは指定できません。Kobune は起動時にこれを検証し、
 原因の分かりにくいエラーで失敗する代わりに、その旨を明示します。
 
 ## アンインストール
 
 ```console
-$ minato uninstall
+$ kobune uninstall
 ```
 
 見つかったもの、つまりコンテナ・daemon の状態・バイナリ・補完・root が必要な
@@ -491,7 +491,7 @@ $ minato uninstall
 `--yes` は確認を省略します。端末がない環境では `--yes` が必須です。
 
 **worktree はそのまま残します。** 何が残るか分かるように一覧には表示します。
-削除するなら `minato rm` です。
+削除するなら `kobune rm` です。
 
 削除対象の詳細と、root が必要な手順の扱いは
 [CLI リファレンス](../reference/cli#アンインストール)にあります。

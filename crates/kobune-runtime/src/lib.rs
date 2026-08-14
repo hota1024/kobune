@@ -33,7 +33,7 @@ pub use spec::{
 /// Nothing is connected to, so success here does not mean the runtime is
 /// usable. Callers check reachability with [`Runtime::probe`].
 ///
-/// `home` is the caller's `MINATO_HOME`. Apple Container keeps its named
+/// `home` is the caller's `KOBUNE_HOME`. Apple Container keeps its named
 /// volumes in a directory under it, and that directory is now something
 /// `Runtime::remove_managed_volume` deletes — so which one is meant is the
 /// caller's to say rather than the runtime's to guess.
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn rejects_unknown_runtime_with_a_useful_message() {
         // `Box<dyn Runtime>` is not Debug, so unwrap_err is out.
-        let message = match create("podman", Path::new("/tmp/minato-test-home")) {
+        let message = match create("podman", Path::new("/tmp/kobune-test-home")) {
             Ok(runtime) => panic!("expected no support, got {}", runtime.id()),
             Err(err) => err.to_string(),
         };
@@ -107,7 +107,7 @@ mod tests {
         // assertion.
         for id in AVAILABLE_RUNTIMES {
             if let Err(RuntimeError::Unsupported(message)) =
-                create(id, Path::new("/tmp/minato-test-home"))
+                create(id, Path::new("/tmp/kobune-test-home"))
             {
                 panic!("{id} is advertised but not recognised: {message}");
             }
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn accepts_apple_container_aliases() {
         for id in ["apple", "apple-container", "container"] {
-            let runtime = create(id, Path::new("/tmp/minato-test-home")).expect("creates");
+            let runtime = create(id, Path::new("/tmp/kobune-test-home")).expect("creates");
             assert_eq!(runtime.id(), "apple");
         }
     }

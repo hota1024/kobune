@@ -1,16 +1,16 @@
 # Runtimes
 
-Minato runs containers through a backend you choose per project.
+Kobune runs containers through a backend you choose per project.
 
 ```toml
 [runtime]
 default = "docker"   # or "apple"
 ```
 
-`minato doctor` reports the one your project uses, and any others it can reach:
+`kobune doctor` reports the one your project uses, and any others it can reach:
 
 ```console
-$ minato doctor
+$ kobune doctor
 │ …
 │ ✓  container runtime            apple 1.2.1
 │ ✓  Docker (available)           docker 29.4.0
@@ -19,7 +19,7 @@ $ minato doctor
 
 ## Docker
 
-The default, and the better-supported one. Minato talks to the Docker API
+The default, and the better-supported one. Kobune talks to the Docker API
 directly with `bollard` and never shells out to the `docker` CLI, so only the
 API has to be reachable — Docker Desktop, OrbStack and colima all work.
 
@@ -54,21 +54,21 @@ Apple Container has no aliases and no container-to-container DNS. A container's
 nameserver is its network gateway, which answers NXDOMAIN for every container
 name. `db:5432` does not work.
 
-Minato injects the peer's **IP address** instead:
+Kobune injects the peer's **IP address** instead:
 
 ```
-MINATO_HOST_DB = 192.168.64.7
+KOBUNE_HOST_DB = 192.168.64.7
 ```
 
 So write this:
 
 ```js
-const db = process.env.MINATO_HOST_DB ?? 'db'
+const db = process.env.KOBUNE_HOST_DB ?? 'db'
 ```
 
 ::: warning depends_on matters here
 The address is read when the service starts, so a peer that is not running yet
-contributes no variable at all. **Declare `depends_on`** and Minato starts them
+contributes no variable at all. **Declare `depends_on`** and Kobune starts them
 in the right order.
 
 An unset variable is deliberate. A hostname that never resolves would send you
@@ -84,12 +84,12 @@ network's gateway, which is the host: a container reaches the proxy there and
 nowhere else, since it cannot see the host's loopback.
 
 **The proxy has to be listening on that address**, and on 80 and 443 only
-launchd can put it there. `minato setup` writes that socket into the plist, so
-a machine set up before Apple Container was installed needs `minato setup` run
-again. `minato doctor` says so when it applies:
+launchd can put it there. `kobune setup` writes that socket into the plist, so
+a machine set up before Apple Container was installed needs `kobune setup` run
+again. `kobune doctor` says so when it applies:
 
 ```console
-$ minato doctor
+$ kobune doctor
 ✗ reachable from containers  the proxy is not listening on 192.168.64.1, …
 ```
 
@@ -107,9 +107,9 @@ on the isolation.
 
 ### Also
 
-- **Named volumes** do not exist. Minato maps them to bind mounts under
-  `~/.minato/volumes/<project>/`, which gives the same persistence.
-- `minato doctor` says `container system start` rather than "start Docker
+- **Named volumes** do not exist. Kobune maps them to bind mounts under
+  `~/.kobune/volumes/<project>/`, which gives the same persistence.
+- `kobune doctor` says `container system start` rather than "start Docker
   Desktop" when this is your runtime.
 
 ## Which to pick
@@ -119,7 +119,7 @@ and per-workspace isolation.
 
 Apple Container is worth it for a lighter-weight VM per container with no
 Docker Desktop running, if your services reach each other through
-`MINATO_HOST_*` and you do not need worktrees isolated from one another.
+`KOBUNE_HOST_*` and you do not need worktrees isolated from one another.
 
 ## Firecracker
 
@@ -134,10 +134,10 @@ which one produced it.
 Change the line and restart:
 
 ```console
-$ minato down --all
-$ # edit minato.toml
-$ minato up
+$ kobune down --all
+$ # edit kobune.toml
+$ kobune up
 ```
 
 Containers do not migrate. The old runtime's containers stay until you remove
-them, and Minato only manages what carries its own labels.
+them, and Kobune only manages what carries its own labels.

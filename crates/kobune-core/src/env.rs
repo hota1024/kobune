@@ -4,16 +4,16 @@
 //!
 //! | Layer | Location | Intent |
 //! | --- | --- | --- |
-//! | global | `~/.minato/env` | shared by every project |
-//! | project | `env` in `minato.toml` and `.minato/env` | committed |
-//! | workspace | `.minato/env.local` | per-worktree, gitignored |
+//! | global | `~/.kobune/env` | shared by every project |
+//! | project | `env` in `kobune.toml` and `.kobune/env` | committed |
+//! | workspace | `.kobune/env.local` | per-worktree, gitignored |
 //!
 //! **Keeps plaintext secrets out of the repository.** Values may hold a
 //! reference (`op://` and friends), resolved by the daemon at start-up.
 //!
 //! A value may also hold `${ANOTHER_KEY}`, expanded when the layers are
 //! resolved. It is what lets a per-worktree URL reach a name the
-//! application already reads: `NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"`.
+//! application already reads: `NEXT_PUBLIC_API_URL = "${KOBUNE_URL_API}"`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 /// The directory where projects and workspaces keep their variables.
-pub const ENV_DIR: &str = ".minato";
+pub const ENV_DIR: &str = ".kobune";
 
 /// The project-wide file. Committed to the repository.
 pub const PROJECT_ENV_FILE: &str = "env";
@@ -30,7 +30,7 @@ pub const PROJECT_ENV_FILE: &str = "env";
 /// The per-worktree file. Gitignored.
 pub const WORKSPACE_ENV_FILE: &str = "env.local";
 
-/// The global file, directly under `$MINATO_HOME`.
+/// The global file, directly under `$KOBUNE_HOME`.
 pub const GLOBAL_ENV_FILE: &str = "env";
 
 /// Where a variable was defined.
@@ -43,22 +43,22 @@ pub enum EnvScope {
     Global,
     /// Shared within the project.
     Project,
-    /// A service's own `env` in `minato.toml`.
+    /// A service's own `env` in `kobune.toml`.
     ///
     /// Between the project and the worktree: more specific than what the
     /// whole project sets, less than what this worktree does. It has its
     /// own name because `project` would send someone editing
-    /// `.minato/env` to change a value that a service overrides — with the
+    /// `.kobune/env` to change a value that a service overrides — with the
     /// listing having told them they were looking at the right layer.
     Service,
     /// Specific to one worktree.
     Workspace,
-    /// Injected by Minato. The user may override it.
+    /// Injected by Kobune. The user may override it.
     Injected,
 }
 
 impl EnvScope {
-    /// The layers `minato env set` can target.
+    /// The layers `kobune env set` can target.
     pub const WRITABLE: &'static [EnvScope] =
         &[EnvScope::Global, EnvScope::Project, EnvScope::Workspace];
 
@@ -87,7 +87,7 @@ impl std::str::FromStr for EnvScope {
             "project" => Ok(Self::Project),
             "workspace" => Ok(Self::Workspace),
             // `service` is not here on purpose: it is written in
-            // `minato.toml` under the service, not through `env set`.
+            // `kobune.toml` under the service, not through `env set`.
             other => Err(format!(
                 "`{other}` is not a valid layer. Use global, project or workspace"
             )),
@@ -156,7 +156,7 @@ impl EnvLayers {
     /// Sorted by key so that display and comparison stay stable.
     ///
     /// **Expansion happens here rather than at each caller** so that what
-    /// `minato env ls` shows is what the container is given. A listing of
+    /// `kobune env ls` shows is what the container is given. A listing of
     /// unexpanded values would be a listing of something nothing ever runs
     /// with.
     ///
@@ -249,7 +249,7 @@ pub struct Unsettled {
 ///
 /// **What a reference resolves to is the value the container will see**,
 /// not the one from the layer below the reference. A worktree that
-/// overrides `MINATO_URL_API` overrides it for everything built out of it
+/// overrides `KOBUNE_URL_API` overrides it for everything built out of it
 /// too; the other way round, the override would apply everywhere except
 /// where it was being used.
 ///
@@ -368,7 +368,7 @@ fn expand_value(
         // A secret resolves in memory when the container starts, so there
         // is nothing here to paste in. Pasting the reference itself would
         // hand the container the string `op://…`, and expanding it would
-        // put the secret into `minato env ls` and into any value that
+        // put the secret into `kobune env ls` and into any value that
         // gets written out.
         if SecretRef::parse(&target.raw).is_some() {
             return Err(EnvError::SecretReference {
@@ -400,9 +400,9 @@ fn reference_at(text: &str) -> Option<&str> {
 
 /// The names written as `$NAME`, which is not a reference.
 ///
-/// **So the trap can be answered instead of sprung.** `$MINATO_CACHE_DIR`
+/// **So the trap can be answered instead of sprung.** `$KOBUNE_CACHE_DIR`
 /// is what anyone reaches for first, and a value passed through as written
-/// fails somewhere else entirely — a directory called `$MINATO_CACHE_DIR`
+/// fails somewhere else entirely — a directory called `$KOBUNE_CACHE_DIR`
 /// appears in the worktree and nothing says why. The caller warns when one
 /// of these names is a variable that exists.
 pub fn bare_references(value: &str) -> Vec<&str> {
@@ -529,7 +529,7 @@ pub enum EnvError {
     UndefinedReference { key: String, name: String },
 
     #[error(
-        "{key} refers to ${{{name}}}, which is a secret reference. Minato resolves those when the container starts, so one cannot be built into another value"
+        "{key} refers to ${{{name}}}, which is a secret reference. Kobune resolves those when the container starts, so one cannot be built into another value"
     )]
     SecretReference { key: String, name: String },
 
@@ -546,11 +546,11 @@ pub fn is_valid_key(key: &str) -> bool {
         && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// The first line of a file Minato writes.
+/// The first line of a file Kobune writes.
 ///
 /// **The marker that says this file may be replaced.** Anything without it
 /// is somebody's own work, and gets left alone.
-pub const GENERATED_MARKER: &str = "# generated by minato";
+pub const GENERATED_MARKER: &str = "# generated by kobune";
 
 /// Renders settled values as a dotenv file, for the tools that read one.
 ///
@@ -586,7 +586,7 @@ pub fn render(entries: &[EnvEntry], note: &str) -> String {
     out
 }
 
-/// Whether this text is a file Minato wrote.
+/// Whether this text is a file Kobune wrote.
 pub fn is_generated(text: &str) -> bool {
     text.starts_with(GENERATED_MARKER)
 }
@@ -793,12 +793,12 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<(), EnvError> {
     })
 }
 
-/// The project's environment file (`{root}/.minato/env`).
+/// The project's environment file (`{root}/.kobune/env`).
 pub fn project_env_path(root: &Path) -> PathBuf {
     root.join(ENV_DIR).join(PROJECT_ENV_FILE)
 }
 
-/// The worktree's environment file (`{worktree}/.minato/env.local`).
+/// The worktree's environment file (`{worktree}/.kobune/env.local`).
 pub fn workspace_env_path(worktree: &Path) -> PathBuf {
     worktree.join(ENV_DIR).join(WORKSPACE_ENV_FILE)
 }
@@ -933,8 +933,8 @@ ESCAPED="line1\nline2"
     fn injected_values_can_be_overridden_by_the_user() {
         // Injected values go first; the user's settings layer on top.
         let mut layers = EnvLayers::new();
-        layers.push(EnvScope::Injected, layer(&[("MINATO_URL_WEB", "auto")]));
-        layers.push(EnvScope::Project, layer(&[("MINATO_URL_WEB", "custom")]));
+        layers.push(EnvScope::Injected, layer(&[("KOBUNE_URL_WEB", "auto")]));
+        layers.push(EnvScope::Project, layer(&[("KOBUNE_URL_WEB", "custom")]));
 
         let resolved = layers.resolve().expect("resolves");
         assert_eq!(resolved[0].raw, "custom");
@@ -969,13 +969,13 @@ ESCAPED="line1\nline2"
         let mut layers = EnvLayers::new();
         layers.push(
             EnvScope::Injected,
-            layer(&[("MINATO_URL_API", "https://api.feat-1.myapp.localhost")]),
+            layer(&[("KOBUNE_URL_API", "https://api.feat-1.myapp.localhost")]),
         );
         layers.push(
             EnvScope::Service,
             layer(&[
-                ("NEXT_PUBLIC_API_URL", "${MINATO_URL_API}"),
-                ("FILE_BASE_URL", "${MINATO_URL_API}/dev/r2"),
+                ("NEXT_PUBLIC_API_URL", "${KOBUNE_URL_API}"),
+                ("FILE_BASE_URL", "${KOBUNE_URL_API}/dev/r2"),
             ]),
         );
 
@@ -995,14 +995,14 @@ ESCAPED="line1\nline2"
         // Not the layer below the reference: an override that applied
         // everywhere except where it was being used would be a trap.
         let mut layers = EnvLayers::new();
-        layers.push(EnvScope::Injected, layer(&[("MINATO_URL_API", "auto")]));
+        layers.push(EnvScope::Injected, layer(&[("KOBUNE_URL_API", "auto")]));
         layers.push(
             EnvScope::Service,
-            layer(&[("API_URL", "${MINATO_URL_API}")]),
+            layer(&[("API_URL", "${KOBUNE_URL_API}")]),
         );
         layers.push(
             EnvScope::Workspace,
-            layer(&[("MINATO_URL_API", "http://localhost:8080")]),
+            layer(&[("KOBUNE_URL_API", "http://localhost:8080")]),
         );
 
         assert_eq!(settled(&layers, "API_URL"), "http://localhost:8080");
@@ -1109,7 +1109,7 @@ ESCAPED="line1\nline2"
 
     #[test]
     fn a_secret_cannot_be_built_into_another_value() {
-        // Expanding one would put the secret in `minato env ls` and in
+        // Expanding one would put the secret in `kobune env ls` and in
         // anything written out of it; pasting the reference in would hand
         // the container the string `op://…`.
         let mut layers = EnvLayers::new();
@@ -1176,13 +1176,13 @@ ESCAPED="line1\nline2"
         layers.push(
             EnvScope::Project,
             layer(&[
-                ("MINATO_CACHE_DIR", "/var/cache/minato"),
-                ("STORE", "$MINATO_CACHE_DIR/pnpm"),
+                ("KOBUNE_CACHE_DIR", "/var/cache/kobune"),
+                ("STORE", "$KOBUNE_CACHE_DIR/pnpm"),
                 ("COST", "$5"),
             ]),
         );
 
-        assert_eq!(settled(&layers, "STORE"), "$MINATO_CACHE_DIR/pnpm");
+        assert_eq!(settled(&layers, "STORE"), "$KOBUNE_CACHE_DIR/pnpm");
         assert_eq!(settled(&layers, "COST"), "$5");
     }
 
@@ -1219,8 +1219,8 @@ ESCAPED="line1\nline2"
     #[test]
     fn bare_references_are_found_so_they_can_be_warned_about() {
         assert_eq!(
-            bare_references("$MINATO_CACHE_DIR/pnpm"),
-            vec!["MINATO_CACHE_DIR"]
+            bare_references("$KOBUNE_CACHE_DIR/pnpm"),
+            vec!["KOBUNE_CACHE_DIR"]
         );
         assert_eq!(bare_references("$A:$B"), vec!["A", "B"]);
 
@@ -1235,11 +1235,11 @@ ESCAPED="line1\nline2"
         let mut layers = EnvLayers::new();
         layers.push(
             EnvScope::Injected,
-            layer(&[("MINATO_URL_API", "https://api")]),
+            layer(&[("KOBUNE_URL_API", "https://api")]),
         );
         layers.push(
             EnvScope::Service,
-            layer(&[("API_URL", "${MINATO_URL_API}"), ("NOTE", "has space")]),
+            layer(&[("API_URL", "${KOBUNE_URL_API}"), ("NOTE", "has space")]),
         );
 
         let rendered = render(&layers.resolve().expect("resolves"), "service: api");
@@ -1290,7 +1290,7 @@ ESCAPED="line1\nline2"
     }
 
     #[test]
-    fn only_what_minato_wrote_carries_the_marker() {
+    fn only_what_kobune_wrote_carries_the_marker() {
         assert!(is_generated(&render(&[], "service: api")));
         assert!(!is_generated("FOO=bar\n"));
         assert!(!is_generated("# my own notes\nFOO=bar\n"));
@@ -1327,9 +1327,9 @@ ESCAPED="line1\nline2"
             ))
         );
         assert_eq!(
-            SecretRef::parse("keychain://minato/api-key"),
+            SecretRef::parse("keychain://kobune/api-key"),
             Some(SecretRef::Keychain {
-                service: "minato".into(),
+                service: "kobune".into(),
                 account: "api-key".into()
             })
         );
@@ -1358,13 +1358,13 @@ ESCAPED="line1\nline2"
     #[test]
     fn descriptions_never_contain_the_value() {
         let reference = SecretRef::Keychain {
-            service: "minato".into(),
+            service: "kobune".into(),
             account: "api-key".into(),
         };
         let description = reference.describe();
 
         assert!(description.contains("keychain"));
-        assert!(description.contains("minato/api-key"));
+        assert!(description.contains("kobune/api-key"));
     }
 
     #[test]
@@ -1499,11 +1499,11 @@ ESCAPED="line1\nline2"
     fn paths_follow_the_convention() {
         assert_eq!(
             project_env_path(Path::new("/repo")),
-            PathBuf::from("/repo/.minato/env")
+            PathBuf::from("/repo/.kobune/env")
         );
         assert_eq!(
             workspace_env_path(Path::new("/repo/wt/feat-1")),
-            PathBuf::from("/repo/wt/feat-1/.minato/env.local")
+            PathBuf::from("/repo/wt/feat-1/.kobune/env.local")
         );
     }
 }

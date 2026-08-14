@@ -11,31 +11,31 @@ it finds out:
 2. **`-w, --workspace`.** Names one explicitly, from anywhere in the repository.
 
 ```console
-$ cd ../myapp.wt/feature-auth && minato status   # this worktree
-$ minato status -w feature-auth                  # the same, from anywhere
+$ cd ../myapp.wt/feature-auth && kobune status   # this worktree
+$ kobune status -w feature-auth                  # the same, from anywhere
 ```
 
 The workspace name is the sanitised branch name: `feature/user-auth` becomes
-`feature-user-auth`. `minato ls` shows both.
+`feature-user-auth`. `kobune ls` shows both.
 
 ## Starting work on something
 
 ```console
-$ minato new feature/user-auth
+$ kobune new feature/user-auth
 ```
 
 Creates the worktree, starts the environment, prints the URLs. Options:
 
 ```console
-$ minato new hotfix/login --base v1.2.0   # branch from somewhere specific
-$ minato new feature/x --path ../elsewhere
-$ minato new feature/x --no-start         # worktree only
+$ kobune new hotfix/login --base v1.2.0   # branch from somewhere specific
+$ kobune new feature/x --path ../elsewhere
+$ kobune new feature/x --no-start         # worktree only
 ```
 
 ::: warning A new worktree has only the tracked files
 `git worktree add` brings what git knows about and nothing else, so an
 untracked `.env` is not there and the services fail to start. Name those files
-and Minato brings them over:
+and Kobune brings them over:
 
 ```toml
 [project]
@@ -43,20 +43,20 @@ carry = [".env"]
 ```
 
 Existing files are never replaced, and a missing one is reported rather than
-fatal. See [`carry`](../reference/minato-toml#carry).
+fatal. See [`carry`](../reference/kobune-toml#carry).
 :::
 
 If the branch already exists, it is checked out rather than created.
 
-A worktree made with plain `git worktree add` is picked up too — Minato
+A worktree made with plain `git worktree add` is picked up too — Kobune
 registers it the first time you run a command in it, so you are never told you
 made your worktree the wrong way.
 
 ## Seeing what is going on
 
 ```console
-$ minato ls        # every workspace, and how many services are up
-$ minato status    # this workspace in detail: state, URLs, addresses
+$ kobune ls        # every workspace, and how many services are up
+$ kobune status    # this workspace in detail: state, URLs, addresses
 ```
 
 A service is in one of four states:
@@ -74,15 +74,15 @@ look like.
 ## Getting a URL
 
 ```console
-$ minato url          # every service, and the way in
-$ minato url web      # a specific one
+$ kobune url          # every service, and the way in
+$ kobune url web      # a specific one
 ```
 
 Naming a service prints one line and nothing else, so it substitutes
 cleanly:
 
 ```console
-$ curl -sS --fail-with-body "$(minato url web)/api/health"
+$ curl -sS --fail-with-body "$(kobune url web)/api/health"
 ```
 
 **Ask for the URL rather than writing one.** It survives restarts; the port
@@ -93,16 +93,16 @@ a URL a phone can resolve, so it uses the [tunnel](/guide/tunnel) URL when
 there is one:
 
 ```console
-$ minato url web --qr
+$ kobune url web --qr
 ```
 
 ## Starting and stopping
 
 ```console
-$ minato up               # everything in this workspace
-$ minato up web api       # only these, and whatever they depend on
-$ minato down             # stop this workspace
-$ minato down --all       # every workspace in the project
+$ kobune up               # everything in this workspace
+$ kobune up web api       # only these, and whatever they depend on
+$ kobune down             # stop this workspace
+$ kobune down --all       # every workspace in the project
 ```
 
 `up` leaves a running container alone, so running it twice is harmless. A
@@ -115,10 +115,10 @@ You mostly do not need `up`. A request to a stopped service starts it.
 ## Logs
 
 ```console
-$ minato logs                  # every service in this workspace
-$ minato logs web              # one
-$ minato logs web -n 100       # the last 100 lines
-$ minato logs web -f           # follow
+$ kobune logs                  # every service in this workspace
+$ kobune logs web              # one
+$ kobune logs web -n 100       # the last 100 lines
+$ kobune logs web -f           # follow
 ```
 
 Output is undecorated, so it greps and pipes. stdout and stderr stay separate.
@@ -143,7 +143,7 @@ Then following that one service hands it this terminal, colour, keys and
 all:
 
 ```console
-$ minato logs -f dev
+$ kobune logs -f dev
 ```
 
 Ctrl-P Ctrl-Q gives the terminal back and leaves the service running.
@@ -154,14 +154,14 @@ turn it off, are in
 ## Running things inside a container
 
 ```console
-$ minato exec web -- npm test
-$ minato exec web -- sh
+$ kobune exec web -- npm test
+$ kobune exec web -- sh
 ```
 
 **The exit code is the command's own**, so this works:
 
 ```console
-$ minato exec web -- npm test && echo "passed"
+$ kobune exec web -- npm test && echo "passed"
 ```
 
 No TTY is requested. A command that waits for input will hang rather than
@@ -170,14 +170,14 @@ prompt, so pass whatever `--yes` flag it needs.
 ## Environment variables
 
 ```console
-$ minato env ls                          # with the layer each came from
-$ minato env get DATABASE_URL            # one value, for piping
-$ minato env set API_KEY=xxx             # this worktree
-$ minato env set LOG_LEVEL=debug --scope project
-$ minato env unset API_KEY
+$ kobune env ls                          # with the layer each came from
+$ kobune env get DATABASE_URL            # one value, for piping
+$ kobune env set API_KEY=xxx             # this worktree
+$ kobune env set LOG_LEVEL=debug --scope project
+$ kobune env unset API_KEY
 ```
 
-A change does not reach a running container. `minato down && minato up` picks
+A change does not reach a running container. `kobune down && kobune up` picks
 it up, and the CLI reminds you.
 
 See [Environment variables](./environment-variables).
@@ -185,8 +185,8 @@ See [Environment variables](./environment-variables).
 ## Finishing up
 
 ```console
-$ minato rm -w feature-user-auth        # worktree and containers
-$ minato rm -w feature-user-auth -f     # even with uncommitted changes
+$ kobune rm -w feature-user-auth        # worktree and containers
+$ kobune rm -w feature-user-auth -f     # even with uncommitted changes
 ```
 
 The branch stays. A shared `scope = "project"` service stays too, because other
@@ -195,10 +195,10 @@ worktrees are using it.
 ## The daemon
 
 ```console
-$ minato daemon status
-$ minato daemon start
-$ minato daemon stop
-$ minato daemon restart
+$ kobune daemon status
+$ kobune daemon start
+$ kobune daemon stop
+$ kobune daemon restart
 ```
 
 You rarely touch these. Any command starts the daemon if it is down. Stopping
@@ -208,7 +208,7 @@ containers keep running.
 If launchd is installed, launchd goes on holding ports 80, 443 and 53 while the
 job is idle, and the next request starts it again. That is how the daemon picks
 up new settings without the ports ever changing hands. To have it back without
-waiting for a request — after an update, say — `minato daemon restart` starts it
+waiting for a request — after an update, say — `kobune daemon restart` starts it
 through launchd too.
 
 ## When something is wrong
@@ -216,9 +216,9 @@ through launchd too.
 Work through it in this order rather than reaching for `docker`:
 
 ```console
-$ minato status      # what state is it in?
-$ minato logs web    # what does the app say?
-$ minato doctor      # what does the environment say?
+$ kobune status      # what state is it in?
+$ kobune logs web    # what does the app say?
+$ kobune doctor      # what does the environment say?
 ```
 
 See [Troubleshooting](./troubleshooting).

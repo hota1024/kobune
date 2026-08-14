@@ -10,13 +10,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::StreamExt;
-use minato_api::{
+use kobune_api::{
     ApiError, ErrorCode, PurgeProject, PurgeReport, PurgeWorkspace, Request, Response, ServiceInfo,
     Target, Typed, Window, WorkspaceInfo,
 };
-use minato_core::{MinatoConfig, Paths, ServiceScope, ServiceState, StateStore, WorkspaceRecord};
-use minato_proxy::Route;
-use minato_runtime::{EventSink, Runtime, ServiceStatus, Sizing, WorkspaceKey};
+use kobune_core::{KobuneConfig, Paths, ServiceScope, ServiceState, StateStore, WorkspaceRecord};
+use kobune_proxy::Route;
+use kobune_runtime::{EventSink, Runtime, ServiceStatus, Sizing, WorkspaceKey};
 
 /// How the idle sweep groups services: (workspace, service).
 type ServiceKeyRef = (String, String);
@@ -74,11 +74,11 @@ pub struct Supervisor {
     /// volume (`CACHE_VOLUME`, `apps/daemon/src/spec.rs`), so two setups
     /// at once are two arbitrary commands writing into one directory. A
     /// package manager's store is built for that; a `setup` is whatever
-    /// somebody wrote, and Minato promises in
-    /// `docs/reference/minato-toml.md` that one runs at a time.
+    /// somebody wrote, and Kobune promises in
+    /// `docs/reference/kobune-toml.md` that one runs at a time.
     ///
     /// The cost is bounded and falls in one place: the first `up` after
-    /// `minato new`. Later ones find the setup recorded and never reach
+    /// `kobune new`. Later ones find the setup recorded and never reach
     /// here.
     ///
     /// Narrowing it to a key would need that promise withdrawn first, and
@@ -181,7 +181,7 @@ impl Supervisor {
                 tail,
                 attach,
             } => {
-                let options = minato_runtime::LogOptions { follow, tail };
+                let options = kobune_runtime::LogOptions { follow, tail };
                 self.logs(target, services, options, attach, from_client, events)
                     .await
             }
@@ -225,7 +225,7 @@ impl Supervisor {
             return Ok(runtime.clone());
         }
 
-        let runtime: Arc<dyn Runtime> = Arc::from(minato_runtime::create(id, self.paths.root())?);
+        let runtime: Arc<dyn Runtime> = Arc::from(kobune_runtime::create(id, self.paths.root())?);
         runtimes.insert(id.to_string(), runtime.clone());
         Ok(runtime)
     }
@@ -260,7 +260,7 @@ impl Supervisor {
     async fn refresh(
         &self,
         project: &str,
-        config: &MinatoConfig,
+        config: &KobuneConfig,
     ) -> Result<Vec<ServiceStatus>, ApiError> {
         let runtime = self.runtime(&config.runtime.default).await?;
         let statuses = runtime.list_project(project).await?;
@@ -299,7 +299,7 @@ impl Supervisor {
     async fn refresh_for_display(
         &self,
         project: &str,
-        config: &MinatoConfig,
+        config: &KobuneConfig,
     ) -> Result<Vec<ServiceStatus>, ApiError> {
         let mut statuses = self.refresh(project, config).await?;
         settle_readiness(config, &mut statuses).await;
@@ -315,7 +315,7 @@ impl Supervisor {
         &self,
         target: Target,
         services: Vec<String>,
-        options: minato_runtime::LogOptions,
+        options: kobune_runtime::LogOptions,
         attach: Option<Window>,
         from_client: ClientStream,
         events: &EventSink,
@@ -384,7 +384,7 @@ impl Supervisor {
         if streams.is_empty() {
             return Err(
                 ApiError::not_found("no service has readable logs".to_string())
-                    .with_hint("check what is running with `minato status`"),
+                    .with_hint("check what is running with `kobune status`"),
             );
         }
 
@@ -392,7 +392,7 @@ impl Supervisor {
         // from where is in Event::Output's service field.
         let mut merged = futures::stream::select_all(streams.into_iter().map(|(name, stream)| {
             Box::pin(stream.map(move |line| (name.clone(), line)))
-                as futures::stream::BoxStream<'static, (String, minato_runtime::LogLine)>
+                as futures::stream::BoxStream<'static, (String, kobune_runtime::LogLine)>
         }));
 
         while let Some((service, entry)) = merged.next().await {
@@ -415,7 +415,7 @@ impl Supervisor {
     ) -> Result<(String, ServiceScope), String> {
         let [name] = targets else {
             return Err("typing needs one service to type at. Name one, as in \
-                 `minato logs -f web`"
+                 `kobune logs -f web`"
                 .to_string());
         };
 
@@ -427,8 +427,8 @@ impl Supervisor {
         if !service.tty {
             return Err(format!(
                 "{name} has no terminal, so it cannot take input. Add \
-                 `tty = true` under [services.{name}] in minato.toml, then \
-                 `minato down && minato up`"
+                 `tty = true` under [services.{name}] in kobune.toml, then \
+                 `kobune down && kobune up`"
             ));
         }
 
@@ -446,13 +446,13 @@ impl Supervisor {
     async fn attach(
         &self,
         runtime: &dyn Runtime,
-        key: &minato_runtime::ServiceKey,
+        key: &kobune_runtime::ServiceKey,
         service: &str,
         window: Window,
         mut from_client: ClientStream,
         events: &EventSink,
     ) -> Result<Response, ApiError> {
-        let minato_runtime::Attachment {
+        let kobune_runtime::Attachment {
             mut output,
             mut input,
             sizing,
@@ -567,7 +567,7 @@ impl Supervisor {
         };
 
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
-        let options = minato_runtime::ExecOptions { workdir };
+        let options = kobune_runtime::ExecOptions { workdir };
 
         let outcome = if fresh {
             let spec = self.service_spec(&resolved, &service, events).await?;
@@ -575,7 +575,7 @@ impl Supervisor {
             // The image may never have been pulled — `--fresh` is at its
             // most useful before a service has ever come up cleanly — so
             // the same groundwork `up` does runs first.
-            let workspace = minato_runtime::WorkspaceSpec {
+            let workspace = kobune_runtime::WorkspaceSpec {
                 key: spec.key.workspace.clone(),
                 worktree_path: resolved.workspace.path.clone(),
                 services: vec![spec.clone()],
@@ -600,7 +600,7 @@ impl Supervisor {
         resolved: &Resolved,
         service: &str,
         events: &EventSink,
-    ) -> Result<minato_runtime::ServiceSpec, ApiError> {
+    ) -> Result<kobune_runtime::ServiceSpec, ApiError> {
         let envs = self
             .workspace_envs(
                 &resolved.config,
@@ -639,7 +639,7 @@ impl Supervisor {
         &self,
         project: &str,
         workspace: &str,
-    ) -> Result<(MinatoConfig, WorkspaceRecord), ApiError> {
+    ) -> Result<(KobuneConfig, WorkspaceRecord), ApiError> {
         let record = {
             let _guard = self.state_lock.lock().await;
             let state = self.store.load().map_err(ApiError::from)?;
@@ -653,7 +653,7 @@ impl Supervisor {
                 })?
         };
 
-        let (_, config) = MinatoConfig::find(&record.path).map_err(ApiError::from)?;
+        let (_, config) = KobuneConfig::find(&record.path).map_err(ApiError::from)?;
         Ok((config, record))
     }
 
@@ -669,7 +669,7 @@ impl Supervisor {
     }
 
     /// Reads a project's configuration from the root in the state store.
-    async fn project_config(&self, project: &str) -> Result<MinatoConfig, ApiError> {
+    async fn project_config(&self, project: &str) -> Result<KobuneConfig, ApiError> {
         let root = {
             let _guard = self.state_lock.lock().await;
             let state = self.store.load().map_err(ApiError::from)?;
@@ -682,7 +682,7 @@ impl Supervisor {
                 })?
         };
 
-        let (_, config) = MinatoConfig::find(&root).map_err(ApiError::from)?;
+        let (_, config) = KobuneConfig::find(&root).map_err(ApiError::from)?;
         Ok(config)
     }
 
@@ -692,7 +692,7 @@ impl Supervisor {
     /// failing the listing: `ls --all-projects` is how someone finds out
     /// what is registered, so it is the wrong moment to refuse to answer.
     /// The reason goes to the log.
-    async fn other_projects(&self, current: &str) -> Vec<minato_api::WorkspaceInfo> {
+    async fn other_projects(&self, current: &str) -> Vec<kobune_api::WorkspaceInfo> {
         let projects = match self.known_projects().await {
             Ok(projects) => projects,
             Err(err) => {
@@ -721,7 +721,7 @@ impl Supervisor {
     async fn project_workspaces(
         &self,
         project: &str,
-    ) -> Result<Vec<minato_api::WorkspaceInfo>, ApiError> {
+    ) -> Result<Vec<kobune_api::WorkspaceInfo>, ApiError> {
         let config = self.project_config(project).await?;
         let records = self.workspace_records(project).await?;
 
@@ -757,7 +757,7 @@ impl Supervisor {
         let context = self.resolve_project_only(&target).await?;
 
         // Both registered and unregistered worktrees show up, so nothing
-        // is in `git worktree list` but missing from `minato ls`.
+        // is in `git worktree list` but missing from `kobune ls`.
         let worktrees = context.repo.worktrees().map_err(ApiError::from)?;
 
         let records = {
@@ -957,7 +957,7 @@ impl Supervisor {
 
     /// Takes down everything this daemon has made, across every project.
     ///
-    /// The daemon's half of `minato uninstall`. It works from the state
+    /// The daemon's half of `kobune uninstall`. It works from the state
     /// file rather than from a working directory, because by the time
     /// anyone uninstalls, the repository a project was registered from may
     /// well have been deleted already.
@@ -989,7 +989,7 @@ impl Supervisor {
                 Ok(found) => found,
                 Err(err) => {
                     events.warn(format!("cannot reach {project}: {err}"));
-                    report.stranded.push(minato_api::PurgeFailure {
+                    report.stranded.push(kobune_api::PurgeFailure {
                         project,
                         reason: err.to_string(),
                     });
@@ -1029,7 +1029,7 @@ impl Supervisor {
             }
 
             if let Some(reason) = left_behind {
-                report.stranded.push(minato_api::PurgeFailure {
+                report.stranded.push(kobune_api::PurgeFailure {
                     project: project.clone(),
                     reason,
                 });
@@ -1089,14 +1089,14 @@ impl Supervisor {
         Ok(Response::Purge(report))
     }
 
-    /// Takes the storage Minato made, whichever runtime is holding it.
+    /// Takes the storage Kobune made, whichever runtime is holding it.
     ///
     /// **Asked of every runtime, not of the projects in the state file.**
     /// A project volume is deliberately longer-lived than any worktree, so
     /// by the time somebody uninstalls, the state file may have forgotten
     /// the project that owns it — its repository deleted, its worktrees
-    /// `minato rm`ed one by one. Sweeping per known project would leave
-    /// exactly those behind, under a name Minato chose and nobody else
+    /// `kobune rm`ed one by one. Sweeping per known project would leave
+    /// exactly those behind, under a name Kobune chose and nobody else
     /// knows to look for. A runtime that cannot be reached, or was never
     /// installed, has nothing to say and is skipped.
     ///
@@ -1116,8 +1116,8 @@ impl Supervisor {
         stranded: &BTreeSet<String>,
         events: &EventSink,
     ) -> (
-        Vec<minato_api::PurgeVolume>,
-        Vec<minato_api::PurgeStorageFailure>,
+        Vec<kobune_api::PurgeVolume>,
+        Vec<kobune_api::PurgeStorageFailure>,
     ) {
         const STEP: &str = "volumes";
 
@@ -1128,7 +1128,7 @@ impl Supervisor {
         let mut found = Vec::new();
         let mut left = Vec::new();
 
-        for id in minato_runtime::AVAILABLE_RUNTIMES {
+        for id in kobune_runtime::AVAILABLE_RUNTIMES {
             let Ok(runtime) = self.runtime(id).await else {
                 continue;
             };
@@ -1140,7 +1140,7 @@ impl Supervisor {
                     // empty list. This is one that is there and would not
                     // say, so whatever it holds is about to be left behind.
                     events.warn(format!("cannot list {id}'s storage: {err}"));
-                    left.push(minato_api::PurgeStorageFailure {
+                    left.push(kobune_api::PurgeStorageFailure {
                         what: id.to_string(),
                         reason: format!("its storage could not be listed: {err}"),
                     });
@@ -1155,14 +1155,14 @@ impl Supervisor {
 
                 if !dry_run && let Err(err) = runtime.remove_managed_volume(&volume).await {
                     events.warn(format!("{} was not removed: {err}", volume.id));
-                    left.push(minato_api::PurgeStorageFailure {
+                    left.push(kobune_api::PurgeStorageFailure {
                         what: volume.id,
                         reason: err.to_string(),
                     });
                     continue;
                 }
 
-                found.push(minato_api::PurgeVolume {
+                found.push(kobune_api::PurgeVolume {
                     project: volume.project,
                     name: volume.id,
                 });
@@ -1183,11 +1183,11 @@ impl Supervisor {
     ///
     /// Docker's storage is the daemon's to leave alone, so there it would.
     /// Apple Container has no named volumes and uses a directory under
-    /// `MINATO_HOME` instead — which the CLI's half of an uninstall deletes
+    /// `KOBUNE_HOME` instead — which the CLI's half of an uninstall deletes
     /// as one entry in its plan, moments after this runs. Skipping it there
     /// saves nothing; all it does is keep the data off the list of what is
     /// about to disappear, which is the one thing that list is for.
-    fn skipping_it_would_save_it(&self, volume: &minato_runtime::ManagedVolume) -> bool {
+    fn skipping_it_would_save_it(&self, volume: &kobune_runtime::ManagedVolume) -> bool {
         !std::path::Path::new(&volume.id).starts_with(self.paths.root())
     }
 
@@ -1201,7 +1201,7 @@ impl Supervisor {
     async fn purge_runtime(&self, project: &str) -> Result<Arc<dyn Runtime>, ApiError> {
         let id = match self.project_config(project).await {
             Ok(config) => config.runtime.default,
-            Err(_) => minato_core::RuntimeSection::default().default,
+            Err(_) => kobune_core::RuntimeSection::default().default,
         };
 
         self.runtime(&id).await
@@ -1219,12 +1219,12 @@ fn default_worktree_path(main_root: &std::path::Path, branch: &str) -> PathBuf {
         .unwrap_or_else(|| "repo".to_string());
 
     let parent = main_root.parent().unwrap_or(main_root);
-    let label = minato_core::naming::sanitize_label(branch);
+    let label = kobune_core::naming::sanitize_label(branch);
 
     parent.join(format!("{repo_name}.wt")).join(label)
 }
 
-/// What `minato new` was asked for, beyond the target.
+/// What `kobune new` was asked for, beyond the target.
 ///
 /// A struct rather than five more parameters: they arrive together, from
 /// one request, and travel as a unit.
@@ -1244,7 +1244,7 @@ struct NewWorkspace {
 /// "stopped" apart from "does not exist": the first is woken by a request,
 /// the second gets a 404. Only running services get a target.
 fn route_entries(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     project: &str,
     records: &[WorkspaceRecord],
     statuses: &[ServiceStatus],
@@ -1272,7 +1272,7 @@ fn route_entries(
                 .filter(|status| status.state.is_running())
                 .and_then(|status| status.endpoint);
 
-            let host = minato_core::naming::service_host_in(name, record.url_label(), &domain);
+            let host = kobune_core::naming::service_host_in(name, record.url_label(), &domain);
             let route = match endpoint {
                 Some(endpoint) => Route::new(endpoint, project, &record.label, name.clone()),
                 None => Route::stopped(project, &record.label, name.clone()),
@@ -1286,7 +1286,7 @@ fn route_entries(
             // tunnel instead would need a rule per service, regenerated
             // and reloaded every time a worktree appeared.
             if let Some(tunnel_domain) = tunnel_domain {
-                let tunnel = minato_core::naming::tunnel_host(
+                let tunnel = kobune_core::naming::tunnel_host(
                     name,
                     record.url_label(),
                     project,
@@ -1307,7 +1307,7 @@ impl Supervisor {
     /// a client receives.
     fn build_workspace_info(
         &self,
-        config: &MinatoConfig,
+        config: &KobuneConfig,
         project: &str,
         record: &WorkspaceRecord,
         statuses: &[ServiceStatus],
@@ -1337,7 +1337,7 @@ impl Supervisor {
                 // "the URL that worked a minute ago is gone".
                 let url = if service_config.exposed() {
                     let host =
-                        minato_core::naming::service_host_in(name, record.url_label(), &domain);
+                        kobune_core::naming::service_host_in(name, record.url_label(), &domain);
                     self.gateway.url_for(&host)
                 } else {
                     None
@@ -1350,7 +1350,7 @@ impl Supervisor {
                     .as_deref()
                     .filter(|_| service_config.exposed())
                     .map(|tunnel_domain| {
-                        let host = minato_core::naming::tunnel_host(
+                        let host = kobune_core::naming::tunnel_host(
                             name,
                             record.url_label(),
                             project,
@@ -1404,7 +1404,7 @@ pub(super) mod tests {
     /// fine.
     pub(super) fn supervisor(gateway: Gateway) -> Supervisor {
         Supervisor::new(
-            &Paths::with_root(PathBuf::from("/tmp/minato-supervisor-test")),
+            &Paths::with_root(PathBuf::from("/tmp/kobune-supervisor-test")),
             Arc::new(gateway),
             TunnelHandle::new(),
             Arc::new(tokio::sync::Notify::new()),
@@ -1412,7 +1412,7 @@ pub(super) mod tests {
     }
 
     pub(super) fn ready(
-        key: minato_runtime::ServiceKey,
+        key: kobune_runtime::ServiceKey,
         port: u16,
         scope: ServiceScope,
     ) -> ServiceStatus {
@@ -1427,8 +1427,8 @@ pub(super) mod tests {
         }
     }
 
-    pub(super) fn config(toml: &str) -> MinatoConfig {
-        let config: MinatoConfig = toml::from_str(toml).expect("is syntactically valid");
+    pub(super) fn config(toml: &str) -> KobuneConfig {
+        let config: KobuneConfig = toml::from_str(toml).expect("is syntactically valid");
         config.validate().expect("is semantically valid");
         config
     }
@@ -1476,7 +1476,7 @@ pub(super) mod tests {
     "#;
 
     // What the grouping itself does is pinned on `startup_waves`, in
-    // `minato-core`. What is left to test here is the part that only
+    // `kobune-core`. What is left to test here is the part that only
     // exists at this layer: mapping specs onto those waves, and doing it
     // for a selection narrower than the configuration.
 
@@ -1499,16 +1499,16 @@ pub(super) mod tests {
         let supervisor = supervisor(Gateway::inert());
 
         assert!(
-            supervisor.skipping_it_would_save_it(&minato_runtime::ManagedVolume {
+            supervisor.skipping_it_would_save_it(&kobune_runtime::ManagedVolume {
                 project: "myapp".into(),
-                id: "minato-myapp-pgdata".into(),
+                id: "kobune-myapp-pgdata".into(),
             })
         );
     }
 
     #[test]
     fn storage_inside_the_daemons_own_directory_cannot_be_kept() {
-        // Apple Container's volumes live under `MINATO_HOME`, which the
+        // Apple Container's volumes live under `KOBUNE_HOME`, which the
         // CLI's half of an uninstall deletes as one entry in its plan.
         // Skipping this would not save the data — it would only leave it
         // off the list of what is about to go, which is the one thing that
@@ -1522,15 +1522,15 @@ pub(super) mod tests {
             .join("pgdata");
 
         assert!(
-            !supervisor.skipping_it_would_save_it(&minato_runtime::ManagedVolume {
+            !supervisor.skipping_it_would_save_it(&kobune_runtime::ManagedVolume {
                 project: "myapp".into(),
                 id: inside.display().to_string(),
             })
         );
     }
 
-    fn record(label: &str, is_main: bool) -> minato_core::WorkspaceRecord {
-        minato_core::WorkspaceRecord {
+    fn record(label: &str, is_main: bool) -> kobune_core::WorkspaceRecord {
+        kobune_core::WorkspaceRecord {
             label: label.to_string(),
             branch: "feature/one".to_string(),
             path: PathBuf::from("/repo/wt/feat-1"),
@@ -1541,8 +1541,8 @@ pub(super) mod tests {
     }
 
     /// A workspace record rooted somewhere that can actually be written.
-    pub(super) fn record_at(path: &std::path::Path) -> minato_core::WorkspaceRecord {
-        minato_core::WorkspaceRecord {
+    pub(super) fn record_at(path: &std::path::Path) -> kobune_core::WorkspaceRecord {
+        kobune_core::WorkspaceRecord {
             path: path.to_path_buf(),
             ..record("feat-1", false)
         }

@@ -10,10 +10,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use minato_api::{ApiError, EnvInfo, ErrorCode, Response, Target};
-use minato_core::WorkspaceRecord;
-use minato_core::config::MinatoConfig;
-use minato_runtime::EventSink;
+use kobune_api::{ApiError, EnvInfo, ErrorCode, Response, Target};
+use kobune_core::WorkspaceRecord;
+use kobune_core::config::KobuneConfig;
+use kobune_runtime::EventSink;
 
 use crate::env;
 use crate::secrets;
@@ -69,9 +69,9 @@ impl Supervisor {
             .map(|entry| {
                 let secret = entry.secret_ref();
 
-                // Injected values are Minato's own and hold no secrets.
+                // Injected values are Kobune's own and hold no secrets.
                 // Checking a URL is common, so they stay visible.
-                let injected = entry.scope == minato_core::EnvScope::Injected;
+                let injected = entry.scope == kobune_core::EnvScope::Injected;
 
                 EnvInfo {
                     key: entry.key.clone(),
@@ -81,7 +81,7 @@ impl Supervisor {
                         // that only happens at start.
                         entry.raw.clone()
                     } else {
-                        minato_core::env::mask(&entry.raw)
+                        kobune_core::env::mask(&entry.raw)
                     },
                     scope: entry.scope,
                     secret: secret.is_some(),
@@ -98,11 +98,11 @@ impl Supervisor {
     pub(super) async fn env_set(
         &self,
         target: Target,
-        scope: minato_core::EnvScope,
+        scope: kobune_core::EnvScope,
         key: String,
         value: String,
     ) -> Result<Response, ApiError> {
-        if !minato_core::env::is_valid_key(&key) {
+        if !kobune_core::env::is_valid_key(&key) {
             return Err(ApiError::new(
                 ErrorCode::InvalidConfig,
                 format!("`{key}` is not a valid environment variable name"),
@@ -113,7 +113,7 @@ impl Supervisor {
         let path = self.env_file_path(&target, scope).await?;
         let current = read_or_empty(&path)?;
 
-        minato_core::env::write_file(&path, &minato_core::env::upsert(&current, &key, &value))
+        kobune_core::env::write_file(&path, &kobune_core::env::upsert(&current, &key, &value))
             .map_err(|err| ApiError::internal(err.to_string()))?;
 
         written(key, self.env_list(target, false, None).await)
@@ -121,13 +121,13 @@ impl Supervisor {
     pub(super) async fn env_unset(
         &self,
         target: Target,
-        scope: minato_core::EnvScope,
+        scope: kobune_core::EnvScope,
         key: String,
     ) -> Result<Response, ApiError> {
         let path = self.env_file_path(&target, scope).await?;
         let current = read_or_empty(&path)?;
 
-        minato_core::env::write_file(&path, &minato_core::env::remove(&current, &key))
+        kobune_core::env::write_file(&path, &kobune_core::env::remove(&current, &key))
             .map_err(|err| ApiError::internal(err.to_string()))?;
 
         written(key, self.env_list(target, false, None).await)
@@ -136,7 +136,7 @@ impl Supervisor {
     pub(super) async fn env_file_path(
         &self,
         target: &Target,
-        scope: minato_core::EnvScope,
+        scope: kobune_core::EnvScope,
     ) -> Result<PathBuf, ApiError> {
         if !scope.is_writable() {
             return Err(ApiError::new(
@@ -145,17 +145,17 @@ impl Supervisor {
             ));
         }
 
-        if scope == minato_core::EnvScope::Global {
-            return Ok(self.paths.root().join(minato_core::env::GLOBAL_ENV_FILE));
+        if scope == kobune_core::EnvScope::Global {
+            return Ok(self.paths.root().join(kobune_core::env::GLOBAL_ENV_FILE));
         }
 
         let resolved = self.resolve(target).await?;
 
         Ok(match scope {
-            minato_core::EnvScope::Project => {
-                minato_core::env::project_env_path(&resolved.repo.main_root)
+            kobune_core::EnvScope::Project => {
+                kobune_core::env::project_env_path(&resolved.repo.main_root)
             }
-            _ => minato_core::env::workspace_env_path(&resolved.workspace.path),
+            _ => kobune_core::env::workspace_env_path(&resolved.workspace.path),
         })
     }
     /// Settles the environment a service receives.
@@ -169,7 +169,7 @@ impl Supervisor {
     /// is asked about services nobody is starting.
     pub(super) async fn service_env(
         &self,
-        config: &MinatoConfig,
+        config: &KobuneConfig,
         project: &str,
         record: &WorkspaceRecord,
         project_root: &std::path::Path,
@@ -191,8 +191,8 @@ impl Supervisor {
 
         // `$NAME` is passed through as written — right for a value on its
         // way to a shell, a mistake everywhere else. Saying so where the
-        // name is one Minato has costs a line and saves an afternoon:
-        // otherwise a directory called `$MINATO_CACHE_DIR` appears in the
+        // name is one Kobune has costs a line and saves an afternoon:
+        // otherwise a directory called `$KOBUNE_CACHE_DIR` appears in the
         // worktree and nothing connects it back to here.
         //
         // **Read from the values as written**, not from the settled ones:
@@ -200,7 +200,7 @@ impl Supervisor {
         // one value's mistake into every value built out of it.
         let written = layers.unexpanded();
         for entry in &written {
-            for name in minato_core::env::bare_references(&entry.raw)
+            for name in kobune_core::env::bare_references(&entry.raw)
                 .into_iter()
                 .filter(|name| written.iter().any(|other| other.key == *name))
             {
@@ -246,7 +246,7 @@ impl Supervisor {
     /// The environments for every service in a workspace.
     pub(super) async fn workspace_envs(
         &self,
-        config: &MinatoConfig,
+        config: &KobuneConfig,
         project: &str,
         record: &WorkspaceRecord,
         project_root: &std::path::Path,
@@ -274,21 +274,21 @@ impl Supervisor {
 /// disk.
 pub(super) struct ServiceEnv {
     pub(super) values: BTreeMap<String, String>,
-    pub(super) entries: Vec<minato_core::env::EnvEntry>,
+    pub(super) entries: Vec<kobune_core::env::EnvEntry>,
 }
 
 /// Writes the `env_file` of each service that is about to run.
 ///
 /// **Only the ones being started.** Every service's file used to be
-/// written whenever any environment was settled, so `minato up web`
+/// written whenever any environment was settled, so `kobune up web`
 /// failed over `api`'s `env_file` pointing somewhere it may not write
-/// — a service nobody asked to start — and `minato exec` left files
+/// — a service nobody asked to start — and `kobune exec` left files
 /// behind as a side effect of running a command.
 ///
 /// From the same values the container is about to be given, so the
 /// file and the process cannot disagree.
 pub(super) fn write_env_files(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     record: &WorkspaceRecord,
     envs: &BTreeMap<String, ServiceEnv>,
     starting: &[String],
@@ -303,7 +303,7 @@ pub(super) fn write_env_files(
 }
 /// The same for one service.
 pub(super) fn write_env_file_for(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     record: &WorkspaceRecord,
     service: &str,
     settled: &ServiceEnv,
@@ -327,7 +327,7 @@ pub(super) fn write_env_file_for(
         .collect();
 
     let note = format!("service: {service}  workspace: {}", record.label);
-    let contents = minato_core::env::render(&written, &note);
+    let contents = kobune_core::env::render(&written, &note);
 
     if let Some(path) = env::write_env_file(&record.path, relative, &contents)? {
         tracing::debug!("{service}: wrote {}", path.display());
@@ -382,11 +382,11 @@ mod tests {
         [services.web]
         image = "node:22"
         port = 3000
-        env_file = ".minato/env.web"
+        env_file = ".kobune/env.web"
         [services.api]
         image = "node:22"
         port = 8080
-        env_file = ".minato/env.api"
+        env_file = ".kobune/env.api"
     "#;
 
     fn settled(pairs: &[(&str, &str)]) -> ServiceEnv {
@@ -397,17 +397,17 @@ mod tests {
                 .collect(),
             entries: pairs
                 .iter()
-                .map(|(k, v)| minato_core::env::EnvEntry {
+                .map(|(k, v)| kobune_core::env::EnvEntry {
                     key: k.to_string(),
                     raw: v.to_string(),
-                    scope: minato_core::EnvScope::Service,
+                    scope: kobune_core::EnvScope::Service,
                 })
                 .collect(),
         }
     }
     #[test]
     fn only_the_services_being_started_get_their_file() {
-        // `minato up web` has no business writing into a path `api` alone
+        // `kobune up web` has no business writing into a path `api` alone
         // was pointed at — nor failing over one.
         let dir = tempfile::tempdir().expect("tempdir");
         let record = record_at(dir.path());
@@ -420,9 +420,9 @@ mod tests {
         write_env_files(&config(TWO_ENV_FILES), &record, &envs, &["web".to_string()])
             .expect("writes");
 
-        assert!(dir.path().join(".minato/env.web").exists());
+        assert!(dir.path().join(".kobune/env.web").exists());
         assert!(
-            !dir.path().join(".minato/env.api").exists(),
+            !dir.path().join(".kobune/env.api").exists(),
             "api was not asked to start"
         );
     }
@@ -434,7 +434,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let record = record_at(dir.path());
 
-        let entry = |key: &str, raw: &str, scope| minato_core::env::EnvEntry {
+        let entry = |key: &str, raw: &str, scope| kobune_core::env::EnvEntry {
             key: key.to_string(),
             raw: raw.to_string(),
             scope,
@@ -443,23 +443,23 @@ mod tests {
         let web = ServiceEnv {
             values: BTreeMap::from([(
                 "NODE_EXTRA_CA_CERTS".to_string(),
-                minato_core::config::CA_TARGET.to_string(),
+                kobune_core::config::CA_TARGET.to_string(),
             )]),
             entries: vec![
                 entry(
                     "NODE_EXTRA_CA_CERTS",
-                    minato_core::config::CA_TARGET,
-                    minato_core::EnvScope::Injected,
+                    kobune_core::config::CA_TARGET,
+                    kobune_core::EnvScope::Injected,
                 ),
                 entry(
-                    "MINATO_CA_FILE",
-                    minato_core::config::CA_TARGET,
-                    minato_core::EnvScope::Injected,
+                    "KOBUNE_CA_FILE",
+                    kobune_core::config::CA_TARGET,
+                    kobune_core::EnvScope::Injected,
                 ),
                 entry(
                     "API_URL",
                     "https://api.myapp.localhost",
-                    minato_core::EnvScope::Service,
+                    kobune_core::EnvScope::Service,
                 ),
             ],
         };
@@ -469,25 +469,25 @@ mod tests {
         write_env_files(&config(TWO_ENV_FILES), &record, &envs, &["web".to_string()])
             .expect("writes");
 
-        let written = std::fs::read_to_string(dir.path().join(".minato/env.web")).expect("reads");
+        let written = std::fs::read_to_string(dir.path().join(".kobune/env.web")).expect("reads");
 
         assert!(
             !written.contains("NODE_EXTRA_CA_CERTS"),
             "the container has it from its environment; the host cannot use it: {written}"
         );
         assert!(
-            written.contains("MINATO_CA_FILE"),
+            written.contains("KOBUNE_CA_FILE"),
             "a path nothing reads by name is the project's to use: {written}"
         );
         assert!(written.contains("API_URL="), "{written}");
     }
     #[test]
     fn another_services_env_file_cannot_fail_this_start() {
-        // The whole point: `api` pointing at a file Minato may not write
-        // used to take `minato up web` down with it.
+        // The whole point: `api` pointing at a file Kobune may not write
+        // used to take `kobune up web` down with it.
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(".minato")).expect("creates");
-        std::fs::write(dir.path().join(".minato/env.api"), "MINE=1\n").expect("writes");
+        std::fs::create_dir_all(dir.path().join(".kobune")).expect("creates");
+        std::fs::write(dir.path().join(".kobune/env.api"), "MINE=1\n").expect("writes");
 
         let record = record_at(dir.path());
         let envs = BTreeMap::from([
@@ -500,7 +500,7 @@ mod tests {
         write_env_files(&config, &record, &envs, &["web".to_string()]).expect("web still starts");
 
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(".minato/env.api")).expect("reads"),
+            std::fs::read_to_string(dir.path().join(".kobune/env.api")).expect("reads"),
             "MINE=1\n",
             "and api's file is left exactly as it was"
         );
@@ -521,7 +521,7 @@ mod tests {
         write_env_files(&config(SAMPLE), &record, &envs, &["web".to_string()]).expect("writes");
 
         assert!(
-            !dir.path().join(".minato").exists(),
+            !dir.path().join(".kobune").exists(),
             "nothing asked for, nothing made"
         );
     }

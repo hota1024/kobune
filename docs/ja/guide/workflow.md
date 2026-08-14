@@ -13,31 +13,31 @@
    できます。
 
 ```console
-$ cd ../myapp.wt/feature-auth && minato status   # この worktree が対象
-$ minato status -w feature-auth                  # 同じ対象を明示的に指定
+$ cd ../myapp.wt/feature-auth && kobune status   # この worktree が対象
+$ kobune status -w feature-auth                  # 同じ対象を明示的に指定
 ```
 
 workspace 名はブランチ名をサニタイズしたもので、`feature/user-auth` であれば
-`feature-user-auth` になります。対応関係は `minato ls` で確認できます。
+`feature-user-auth` になります。対応関係は `kobune ls` で確認できます。
 
 ## 作業を開始する
 
 ```console
-$ minato new feature/user-auth
+$ kobune new feature/user-auth
 ```
 
 worktree を作成し、環境を起動して URL を表示します。
 
 ```console
-$ minato new hotfix/login --base v1.2.0   # 分岐元を指定する
-$ minato new feature/x --path ../elsewhere
-$ minato new feature/x --no-start         # worktree の作成のみ
+$ kobune new hotfix/login --base v1.2.0   # 分岐元を指定する
+$ kobune new feature/x --path ../elsewhere
+$ kobune new feature/x --no-start         # worktree の作成のみ
 ```
 
 ::: warning 新しい worktree には追跡対象のファイルしかありません
 `git worktree add` が持ってくるのは git が把握しているファイルだけです。
 そのため追跡対象外の `.env` は存在せず、サービスは起動に失敗します。
-必要なファイルを列挙しておくと、Minato がコピーします。
+必要なファイルを列挙しておくと、Kobune がコピーします。
 
 ```toml
 [project]
@@ -45,7 +45,7 @@ carry = [".env"]
 ```
 
 既存のファイルを置き換えることはなく、コピー元が無い場合もエラーではなく
-報告に留まります。[`carry`](../reference/minato-toml#carry) を参照して
+報告に留まります。[`carry`](../reference/kobune-toml#carry) を参照して
 ください。
 :::
 
@@ -57,8 +57,8 @@ carry = [".env"]
 ## 状態を確認する
 
 ```console
-$ minato ls        # 全 workspace と稼働中のサービス数
-$ minato status    # 対象 workspace の詳細（状態、URL、アドレス）
+$ kobune ls        # 全 workspace と稼働中のサービス数
+$ kobune status    # 対象 workspace の詳細（状態、URL、アドレス）
 ```
 
 サービスの状態は次の 4 つです。
@@ -75,14 +75,14 @@ $ minato status    # 対象 workspace の詳細（状態、URL、アドレス）
 ## URL を取得する
 
 ```console
-$ minato url          # 全サービスとアクセス先
-$ minato url web      # サービス名を指定
+$ kobune url          # 全サービスとアクセス先
+$ kobune url web      # サービス名を指定
 ```
 
 サービス名を指定した場合は出力が 1 行のみになるため、そのまま埋め込めます。
 
 ```console
-$ curl -sS --fail-with-body "$(minato url web)/api/health"
+$ curl -sS --fail-with-body "$(kobune url web)/api/health"
 ```
 
 **URL は直接記述せず、このコマンドで取得してください。** 再起動しても URL は
@@ -93,16 +93,16 @@ $ curl -sS --fail-with-body "$(minato url web)/api/health"
 有効な場合はトンネル URL を使います。
 
 ```console
-$ minato url web --qr
+$ kobune url web --qr
 ```
 
 ## 起動と停止
 
 ```console
-$ minato up               # この workspace のすべてのサービス
-$ minato up web api       # 指定したサービスとその依存先のみ
-$ minato down             # この workspace を停止
-$ minato down --all       # プロジェクト内の全 workspace を停止
+$ kobune up               # この workspace のすべてのサービス
+$ kobune up web api       # 指定したサービスとその依存先のみ
+$ kobune down             # この workspace を停止
+$ kobune down --all       # プロジェクト内の全 workspace を停止
 ```
 
 `up` は稼働中のコンテナには変更を加えないため、複数回実行しても問題ありません。
@@ -116,10 +116,10 @@ $ minato down --all       # プロジェクト内の全 workspace を停止
 ## ログ
 
 ```console
-$ minato logs                  # この workspace の全サービス
-$ minato logs web              # 特定のサービス
-$ minato logs web -n 100       # 末尾 100 行
-$ minato logs web -f           # 継続的に出力
+$ kobune logs                  # この workspace の全サービス
+$ kobune logs web              # 特定のサービス
+$ kobune logs web -n 100       # 末尾 100 行
+$ kobune logs web -f           # 継続的に出力
 ```
 
 装飾を含まないため、grep やパイプでそのまま処理できます。stdout と stderr は
@@ -145,7 +145,7 @@ tty = true
 そのまま渡されます。
 
 ```console
-$ minato logs -f dev
+$ kobune logs -f dev
 ```
 
 Ctrl-P Ctrl-Q で端末が戻り、サービスは動いたままになります。それ以外は Ctrl-C
@@ -155,14 +155,14 @@ Ctrl-P Ctrl-Q で端末が戻り、サービスは動いたままになります
 ## コンテナ内でコマンドを実行する
 
 ```console
-$ minato exec web -- npm test
-$ minato exec web -- sh
+$ kobune exec web -- npm test
+$ kobune exec web -- sh
 ```
 
 **終了コードは実行したコマンドのものがそのまま返ります。**
 
 ```console
-$ minato exec web -- npm test && echo "passed"
+$ kobune exec web -- npm test && echo "passed"
 ```
 
 TTY は要求しません。入力待ちになるコマンドはプロンプトを表示せず停止するため、
@@ -171,14 +171,14 @@ TTY は要求しません。入力待ちになるコマンドはプロンプト�
 ## 環境変数
 
 ```console
-$ minato env ls                          # 定義元の層も表示される
-$ minato env get DATABASE_URL            # 値を 1 行で出力（パイプ用）
-$ minato env set API_KEY=xxx             # この worktree のみ
-$ minato env set LOG_LEVEL=debug --scope project
-$ minato env unset API_KEY
+$ kobune env ls                          # 定義元の層も表示される
+$ kobune env get DATABASE_URL            # 値を 1 行で出力（パイプ用）
+$ kobune env set API_KEY=xxx             # この worktree のみ
+$ kobune env set LOG_LEVEL=debug --scope project
+$ kobune env unset API_KEY
 ```
 
-変更は稼働中のコンテナには反映されません。`minato down && minato up` で反映
+変更は稼働中のコンテナには反映されません。`kobune down && kobune up` で反映
 されます。CLI も実行後にその旨を表示します。
 
 詳細は [環境変数](./environment-variables) を参照してください。
@@ -186,8 +186,8 @@ $ minato env unset API_KEY
 ## 後片付け
 
 ```console
-$ minato rm -w feature-user-auth        # worktree とコンテナを削除
-$ minato rm -w feature-user-auth -f     # 未コミットの変更があっても削除
+$ kobune rm -w feature-user-auth        # worktree とコンテナを削除
+$ kobune rm -w feature-user-auth -f     # 未コミットの変更があっても削除
 ```
 
 ブランチは残ります。共有サービス（`scope = "project"`）も、他の worktree が
@@ -196,10 +196,10 @@ $ minato rm -w feature-user-auth -f     # 未コミットの変更があって�
 ## daemon の操作
 
 ```console
-$ minato daemon status
-$ minato daemon start
-$ minato daemon stop
-$ minato daemon restart
+$ kobune daemon status
+$ kobune daemon start
+$ kobune daemon stop
+$ kobune daemon restart
 ```
 
 通常は使用しません。いずれのコマンドも、daemon が停止していれば自動的に
@@ -209,7 +209,7 @@ $ minato daemon restart
 launchd を設定している場合、ジョブが停止しているあいだも launchd が 80/443/53
 番ポートを保持し続け、次のリクエストで起動し直します。ポートの持ち主を変えずに
 設定を読み込み直せるのはこのためです。更新の直後など、リクエストを待たずに
-戻したいときは `minato daemon restart` を使います。これも launchd 経由で起動
+戻したいときは `kobune daemon restart` を使います。これも launchd 経由で起動
 します。
 
 ## 問題が起きたとき
@@ -217,9 +217,9 @@ launchd を設定している場合、ジョブが停止しているあいだも
 `docker` を直接操作する前に、次の順序で確認してください。
 
 ```console
-$ minato status      # どの状態にあるか
-$ minato logs web    # アプリケーション側のエラー
-$ minato doctor      # 環境側の問題
+$ kobune status      # どの状態にあるか
+$ kobune logs web    # アプリケーション側のエラー
+$ kobune doctor      # 環境側の問題
 ```
 
 詳細は [困ったときは](./troubleshooting) を参照してください。

@@ -1,6 +1,6 @@
 //! Living in the menu bar.
 //!
-//! Minato's GUI is not something to keep open; it is mostly for glancing
+//! Kobune's GUI is not something to keep open; it is mostly for glancing
 //! at which environments are running and opening one. GPUI cannot do a
 //! tray on its own, so `tray-icon` handles that part.
 //!
@@ -39,7 +39,7 @@ impl Tray {
         let menu = Menu::new();
 
         let icon = TrayIconBuilder::new()
-            .with_tooltip("Minato")
+            .with_tooltip("Kobune")
             .with_icon(icon())
             .with_menu(Box::new(menu.clone()))
             .build()
@@ -82,7 +82,7 @@ impl Tray {
 
         let mut actions = HashMap::new();
 
-        let show = MenuItem::new("Open Minato", true, None);
+        let show = MenuItem::new("Open Kobune", true, None);
         actions.insert(show.id().clone(), Action::Show);
         let _ = self.menu.append(&show);
 

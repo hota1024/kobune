@@ -8,8 +8,8 @@
 //! terminal theme is allowed to redefine; a hand-picked grey that reads
 //! well on black disappears on white.
 
-use minato_api::CheckStatus;
-use minato_core::ServiceState;
+use kobune_api::CheckStatus;
+use kobune_core::ServiceState;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding};
@@ -101,7 +101,7 @@ pub fn check_status(status: CheckStatus) -> Style {
 /// How much decoration the destination can take.
 ///
 /// A terminal gets the frame. A pipe does not: box-drawing characters in
-/// the middle of a `minato ls | grep` are noise, and the point of these
+/// the middle of a `kobune ls | grep` are noise, and the point of these
 /// views is that they stay greppable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decor {

@@ -1,8 +1,8 @@
-//! The types at the bottom of Minato's dependency graph: configuration,
+//! The types at the bottom of Kobune's dependency graph: configuration,
 //! naming, state, and what a program makes of a terminal.
 //!
 //! This crate stays a mostly side-effect-free foundation. Container
-//! operations and networking belong to `minato-runtime` / `minato-proxy`
+//! operations and networking belong to `kobune-runtime` / `kobune-proxy`
 //! and must not leak in here.
 
 pub mod apple;
@@ -18,7 +18,7 @@ pub mod service;
 pub mod state;
 pub mod terminal;
 
-pub use config::{HealthCheck, MinatoConfig, RuntimeSection, ServiceConfig, ServiceScope};
+pub use config::{HealthCheck, KobuneConfig, RuntimeSection, ServiceConfig, ServiceScope};
 pub use env::{EnvEntry, EnvLayers, EnvScope, SecretRef};
 pub use error::{Error, Result};
 pub use git::Repository;
@@ -32,15 +32,15 @@ pub use terminal::Modes;
 /// Every nightly build carries version 0.1.0, so this is what tells one
 /// build from another — and therefore the only thing the update check can
 /// compare.
-pub const BUILD_COMMIT: &str = env!("MINATO_BUILD_COMMIT");
+pub const BUILD_COMMIT: &str = env!("KOBUNE_BUILD_COMMIT");
 
 /// The target triple this was built for, e.g. `aarch64-apple-darwin`.
 ///
 /// Names the release archive that would replace this binary.
-pub const BUILD_TARGET: &str = env!("MINATO_BUILD_TARGET");
+pub const BUILD_TARGET: &str = env!("KOBUNE_BUILD_TARGET");
 
 /// [`BUILD_COMMIT`], shortened to the length `git log --oneline` uses.
-pub const BUILD_COMMIT_SHORT: &str = env!("MINATO_BUILD_COMMIT_SHORT");
+pub const BUILD_COMMIT_SHORT: &str = env!("KOBUNE_BUILD_COMMIT_SHORT");
 
 /// How the version is presented: `0.1.0 (abc1234)`.
 ///

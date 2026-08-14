@@ -3,7 +3,7 @@
 Take a small Node app, give it a preview environment, and end with two branches
 running side by side on their own URLs.
 
-About fifteen minutes. You need Minato installed and `minato doctor` with
+About fifteen minutes. You need Kobune installed and `kobune doctor` with
 nothing to say.
 
 ## The app
@@ -23,7 +23,7 @@ const banner = process.env.BANNER ?? 'hello'
 
 createServer((_, res) => {
   res.writeHead(200, { 'content-type': 'text/plain' })
-  res.end(`${banner} from ${process.env.MINATO_WORKSPACE ?? 'somewhere'}\n`)
+  res.end(`${banner} from ${process.env.KOBUNE_WORKSPACE ?? 'somewhere'}\n`)
 }).listen(3000, '0.0.0.0')
 ```
 
@@ -41,10 +41,10 @@ first mistake.
 ## Describe it
 
 ```console
-$ minato init
+$ kobune init
 ```
 
-Edit `minato.toml`:
+Edit `kobune.toml`:
 
 ```toml
 [project]
@@ -65,13 +65,13 @@ means only that a TCP connection succeeded, which can be true before your app
 can answer.
 
 ```console
-$ git add minato.toml && git commit -m "minato"
+$ git add kobune.toml && git commit -m "kobune"
 ```
 
 ## Start it
 
 ```console
-$ minato up
+$ kobune up
   ✓ pulling image node:22
   ✓ starting web
   ✓ waiting for web
@@ -87,12 +87,12 @@ $ curl -sS --fail-with-body https://web.myapp.localhost
 hello from main
 ```
 
-`MINATO_WORKSPACE` was injected — the app knows which branch it is.
+`KOBUNE_WORKSPACE` was injected — the app knows which branch it is.
 
 ## Branch
 
 ```console
-$ minato new feature/loud-banner
+$ kobune new feature/loud-banner
   ✓ creating worktree feature/loud-banner
   ✓ starting web
 ╭ myapp / feature-loud-banner ──────────────────────────────────╮
@@ -108,8 +108,8 @@ Two environments now. Nothing was stopped and no port was chosen.
 
 ```console
 $ cd ../myapp.wt/feature-loud-banner
-$ minato env set BANNER=HELLO
-$ minato down && minato up
+$ kobune env set BANNER=HELLO
+$ kobune down && kobune up
 ```
 
 ```console
@@ -124,7 +124,7 @@ The variable went to the *workspace* layer, so it applies to this worktree and
 nothing else:
 
 ```console
-$ minato env ls
+$ kobune env ls
 ╭ environment ─────────────╮
 │ KEY     SCOPE      VALUE │
 │ BANNER  workspace  HELLO │
@@ -137,8 +137,8 @@ value.
 ## Watch it stop and start again
 
 ```console
-$ minato down
-$ minato status
+$ kobune down
+$ kobune status
 ╭ myapp / feature-loud-banner ────────────────────────────────────╮
 │ feature/loud-banner  /path/to/myapp.wt/feature-loud-banner      │
 │                                                                 │
@@ -154,17 +154,17 @@ HELLO from feature-loud-banner
 curl …  0.01s user … 2.104s total
 ```
 
-Two seconds, and it is up. You never run `minato up` for a branch you are still
+Two seconds, and it is up. You never run `kobune up` for a branch you are still
 using — and an idle worktree costs nothing, which is what makes making them
 cheap.
 
 ## Look inside
 
 ```console
-$ minato logs web -n 20
-$ minato exec web -- node --version
+$ kobune logs web -n 20
+$ kobune exec web -- node --version
 v22.14.0
-$ minato exec web -- npm test; echo $?
+$ kobune exec web -- npm test; echo $?
 ```
 
 The exit code is the command's, so `npm test` can drive a script.
@@ -173,8 +173,8 @@ The exit code is the command's, so `npm test` can drive a script.
 
 ```console
 $ cd ../../myapp
-$ minato rm -w feature-loud-banner
-$ minato ls
+$ kobune rm -w feature-loud-banner
+$ kobune ls
 ╭ workspaces ─────────────────╮
 │ WORKSPACE  SERVICES  BRANCH │
 │ (main)     1/1       main   │

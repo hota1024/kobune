@@ -16,7 +16,7 @@ use hyper::header::{CONNECTION, HOST, UPGRADE};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use minato_proxy::{
+use kobune_proxy::{
     Activation, Activator, LocalCa, NoopActivator, Route, Routes, serve_http, serve_https,
     server_config,
 };
@@ -289,7 +289,7 @@ async fn unknown_host_explains_itself() {
 
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
-        body.contains("minato ls"),
+        body.contains("kobune ls"),
         "it has to say what to do next: {body}"
     );
 }
@@ -312,14 +312,14 @@ async fn dead_upstream_returns_bad_gateway() {
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(
-        body.contains("minato status"),
+        body.contains("kobune status"),
         "it has to give something to go on: {body}"
     );
 }
 
 #[tokio::test]
 async fn passes_websocket_style_upgrades_through() {
-    // HMR depends on this. Without it Minato is useless.
+    // HMR depends on this. Without it Kobune is useless.
     let upstream = spawn_upstream().await;
     let routes = Routes::new();
     routes.insert(
@@ -469,7 +469,7 @@ async fn serves_https_with_a_certificate_for_the_sni_name() {
 /// passed, because they all asked rcgen's own parser rather than anything
 /// that verifies.
 ///
-/// `localhost` is not a hypothetical: `minato-dns` answers for the apex,
+/// `localhost` is not a hypothetical: `kobune-dns` answers for the apex,
 /// so `https://localhost` is a URL a person really opens.
 #[tokio::test]
 async fn the_constrained_ca_verifies_for_every_name_it_covers() {
@@ -525,7 +525,7 @@ async fn the_constrained_ca_verifies_for_every_name_it_covers() {
             .unwrap_or_else(|err| {
                 panic!(
                     "a client trusting only this CA must accept {name}, and did not: {err}. \
-                     The name constraint is refusing a name Minato serves"
+                     The name constraint is refusing a name Kobune serves"
                 )
             });
     }
@@ -623,7 +623,7 @@ async fn non_browser_clients_get_a_timeout_not_a_html_page() {
 
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert!(!body.contains("<!doctype"), "no HTML here: {body}");
-    assert!(body.contains("minato status"), "gives something to go on");
+    assert!(body.contains("kobune status"), "gives something to go on");
 }
 
 #[tokio::test]
@@ -644,7 +644,7 @@ async fn failed_activation_explains_itself() {
         body.contains("no such image"),
         "passes the reason through as-is"
     );
-    assert!(body.contains("minato logs"));
+    assert!(body.contains("kobune logs"));
 }
 
 #[tokio::test]
@@ -762,7 +762,7 @@ async fn a_service_that_never_answers_still_reports_the_reason() {
     let (status, body) = request_through(proxy, "web.feat-1.myapp.localhost", "/").await;
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body.contains("minato status"), "got: {body}");
+    assert!(body.contains("kobune status"), "got: {body}");
     assert!(
         accepted.load(Ordering::SeqCst) > 1,
         "it gave up without trying again"

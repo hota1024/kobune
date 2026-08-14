@@ -1,4 +1,4 @@
-# `minato.toml`
+# `kobune.toml`
 
 リポジトリルートに配置し、リポジトリで管理します。すべての worktree が同じ
 内容を参照します。
@@ -47,11 +47,11 @@ carry = [".env", "apps/api/.dev.vars"]
 
 `git worktree add` が新しい worktree に用意するのは追跡対象のファイルだけ
 です。そのため、追跡対象外でありながら必須である `.env` などは存在せず、
-サービスが起動できません。ここに列挙したファイルは `minato new` の際に
+サービスが起動できません。ここに列挙したファイルは `kobune new` の際に
 メインの worktree からコピーされ、サービスの起動前に配置されます。
 
 - **コピー元が無いことはエラーではありません。** すべてのチェックアウトに
-  `.env` があるとは限らず、無いことを理由に `minato new` を失敗させるのは
+  `.env` があるとは限らず、無いことを理由に `kobune new` を失敗させるのは
   埋めようとしている穴より悪い結果になります。黙って無視はせず報告します。
 - **コピー先が既に存在する場合は上書きしません。** git がチェックアウトした
   内容が優先されます。これは git が持ってこないものを補う仕組みであって、
@@ -70,7 +70,7 @@ carry = [".env", "apps/api/.dev.vars"]
 
 ## `[services.<name>]`
 
-サービス名は URL と `MINATO_URL_<SERVICE>` に含まれるため、英数字と `-` の
+サービス名は URL と `KOBUNE_URL_<SERVICE>` に含まれるため、英数字と `-` の
 範囲に留めてください。
 
 ### イメージとコマンド
@@ -100,18 +100,18 @@ tty = true
 プログラムが描画を始める前に確かめているのがこれです。Turborepo や Vitest
 などは「相手が端末かどうか」を尋ね、端末でなければただ流れるテキストで妥協し
 ます。これがない状態のコンテナはまさにそれにあたります。有効にすると色が通り、
-[`minato logs -f dev`](./cli#サービスに入力する) がその端末になります。つまり
+[`kobune logs -f dev`](./cli#サービスに入力する) がその端末になります。つまり
 入力がプログラムに届きます。
 
 ::: warning 端末はログの性質そのものを変えます
 出力ストリームが 1 本にまとまるため stderr と stdout の区別がなくなり、行末は
-`\r\n` になります。これは Minato が足しているものではなく、端末とはそういう
+`\r\n` になります。これは Kobune が足しているものではなく、端末とはそういう
 ものだからです。ログをパイプで処理するサービスでは `tty` を切ったままにして
 ください。
 :::
 
 コンテナが端末を持つかどうかは作成時に決まります。そのため、すでに起動している
-サービスでこれを有効にすると、次の `minato up` でコンテナが作り直されます
+サービスでこれを有効にすると、次の `kobune up` でコンテナが作り直されます
 （再起動になります）。
 
 #### `setup`
@@ -129,7 +129,7 @@ command = "sh -c 'pnpm dev'"
 
 **コンテナごとではなく worktree ごとに 1 回です。** 停止中のコンテナは次の
 `up` で作り直されるため、コンテナ作成に紐づけると `down` / `up` のたびに実行
-されてしまい、この機能が避けようとしている状態そのものになります。Minato は
+されてしまい、この機能が避けようとしている状態そのものになります。Kobune は
 実行したコマンドを worktree に対して記録します。
 
 - `setup` の内容を変更すると再実行されます。比較対象は内容そのものなので、
@@ -137,7 +137,7 @@ command = "sh -c 'pnpm dev'"
   古いランタイム向けにビルドされたネイティブモジュールはボリュームに残ります
 - 失敗した `setup` は `up` を中断し、記録もされません。修正して `up` し直せば
   再試行されます
-- `minato rm` は記録を消します。`@workspace` ボリュームも一緒に消えます
+- `kobune rm` は記録を消します。`@workspace` ボリュームも一緒に消えます
 - `scope = "project"` のサービスは worktree ごとではなく、プロジェクトで 1 回
   です。コンテナがすべての worktree で 1 つだからです
 
@@ -151,15 +151,15 @@ command = "sh -c 'pnpm dev'"
 マウントしているため、2 つの `setup` を同時に走らせることは、任意のコマンド
 2 つが 1 つのディレクトリに書き込むことを意味します。パッケージマネージャの
 ストアはそのために作られているので安全ですが、`setup` が他に何をするかまで
-Minato は保証できません。そのため直列にしています。`minato new` 後の初回 `up`
+Kobune は保証できません。そのため直列にしています。`kobune new` 後の初回 `up`
 は setup の時間を素直に足し合わせただけかかり、2 回目以降は記録済みとして
 読み飛ばされます。
 
 停止中のサービスがリクエストで起こされる際に `setup` は実行されません。実行
-されるのは `minato up` のときだけなので、編集内容は次のリクエストではなく次の
+されるのは `kobune up` のときだけなので、編集内容は次のリクエストではなく次の
 `up` で反映されます。
 
-ホスト側の特権設定を行う `minato setup` とは別のものです。
+ホスト側の特権設定を行う `kobune setup` とは別のものです。
 
 ### ネットワーク
 
@@ -189,7 +189,7 @@ Dockerfile を変更したブランチには、その Dockerfile が示すイメ
 コンテキストは worktree の内側である必要があり、`build = "../.."` のような
 指定は、ビルドコンテキストとしてランタイムに渡す前に拒否されます。
 
-イメージには `minato-{project}-{service}:{fingerprint}` というタグが付きます。
+イメージには `kobune-{project}-{service}:{fingerprint}` というタグが付きます。
 fingerprint は Dockerfile と build_args から算出されます。ここから 2 つの
 挙動が導かれます。
 
@@ -200,7 +200,7 @@ fingerprint は Dockerfile と build_args から算出されます。ここか�
 
 ::: warning COPY したファイルの変更では再ビルドされません
 fingerprint は Dockerfile が `COPY` するファイルまでは見ないため、
-`package.json` だけを変更しても再ビルドは発生しません。`minato up --build`
+`package.json` だけを変更しても再ビルドは発生しません。`kobune up --build`
 を使用してください。`docker compose` も同様の挙動です。
 :::
 
@@ -217,13 +217,13 @@ health = "cmd:pg_isready -U postgres"      # コンテナ内で実行
 ```
 
 `http://` で**使われるのはパスのみ**です。記述するのはコンテナ内から見た
-アドレスですが、Minato はランタイムが割り当てたアドレスに接続します。
+アドレスですが、Kobune はランタイムが割り当てたアドレスに接続します。
 
-サービスの起動時にはこの判定が通るまで待機します。`minato up` の直後の
+サービスの起動時にはこの判定が通るまで待機します。`kobune up` の直後の
 `curl` が connection refused にならないのはこのためです。
 
 ::: warning 待機は 15 秒で打ち切られます
-無制限に待つと `minato up` が返らなくなるため、15 秒で待機をやめて先に
+無制限に待つと `kobune up` が返らなくなるため、15 秒で待機をやめて先に
 進みます。初回起動でコンパイルに 1 分かかる dev server などはこれに該当
 します。URL 自体はアクセス時に待機するので壊れてはいませんが、その時点で
 `depends_on` は保証ではなくなります。
@@ -234,14 +234,14 @@ health = "cmd:pg_isready -U postgres"      # コンテナ内で実行
 | キー | 型 | 既定値 | 説明 |
 | --- | --- | --- | --- |
 | `idle_timeout` | duration | `"30m"` | リクエストが来ない状態が続いたとき、自動停止するまでの時間。URL を持たないサービスは `depends_on` で参照している側に従う |
-| `depends_on` | array | `[]` | 先に起動するサービス。`minato up` でも、リクエストによる起動でも先に起動する |
+| `depends_on` | array | `[]` | 先に起動するサービス。`kobune up` でも、リクエストによる起動でも先に起動する |
 | `scope` | string | `"workspace"` | `"workspace"` または `"project"` |
 
 時間は `humantime` 形式で指定します。`"30s"`、`"10m"`、`"2h"` など。
 
 `depends_on` は依存先を先に起動し、**ready になるまで待機します**。判定
 方法は [起動完了の判定](#起動完了の判定) と同じで、そこに記載した 15 秒の
-上限も同様に適用されます。Apple Container では、`MINATO_HOST_<PEER>` が
+上限も同様に適用されます。Apple Container では、`KOBUNE_HOST_<PEER>` が
 利用可能かどうかもこの指定に依存します。アドレスをサービスの起動時に取得
 するためです。
 
@@ -270,9 +270,9 @@ volumes = [
 読み書き可能です。コンテナ側のパスは絶対パスである必要があります。
 
 **名前付き領域はプロジェクト単位で名前空間が切られています。** `pgdata` は
-Docker のボリューム `minato-{project}-pgdata` になるため、自分で prefix を
+Docker のボリューム `kobune-{project}-pgdata` になるため、自分で prefix を
 付ける必要はありません。プロジェクト `myapp` で `myapp-pgdata` と書くと
-`minato-myapp-myapp-pgdata` になります。
+`kobune-myapp-myapp-pgdata` になります。
 
 #### スコープ
 
@@ -293,8 +293,8 @@ volumes = [
 
 | 記述 | 実際の Docker ボリューム名 |
 | --- | --- |
-| `pnpm-store` | `minato-{project}-pnpm-store` |
-| `node-modules@workspace` | `minato-{project}-{workspace}.node-modules` |
+| `pnpm-store` | `kobune-{project}-pnpm-store` |
+| `node-modules@workspace` | `kobune-{project}-{workspace}.node-modules` |
 
 worktree 名の連結に `-` ではなく `.` を使っているのは意図的です。project、
 worktree、ボリューム名はいずれも DNS ラベルであり、どれにもハイフンが
@@ -310,15 +310,15 @@ project スコープのボリューム `feat-1-cache` が同一の領域にな�
 黙って作られてしまうためです。
 
 **workspace スコープのボリュームは worktree と一緒に削除されます。**
-`minato rm` がコンテナとあわせて削除します。所属する worktree が無くなる
+`kobune rm` がコンテナとあわせて削除します。所属する worktree が無くなる
 以上、残しても到達できないためです。project スコープのボリュームは共有物で
 あり個々の worktree より長生きするため、削除されません。
 
 したがって project スコープのボリュームを削除するコマンドは
-[`minato uninstall`](./cli#アンインストール) だけで、見つけたものをすべて
+[`kobune uninstall`](./cli#アンインストール) だけで、見つけたものをすべて
 一覧に出してから確認を求めます。個別に消したい場合は実体を消してください。
-`docker volume rm minato-{project}-{name}`、Apple Container なら
-`~/.minato/volumes/` 以下のディレクトリです。
+`docker volume rm kobune-{project}-{name}`、Apple Container なら
+`~/.kobune/volumes/` 以下のディレクトリです。
 
 ::: warning 既存ボリュームのスコープ変更について
 スコープは実際のボリューム名の一部です。そのため `@workspace` の付け外しは
@@ -331,7 +331,7 @@ project スコープのボリューム `feat-1-cache` が同一の領域にな�
 かを決められないためです。これは設定の読み込み時にエラーとして検出されます。
 
 Apple Container には名前付きボリュームがないため、
-`~/.minato/volumes/<project>/` へのバインドマウントに置き換えられます。
+`~/.kobune/volumes/<project>/` へのバインドマウントに置き換えられます。
 
 ### 環境変数
 
@@ -348,7 +348,7 @@ env = { NODE_ENV = "development", PORT = "3000" }
 ションが既に読んでいる名前で渡すための書き方です。
 
 ```toml
-env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+env = { NEXT_PUBLIC_API_URL = "${KOBUNE_URL_API}" }
 ```
 
 これは project 層にあたり、リポジトリで管理されます。秘匿すべき値は記述しない
@@ -358,20 +358,20 @@ env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
 書き出します。
 
 ```toml
-env_file = ".minato/env.api"
+env_file = ".kobune/env.api"
 ```
 
 書き込まれるのは起動するサービスの分だけで、そのサービスの起動直前です。
 シークレットは含まれません。git が追跡
-しているパスは拒否され、Minato が書いたのでないファイルは上書きされません。
-Minato 自身が層として読む `.minato/env` と `.minato/env.local`、および他の
+しているパスは拒否され、Kobune が書いたのでないファイルは上書きされません。
+Kobune 自身が層として読む `.kobune/env` と `.kobune/env.local`、および他の
 サービスが既に使っているパスも拒否されます。また `scope = "project"` の
 サービスでは使えません。書き込む先の worktree がマウントされていないためです。
 
 ## 検証
 
 ```console
-$ minato status
+$ kobune status
 ✗ error: invalid configuration: service `web`: depends_on names an unknown service `database`
 ```
 

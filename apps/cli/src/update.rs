@@ -2,12 +2,12 @@
 //!
 //! Every nightly reports version 0.1.0, so there is no version to compare.
 //! What distinguishes two builds is the commit they came from, which
-//! [`minato_core::BUILD_COMMIT`] carries and the release records as its
+//! [`kobune_core::BUILD_COMMIT`] carries and the release records as its
 //! target. Comparing those two is the whole of the check.
 //!
 //! **Neither the background check nor the one `--version` makes writes to
 //! stdout, and neither runs under `--json`.** An agent parses that stream,
-//! and a line about a new build appearing in it would be a bug in Minato,
+//! and a line about a new build appearing in it would be a bug in Kobune,
 //! not a nuisance.
 
 use std::io::Write;
@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 /// Where the release lives.
-const REPO: &str = "hota1024/minato";
+const REPO: &str = "hota1024/kobune";
 
 /// The rolling build every merge to `main` replaces.
 const CHANNEL: &str = "nightly";
@@ -39,9 +39,9 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Set to anything non-empty to stop the checks — both the background one
 /// and the one `--version` makes.
-pub const NO_CHECK_ENV: &str = "MINATO_NO_UPDATE_CHECK";
+pub const NO_CHECK_ENV: &str = "KOBUNE_NO_UPDATE_CHECK";
 
-/// What [`minato_core::BUILD_COMMIT`] says when there was no commit to
+/// What [`kobune_core::BUILD_COMMIT`] says when there was no commit to
 /// record: a source tarball, or a build from before it was recorded.
 pub const NO_COMMIT: &str = "unknown";
 
@@ -117,7 +117,7 @@ pub async fn check() -> Result<Status> {
     let release = fetch_release().await?;
     Ok(compare(
         &release.target_commitish,
-        minato_core::BUILD_COMMIT,
+        kobune_core::BUILD_COMMIT,
     ))
 }
 
@@ -172,7 +172,7 @@ async fn fetch_release() -> Result<Release> {
 fn client(timeout: Duration) -> Result<reqwest::Client> {
     reqwest::Client::builder()
         // GitHub rejects requests with no user agent.
-        .user_agent(concat!("minato/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("kobune/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)
         .build()
         .map_err(|err| UpdateError::Other(err.to_string()))
@@ -210,13 +210,13 @@ pub enum Stage {
 pub async fn install(report: impl Fn(Stage)) -> Result<String> {
     let release = fetch_release().await?;
 
-    let archive_name = format!("minato-{}.tar.gz", minato_core::BUILD_TARGET);
+    let archive_name = format!("kobune-{}.tar.gz", kobune_core::BUILD_TARGET);
     let archive = release
         .asset(&archive_name)
-        .ok_or_else(|| UpdateError::NoArchive(minato_core::BUILD_TARGET.to_string()))?;
+        .ok_or_else(|| UpdateError::NoArchive(kobune_core::BUILD_TARGET.to_string()))?;
     let checksum = release
         .asset(&format!("{archive_name}.sha256"))
-        .ok_or_else(|| UpdateError::NoArchive(minato_core::BUILD_TARGET.to_string()))?;
+        .ok_or_else(|| UpdateError::NoArchive(kobune_core::BUILD_TARGET.to_string()))?;
 
     let bytes = download_watched(&archive.browser_download_url, |done, total| {
         report(Stage::Downloading { done, total })
@@ -333,7 +333,7 @@ fn unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
             continue;
         };
 
-        if !matches!(name, "minato" | "minatod") {
+        if !matches!(name, "kobune" | "kobuned") {
             continue;
         }
 
@@ -403,7 +403,7 @@ fn write_executable(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Where the running `minato` lives.
+/// Where the running `kobune` lives.
 ///
 /// The update goes beside the binary that asked for it, not to a configured
 /// directory: updating an installation other than the one being run is
@@ -440,7 +440,7 @@ struct Cache {
 ///
 /// Every failure is silent. A check that cannot reach GitHub has found
 /// nothing to say, and saying so would interrupt a command that worked.
-pub async fn background_notice(paths: &minato_core::Paths) -> Option<String> {
+pub async fn background_notice(paths: &kobune_core::Paths) -> Option<String> {
     if refused() {
         return None;
     }
@@ -452,7 +452,7 @@ pub async fn background_notice(paths: &minato_core::Paths) -> Option<String> {
     {
         // Report from the cache rather than going quiet between checks,
         // otherwise the notice appears once a day and is missed.
-        return notice(compare(&cache.published, minato_core::BUILD_COMMIT));
+        return notice(compare(&cache.published, kobune_core::BUILD_COMMIT));
     }
 
     fresh_notice(&cache_path).await
@@ -466,7 +466,7 @@ pub async fn background_notice(paths: &minato_core::Paths) -> Option<String> {
 ///
 /// It leaves what it found in the cache all the same — what has just been
 /// fetched is newer than whatever the background check has.
-pub async fn version_notice(paths: &minato_core::Paths) -> Option<String> {
+pub async fn version_notice(paths: &kobune_core::Paths) -> Option<String> {
     if refused() {
         return None;
     }
@@ -481,12 +481,12 @@ pub async fn version_notice(paths: &minato_core::Paths) -> Option<String> {
 async fn fresh_notice(cache_path: &Path) -> Option<String> {
     // A build with no commit of its own comes to `Unknown` whatever the
     // release turns out to say, so the request is not worth making.
-    if minato_core::BUILD_COMMIT == NO_COMMIT {
+    if kobune_core::BUILD_COMMIT == NO_COMMIT {
         return None;
     }
 
     let release = fetch_release().await.ok()?;
-    let status = compare(&release.target_commitish, minato_core::BUILD_COMMIT);
+    let status = compare(&release.target_commitish, kobune_core::BUILD_COMMIT);
 
     write_cache(
         cache_path,
@@ -504,7 +504,7 @@ fn refused() -> bool {
     std::env::var_os(NO_CHECK_ENV).is_some_and(|value| !value.is_empty())
 }
 
-fn cache_path(paths: &minato_core::Paths) -> PathBuf {
+fn cache_path(paths: &kobune_core::Paths) -> PathBuf {
     paths.root().join("update-check.json")
 }
 
@@ -630,7 +630,7 @@ mod tests {
         let contents = b"hello";
         let digest = format!("{:x}", sha2::Sha256::digest(contents));
 
-        let file = format!("{digest}  minato-x86_64-unknown-linux-gnu.tar.gz\n");
+        let file = format!("{digest}  kobune-x86_64-unknown-linux-gnu.tar.gz\n");
         verify(contents, file.as_bytes()).expect("matches");
 
         // Case is not significant in hex.
@@ -666,7 +666,7 @@ mod tests {
         header.set_mode(0o755);
         header.set_cksum();
         builder
-            .append_data(&mut header, "minato-x/minato", contents.as_slice())
+            .append_data(&mut header, "kobune-x/kobune", contents.as_slice())
             .expect("appends");
 
         let tarball = builder.into_inner().expect("builds");

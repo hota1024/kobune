@@ -21,7 +21,7 @@ pub const PROGRAM: &str = "container";
 ///
 /// For a `container` installed somewhere [`crate::program`] does not think
 /// to look, and for exercising the runtime against a stub.
-pub const PROGRAM_ENV: &str = "MINATO_CONTAINER";
+pub const PROGRAM_ENV: &str = "KOBUNE_CONTAINER";
 
 /// The command to run, honouring [`PROGRAM_ENV`].
 ///
@@ -35,7 +35,7 @@ pub fn program() -> String {
 /// The arguments that print the networks as JSON.
 pub const LIST_ARGS: [&str; 4] = ["network", "list", "--format", "json"];
 
-/// The network Minato's services share.
+/// The network Kobune's services share.
 ///
 /// Apple Container attaches a container to one network only, so everything
 /// goes on the default one — see `AppleContainerRuntime::ensure_network`.
@@ -80,7 +80,7 @@ impl NetworkRecord {
     /// Whether this is the network being asked about.
     ///
     /// The name is checked as well as the id: they hold the same string for
-    /// the networks Minato uses, and neither is documented to be the one
+    /// the networks Kobune uses, and neither is documented to be the one
     /// that always does.
     fn is(&self, network: &str) -> bool {
         self.id.as_deref() == Some(network)

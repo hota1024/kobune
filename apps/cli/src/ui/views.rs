@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use minato_api::{
+use kobune_api::{
     Check, Diagnostics, EnvInfo, Pong, ServiceInfo, TunnelInfo, TunnelState, Unsettled,
     UnsettledReason, WorkspaceInfo,
 };
@@ -20,7 +20,7 @@ use super::theme::{self, Decor};
 /// Shown against a service with nowhere to go.
 const NO_ADDRESS: &str = "—";
 
-/// One workspace in full: `minato status`, and what `up`, `down` and `new`
+/// One workspace in full: `kobune status`, and what `up`, `down` and `new`
 /// leave on the screen when they are done.
 pub fn workspace(info: &WorkspaceInfo, decor: Decor) -> Panel {
     let mut panel = Panel::new(decor, title(info)).lines(vec![Line::from(vec![
@@ -92,7 +92,7 @@ pub fn workspace(info: &WorkspaceInfo, decor: Decor) -> Panel {
     )
 }
 
-/// `minato url` with nothing named: every service, and the way in.
+/// `kobune url` with nothing named: every service, and the way in.
 ///
 /// The whole list rather than the first reachable one. "Which URL" is the
 /// question being asked, and answering it with one of several is how
@@ -133,7 +133,7 @@ pub fn urls(info: &WorkspaceInfo, qr: bool, decor: Decor) -> Panel {
     panel
 }
 
-/// `minato url <service> --qr`: one URL, drawn to be photographed.
+/// `kobune url <service> --qr`: one URL, drawn to be photographed.
 pub fn url(service: &ServiceInfo, decor: Decor) -> Panel {
     with_code(Panel::new(decor, "url"), service, decor)
 }
@@ -188,7 +188,7 @@ fn with_code(panel: Panel, service: &ServiceInfo, decor: Decor) -> Panel {
     )
 }
 
-/// Every workspace: `minato ls`.
+/// Every workspace: `kobune ls`.
 ///
 /// The project column appears only when more than one is listed. With a
 /// single project it is the same word on every row, and `ls` is something
@@ -197,7 +197,7 @@ pub fn workspaces(list: &[WorkspaceInfo], decor: Decor) -> Panel {
     if list.is_empty() {
         return Panel::new(decor, "workspaces")
             .line(Span::styled("none yet", theme::muted()))
-            .line(hint("create one with", "minato new <branch>"));
+            .line(hint("create one with", "kobune new <branch>"));
     }
 
     let projects: std::collections::BTreeSet<&str> =
@@ -236,7 +236,7 @@ pub fn workspaces(list: &[WorkspaceInfo], decor: Decor) -> Panel {
     Panel::new(decor, "workspaces").grid(grid)
 }
 
-/// `minato doctor`: what was found, and what to do about it.
+/// `kobune doctor`: what was found, and what to do about it.
 pub fn diagnostics(diagnostics: &Diagnostics, decor: Decor) -> Panel {
     let mut checks = Grid::new();
     for check in &diagnostics.checks {
@@ -269,7 +269,7 @@ pub fn diagnostics(diagnostics: &Diagnostics, decor: Decor) -> Panel {
 
     panel
         .lines(lines)
-        .line(hint("or walk through all of it with", "minato setup"))
+        .line(hint("or walk through all of it with", "kobune setup"))
 }
 
 fn fix_lines(check: &Check) -> Vec<Line<'static>> {
@@ -288,7 +288,7 @@ fn fix_lines(check: &Check) -> Vec<Line<'static>> {
     ]
 }
 
-/// One privileged step of `minato setup`.
+/// One privileged step of `kobune setup`.
 ///
 /// Structured rather than pre-formatted so that `--json` and the panel are
 /// built from the same thing (`docs/DESIGN.md` §3).
@@ -300,7 +300,7 @@ pub struct SetupStep {
     pub commands: Vec<String>,
 }
 
-/// What became of one step of `minato setup`.
+/// What became of one step of `kobune setup`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupOutcome {
@@ -312,7 +312,7 @@ pub enum SetupOutcome {
     Failed,
 }
 
-/// `minato setup` with nowhere to ask: it says what to run, and runs none
+/// `kobune setup` with nowhere to ask: it says what to run, and runs none
 /// of it.
 ///
 /// `restart_needed` is whether the daemon still has to be restarted for
@@ -323,7 +323,7 @@ pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: 
     if steps.is_empty() {
         return Panel::new(decor, "setup")
             .line(Span::styled("everything is set up", theme::good()))
-            .line(hint("confirm with", "minato doctor"));
+            .line(hint("confirm with", "kobune doctor"));
     }
 
     let mut panel = Panel::new(decor, "setup").line(Span::styled(
@@ -376,12 +376,12 @@ pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: 
 /// behind a command someone ran to make the URLs work.
 ///
 /// `restart` starts one the way every other command does, and that asks
-/// launchd first ([`minato_client::Client::connect_or_spawn`]) — so what
+/// launchd first ([`kobune_client::Client::connect_or_spawn`]) — so what
 /// comes back is the job, holding the ports and reading what these steps
 /// changed.
 fn restart_hint() -> Vec<Line<'static>> {
     vec![
-        hint("afterwards run", minato_core::launchd::RESTART_COMMAND),
+        hint("afterwards run", kobune_core::launchd::RESTART_COMMAND),
         Line::styled(
             "  it comes back as launchd's job, with the new settings",
             theme::muted(),
@@ -389,7 +389,7 @@ fn restart_hint() -> Vec<Line<'static>> {
     ]
 }
 
-/// What an interactive `minato setup` is about to walk through.
+/// What an interactive `kobune setup` is about to walk through.
 ///
 /// **The commands are not in here.** Each step prints its own the moment
 /// before it is offered, so what is being agreed to is on the screen rather
@@ -462,7 +462,7 @@ pub fn setup_outcome_line(outcome: SetupOutcome) -> Line<'static> {
     ])
 }
 
-/// Where an interactive `minato setup` left the machine.
+/// Where an interactive `kobune setup` left the machine.
 ///
 /// `restart_needed` is as in [`setup`]: whether anything is left for the
 /// daemon to be restarted for.
@@ -492,7 +492,7 @@ pub fn setup_done(
         ))
     };
 
-    // Whatever was declined, or failed, gets the answer `minato setup` has
+    // Whatever was declined, or failed, gets the answer `kobune setup` has
     // always given: the commands, to run by hand. Nothing is left to guess
     // at from a "skipped".
     let left: Vec<(&SetupStep, SetupOutcome)> = steps
@@ -557,7 +557,7 @@ fn count(n: usize, noun: &str) -> String {
     }
 }
 
-/// `minato env ls`.
+/// `kobune env ls`.
 ///
 /// **Each value says which layer defined it.** With three layers, not
 /// seeing that an unintended one is winning makes the cause impossible to
@@ -590,9 +590,9 @@ pub fn unsettled_reason(unsettled: &Unsettled) -> String {
 pub fn unsettled_remedy(unsettled: &Unsettled) -> Option<String> {
     match &unsettled.reason {
         UnsettledReason::OnlyWithService { service } => {
-            Some(format!("minato env ls --service {service}"))
+            Some(format!("kobune env ls --service {service}"))
         }
-        UnsettledReason::NeedsProxy => Some("minato doctor".to_string()),
+        UnsettledReason::NeedsProxy => Some("kobune doctor".to_string()),
         _ => None,
     }
 }
@@ -655,7 +655,7 @@ pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
     panel
 }
 
-/// `minato tunnel status`, and where `enable` and `disable` leave things.
+/// `kobune tunnel status`, and where `enable` and `disable` leave things.
 pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
     let state = Span::styled(info.state.label(), tunnel_style(info.state));
 
@@ -692,7 +692,7 @@ pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
         panel = panel.lines(vec![
             warning("this environment is reachable from the internet."),
             Line::styled(
-                "Minato cannot see whether a Cloudflare Access policy is in front of it.",
+                "Kobune cannot see whether a Cloudflare Access policy is in front of it.",
                 theme::muted(),
             ),
         ]);
@@ -730,16 +730,16 @@ pub fn daemon(pong: &Pong, socket: Option<&Path>, decor: Decor) -> Panel {
         fact("socket", display_path(socket));
     }
 
-    Panel::new(decor, "minatod")
+    Panel::new(decor, "kobuned")
         .line(Span::styled("running", theme::good()))
         .grid(grid)
 }
 
 /// The daemon, when there is none.
 pub fn daemon_stopped(decor: Decor) -> Panel {
-    Panel::new(decor, "minatod")
+    Panel::new(decor, "kobuned")
         .line(Span::styled("stopped", theme::muted()))
-        .line(hint("start it with", "minato daemon start"))
+        .line(hint("start it with", "kobune daemon start"))
 }
 
 /// A short confirmation: a few facts, and what to do next.
@@ -763,7 +763,7 @@ pub fn done(
     Panel::new(decor, title).grid(grid).lines(next)
 }
 
-/// What `minato uninstall` is about to do, before it does any of it.
+/// What `kobune uninstall` is about to do, before it does any of it.
 ///
 /// The containers come from the daemon, the rest from looking at the
 /// machine. Worktrees get a section of their own because they are the one
@@ -771,7 +771,7 @@ pub fn done(
 /// is.
 pub fn uninstall_plan(
     plan: &crate::uninstall::Plan,
-    daemon: Result<&minato_api::PurgeReport, &String>,
+    daemon: Result<&kobune_api::PurgeReport, &String>,
     dry_run: bool,
     decor: Decor,
 ) -> Panel {
@@ -927,7 +927,7 @@ pub fn uninstall_plan(
         && storage_left.is_empty()
     {
         return panel.line(Span::styled(
-            "nothing of Minato's was found on this machine",
+            "nothing of Kobune's was found on this machine",
             theme::muted(),
         ));
     }
@@ -949,13 +949,13 @@ pub fn uninstall_plan(
     }
 
     if dry_run {
-        panel = panel.line(hint("to go ahead, run", "minato uninstall"));
+        panel = panel.line(hint("to go ahead, run", "kobune uninstall"));
     }
 
     panel
 }
 
-/// What `minato uninstall` managed, and what it did not.
+/// What `kobune uninstall` managed, and what it did not.
 pub fn uninstall_done(
     failures: &[String],
     remaining: &[crate::uninstall::Privileged],
@@ -983,7 +983,7 @@ pub fn uninstall_done(
     }
 
     // Reached when there was no terminal to type a password into, or sudo
-    // said no. Printing the commands is the same answer `minato setup`
+    // said no. Printing the commands is the same answer `kobune setup`
     // gives, and it leaves the machine in a state a person can finish.
     let mut lines = vec![Line::styled("still to run, as root:", theme::heading())];
     for step in remaining {
@@ -1109,9 +1109,9 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::*;
     use crate::ui::test_support::render;
-    use minato_api::CheckStatus;
-    use minato_core::ServiceState;
-    use minato_core::{EnvScope, ServiceScope};
+    use kobune_api::CheckStatus;
+    use kobune_core::ServiceState;
+    use kobune_core::{EnvScope, ServiceScope};
     use std::path::PathBuf;
 
     fn service(name: &str, state: ServiceState, url: Option<&str>) -> ServiceInfo {
@@ -1390,7 +1390,7 @@ mod tests {
     #[test]
     fn an_empty_listing_says_how_to_start() {
         let text = render(&workspaces(&[], Decor::PLAIN));
-        assert!(text.contains("minato new <branch>"), "got:\n{text}");
+        assert!(text.contains("kobune new <branch>"), "got:\n{text}");
     }
 
     #[test]
@@ -1412,13 +1412,13 @@ mod tests {
             &Diagnostics::new(vec![
                 Check::ok("runtime", "Docker", "29.4.0"),
                 Check::fail("resolver", "DNS resolver", "not installed")
-                    .with_fix("sudo minato setup"),
+                    .with_fix("sudo kobune setup"),
             ]),
             Decor::PLAIN,
         ));
 
         assert!(text.contains("Docker"), "got:\n{text}");
-        assert!(text.contains("sudo minato setup"), "got:\n{text}");
+        assert!(text.contains("sudo kobune setup"), "got:\n{text}");
     }
 
     #[test]
@@ -1451,7 +1451,7 @@ mod tests {
                 commands: vec!["sudo cp /tmp/x.plist /Library/LaunchDaemons/".into()],
             },
             SetupStep {
-                description: "point *.localhost at Minato".into(),
+                description: "point *.localhost at Kobune".into(),
                 note: None,
                 commands: vec!["sudo tee /etc/resolver/localhost".into()],
             },
@@ -1468,7 +1468,7 @@ mod tests {
         assert!(text.contains("2. point"), "got:\n{text}");
         assert!(text.contains("/tmp/x.plist"), "got:\n{text}");
         assert!(text.contains("to undo:"), "got:\n{text}");
-        assert!(text.contains("minato daemon restart"), "got:\n{text}");
+        assert!(text.contains("kobune daemon restart"), "got:\n{text}");
     }
 
     #[test]
@@ -1479,7 +1479,7 @@ mod tests {
             description: "wake launchd's job".into(),
             note: None,
             commands: vec![
-                "minato daemon stop".into(),
+                "kobune daemon stop".into(),
                 "sudo launchctl kickstart -k x".into(),
             ],
         }];
@@ -1495,7 +1495,7 @@ mod tests {
         assert!(text.contains("everything is set up"), "got:\n{text}");
     }
 
-    /// Two steps, the first with a note, as `minato setup` builds them.
+    /// Two steps, the first with a note, as `kobune setup` builds them.
     fn setup_steps() -> Vec<SetupStep> {
         vec![
             SetupStep {
@@ -1504,7 +1504,7 @@ mod tests {
                 commands: vec!["sudo cp /tmp/x.plist /Library/LaunchDaemons/".into()],
             },
             SetupStep {
-                description: "point *.localhost at Minato".into(),
+                description: "point *.localhost at Kobune".into(),
                 note: None,
                 commands: vec!["sudo tee /etc/resolver/localhost".into()],
             },
@@ -1568,7 +1568,7 @@ mod tests {
         // The one that ran needs nothing done to it.
         assert!(!text.contains("sudo cp /tmp/x.plist"), "got:\n{text}");
         // Something landed, so the daemon has to be restarted to see it.
-        assert!(text.contains("minato daemon restart"), "got:\n{text}");
+        assert!(text.contains("kobune daemon restart"), "got:\n{text}");
         assert!(text.contains("to undo:"), "got:\n{text}");
     }
 
@@ -1587,7 +1587,7 @@ mod tests {
         assert!(text.contains("0 of 2 steps done"), "got:\n{text}");
         assert!(text.contains("still to run, as root:"), "got:\n{text}");
         // Nothing landed, so there is nothing for the daemon to pick up.
-        assert!(!text.contains("minato daemon restart"), "got:\n{text}");
+        assert!(!text.contains("kobune daemon restart"), "got:\n{text}");
     }
 
     #[test]
@@ -1603,7 +1603,7 @@ mod tests {
 
         assert!(text.contains("every step is done"), "got:\n{text}");
         assert!(!text.contains("still to run"), "got:\n{text}");
-        assert!(text.contains("minato daemon restart"), "got:\n{text}");
+        assert!(text.contains("kobune daemon restart"), "got:\n{text}");
     }
 
     #[test]
@@ -1677,12 +1677,12 @@ mod tests {
             },
             EnvInfo {
                 key: "API_URL".into(),
-                value: "${MINATO_URL_API}".into(),
+                value: "${KOBUNE_URL_API}".into(),
                 scope: EnvScope::Service,
                 secret: false,
                 source: None,
                 unsettled: Some(Unsettled {
-                    reference: Some("MINATO_URL_API".into()),
+                    reference: Some("KOBUNE_URL_API".into()),
                     reason: UnsettledReason::NeedsProxy,
                 }),
             },
@@ -1701,7 +1701,7 @@ mod tests {
             "and says what is wrong:\n{text}"
         );
         assert!(
-            text.contains("minato doctor"),
+            text.contains("kobune doctor"),
             "and what to do about it:\n{text}"
         );
     }
@@ -1846,23 +1846,23 @@ mod tests {
     #[test]
     fn a_stopped_daemon_says_how_to_start_it() {
         let text = render(&daemon_stopped(Decor::PLAIN));
-        assert!(text.contains("minato daemon start"), "got:\n{text}");
+        assert!(text.contains("kobune daemon start"), "got:\n{text}");
     }
 
-    fn purge_report() -> minato_api::PurgeReport {
-        minato_api::PurgeReport {
+    fn purge_report() -> kobune_api::PurgeReport {
+        kobune_api::PurgeReport {
             dry_run: true,
-            projects: vec![minato_api::PurgeProject {
+            projects: vec![kobune_api::PurgeProject {
                 name: "myapp".into(),
-                workspaces: vec![minato_api::PurgeWorkspace {
+                workspaces: vec![kobune_api::PurgeWorkspace {
                     label: "feat-1".into(),
                     services: vec!["web".into(), "db".into()],
                 }],
             }],
             worktrees: vec![PathBuf::from("/repo/myapp.wt/feat-1")],
-            volumes: vec![minato_api::PurgeVolume {
+            volumes: vec![kobune_api::PurgeVolume {
                 project: "myapp".into(),
-                name: "minato-myapp-pgdata".into(),
+                name: "kobune-myapp-pgdata".into(),
             }],
             ..Default::default()
         }
@@ -1872,12 +1872,12 @@ mod tests {
         crate::uninstall::Plan {
             files: vec![crate::uninstall::Removal {
                 label: "state, logs and the local CA",
-                path: PathBuf::from("/home/u/.minato"),
+                path: PathBuf::from("/home/u/.kobune"),
             }],
             privileged: vec![crate::uninstall::Privileged {
                 label: "stop trusting the local CA".into(),
                 commands: vec![
-                    "sudo security remove-trusted-cert -d /home/u/.minato/ca.crt".into(),
+                    "sudo security remove-trusted-cert -d /home/u/.kobune/ca.crt".into(),
                 ],
             }],
         }
@@ -1894,14 +1894,14 @@ mod tests {
         ));
 
         assert!(text.contains("web"), "containers:\n{text}");
-        assert!(text.contains(".minato"), "files:\n{text}");
+        assert!(text.contains(".kobune"), "files:\n{text}");
         assert!(text.contains("remove-trusted-cert"), "root steps:\n{text}");
-        assert!(text.contains("minato-myapp-pgdata"), "storage:\n{text}");
+        assert!(text.contains("kobune-myapp-pgdata"), "storage:\n{text}");
     }
 
     #[test]
     fn storage_is_named_by_what_the_runtime_calls_it() {
-        // `pgdata` is what `minato.toml` says; `minato-myapp-pgdata` is
+        // `pgdata` is what `kobune.toml` says; `kobune-myapp-pgdata` is
         // what Docker was told. Someone who wants to keep a database
         // before saying yes has to be able to find it, and only the
         // second name does that.
@@ -1914,7 +1914,7 @@ mod tests {
         ));
 
         assert!(text.contains("storage"), "got:\n{text}");
-        assert!(text.contains("minato-myapp-pgdata"), "got:\n{text}");
+        assert!(text.contains("kobune-myapp-pgdata"), "got:\n{text}");
     }
 
     #[test]
@@ -1922,8 +1922,8 @@ mod tests {
         // The dangerous shape: Docker is down, so the daemon finds no
         // volumes and the plan would read as a machine that has none —
         // right before removing everything else and exiting 0.
-        let report = minato_api::PurgeReport {
-            storage_left: vec![minato_api::PurgeStorageFailure {
+        let report = kobune_api::PurgeReport {
+            storage_left: vec![kobune_api::PurgeStorageFailure {
                 what: "docker".into(),
                 reason: "its storage could not be listed: connection refused".into(),
             }],
@@ -1937,7 +1937,7 @@ mod tests {
             Decor::PLAIN,
         ));
 
-        assert!(!text.contains("nothing of Minato"), "got:\n{text}");
+        assert!(!text.contains("nothing of Kobune"), "got:\n{text}");
         assert!(text.contains("docker"), "got:\n{text}");
         assert!(text.contains("connection refused"), "got:\n{text}");
     }
@@ -1948,10 +1948,10 @@ mod tests {
         // gone, so there are no containers, and the volumes they shared
         // are still there. Saying "nothing was found" and then deleting a
         // database is the failure this guards.
-        let report = minato_api::PurgeReport {
-            volumes: vec![minato_api::PurgeVolume {
+        let report = kobune_api::PurgeReport {
+            volumes: vec![kobune_api::PurgeVolume {
                 project: "myapp".into(),
-                name: "minato-myapp-pgdata".into(),
+                name: "kobune-myapp-pgdata".into(),
             }],
             ..Default::default()
         };
@@ -1963,8 +1963,8 @@ mod tests {
             Decor::PLAIN,
         ));
 
-        assert!(!text.contains("nothing of Minato"), "got:\n{text}");
-        assert!(text.contains("minato-myapp-pgdata"), "got:\n{text}");
+        assert!(!text.contains("nothing of Kobune"), "got:\n{text}");
+        assert!(text.contains("kobune-myapp-pgdata"), "got:\n{text}");
     }
 
     #[test]
@@ -2007,7 +2007,7 @@ mod tests {
             true,
             Decor::PLAIN,
         ));
-        assert!(text.contains("minato uninstall"), "got:\n{text}");
+        assert!(text.contains("kobune uninstall"), "got:\n{text}");
     }
 
     #[test]
@@ -2015,13 +2015,13 @@ mod tests {
         let empty = crate::uninstall::Plan::default();
         let reason = "it is not running".to_string();
         let text = render(&uninstall_plan(&empty, Err(&reason), false, Decor::PLAIN));
-        assert!(text.contains("nothing of Minato"), "got:\n{text}");
+        assert!(text.contains("nothing of Kobune"), "got:\n{text}");
     }
 
     #[test]
     fn what_could_not_be_removed_is_named() {
         let text = render(&uninstall_done(
-            &["/usr/local/bin/minato: Permission denied".to_string()],
+            &["/usr/local/bin/kobune: Permission denied".to_string()],
             &[],
             Decor::PLAIN,
         ));
@@ -2033,10 +2033,10 @@ mod tests {
     #[test]
     fn root_steps_that_did_not_run_are_handed_back() {
         // The machine is left in a state a person can finish by hand,
-        // which is the same answer `minato setup` gives.
+        // which is the same answer `kobune setup` gives.
         let remaining = vec![crate::uninstall::Privileged {
             label: "stop the LaunchDaemon".into(),
-            commands: vec!["sudo launchctl bootout system/dev.minato.daemon".into()],
+            commands: vec!["sudo launchctl bootout system/dev.kobune.daemon".into()],
         }];
 
         let text = render(&uninstall_done(&[], &remaining, Decor::PLAIN));

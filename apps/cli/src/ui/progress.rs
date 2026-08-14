@@ -22,7 +22,7 @@ use std::io::{IsTerminal, Stdout, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use minato_api::{Event, LogLevel, StepStatus};
+use kobune_api::{Event, LogLevel, StepStatus};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};

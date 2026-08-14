@@ -23,7 +23,7 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// What `cloudflared` says when the work is already done.
 ///
 /// Both setup steps are run on every enable, so "it exists" has to read as
-/// success — otherwise re-running `minato tunnel enable` fails on a
+/// success — otherwise re-running `kobune tunnel enable` fails on a
 /// machine where it already worked.
 const ALREADY_EXISTS: &[&str] = &[
     "already exists",
@@ -49,7 +49,7 @@ impl TunnelProcess {
     /// safe to call on every daemon start rather than only the first.
     ///
     /// The DNS outcome comes back with the process because the caller is
-    /// the only one that knows whether Minato has routed this zone before,
+    /// the only one that knows whether Kobune has routed this zone before,
     /// and so whether "already existed" is its own record or a stranger's.
     pub async fn start(settings: TunnelSettings) -> Result<(Self, StepOutcome)> {
         ensure_tunnel(&settings).await?;
@@ -115,7 +115,7 @@ pub async fn ensure_tunnel(settings: &TunnelSettings) -> Result<()> {
 /// The outcome is returned rather than swallowed. `*.{zone}` is a record a
 /// zone may well already have for its own reasons, and cloudflared refuses
 /// with "already exists" without saying what holds the name — a record
-/// that is not this tunnel means every Minato hostname silently goes
+/// that is not this tunnel means every Kobune hostname silently goes
 /// nowhere, which is worth saying out loud.
 pub async fn ensure_dns(settings: &TunnelSettings) -> Result<StepOutcome> {
     let record = settings.dns_record();
@@ -146,7 +146,7 @@ pub async fn ensure_dns(settings: &TunnelSettings) -> Result<StepOutcome> {
 /// mean a cached NXDOMAIN — so the caller reports it as something to look
 /// at rather than as a failure.
 pub async fn wildcard_resolves(settings: &TunnelSettings) -> bool {
-    let probe = format!("minato-probe.{}:443", settings.domain);
+    let probe = format!("kobune-probe.{}:443", settings.domain);
 
     match tokio::net::lookup_host(&probe).await {
         Ok(mut addresses) => addresses.next().is_some(),
@@ -175,7 +175,7 @@ pub async fn delete_tunnel(settings: &TunnelSettings) -> Result<()> {
 /// What a setup step actually did.
 ///
 /// Every step runs every time, so "already exists" is success — but for
-/// the DNS record it is also the one case Minato cannot see past, so the
+/// the DNS record it is also the one case Kobune cannot see past, so the
 /// two are told apart rather than collapsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepOutcome {
@@ -188,7 +188,7 @@ pub enum StepOutcome {
     /// cloudflared refused because the name is taken.
     ///
     /// By what, it does not say. For the DNS record that is the case
-    /// Minato cannot see past.
+    /// Kobune cannot see past.
     AlreadyThere,
 }
 
@@ -330,7 +330,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let settings = settings(
             dir.path(),
-            r#"echo 'tunnel with name minato already exists' >&2; exit 1"#,
+            r#"echo 'tunnel with name kobune already exists' >&2; exit 1"#,
         );
 
         ensure_tunnel(&settings).await.expect("treated as success");

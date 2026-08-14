@@ -9,8 +9,8 @@ script or an agent can branch without reading any output.
 | `1` | An error with no more specific code | No |
 | `4` | Not found — workspace, service or project | No |
 | `5` | Already exists | No |
-| `6` | No `minato.toml` was found | No |
-| `7` | `minato.toml` is invalid | No |
+| `6` | No `kobune.toml` was found | No |
+| `7` | `kobune.toml` is invalid | No |
 | `8` | Not inside a git repository | No |
 | `9` | The container runtime cannot be reached | **Yes** |
 | `10` | A runtime operation failed | No |
@@ -21,10 +21,10 @@ changed. Only code 9 qualifies: start Docker or Apple Container and try again.
 
 ## `exec` is different
 
-`minato exec` returns **the command's own exit code**, not one of the above:
+`kobune exec` returns **the command's own exit code**, not one of the above:
 
 ```console
-$ minato exec web -- npm test; echo $?
+$ kobune exec web -- npm test; echo $?
 1
 ```
 
@@ -35,7 +35,7 @@ you need to be sure which happened.
 ## In JSON
 
 ```console
-$ minato url nope --json; echo $?
+$ kobune url nope --json; echo $?
 {
   "error": {
     "code": "not_found",

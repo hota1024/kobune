@@ -4,17 +4,17 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no minato.toml found: searched upwards from {0}")]
+    #[error("no kobune.toml found: searched upwards from {0}")]
     ConfigNotFound(PathBuf),
 
-    #[error("cannot read minato.toml ({path}): {source}")]
+    #[error("cannot read kobune.toml ({path}): {source}")]
     ConfigRead {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("invalid syntax in minato.toml ({path}): {source}")]
+    #[error("invalid syntax in kobune.toml ({path}): {source}")]
     ConfigParse {
         path: PathBuf,
         #[source]

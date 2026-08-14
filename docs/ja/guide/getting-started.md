@@ -3,7 +3,7 @@
 空のリポジトリから、URL でアクセスできる状態までを一通りたどります。所要時間は
 10 分程度で、その大半はイメージの取得待ちです。
 
-[インストール](./installation) を済ませ、`minato doctor` が問題なく通ることを
+[インストール](./installation) を済ませ、`kobune doctor` が問題なく通ることを
 前提とします。
 
 ## 1. プロジェクトを定義する
@@ -11,16 +11,16 @@
 git リポジトリのルートで実行します。
 
 ```console
-$ minato init
+$ kobune init
 ╭ init ─────────────────────────────────────╮
-│ created  /path/to/myapp/minato.toml       │
+│ created  /path/to/myapp/kobune.toml       │
 │ project  myapp                            │
 │                                           │
-│ › bring the environment up with minato up │
+│ › bring the environment up with kobune up │
 ╰───────────────────────────────────────────╯
 ```
 
-`minato init` はひな形を生成し、ディレクトリ名からプロジェクト名を推測します。
+`kobune init` はひな形を生成し、ディレクトリ名からプロジェクト名を推測します。
 生成されたファイルを開き、実際の構成に合わせて編集します。
 
 ```toml
@@ -45,13 +45,13 @@ command = "npm run dev"
 - worktree は **`/workspace`** にマウントされ、そこが作業ディレクトリになり
   ます。したがって `npm run dev` は、そのブランチのコードに対して実行されます。
 
-編集したらコミットしてください。`minato.toml` はリポジトリで管理するファイル
+編集したらコミットしてください。`kobune.toml` はリポジトリで管理するファイル
 であり、すべての worktree が同じ内容を参照します。
 
 ## 2. 起動する
 
 ```console
-$ minato up
+$ kobune up
   ✓ preparing the network
   ✓ pulling image node:22
   ✓ starting web
@@ -79,17 +79,17 @@ $ curl -sS --fail-with-body https://web.myapp.localhost
 URL を取得してから使うこともできます。
 
 ```console
-$ minato url web
+$ kobune url web
 https://web.myapp.localhost
 ```
 
-サービス名を指定した `minato url` は 1 行だけを出力するため、パイプやコマンド
+サービス名を指定した `kobune url` は 1 行だけを出力するため、パイプやコマンド
 置換にそのまま使えます。URL を直接記述するのではなく、このコマンドで取得して
 ください。サービス名を省略すると、全サービスを一覧表示します。
 
 ::: tip 証明書エラーが出る場合
 `curl` が終了コード 60 で失敗するのは、ローカル CA がまだ信頼されていないため
-です。`minato doctor` が対処方法を出力します。最初に遭遇する問題としては、
+です。`kobune doctor` が対処方法を出力します。最初に遭遇する問題としては、
 これが最も多いものです。
 :::
 
@@ -98,7 +98,7 @@ https://web.myapp.localhost
 worktree を使う利点が現れるのはここからです。
 
 ```console
-$ minato new feature/user-auth
+$ kobune new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ starting web
   ✓ waiting for web
@@ -116,7 +116,7 @@ worktree は `../myapp.wt/feature-user-auth` に作成されます。リポジ�
 ではなく隣接するディレクトリに置くため、エディタや検索の対象が二重になりません。
 
 ```console
-$ minato ls
+$ kobune ls
 ╭ workspaces ────────────────────────────────────╮
 │ WORKSPACE          SERVICES  BRANCH            │
 │ (main)             1/1       main              │
@@ -133,15 +133,15 @@ $ cd ../myapp.wt/feature-user-auth
 worktree の内側では、コマンドは既定でその workspace を対象とします。
 
 ```console
-$ minato logs web -f          # このブランチのログを追跡する
-$ minato exec web -- npm test # このコンテナ内でテストを実行する
-$ minato status               # 起動状況とアクセス先を確認する
+$ kobune logs web -f          # このブランチのログを追跡する
+$ kobune exec web -- npm test # このコンテナ内でテストを実行する
+$ kobune status               # 起動状況とアクセス先を確認する
 ```
 
 別のディレクトリからは `-w` で対象を指定します。
 
 ```console
-$ minato logs -w feature-user-auth web
+$ kobune logs -w feature-user-auth web
 ```
 
 ## 6. 放置した場合の挙動
@@ -154,13 +154,13 @@ $ curl -sS https://web.feature-user-auth.myapp.localhost
 # 1〜2 秒待って応答が返る
 ```
 
-作業中のブランチに対して `minato up` を再実行する必要はありません。放置した
+作業中のブランチに対して `kobune up` を再実行する必要はありません。放置した
 環境がリソースを消費しないため、worktree を必要なだけ作成できます。
 
 ## 7. 後片付け
 
 ```console
-$ minato rm -w feature-user-auth
+$ kobune rm -w feature-user-auth
 ```
 
 worktree とコンテナを削除します。ブランチは残ります。このコマンドは

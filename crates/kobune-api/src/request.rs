@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Identifies what an operation acts on.
 ///
 /// The daemon does not know the caller's working directory, so the client
-/// always supplies it. The git repository and `minato.toml` are resolved
+/// always supplies it. The git repository and `kobune.toml` are resolved
 /// from `cwd`; when `workspace` is omitted, the worktree containing `cwd`
 /// is the target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,9 +61,9 @@ pub enum Request {
     /// Shuts the daemon down.
     Shutdown,
 
-    /// Takes down everything Minato has made, across every project.
+    /// Takes down everything Kobune has made, across every project.
     ///
-    /// This is the daemon's half of `minato uninstall`: containers,
+    /// This is the daemon's half of `kobune uninstall`: containers,
     /// networks and the state file. What lives outside the daemon — the
     /// binaries, the CA in the keychain, `/etc/resolver` — is the CLI's,
     /// because the daemon does not know where it was installed from.
@@ -212,7 +212,7 @@ pub enum Request {
     /// Sets an environment variable.
     EnvSet {
         target: Target,
-        scope: minato_core::EnvScope,
+        scope: kobune_core::EnvScope,
         key: String,
         value: String,
     },
@@ -220,7 +220,7 @@ pub enum Request {
     /// Removes an environment variable.
     EnvUnset {
         target: Target,
-        scope: minato_core::EnvScope,
+        scope: kobune_core::EnvScope,
         key: String,
     },
 
@@ -234,7 +234,7 @@ pub enum Request {
         /// Acknowledges that the environment goes on the public internet
         /// with no Cloudflare Access policy in front of it.
         ///
-        /// Not a convenience flag. Minato cannot apply an Access policy —
+        /// Not a convenience flag. Kobune cannot apply an Access policy —
         /// that needs the Cloudflare API, not the CLI — so it cannot
         /// promise one is there. Exposing a development environment
         /// unauthenticated is an accident unless it was asked for
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn start_defaults_to_true() {
-        // A default of false would make `minato new` skip starting up.
+        // A default of false would make `kobune new` skip starting up.
         let request: Request =
             serde_json::from_str(r#"{"op":"new","target":{"cwd":"/repo"},"branch":"x"}"#)
                 .expect("deserializes");

@@ -1,6 +1,6 @@
 //! The hook for waking a stopped service.
 //!
-//! The proxy cannot depend on `minato-runtime` (`docs/DESIGN.md` §13), yet
+//! The proxy cannot depend on `kobune-runtime` (`docs/DESIGN.md` §13), yet
 //! "start it when a request arrives" needs the runtime. This trait is the
 //! boundary; the daemon supplies the implementation. All the proxy does is
 //! ask for a host to be made ready.

@@ -47,20 +47,20 @@ jobs:
         run: cargo fmt --all --check
 
       # Nor can the dependency graph. `docs/DESIGN.md` §13: no client-side
-      # crate may reach `minato-runtime` and its neighbours, or Docker
+      # crate may reach `kobune-runtime` and its neighbours, or Docker
       # ends up in the GUI and the daemon stops being the only way in.
       - name: Direction of dependencies
         if: matrix.os == 'macos-latest'
         run: cargo xtask deps check
 
-      # `minato-desktop` is excluded here and built in its own job: it pulls
+      # `kobune-desktop` is excluded here and built in its own job: it pulls
       # GPUI from the Zed repository, which dominates the build time and
       # would delay the result for changes that cannot affect it.
       - name: Clippy
-        run: cargo clippy --workspace --exclude minato-desktop --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude kobune-desktop --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace --exclude minato-desktop
+        run: cargo test --workspace --exclude kobune-desktop
 
   # The tests that need a container runtime, which is why they are their
   # own job: every one of them is `#[ignore]`d, so the job above never
@@ -91,9 +91,9 @@ jobs:
         run: docker pull busybox:latest
 
       # One at a time: they share a Docker daemon, and each names its
-      # containers after the project in its own `minato.toml`.
+      # containers after the project in its own `kobune.toml`.
       - name: Tests
-        run: cargo test --workspace --exclude minato-desktop -- --ignored --test-threads=1
+        run: cargo test --workspace --exclude kobune-desktop -- --ignored --test-threads=1
 
       # A container left behind would be found by the next run and read as
       # state that belongs to it. The harness clears up after itself even
@@ -101,10 +101,10 @@ jobs:
       # true, and it says so rather than passing quietly.
       - name: Nothing left behind
         run: |
-          left="$(docker ps -aq --filter 'label=dev.minato.managed=1')"
+          left="$(docker ps -aq --filter 'label=dev.kobune.managed=1')"
           if [ -n "$left" ]; then
             echo "containers survived the run:" >&2
-            docker ps -a --filter 'label=dev.minato.managed=1' >&2
+            docker ps -a --filter 'label=dev.kobune.managed=1' >&2
             exit 1
           fi
 
@@ -115,7 +115,7 @@ jobs:
   #
   # Here rather than in `docs.yml`, which is filtered to the paths that
   # build the site. The corpus is wider than the site: `README.md`,
-  # `SECURITY.md` and `skills/minato/SKILL.md` are all in it, and none of
+  # `SECURITY.md` and `skills/kobune/SKILL.md` are all in it, and none of
   # them should trigger a deploy.
   #
   # Node with nothing installed — the checker has no dependencies, which is
@@ -155,7 +155,7 @@ jobs:
       # know about macOS is first on PATH. Setting LIBCLANG_PATH to the
       # Command Line Tools is the fix; runners have not needed it so far.
       - name: Clippy
-        run: cargo clippy -p minato-desktop --all-targets -- -D warnings
+        run: cargo clippy -p kobune-desktop --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test -p minato-desktop
+        run: cargo test -p kobune-desktop

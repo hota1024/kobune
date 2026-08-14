@@ -1,4 +1,4 @@
-# `minato.toml`
+# `kobune.toml`
 
 Lives at the repository root and is committed. Every worktree reads the same
 one.
@@ -48,11 +48,11 @@ carry = [".env", "apps/api/.dev.vars"]
 
 `git worktree add` gives a new worktree the tracked files and nothing else, so
 an untracked but required `.env` is missing and the services cannot start.
-These are copied from the main worktree during `minato new`, before anything
+These are copied from the main worktree during `kobune new`, before anything
 starts.
 
 - **A missing source is not an error.** Not every checkout has a `.env` yet,
-  and failing `minato new` over one would be worse than the gap it fills. It
+  and failing `kobune new` over one would be worse than the gap it fills. It
   is reported, not passed over in silence.
 - **An existing destination is never overwritten.** Whatever git just checked
   out wins — this is for what git does not carry, not a way to replace what it
@@ -71,7 +71,7 @@ See [Runtimes](../guide/runtimes).
 
 ## `[services.<name>]`
 
-The service name appears in URLs and in `MINATO_URL_<SERVICE>`, so keep it to
+The service name appears in URLs and in `KOBUNE_URL_<SERVICE>`, so keep it to
 letters, digits and `-`.
 
 ### Image and command
@@ -102,19 +102,19 @@ What a program looks for before it draws anything. Turborepo, Vitest and the
 rest ask whether they are talking to a terminal and settle for plain
 scrolling text when they are not — which is what a container gives them
 without this. With it, colour comes through and
-[`minato logs -f dev`](./cli#typing-at-a-service) becomes that terminal: what
+[`kobune logs -f dev`](./cli#typing-at-a-service) becomes that terminal: what
 you type reaches the program.
 
 ::: warning A terminal changes what the logs are
 The two output streams become one, so nothing tells stderr from stdout any
 more, and lines arrive ending `\r\n`. That is what a terminal is, not
-something Minato adds. Leave `tty` off for a service whose logs get piped
+something Kobune adds. Leave `tty` off for a service whose logs get piped
 into something.
 :::
 
 Whether a container has a terminal is fixed when it is created, so turning
 this on for a service that is already running recreates it — a restart, on
-the next `minato up`.
+the next `kobune up`.
 
 #### `setup`
 
@@ -132,7 +132,7 @@ real container comes up.
 
 **Once per worktree, not once per container.** A stopped container is
 recreated by the next `up`, so anything tied to container creation would run
-on every `down`/`up` — which is what this exists to avoid. Minato remembers
+on every `down`/`up` — which is what this exists to avoid. Kobune remembers
 the command it ran against the worktree:
 
 - Change what `setup` says and it runs again. There is nothing else to
@@ -141,7 +141,7 @@ the command it ran against the worktree:
   until you say otherwise
 - A `setup` that fails stops the `up` and is not remembered, so fixing it and
   running `up` again retries
-- `minato rm` forgets it, along with the `@workspace` volumes it populated
+- `kobune rm` forgets it, along with the `@workspace` volumes it populated
 - A `scope = "project"` service is set up once for the project, not once per
   worktree — it has one container for all of them
 
@@ -154,15 +154,15 @@ running, because that is the thing it is about to start.
 together. Every service mounts the same project-wide cache volume, so two
 installs at once would be two arbitrary commands writing to one directory —
 safe for a package manager's own store, which is built for it, and not
-something Minato can promise for whatever else a `setup` does. So it does
-not: the first `up` after `minato new` pays for its setups end to end, and
+something Kobune can promise for whatever else a `setup` does. So it does
+not: the first `up` after `kobune new` pays for its setups end to end, and
 later ones find them recorded and skip straight past.
 
-Waking a stopped service with a request does not run `setup` — only `minato
+Waking a stopped service with a request does not run `setup` — only `kobune
 up` does, so an edit takes effect on the next `up` rather than on the next
 request.
 
-Not to be confused with `minato setup`, which is the privileged host setup.
+Not to be confused with `kobune setup`, which is the privileged host setup.
 
 ### Networking
 
@@ -192,7 +192,7 @@ that edits its Dockerfile gets the image that Dockerfile describes. It has to
 stay inside the worktree; `build = "../.."` is refused rather than handed to
 the runtime as a build context.
 
-The image is tagged `minato-{project}-{service}:{fingerprint}`, where the
+The image is tagged `kobune-{project}-{service}:{fingerprint}`, where the
 fingerprint covers the Dockerfile and the build args. Two consequences worth
 knowing:
 
@@ -203,7 +203,7 @@ knowing:
 
 ::: warning A copied file does not trigger a rebuild
 The fingerprint cannot see files the Dockerfile `COPY`s in, so editing
-`package.json` alone does not cause a rebuild. Use `minato up --build`.
+`package.json` alone does not cause a rebuild. Use `kobune up --build`.
 `docker compose` behaves the same way.
 :::
 
@@ -220,15 +220,15 @@ health = "cmd:pg_isready -U postgres"      # runs inside the container
 ```
 
 **Only the path is used** for `http://`. What you write is the address from
-inside the container; Minato reaches it at whatever address the runtime
+inside the container; Kobune reaches it at whatever address the runtime
 assigned.
 
 Starting a service waits for this check to pass before moving on, which is
-what keeps the `curl` right after `minato up` from meeting a connection
+what keeps the `curl` right after `kobune up` from meeting a connection
 refused.
 
 ::: warning The wait gives up after 15 seconds
-Waiting forever would mean `minato up` never returns, so a service that is
+Waiting forever would mean `kobune up` never returns, so a service that is
 not ready by then is left starting and the command carries on. A dev server
 that compiles for a minute on its first run will hit this. Nothing is
 broken — the URL still works once it comes up, because reaching for it waits
@@ -240,7 +240,7 @@ broken — the URL still works once it comes up, because reaching for it waits
 | Key | Type | | |
 | --- | --- | --- | --- |
 | `idle_timeout` | duration | `"30m"` | Time without a request before it stops itself. Without a URL of its own, it follows the services that `depends_on` it |
-| `depends_on` | array | `[]` | Services to start first, whether by `minato up` or by a request waking this one |
+| `depends_on` | array | `[]` | Services to start first, whether by `kobune up` or by a request waking this one |
 | `scope` | string | `"workspace"` | `"workspace"` or `"project"` |
 
 Durations are `humantime`: `"30s"`, `"10m"`, `"2h"`.
@@ -248,7 +248,7 @@ Durations are `humantime`: `"30s"`, `"10m"`, `"2h"`.
 `depends_on` starts a dependency first **and waits for it to be ready**, by
 the same check [Readiness](#readiness) describes — so a service can assume
 the ones it names are answering, up to the 15-second limit noted there. On
-Apple Container it also decides whether `MINATO_HOST_<PEER>` is available,
+Apple Container it also decides whether `KOBUNE_HOST_<PEER>` is available,
 since the address is read when the service starts.
 
 `scope = "project"` shares one instance across every worktree. Good for a
@@ -276,9 +276,9 @@ is a host path. A `:ro` or `:rw` suffix sets the mode, defaulting to read-write.
 The container path must be absolute.
 
 **Named storage is already namespaced per project.** `pgdata` becomes the
-Docker volume `minato-{project}-pgdata`, so there is no need to prefix the
+Docker volume `kobune-{project}-pgdata`, so there is no need to prefix the
 name yourself — `myapp-pgdata` under project `myapp` would end up as
-`minato-myapp-myapp-pgdata`.
+`kobune-myapp-myapp-pgdata`.
 
 #### Scope
 
@@ -299,8 +299,8 @@ volumes = [
 
 | Written | Docker volume |
 | --- | --- |
-| `pnpm-store` | `minato-{project}-pnpm-store` |
-| `node-modules@workspace` | `minato-{project}-{workspace}.node-modules` |
+| `pnpm-store` | `kobune-{project}-pnpm-store` |
+| `node-modules@workspace` | `kobune-{project}-{workspace}.node-modules` |
 
 The worktree is joined with `.` rather than `-` on purpose. Projects,
 worktrees and volume names are all DNS labels, so a hyphen occurs inside any
@@ -316,15 +316,15 @@ either way. An unrecognised suffix is refused rather than treated as part of
 the name, since `@worktree` would otherwise quietly produce a shared volume
 called `node-modules@worktree`.
 
-**A workspace volume goes when its worktree goes.** `minato rm` removes it
+**A workspace volume goes when its worktree goes.** `kobune rm` removes it
 along with the containers, since there is no longer a worktree it belongs to.
 Project volumes are left alone — they are shared, and outlive any one
 worktree.
 
-That leaves [`minato uninstall`](./cli#taking-it-off-again) as the only
+That leaves [`kobune uninstall`](./cli#taking-it-off-again) as the only
 command that removes a project volume, and it lists every one it found before
 asking. To remove one on its own, remove it where it lives: `docker volume rm
-minato-{project}-{name}`, or the directory under `~/.minato/volumes/` on
+kobune-{project}-{name}`, or the directory under `~/.kobune/volumes/` on
 Apple Container.
 
 ::: warning Changing the scope of an existing volume
@@ -338,7 +338,7 @@ instance serves every worktree, so there is no worktree whose volume it would
 be. That is refused when the configuration is read.
 
 Apple Container has no named volumes, so they become bind mounts under
-`~/.minato/volumes/<project>/`.
+`~/.kobune/volumes/<project>/`.
 
 ### Environment
 
@@ -355,7 +355,7 @@ A value may refer to another variable, which is how a per-worktree URL reaches
 the name an application already reads:
 
 ```toml
-env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+env = { NEXT_PUBLIC_API_URL = "${KOBUNE_URL_API}" }
 ```
 
 This is the *project* layer, and it is committed — keep secrets out of it. See
@@ -365,13 +365,13 @@ This is the *project* layer, and it is committed — keep secrets out of it. See
 than its own environment can find it:
 
 ```toml
-env_file = ".minato/env.api"
+env_file = ".kobune/env.api"
 ```
 
 Written before the service starts and only for the ones being started, secrets
 left out. A path git tracks is
-refused, a file Minato did not write is never overwritten, and so are
-`.minato/env` and `.minato/env.local` — Minato reads those as layers of its
+refused, a file Kobune did not write is never overwritten, and so are
+`.kobune/env` and `.kobune/env.local` — Kobune reads those as layers of its
 own — and any path another service already claims. A service with
 `scope = "project"` cannot have one either: it is mounted no worktree to write
 into.
@@ -379,7 +379,7 @@ into.
 ## Validation
 
 ```console
-$ minato status
+$ kobune status
 ✗ error: invalid configuration: service `web`: depends_on names an unknown service `database`
 ```
 

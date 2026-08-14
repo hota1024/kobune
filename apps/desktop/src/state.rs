@@ -7,7 +7,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, RwLock};
 
-use minato_api::{Pong, WorkspaceInfo};
+use kobune_api::{Pong, WorkspaceInfo};
 
 /// How many lines the log viewer keeps.
 ///
@@ -152,7 +152,7 @@ impl SharedState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minato_api::{ServiceInfo, ServiceScope, ServiceState};
+    use kobune_api::{ServiceInfo, ServiceScope, ServiceState};
     use std::path::PathBuf;
 
     fn service(name: &str, state: ServiceState, url: Option<&str>) -> ServiceInfo {

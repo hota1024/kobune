@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use minato_core::{HealthCheck, ServiceScope, ServiceState};
+use kobune_core::{HealthCheck, ServiceScope, ServiceState};
 
 /// The notional workspace that `scope = "project"` services belong to.
 ///
@@ -106,7 +106,7 @@ pub struct ServiceSpec {
 
     /// Run the process on a terminal, with its stdin left open.
     ///
-    /// Set from `tty` in `minato.toml`. It is what lets `minato logs`
+    /// Set from `tty` in `kobune.toml`. It is what lets `kobune logs`
     /// attach both ways, and what makes a program that checks for a
     /// terminal — turborepo, most test runners — draw in colour.
     pub tty: bool,
@@ -129,11 +129,11 @@ pub struct ServiceSpec {
     ///
     /// Docker resolves service names through network aliases. Apple
     /// Container has no aliases and can only resolve container names, so
-    /// it uses this list to inject `MINATO_HOST_<SERVICE>` and tell the app
+    /// it uses this list to inject `KOBUNE_HOST_<SERVICE>` and tell the app
     /// what to call its neighbours.
     pub peers: Vec<String>,
 
-    /// The hostnames from `MINATO_URL_<SERVICE>`, to be pointed at the
+    /// The hostnames from `KOBUNE_URL_<SERVICE>`, to be pointed at the
     /// gateway from inside the container.
     ///
     /// **A URL that only works in the browser is half a URL.** The same
@@ -174,7 +174,7 @@ pub struct BuildSpec {
 
     /// The Dockerfile, as an absolute path.
     ///
-    /// Usually `context/Dockerfile`, but `dockerfile` in `minato.toml` can
+    /// Usually `context/Dockerfile`, but `dockerfile` in `kobune.toml` can
     /// point elsewhere — one context, several images is a common layout.
     pub dockerfile: PathBuf,
 
@@ -220,7 +220,7 @@ pub enum VolumeScope {
     Workspace,
 }
 
-/// One piece of storage Minato is holding, as its runtime knows it.
+/// One piece of storage Kobune is holding, as its runtime knows it.
 ///
 /// What [`Runtime::managed_volumes`](crate::Runtime::managed_volumes)
 /// finds and [`Runtime::remove_managed_volume`](crate::Runtime::remove_managed_volume)
@@ -232,7 +232,7 @@ pub struct ManagedVolume {
     /// The project whose storage it is.
     ///
     /// Empty when the volume carries no project of its own. It is still
-    /// Minato's, and still goes; there is simply nothing to group it under.
+    /// Kobune's, and still goes; there is simply nothing to group it under.
     pub project: String,
 
     /// What the runtime calls it.
@@ -258,7 +258,7 @@ pub enum VolumeMount {
 }
 
 impl VolumeMount {
-    /// Parses one line of `volumes` from `minato.toml`.
+    /// Parses one line of `volumes` from `kobune.toml`.
     ///
     /// - `pgdata:/var/lib/postgresql/data` — named storage, shared by the
     ///   project's worktrees
@@ -378,7 +378,7 @@ fn validate_name(name: &str, spec: &str) -> Result<String, String> {
         return Err(format!("the volume name is empty: `{spec}`"));
     }
 
-    if !minato_core::naming::is_valid_label(name) {
+    if !kobune_core::naming::is_valid_label(name) {
         return Err(format!(
             "`{name}` is not a usable volume name in `{spec}`. \
              Use lowercase letters, digits and hyphens"
@@ -443,7 +443,7 @@ mod tests {
     fn shared_workspace_cannot_collide_with_real_labels() {
         // A real workspace name is always a DNS label, so nothing
         // starting with `_` can collide with one.
-        assert!(!minato_core::naming::is_valid_label(SHARED_WORKSPACE));
+        assert!(!kobune_core::naming::is_valid_label(SHARED_WORKSPACE));
         assert!(WorkspaceKey::shared("myapp").is_shared());
         assert!(!WorkspaceKey::new("myapp", "feat-1").is_shared());
     }

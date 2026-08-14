@@ -28,7 +28,7 @@ const FALLBACK: &str = "unnamed";
 /// dropped, a hash is appended to show that information was lost.
 ///
 /// ```
-/// # use minato_core::naming::sanitize_label;
+/// # use kobune_core::naming::sanitize_label;
 /// assert_eq!(sanitize_label("feature/user-auth"), "feature-user-auth");
 ///
 /// // Dropped characters are replaced by a hash so branches stay distinct.
@@ -326,7 +326,7 @@ mod tests {
     fn a_tunnel_hostname_is_one_label_under_the_zone() {
         // Universal SSL stops at the first level. A second label reaches
         // Cloudflare and is refused at the TLS handshake, which looks
-        // nothing like a Minato problem from the outside.
+        // nothing like a Kobune problem from the outside.
         let host = tunnel_host("web", Some("feat-1"), "myapp", "example.com");
         let label = host.strip_suffix(".example.com").expect("under the zone");
 

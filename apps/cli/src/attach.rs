@@ -1,4 +1,4 @@
-//! Lending this terminal to a service, for `minato logs`.
+//! Lending this terminal to a service, for `kobune logs`.
 //!
 //! Everything here is about getting out of the way. A program drawing a
 //! full-screen interface — turborepo's, most test runners' — needs the
@@ -14,7 +14,7 @@
 
 use std::io::{IsTerminal, Read, Write};
 
-use minato_api::{Typed, Window};
+use kobune_api::{Typed, Window};
 use ratatui::crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use tokio::sync::mpsc::{UnboundedSender, WeakUnboundedSender};
 use tokio::task::JoinHandle;
@@ -68,7 +68,7 @@ pub fn announce(service: &str) {
 /// moves.
 #[derive(Default)]
 pub struct Screen {
-    modes: minato_core::Modes,
+    modes: kobune_core::Modes,
 }
 
 impl Screen {
@@ -142,7 +142,7 @@ impl Session {
 /// of the program is told that the person detached, and a second one held
 /// by the watcher would mean it was never put down: the channel would stay
 /// open with nobody reading the terminal, and ctrl-p ctrl-q would leave
-/// `minato logs` running rather than end it. Weak, so a window that changes
+/// `kobune logs` running rather than end it. Weak, so a window that changes
 /// size can still be reported without the watcher keeping the session alive
 /// on its own.
 ///
@@ -390,7 +390,7 @@ mod tests {
 
         // The window watcher used to be given a clone, so the channel
         // stayed open, `call_attached` waited on for ever, and ctrl-p
-        // ctrl-q left `minato logs` running instead of ending it.
+        // ctrl-q left `kobune logs` running instead of ending it.
         assert!(
             window.upgrade().is_none(),
             "the window watcher must not hold the session open by itself"

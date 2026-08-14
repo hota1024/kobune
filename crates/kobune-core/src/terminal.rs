@@ -6,7 +6,7 @@
 //! it again — there is no reason to, since the terminal it is talking to
 //! has not changed.
 //!
-//! **Except that under `minato logs -f` it has.** Attaching hands the
+//! **Except that under `kobune logs -f` it has.** Attaching hands the
 //! program a terminal it has never seen, minutes after it announced what it
 //! wanted, and the announcement is long gone: the terminal sends no mouse
 //! reports because nobody asked it to, so the wheel does nothing and the

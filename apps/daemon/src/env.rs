@@ -1,14 +1,14 @@
 //! Building the environment a service receives.
 //!
-//! The layers stack as `docs/DESIGN.md` §8 describes. What Minato injects
+//! The layers stack as `docs/DESIGN.md` §8 describes. What Kobune injects
 //! goes first, so the user's own settings win. The other way round,
-//! Minato's conveniences would quietly erase them.
+//! Kobune's conveniences would quietly erase them.
 
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
-use minato_api::{ApiError, ErrorCode, Unsettled, UnsettledReason};
-use minato_core::{EnvLayers, EnvScope, MinatoConfig, Paths, WorkspaceRecord, env};
+use kobune_api::{ApiError, ErrorCode, Unsettled, UnsettledReason};
+use kobune_core::{EnvLayers, EnvScope, KobuneConfig, Paths, WorkspaceRecord, env};
 
 use crate::gateway::Gateway;
 
@@ -16,22 +16,22 @@ use crate::gateway::Gateway;
 ///
 /// **The additive one.** `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and
 /// `REQUESTS_CA_BUNDLE` replace the trust store rather than adding to it,
-/// so a container told about Minato through one of those would stop
+/// so a container told about Kobune through one of those would stop
 /// trusting everywhere else — including the registry it installs from.
 /// There is no additive equivalent to set for them.
 const NODE_CA_VAR: &str = "NODE_EXTRA_CA_CERTS";
 
-/// The variables Minato injects.
+/// The variables Kobune injects.
 ///
-/// **`MINATO_URL_<SERVICE>` is the important one.** Without a way for the
+/// **`KOBUNE_URL_<SERVICE>` is the important one.** Without a way for the
 /// frontend to learn the API's URL, a setup where URLs differ per worktree
 /// cannot hold together.
 ///
 /// `service` is `None` when nobody is asking about a particular one — a
-/// listing of what every service shares. `MINATO_SERVICE` is left out
+/// listing of what every service shares. `KOBUNE_SERVICE` is left out
 /// there, since there is no service to name.
 pub fn injected(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     project: &str,
     record: &WorkspaceRecord,
     service: Option<&str>,
@@ -39,11 +39,11 @@ pub fn injected(
 ) -> IndexMap<String, String> {
     let mut values = IndexMap::new();
 
-    values.insert("MINATO_PROJECT".to_string(), project.to_string());
-    values.insert("MINATO_WORKSPACE".to_string(), record.label.clone());
+    values.insert("KOBUNE_PROJECT".to_string(), project.to_string());
+    values.insert("KOBUNE_WORKSPACE".to_string(), record.label.clone());
 
     if let Some(service) = service {
-        values.insert("MINATO_SERVICE".to_string(), service.to_string());
+        values.insert("KOBUNE_SERVICE".to_string(), service.to_string());
     }
 
     // Somewhere to put what is worth keeping but not committing. Every
@@ -51,15 +51,15 @@ pub fn injected(
     // writing gigabytes into the worktree — and therefore into the
     // repository on the host.
     values.insert(
-        "MINATO_CACHE_DIR".to_string(),
-        minato_core::config::CACHE_TARGET.to_string(),
+        "KOBUNE_CACHE_DIR".to_string(),
+        kobune_core::config::CACHE_TARGET.to_string(),
     );
 
     // **The certificate the proxy presents, so a container can check
     // it.** Without this the URL below resolves, connects, and then fails
     // to verify — and every project reaches for
     // `NODE_TLS_REJECT_UNAUTHORIZED=0`, which turns verification off for
-    // the whole process rather than for Minato.
+    // the whole process rather than for Kobune.
     //
     // **Wired in, not just named.** Naming the file and leaving the rest
     // to the service is what this did at first, and what came back was
@@ -74,12 +74,12 @@ pub fn injected(
     // away from keeping it, since this is the bottom layer.
     if gateway.trusted_ca().is_some() {
         values.insert(
-            "MINATO_CA_FILE".to_string(),
-            minato_core::config::CA_TARGET.to_string(),
+            "KOBUNE_CA_FILE".to_string(),
+            kobune_core::config::CA_TARGET.to_string(),
         );
         values.insert(
             NODE_CA_VAR.to_string(),
-            minato_core::config::CA_TARGET.to_string(),
+            kobune_core::config::CA_TARGET.to_string(),
         );
     }
 
@@ -87,9 +87,9 @@ pub fn injected(
         values.insert(url_variable(&name), url);
 
         // **A CORS origin, `allowedDevOrigins` and a cookie domain want
-        // the host, not the URL.** Cutting the scheme off `MINATO_URL_*`
+        // the host, not the URL.** Cutting the scheme off `KOBUNE_URL_*`
         // with `sed` is what every project does otherwise, and it is a
-        // name Minato has already worked out to build the URL.
+        // name Kobune has already worked out to build the URL.
         //
         // Under the same condition as the URL on purpose: a hostname
         // nothing answers on is the "set, but broken" this avoids.
@@ -103,11 +103,11 @@ pub fn injected(
 ///
 /// What a container has to be able to resolve for the URL it was handed to
 /// work from inside one — see `ServiceSpec::gateway_hosts`. The same names
-/// `MINATO_URL_<SERVICE>` is built from and `MINATO_HOSTNAME_<SERVICE>`
+/// `KOBUNE_URL_<SERVICE>` is built from and `KOBUNE_HOSTNAME_<SERVICE>`
 /// carries, under the same condition: no proxy, no URL, and so nothing to
 /// point anywhere.
 pub fn service_hosts(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     record: &WorkspaceRecord,
     gateway: &Gateway,
 ) -> Vec<String> {
@@ -123,7 +123,7 @@ pub fn service_hosts(
 /// both answers to "what is the proxy serving right now", and three call
 /// sites deriving them separately is three chances for them to disagree.
 pub fn workspace_context(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     record: &WorkspaceRecord,
     gateway: &Gateway,
 ) -> crate::spec::WorkspaceContext {
@@ -141,7 +141,7 @@ pub fn workspace_context(
 /// set; a name pointed at the proxy for a service the proxy does not route
 /// resolves to a 404 rather than to nothing.
 fn exposed_urls(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     record: &WorkspaceRecord,
     gateway: &Gateway,
 ) -> Vec<(String, String, String)> {
@@ -152,7 +152,7 @@ fn exposed_urls(
         .iter()
         .filter(|(_, service)| service.exposed())
         .filter_map(|(name, _)| {
-            let host = minato_core::naming::service_host_in(name, record.url_label(), &domain);
+            let host = kobune_core::naming::service_host_in(name, record.url_label(), &domain);
 
             // With no proxy running there is no URL. An empty string would
             // leave it "set, but broken".
@@ -165,33 +165,33 @@ fn exposed_urls(
 
 /// Turns a failure to settle the layers into an API error.
 ///
-/// **A missing `MINATO_URL_<SERVICE>` is usually the proxy being down**,
+/// **A missing `KOBUNE_URL_<SERVICE>` is usually the proxy being down**,
 /// not a mistake in the configuration: the variable is only injected while
 /// the gateway is listening, and only for an exposed service. Saying no
-/// more than "nothing sets it" sends someone to edit a `minato.toml` that
-/// is already right. `MINATO_HOSTNAME_<SERVICE>` goes the same way, for
+/// more than "nothing sets it" sends someone to edit a `kobune.toml` that
+/// is already right. `KOBUNE_HOSTNAME_<SERVICE>` goes the same way, for
 /// the same reason.
 pub fn resolution_error(err: env::EnvError) -> ApiError {
     let error = ApiError::new(ErrorCode::InvalidConfig, err.to_string());
 
     match &err {
         env::EnvError::UndefinedReference { name, .. } if is_per_service(name) => error.with_hint(
-            "MINATO_URL_<SERVICE> and MINATO_HOSTNAME_<SERVICE> exist only while the \
+            "KOBUNE_URL_<SERVICE> and KOBUNE_HOSTNAME_<SERVICE> exist only while the \
              proxy is listening, and only for a service with `expose = true`. Run \
-             `minato doctor`",
+             `kobune doctor`",
         ),
         _ => error,
     }
 }
 
-/// Whether a name is one Minato injects per service.
+/// Whether a name is one Kobune injects per service.
 ///
 /// **The one place that decides it.** Both an error on the way to
 /// starting and a reason on a listing turn on this, and the two would
 /// otherwise drift into disagreeing about what a missing
-/// `MINATO_URL_<SERVICE>` means.
+/// `KOBUNE_URL_<SERVICE>` means.
 fn is_per_service(name: &str) -> bool {
-    name.starts_with("MINATO_URL_") || name.starts_with("MINATO_HOSTNAME_")
+    name.starts_with("KOBUNE_URL_") || name.starts_with("KOBUNE_HOSTNAME_")
 }
 
 /// What stood in the way of expanding a value, for a client to say in its
@@ -203,7 +203,7 @@ fn is_per_service(name: &str) -> bool {
 pub fn unsettled(
     err: &env::EnvError,
     service: Option<&str>,
-    config: &MinatoConfig,
+    config: &KobuneConfig,
 ) -> Option<Unsettled> {
     match err {
         env::EnvError::CyclicReference { chain } => Some(Unsettled {
@@ -231,8 +231,8 @@ pub fn unsettled(
 }
 
 /// Why a name nothing sets is missing.
-fn undefined_because(name: &str, service: Option<&str>, config: &MinatoConfig) -> UnsettledReason {
-    // **A listing of no particular service leaves out `MINATO_SERVICE`
+fn undefined_because(name: &str, service: Option<&str>, config: &KobuneConfig) -> UnsettledReason {
+    // **A listing of no particular service leaves out `KOBUNE_SERVICE`
     // and every service's own `env`**, since presenting one service's
     // variables as everyone's would be worse. A value referring to one is
     // right, and starting the service settles it — it is the listing that
@@ -257,10 +257,10 @@ fn undefined_because(name: &str, service: Option<&str>, config: &MinatoConfig) -
 
 /// A service whose own `env` would supply `name`.
 ///
-/// `MINATO_SERVICE` is every service's, so the first will do; anything
+/// `KOBUNE_SERVICE` is every service's, so the first will do; anything
 /// else belongs to whichever service declared it.
-fn service_defining(name: &str, config: &MinatoConfig) -> Option<String> {
-    if name == "MINATO_SERVICE" {
+fn service_defining(name: &str, config: &KobuneConfig) -> Option<String> {
+    if name == "KOBUNE_SERVICE" {
         return config.services.keys().next().cloned();
     }
 
@@ -273,29 +273,29 @@ fn service_defining(name: &str, config: &MinatoConfig) -> Option<String> {
 
 /// Turns a service name into a variable name.
 ///
-/// `cache-store` becomes `MINATO_URL_CACHE_STORE`. A hyphen is not valid
+/// `cache-store` becomes `KOBUNE_URL_CACHE_STORE`. A hyphen is not valid
 /// in a variable name, so it becomes an underscore.
 pub fn url_variable(service: &str) -> String {
-    format!("MINATO_URL_{}", service.to_uppercase().replace('-', "_"))
+    format!("KOBUNE_URL_{}", service.to_uppercase().replace('-', "_"))
 }
 
 /// The name carrying a service's hostname.
 ///
-/// `MINATO_HOSTNAME_<SERVICE>`, and not `MINATO_HOST_`: that one is taken
+/// `KOBUNE_HOSTNAME_<SERVICE>`, and not `KOBUNE_HOST_`: that one is taken
 /// by Apple Container, where it carries a peer's IP address. Two names a
 /// letter apart meaning different things is worse than a longer one.
 pub fn hostname_variable(service: &str) -> String {
     format!(
-        "MINATO_HOSTNAME_{}",
+        "KOBUNE_HOSTNAME_{}",
         service.to_uppercase().replace('-', "_")
     )
 }
 
-/// Whether a value Minato injects belongs to the container alone.
+/// Whether a value Kobune injects belongs to the container alone.
 ///
 /// **`env_file` is read on the host**, where a path into a container
 /// resolves to nothing. That is harmless while nothing reads the name —
-/// `MINATO_CA_FILE` and `MINATO_CACHE_DIR` are addressed to the project,
+/// `KOBUNE_CA_FILE` and `KOBUNE_CACHE_DIR` are addressed to the project,
 /// which knows where they point. `NODE_EXTRA_CA_CERTS` is not: Node reads
 /// it by name, and a host-side `node` handed this file would warn on
 /// every start about a certificate that was never the problem.
@@ -332,9 +332,9 @@ pub fn write_env_file(
     // A generated file that git watches leaves the worktree permanently
     // dirty, and committing it would put one branch's URLs into every
     // other checkout.
-    if minato_core::git::is_tracked(worktree, relative) {
+    if kobune_core::git::is_tracked(worktree, relative) {
         return refuse(
-            "git tracks it. Point it somewhere untracked, `.minato/` or a \
+            "git tracks it. Point it somewhere untracked, `.kobune/` or a \
              gitignored path",
         );
     }
@@ -361,7 +361,7 @@ pub fn write_env_file(
         }
     }
 
-    let occupied = "there is already a file there that Minato did not write. \
+    let occupied = "there is already a file there that Kobune did not write. \
                     Move it aside, or point env_file somewhere else";
 
     match std::fs::read_to_string(&path) {
@@ -463,7 +463,7 @@ fn temporary_prefix(path: &Path) -> String {
 }
 
 /// What every temporary ends with.
-const TEMPORARY_SUFFIX: &str = ".minato-tmp";
+const TEMPORARY_SUFFIX: &str = ".kobune-tmp";
 
 /// Removes temporaries an earlier run left behind.
 ///
@@ -510,7 +510,7 @@ fn sweep_stale_temporaries(path: &Path) {
 
 /// Stacks one service's layers, lowest priority first.
 pub fn layers_for_service(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     project: &str,
     record: &WorkspaceRecord,
     project_root: &std::path::Path,
@@ -520,7 +520,7 @@ pub fn layers_for_service(
 ) -> Result<EnvLayers, env::EnvError> {
     let mut layers = EnvLayers::new();
 
-    // 1. What Minato injects — first, so the user can override it
+    // 1. What Kobune injects — first, so the user can override it
     layers.push(
         EnvScope::Injected,
         injected(config, project, record, service, gateway),
@@ -532,7 +532,7 @@ pub fn layers_for_service(
     // 3. The project-wide file
     layers.push_file(EnvScope::Project, &env::project_env_path(project_root))?;
 
-    // 4. The service's own entry in minato.toml — more specific than the
+    // 4. The service's own entry in kobune.toml — more specific than the
     //    project.
     //
     // **Only when one was asked about.** Folding some service's own
@@ -565,8 +565,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn config(toml: &str) -> MinatoConfig {
-        let config: MinatoConfig = toml::from_str(toml).expect("is syntactically valid");
+    fn config(toml: &str) -> KobuneConfig {
+        let config: KobuneConfig = toml::from_str(toml).expect("is syntactically valid");
         config.validate().expect("is semantically valid");
         config
     }
@@ -609,16 +609,16 @@ mod tests {
         );
 
         assert_eq!(
-            values.get("MINATO_URL_WEB").map(String::as_str),
+            values.get("KOBUNE_URL_WEB").map(String::as_str),
             Some("https://web.feat-1.myapp.localhost")
         );
         assert_eq!(
-            values.get("MINATO_URL_API_SERVER").map(String::as_str),
+            values.get("KOBUNE_URL_API_SERVER").map(String::as_str),
             Some("https://api-server.feat-1.myapp.localhost"),
             "a hyphen becomes an underscore"
         );
         assert!(
-            !values.contains_key("MINATO_URL_DB"),
+            !values.contains_key("KOBUNE_URL_DB"),
             "a service with expose = false has no URL"
         );
     }
@@ -627,7 +627,7 @@ mod tests {
     /// as production's is. A path nobody created names a file no
     /// container will have mounted.
     fn ca_on_disk(dir: &tempfile::TempDir) -> Gateway {
-        let ca = dir.path().join("minato-ca.crt");
+        let ca = dir.path().join("kobune-ca.crt");
         std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").expect("writes");
 
         Gateway::with_ports(Some(80), Some(443)).with_ca(&ca.to_string_lossy())
@@ -648,13 +648,13 @@ mod tests {
         );
 
         assert_eq!(
-            values.get("MINATO_CA_FILE").map(String::as_str),
-            Some(minato_core::config::CA_TARGET),
+            values.get("KOBUNE_CA_FILE").map(String::as_str),
+            Some(kobune_core::config::CA_TARGET),
             "the path inside the container, not the one on the host"
         );
         assert_eq!(
             values.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
-            Some(minato_core::config::CA_TARGET),
+            Some(kobune_core::config::CA_TARGET),
             "naming the file and leaving Node unwired is a certificate \
              mounted and never trusted"
         );
@@ -664,7 +664,7 @@ mod tests {
     fn a_service_keeps_the_certificate_it_chose() {
         // The cost of setting Node's variable: an image pointed at a
         // corporate bundle would lose it. Injection is the bottom layer,
-        // so saying so in `minato.toml` is enough to keep it.
+        // so saying so in `kobune.toml` is enough to keep it.
         let config = config(
             r#"
             [project]
@@ -701,10 +701,10 @@ mod tests {
     }
 
     #[test]
-    fn only_minato_own_certificate_is_kept_out_of_the_env_file() {
+    fn only_kobune_own_certificate_is_kept_out_of_the_env_file() {
         let entry = |key: &str, scope| env::EnvEntry {
             key: key.to_string(),
-            raw: minato_core::config::CA_TARGET.to_string(),
+            raw: kobune_core::config::CA_TARGET.to_string(),
             scope,
         };
 
@@ -714,7 +714,7 @@ mod tests {
             "a project that set it means it, wherever the file is read"
         );
         assert!(
-            !container_only(&entry("MINATO_CA_FILE", EnvScope::Injected)),
+            !container_only(&entry("KOBUNE_CA_FILE", EnvScope::Injected)),
             "a container path nothing reads by name misleads no one"
         );
     }
@@ -725,7 +725,7 @@ mod tests {
         // the URLs are http://, so there is nothing for a container to
         // verify — and the file would still be mounted for it.
         let dir = tempfile::tempdir().expect("tempdir");
-        let ca = dir.path().join("minato-ca.crt");
+        let ca = dir.path().join("kobune-ca.crt");
         std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").expect("writes");
 
         let values = injected(
@@ -738,24 +738,24 @@ mod tests {
 
         assert!(
             values
-                .get("MINATO_URL_WEB")
+                .get("KOBUNE_URL_WEB")
                 .is_some_and(|url| url.starts_with("http://")),
             "the state under test is HTTP-only, with the certificate there"
         );
-        assert!(!values.contains_key("MINATO_CA_FILE"));
+        assert!(!values.contains_key("KOBUNE_CA_FILE"));
         assert!(!values.contains_key(NODE_CA_VAR));
     }
 
     #[test]
     fn names_no_certificate_once_the_file_is_gone() {
-        // It can be removed under a running daemon — `minato setup`
+        // It can be removed under a running daemon — `kobune setup`
         // undone, the directory cleared — and what is mounted is decided
         // from the same answer. A name that outlives the mount is Node
         // warning on every start about a certificate it cannot load.
         let dir = tempfile::tempdir().expect("tempdir");
         let gateway = ca_on_disk(&dir);
 
-        std::fs::remove_file(dir.path().join("minato-ca.crt")).expect("removes");
+        std::fs::remove_file(dir.path().join("kobune-ca.crt")).expect("removes");
 
         let values = injected(
             &config(SAMPLE),
@@ -767,11 +767,11 @@ mod tests {
 
         assert!(
             values
-                .get("MINATO_URL_WEB")
+                .get("KOBUNE_URL_WEB")
                 .is_some_and(|url| url.starts_with("https://")),
             "HTTPS is still being served; it is the file that went"
         );
-        assert!(!values.contains_key("MINATO_CA_FILE"));
+        assert!(!values.contains_key("KOBUNE_CA_FILE"));
         assert!(!values.contains_key(NODE_CA_VAR));
     }
 
@@ -787,7 +787,7 @@ mod tests {
             &Gateway::inert(),
         );
 
-        assert!(!values.contains_key("MINATO_CA_FILE"));
+        assert!(!values.contains_key("KOBUNE_CA_FILE"));
         assert!(!values.contains_key("NODE_EXTRA_CA_CERTS"));
     }
 
@@ -846,15 +846,15 @@ mod tests {
         );
 
         assert_eq!(
-            values.get("MINATO_PROJECT").map(String::as_str),
+            values.get("KOBUNE_PROJECT").map(String::as_str),
             Some("myapp")
         );
         assert_eq!(
-            values.get("MINATO_WORKSPACE").map(String::as_str),
+            values.get("KOBUNE_WORKSPACE").map(String::as_str),
             Some("feat-1")
         );
         assert_eq!(
-            values.get("MINATO_SERVICE").map(String::as_str),
+            values.get("KOBUNE_SERVICE").map(String::as_str),
             Some("web")
         );
     }
@@ -871,12 +871,12 @@ mod tests {
             &Gateway::inert(),
         );
 
-        let cache = values.get("MINATO_CACHE_DIR").map(String::as_str);
-        assert_eq!(cache, Some(minato_core::config::CACHE_TARGET));
+        let cache = values.get("KOBUNE_CACHE_DIR").map(String::as_str);
+        assert_eq!(cache, Some(kobune_core::config::CACHE_TARGET));
         assert!(
             !cache
                 .expect("set")
-                .starts_with(minato_core::config::MOUNT_TARGET),
+                .starts_with(kobune_core::config::MOUNT_TARGET),
             "pointing it into the worktree would defeat the purpose"
         );
     }
@@ -892,9 +892,9 @@ mod tests {
             &Gateway::inert(),
         );
 
-        assert!(!values.keys().any(|key| key.starts_with("MINATO_URL_")));
+        assert!(!values.keys().any(|key| key.starts_with("KOBUNE_URL_")));
         assert!(
-            !values.keys().any(|key| key.starts_with("MINATO_HOSTNAME_")),
+            !values.keys().any(|key| key.starts_with("KOBUNE_HOSTNAME_")),
             "a hostname nothing answers on is the same trap"
         );
     }
@@ -913,17 +913,17 @@ mod tests {
         );
 
         assert_eq!(
-            values.get("MINATO_HOSTNAME_WEB").map(String::as_str),
+            values.get("KOBUNE_HOSTNAME_WEB").map(String::as_str),
             Some("web.feat-1.myapp.localhost"),
             "no scheme, no port, no trailing slash"
         );
         assert_eq!(
-            values.get("MINATO_HOSTNAME_API_SERVER").map(String::as_str),
+            values.get("KOBUNE_HOSTNAME_API_SERVER").map(String::as_str),
             Some("api-server.feat-1.myapp.localhost"),
             "a hyphen becomes an underscore in the name, not in the host"
         );
         assert!(
-            !values.contains_key("MINATO_HOSTNAME_DB"),
+            !values.contains_key("KOBUNE_HOSTNAME_DB"),
             "a service with expose = false publishes no hostname"
         );
     }
@@ -943,13 +943,13 @@ mod tests {
 
         assert!(
             values
-                .get("MINATO_URL_WEB")
+                .get("KOBUNE_URL_WEB")
                 .is_some_and(|url| url.contains("8443")),
             "the URL carries the port: {:?}",
-            values.get("MINATO_URL_WEB")
+            values.get("KOBUNE_URL_WEB")
         );
         assert_eq!(
-            values.get("MINATO_HOSTNAME_WEB").map(String::as_str),
+            values.get("KOBUNE_HOSTNAME_WEB").map(String::as_str),
             Some("web.feat-1.myapp.localhost"),
             "the hostname does not"
         );
@@ -966,7 +966,7 @@ mod tests {
         );
 
         assert_eq!(
-            values.get("MINATO_URL_WEB").map(String::as_str),
+            values.get("KOBUNE_URL_WEB").map(String::as_str),
             Some("https://web.myapp.localhost")
         );
     }
@@ -983,9 +983,9 @@ mod tests {
             &Gateway::inert(),
         );
 
-        assert!(!values.contains_key("MINATO_SERVICE"));
+        assert!(!values.contains_key("KOBUNE_SERVICE"));
         assert_eq!(
-            values.get("MINATO_PROJECT").map(String::as_str),
+            values.get("KOBUNE_PROJECT").map(String::as_str),
             Some("myapp"),
             "the rest is shared and still belongs there"
         );
@@ -1050,7 +1050,7 @@ mod tests {
         assert_eq!(
             own.scope,
             EnvScope::Service,
-            "labelling it `project` sends someone to edit .minato/env for a \
+            "labelling it `project` sends someone to edit .kobune/env for a \
              value the service overrides"
         );
     }
@@ -1065,7 +1065,7 @@ mod tests {
             [services.web]
             image = "node:22"
             port = 3000
-            env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+            env = { NEXT_PUBLIC_API_URL = "${KOBUNE_URL_API}" }
             [services.api]
             image = "node:22"
             port = 8080
@@ -1097,7 +1097,7 @@ mod tests {
     #[test]
     fn a_url_that_is_missing_because_the_proxy_is_down_says_so() {
         // The configuration is right and the error is about the proxy.
-        // "nothing sets it" alone sends someone to edit `minato.toml`.
+        // "nothing sets it" alone sends someone to edit `kobune.toml`.
         let config = config(
             r#"
             [project]
@@ -1105,7 +1105,7 @@ mod tests {
             [services.web]
             image = "node:22"
             port = 3000
-            env = { NEXT_PUBLIC_API_URL = "${MINATO_URL_API}" }
+            env = { NEXT_PUBLIC_API_URL = "${KOBUNE_URL_API}" }
             [services.api]
             image = "node:22"
             port = 8080
@@ -1137,7 +1137,7 @@ mod tests {
         toml: &str,
         project: &str,
         service: Option<&str>,
-    ) -> (env::EnvError, MinatoConfig, tempfile::TempDir) {
+    ) -> (env::EnvError, KobuneConfig, tempfile::TempDir) {
         let config = config(toml);
 
         let root = tempfile::tempdir().expect("tempdir");
@@ -1162,7 +1162,7 @@ mod tests {
 
     #[test]
     fn a_listing_of_no_service_says_that_is_why() {
-        // `MINATO_SERVICE` is left out of a shared listing on purpose, so
+        // `KOBUNE_SERVICE` is left out of a shared listing on purpose, so
         // a value referring to it is right and it is the listing that
         // cannot settle. "Nothing sets it" would send someone hunting a
         // bug that is not there.
@@ -1174,7 +1174,7 @@ mod tests {
             image = "node:22"
             port = 3000
         "#,
-            "LOG_TAG=${MINATO_SERVICE}\n",
+            "LOG_TAG=${KOBUNE_SERVICE}\n",
             None,
         );
 
@@ -1222,7 +1222,7 @@ mod tests {
 
     #[test]
     fn a_listing_about_one_service_gets_no_such_excuse() {
-        // Asked about `web`, `MINATO_SERVICE` is there — so a name that
+        // Asked about `web`, `KOBUNE_SERVICE` is there — so a name that
         // does not settle really is missing, and saying "this listing has
         // no service" would be a lie.
         let (err, config, _root) = listing_failure(
@@ -1252,7 +1252,7 @@ mod tests {
             [services.web]
             image = "node:22"
             port = 3000
-            env = { API_URL = "${MINATO_URL_WEB}" }
+            env = { API_URL = "${KOBUNE_URL_WEB}" }
         "#,
             "",
             Some("web"),
@@ -1298,11 +1298,11 @@ mod tests {
         let dir = worktree();
         let contents = env::render(&[], "service: api");
 
-        let written = write_env_file(dir.path(), ".minato/env.api", &contents)
+        let written = write_env_file(dir.path(), ".kobune/env.api", &contents)
             .expect("writes")
             .expect("a new file is a change");
 
-        assert_eq!(written, dir.path().join(".minato/env.api"));
+        assert_eq!(written, dir.path().join(".kobune/env.api"));
         assert_eq!(
             std::fs::read_to_string(&written).expect("reads"),
             contents,
@@ -1327,8 +1327,8 @@ mod tests {
         let dir = worktree();
         let contents = env::render(&[], "service: api");
 
-        write_env_file(dir.path(), ".minato/env.api", &contents).expect("writes");
-        let again = write_env_file(dir.path(), ".minato/env.api", &contents).expect("writes");
+        write_env_file(dir.path(), ".kobune/env.api", &contents).expect("writes");
+        let again = write_env_file(dir.path(), ".kobune/env.api", &contents).expect("writes");
 
         assert!(again.is_none(), "unchanged is not a write");
     }
@@ -1337,12 +1337,12 @@ mod tests {
     fn replaces_a_file_it_wrote_itself() {
         let dir = worktree();
 
-        write_env_file(dir.path(), ".env.minato", &env::render(&[], "old")).expect("writes");
+        write_env_file(dir.path(), ".env.kobune", &env::render(&[], "old")).expect("writes");
         let new = env::render(&[], "new");
-        write_env_file(dir.path(), ".env.minato", &new).expect("writes");
+        write_env_file(dir.path(), ".env.kobune", &new).expect("writes");
 
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(".env.minato")).expect("reads"),
+            std::fs::read_to_string(dir.path().join(".env.kobune")).expect("reads"),
             new
         );
     }
@@ -1369,7 +1369,7 @@ mod tests {
 
     #[test]
     fn never_overwrites_a_file_it_cannot_even_read() {
-        // The marker cannot say a file is Minato's when the file will not
+        // The marker cannot say a file is Kobune's when the file will not
         // read as text at all — an `.env` in UTF-16, say. Unreadable is
         // still somebody's.
         let dir = worktree();
@@ -1399,15 +1399,15 @@ mod tests {
         std::fs::write(&target, "untouched").expect("writes");
 
         let dir = worktree();
-        std::fs::create_dir(dir.path().join(".minato")).expect("creates");
+        std::fs::create_dir(dir.path().join(".kobune")).expect("creates");
 
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, dir.path().join(".minato/.env.api.minato-tmp"))
+        std::os::unix::fs::symlink(&target, dir.path().join(".kobune/.env.api.kobune-tmp"))
             .expect("links");
 
         write_env_file(
             dir.path(),
-            ".minato/env.api",
+            ".kobune/env.api",
             &env::render(&[], "service: api"),
         )
         .expect("writes");
@@ -1425,23 +1425,23 @@ mod tests {
         // after itself, and the next name is a different one — so without
         // this they gather in the worktree, one per crash.
         let dir = worktree();
-        std::fs::create_dir(dir.path().join(".minato")).expect("creates");
+        std::fs::create_dir(dir.path().join(".kobune")).expect("creates");
 
-        let stale = dir.path().join(".minato").join(format!(
-            ".env.api.{}-1-0.minato-tmp",
+        let stale = dir.path().join(".kobune").join(format!(
+            ".env.api.{}-1-0.kobune-tmp",
             std::process::id() + 1
         ));
         std::fs::write(&stale, "half a file").expect("writes");
 
         write_env_file(
             dir.path(),
-            ".minato/env.api",
+            ".kobune/env.api",
             &env::render(&[], "service: api"),
         )
         .expect("writes");
 
         assert!(!stale.exists(), "the leftover is gone");
-        assert!(dir.path().join(".minato/env.api").exists());
+        assert!(dir.path().join(".kobune/env.api").exists());
     }
 
     #[test]
@@ -1450,17 +1450,17 @@ mod tests {
         // now, and removing it would leave that write renaming a file that
         // is no longer there.
         let dir = worktree();
-        std::fs::create_dir(dir.path().join(".minato")).expect("creates");
+        std::fs::create_dir(dir.path().join(".kobune")).expect("creates");
 
         let in_flight = dir
             .path()
-            .join(".minato")
-            .join(format!(".env.api.{}-1-0.minato-tmp", std::process::id()));
+            .join(".kobune")
+            .join(format!(".env.api.{}-1-0.kobune-tmp", std::process::id()));
         std::fs::write(&in_flight, "being written").expect("writes");
 
         write_env_file(
             dir.path(),
-            ".minato/env.api",
+            ".kobune/env.api",
             &env::render(&[], "service: api"),
         )
         .expect("writes");
@@ -1513,7 +1513,7 @@ mod tests {
 
     #[test]
     fn url_variable_names_are_shell_safe() {
-        assert_eq!(url_variable("web"), "MINATO_URL_WEB");
-        assert_eq!(url_variable("api-server"), "MINATO_URL_API_SERVER");
+        assert_eq!(url_variable("web"), "KOBUNE_URL_WEB");
+        assert_eq!(url_variable("api-server"), "KOBUNE_URL_API_SERVER");
     }
 }

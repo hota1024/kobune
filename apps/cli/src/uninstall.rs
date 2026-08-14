@@ -1,4 +1,4 @@
-//! Taking Minato back off the machine.
+//! Taking Kobune back off the machine.
 //!
 //! The daemon removes what it made — containers, networks, its state file
 //! — because only it knows what those are. Everything else is here,
@@ -8,10 +8,10 @@
 //!
 //! **Nothing is removed that was not found.** The plan is built by looking,
 //! so what a person is asked to confirm is what is actually there, not a
-//! list of everywhere Minato might have put something.
+//! list of everywhere Kobune might have put something.
 //!
 //! **Worktrees are never touched.** They are the user's checkouts with the
-//! user's uncommitted work in them. `minato rm` removes one at a time and
+//! user's uncommitted work in them. `kobune rm` removes one at a time and
 //! asks for `--force` when git objects; an uninstaller cannot make that
 //! judgement for twenty of them at once.
 
@@ -35,7 +35,7 @@ pub struct Privileged {
     pub commands: Vec<String>,
 }
 
-/// What `minato uninstall` would take off this machine.
+/// What `kobune uninstall` would take off this machine.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Plan {
     /// Removable without asking anyone's permission.
@@ -59,7 +59,7 @@ impl Plan {
 pub fn plan(suffix: &str, ca_path: Option<&Path>) -> Plan {
     let mut plan = Plan::default();
 
-    if let Ok(paths) = minato_core::Paths::resolve() {
+    if let Ok(paths) = kobune_core::Paths::resolve() {
         let root = paths.root();
         if root.exists() {
             plan.files.push(Removal {
@@ -82,7 +82,7 @@ pub fn plan(suffix: &str, ca_path: Option<&Path>) -> Plan {
 
     if system::resolver_path(suffix).exists() {
         plan.privileged.push(Privileged {
-            label: format!("stop sending *.{suffix} to Minato's DNS"),
+            label: format!("stop sending *.{suffix} to Kobune's DNS"),
             commands: vec![system::resolver_remove_command(suffix)],
         });
     }
@@ -106,9 +106,9 @@ pub fn plan(suffix: &str, ca_path: Option<&Path>) -> Plan {
 /// which is also why the privileged steps run before anything is deleted.
 ///
 /// Everywhere else it was **copied** into the system store on the way in,
-/// and it is that copy which is trusted. Asking whether `~/.minato` still
+/// and it is that copy which is trusted. Asking whether `~/.kobune` still
 /// holds the original would be asking about the wrong file entirely: a
-/// user who moved `MINATO_HOME` or deleted the directory by hand would be
+/// user who moved `KOBUNE_HOME` or deleted the directory by hand would be
 /// shown a plan with no mention of a certificate their machine still
 /// trusts.
 fn trust_is_removable(ca_path: &Path) -> bool {
@@ -123,13 +123,13 @@ fn trust_is_removable(ca_path: &Path) -> bool {
 ///
 /// The same path `system::untrust_command` removes; they are a pair, and
 /// changing one without the other silently stops the step being offered.
-const SYSTEM_STORE_CA: &str = "/usr/local/share/ca-certificates/minato-ca.crt";
+const SYSTEM_STORE_CA: &str = "/usr/local/share/ca-certificates/kobune-ca.crt";
 
 /// The two binaries, when they are where this one is.
 ///
-/// `minato` finds the daemon next to itself, so they were installed
+/// `kobune` finds the daemon next to itself, so they were installed
 /// together and go together. A build tree is left alone: deleting
-/// `target/debug/minato` because someone ran it from a checkout would be
+/// `target/debug/kobune` because someone ran it from a checkout would be
 /// removing a build artefact, not an installation.
 fn installed_binaries() -> Vec<Removal> {
     let Ok(exe) = std::env::current_exe() else {
@@ -143,7 +143,7 @@ fn installed_binaries() -> Vec<Removal> {
         return Vec::new();
     }
 
-    ["minato", "minatod"]
+    ["kobune", "kobuned"]
         .into_iter()
         .map(|name| dir.join(name))
         .filter(|path| path.exists())
@@ -181,11 +181,11 @@ fn completions() -> Vec<Removal> {
 
     let mut candidates = Vec::new();
     if let Some(data) = data {
-        candidates.push(data.join("bash-completion/completions/minato"));
-        candidates.push(data.join("zsh/site-functions/_minato"));
+        candidates.push(data.join("bash-completion/completions/kobune"));
+        candidates.push(data.join("zsh/site-functions/_kobune"));
     }
     if let Some(config) = config {
-        candidates.push(config.join("fish/completions/minato.fish"));
+        candidates.push(config.join("fish/completions/kobune.fish"));
     }
 
     candidates
@@ -224,7 +224,7 @@ pub fn remove_files(plan: &Plan) -> Removed {
             // Already gone is the outcome that was wanted.
             std::io::ErrorKind::NotFound => {}
 
-            // `MINATO_INSTALL_DIR=/usr/local/bin` is documented, and a
+            // `KOBUNE_INSTALL_DIR=/usr/local/bin` is documented, and a
             // directory root owns is not this process's to write to. This
             // run is already willing to ask for a password for the
             // LaunchDaemon and the keychain, so the honest answer is to
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn a_build_tree_is_not_an_installation() {
-        // `cargo run` from a checkout must not have `minato uninstall`
+        // `cargo run` from a checkout must not have `kobune uninstall`
         // delete the build output.
         assert!(is_build_tree(Path::new("/repo/target/debug")));
         assert!(is_build_tree(Path::new("/repo/target/release")));
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn a_plan_lists_only_what_is_there() {
-        // Nothing of Minato's is installed under a fresh temporary root,
+        // Nothing of Kobune's is installed under a fresh temporary root,
         // so the plan has nothing to say about it.
         let dir = tempfile::tempdir().expect("tempdir");
         let plan = plan("localhost", Some(&dir.path().join("absent-ca.crt")));
@@ -292,8 +292,8 @@ mod tests {
     fn the_certificate_to_untrust_sits_inside_what_gets_deleted() {
         // Why the privileged steps run before anything is removed.
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("minato");
-        let ca = root.join("ca/minato-ca.crt");
+        let root = dir.path().join("kobune");
+        let ca = root.join("ca/kobune-ca.crt");
         std::fs::create_dir_all(ca.parent().expect("parent")).expect("creates");
         std::fs::write(&ca, "-----BEGIN CERTIFICATE-----").expect("writes");
 
@@ -341,13 +341,13 @@ mod tests {
 
     #[test]
     fn a_file_this_user_cannot_remove_becomes_a_root_step() {
-        // `MINATO_INSTALL_DIR=/usr/local/bin` is documented, and root owns
+        // `KOBUNE_INSTALL_DIR=/usr/local/bin` is documented, and root owns
         // it. Reporting "Permission denied" and stopping would be giving
         // up in a run that is already asking for a password elsewhere.
         let dir = tempfile::tempdir().expect("tempdir");
         let locked = dir.path().join("locked");
         std::fs::create_dir(&locked).expect("creates");
-        let binary = locked.join("minato");
+        let binary = locked.join("kobune");
         std::fs::write(&binary, "#!/bin/sh\n").expect("writes");
 
         // Read and execute only: the file cannot be unlinked from here.
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn a_directory_goes_with_its_contents() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("minato");
+        let root = dir.path().join("kobune");
         std::fs::create_dir_all(root.join("logs")).expect("creates");
         std::fs::write(root.join("state.json"), "{}").expect("writes");
 
@@ -415,7 +415,7 @@ mod tests {
         // has to be done before it can go.
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let binary = dir.path().join("minato");
+        let binary = dir.path().join("kobune");
         let state = dir.path().join("state");
         std::fs::write(&binary, "#!/bin/sh\n").expect("writes");
         std::fs::create_dir(&state).expect("creates");

@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use minato_core::{ServiceScope, ServiceState};
+use kobune_core::{ServiceScope, ServiceState};
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostics::Diagnostics;
@@ -39,7 +39,7 @@ pub enum Response {
         /// The exit code of the command that was run.
         ///
         /// The CLI passes it through as its own exit code, so an agent can
-        /// judge `minato exec web -- pnpm test` by exit status alone.
+        /// judge `kobune exec web -- pnpm test` by exit status alone.
         exit_code: i32,
     },
     /// The state of the Cloudflare Tunnel.
@@ -65,9 +65,9 @@ pub struct PurgeReport {
 
     pub projects: Vec<PurgeProject>,
 
-    /// Worktrees Minato created and is **leaving in place**.
+    /// Worktrees Kobune created and is **leaving in place**.
     ///
-    /// Removing them is `minato rm`, one at a time and with a `--force`
+    /// Removing them is `kobune rm`, one at a time and with a `--force`
     /// that means something. An uninstaller that deleted a checkout would
     /// take uncommitted work with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -83,7 +83,7 @@ pub struct PurgeReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelLeftover>,
 
-    /// The storage Minato made, and is taking with it.
+    /// The storage Kobune made, and is taking with it.
     ///
     /// **Listed, not swept along quietly.** A project volume outlives the
     /// worktrees that used it — that is what it is for — so what is in one
@@ -100,7 +100,7 @@ pub struct PurgeReport {
     /// and the difference is the whole question: an uninstall that could
     /// not reach Docker would otherwise print a plan with no storage in
     /// it, remove everything else, and exit 0, leaving volumes behind
-    /// under names only Minato knew.
+    /// under names only Kobune knew.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub storage_left: Vec<PurgeStorageFailure>,
 
@@ -148,7 +148,7 @@ pub struct PurgeVolume {
     /// What the runtime calls it: the name `docker volume ls` prints, or
     /// the directory Apple Container's bind mount lives in.
     ///
-    /// The real name rather than the one written in `minato.toml`, so that
+    /// The real name rather than the one written in `kobune.toml`, so that
     /// somebody who wants to keep one can find it before saying yes.
     pub name: String,
 }
@@ -167,7 +167,7 @@ impl PurgeReport {
     ///
     /// **Storage it could not ask about counts as something left.** Not
     /// knowing and having nothing are different answers, and only one of
-    /// them makes "nothing of Minato's was found" true.
+    /// them makes "nothing of Kobune's was found" true.
     pub fn is_empty(&self) -> bool {
         self.volumes.is_empty()
             && self.storage_left.is_empty()
@@ -218,7 +218,7 @@ pub struct TunnelInfo {
     ///
     /// Empty once setup is done. `cloudflared tunnel login` opens a
     /// browser and waits, so it is reported rather than run — the same
-    /// reason `minato setup` runs nothing where there is no terminal to
+    /// reason `kobune setup` runs nothing where there is no terminal to
     /// answer at.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
@@ -235,7 +235,7 @@ pub struct TunnelInfo {
     /// Whether the tunnel is unauthenticated.
     ///
     /// True means the environment is on the public internet with no
-    /// Cloudflare Access policy that Minato knows of.
+    /// Cloudflare Access policy that Kobune knows of.
     #[serde(default)]
     pub public: bool,
 }
@@ -292,7 +292,7 @@ pub struct EnvInfo {
     /// The value for display. Masked by default.
     pub value: String,
     /// Which layer defined it.
-    pub scope: minato_core::EnvScope,
+    pub scope: kobune_core::EnvScope,
     /// Whether this is a secret reference.
     #[serde(default)]
     pub secret: bool,
@@ -326,7 +326,7 @@ pub struct Unsettled {
 pub enum UnsettledReason {
     /// Nothing in this environment sets the name.
     Undefined,
-    /// Only a listing about one service holds it — `MINATO_SERVICE`, or a
+    /// Only a listing about one service holds it — `KOBUNE_SERVICE`, or a
     /// service's own `env`. The environment itself is fine; this listing
     /// is the one that cannot settle it.
     OnlyWithService {
@@ -390,7 +390,7 @@ pub struct ServiceInfo {
     ///
     /// **Beside the state rather than inside it.** That is what lets
     /// `state` be a string an agent can compare — see
-    /// [`minato_core::ServiceState`].
+    /// [`kobune_core::ServiceState`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub scope: ServiceScope,
@@ -533,14 +533,14 @@ mod tests {
     #[test]
     fn storage_left_over_is_not_an_empty_report() {
         // The state a machine is usually in by the time anyone uninstalls:
-        // every worktree `minato rm`ed, so no containers left, and the
+        // every worktree `kobune rm`ed, so no containers left, and the
         // project volumes they shared still there. `uninstall` asks this
         // before deciding it has nothing to do — and there is a database
         // to remove.
         let report = PurgeReport {
             volumes: vec![PurgeVolume {
                 project: "myapp".into(),
-                name: "minato-myapp-pgdata".into(),
+                name: "kobune-myapp-pgdata".into(),
             }],
             ..PurgeReport::default()
         };
@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn storage_that_could_not_be_asked_about_is_not_an_empty_report() {
-        // Docker not running, and every worktree already `minato rm`ed. An
+        // Docker not running, and every worktree already `kobune rm`ed. An
         // empty listing and a listing that failed are the same shape and
         // opposite answers: reporting nothing here is how an uninstall
         // says "there was no storage" about volumes it never saw.

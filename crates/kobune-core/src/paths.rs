@@ -1,11 +1,11 @@
-//! The layout of the files Minato keeps under its home directory.
+//! The layout of the files Kobune keeps under its home directory.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
 /// Overrides the root directory. Used by tests and to isolate instances.
-pub const HOME_ENV: &str = "MINATO_HOME";
+pub const HOME_ENV: &str = "KOBUNE_HOME";
 
 /// The upper bound on the length of a Unix socket path.
 ///
@@ -19,7 +19,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Uses `$MINATO_HOME`, falling back to `~/.minato`.
+    /// Uses `$KOBUNE_HOME`, falling back to `~/.kobune`.
     pub fn resolve() -> Result<Self> {
         if let Some(value) = std::env::var_os(HOME_ENV) {
             let path = PathBuf::from(value);
@@ -29,7 +29,7 @@ impl Paths {
         }
 
         let home = dirs::home_dir().ok_or(Error::NoHomeDirectory)?;
-        Ok(Self::with_root(home.join(".minato")))
+        Ok(Self::with_root(home.join(".kobune")))
     }
 
     pub fn with_root(root: PathBuf) -> Self {
@@ -50,14 +50,14 @@ impl Paths {
     /// Socket paths are length-limited (104 bytes on macOS), so keep this
     /// directly under the root rather than nesting it.
     pub fn socket(&self) -> PathBuf {
-        self.root.join("minatod.sock")
+        self.root.join("kobuned.sock")
     }
 
     /// Checks that the socket path fits within the platform limit.
     ///
     /// Exceeding it makes `bind` fail with `SUN_LEN`, which says nothing
     /// about the cause. Fail here with an explanation instead, so a deep
-    /// `MINATO_HOME` is caught before it turns into a puzzle.
+    /// `KOBUNE_HOME` is caught before it turns into a puzzle.
     pub fn check_socket_length(&self) -> Result<()> {
         let socket = self.socket();
         let length = socket.as_os_str().as_encoded_bytes().len();
@@ -78,7 +78,7 @@ impl Paths {
     }
 
     pub fn daemon_log(&self) -> PathBuf {
-        self.log_dir().join("minatod.log")
+        self.log_dir().join("kobuned.log")
     }
 
     /// The local CA's key and certificate.
@@ -89,12 +89,12 @@ impl Paths {
     /// The generated cloudflared configuration.
     ///
     /// Not `~/.cloudflared`: that belongs to cloudflared itself and holds
-    /// the login certificate, which Minato only ever reads.
+    /// the login certificate, which Kobune only ever reads.
     pub fn tunnel_dir(&self) -> PathBuf {
         self.root.join("tunnel")
     }
 
-    /// Creates the directories Minato needs.
+    /// Creates the directories Kobune needs.
     pub fn ensure(&self) -> Result<()> {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(self.log_dir())?;
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn layout_is_flat_enough_for_unix_socket() {
-        let paths = Paths::with_root(PathBuf::from("/Users/someone/.minato"));
+        let paths = Paths::with_root(PathBuf::from("/Users/someone/.kobune"));
         paths
             .check_socket_length()
             .expect("the default layout fits within the limit");
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn rejects_socket_path_over_the_limit() {
-        // A deep MINATO_HOME makes bind fail with SUN_LEN, which explains
+        // A deep KOBUNE_HOME makes bind fail with SUN_LEN, which explains
         // nothing. Reject it up front with a message that does.
         let deep = PathBuf::from("/tmp").join("x".repeat(MAX_SOCKET_PATH_LEN));
         let err = Paths::with_root(deep).check_socket_length().unwrap_err();
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn accepts_socket_path_at_the_limit() {
         // Exactly at the limit is allowed.
-        let socket_name_len = "/minatod.sock".len();
+        let socket_name_len = "/kobuned.sock".len();
         let root =
             PathBuf::from("/".to_string() + &"x".repeat(MAX_SOCKET_PATH_LEN - socket_name_len - 1));
 
@@ -145,12 +145,12 @@ mod tests {
 
     #[test]
     fn derives_paths_from_root() {
-        let paths = Paths::with_root(PathBuf::from("/tmp/minato-test"));
-        assert_eq!(paths.state_file(), Path::new("/tmp/minato-test/state.json"));
-        assert_eq!(paths.socket(), Path::new("/tmp/minato-test/minatod.sock"));
+        let paths = Paths::with_root(PathBuf::from("/tmp/kobune-test"));
+        assert_eq!(paths.state_file(), Path::new("/tmp/kobune-test/state.json"));
+        assert_eq!(paths.socket(), Path::new("/tmp/kobune-test/kobuned.sock"));
         assert_eq!(
             paths.daemon_log(),
-            Path::new("/tmp/minato-test/logs/minatod.log")
+            Path::new("/tmp/kobune-test/logs/kobuned.log")
         );
     }
 }

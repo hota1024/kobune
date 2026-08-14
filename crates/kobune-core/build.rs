@@ -8,10 +8,10 @@ use std::process::Command;
 fn main() {
     // CI passes the commit it is building; locally it comes from git. Both
     // are declared below so a change to either rebuilds this.
-    println!("cargo:rerun-if-env-changed=MINATO_BUILD_COMMIT");
+    println!("cargo:rerun-if-env-changed=KOBUNE_BUILD_COMMIT");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
 
-    let commit = std::env::var("MINATO_BUILD_COMMIT")
+    let commit = std::env::var("KOBUNE_BUILD_COMMIT")
         .or_else(|_| std::env::var("GITHUB_SHA"))
         .ok()
         .filter(|value| !value.is_empty())
@@ -22,14 +22,14 @@ fn main() {
 
     let short: String = commit.chars().take(SHORT_LEN).collect();
 
-    println!("cargo:rustc-env=MINATO_BUILD_COMMIT={commit}");
-    println!("cargo:rustc-env=MINATO_BUILD_COMMIT_SHORT={short}");
+    println!("cargo:rustc-env=KOBUNE_BUILD_COMMIT={commit}");
+    println!("cargo:rustc-env=KOBUNE_BUILD_COMMIT_SHORT={short}");
 
     // Which release archive this build corresponds to. `std::env::consts`
     // gives the OS and architecture separately, and stitching them back
     // into a triple means duplicating the mapping cargo already did.
     let target = std::env::var("TARGET").expect("cargo always sets TARGET");
-    println!("cargo:rustc-env=MINATO_BUILD_TARGET={target}");
+    println!("cargo:rustc-env=KOBUNE_BUILD_TARGET={target}");
 }
 
 /// How much of the hash to show a person. Matches `git log --oneline`.

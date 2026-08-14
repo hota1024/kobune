@@ -7,10 +7,10 @@ an alternative.
 ## The two that are confused
 
 **`worktree`** is git's. A checkout of a branch beside the repository, made by
-`git worktree add` or by `minato new`.
+`git worktree add` or by `kobune new`.
 
-**`workspace`** is Minato's. The environment a worktree has: its containers, its
-URLs, its label. `minato ls` lists workspaces; `-w` names one.
+**`workspace`** is Kobune's. The environment a worktree has: its containers, its
+URLs, its label. `kobune ls` lists workspaces; `-w` names one.
 
 The main worktree has a workspace too, labelled `(main)`, and leaves its label
 out of the URLs. Neither word is ever the other, and neither is ever written in
@@ -44,7 +44,7 @@ that way.
 | branch | ブランチ | 51 |
 | host | ホスト | 32 |
 | flag | フラグ | 7. Not `オプション` |
-| key | キー | 20, for a `minato.toml` key |
+| key | キー | 20, for a `kobune.toml` key |
 | exit code | 終了コード | 22 |
 | environment variable | 環境変数 | 26 |
 
@@ -59,7 +59,7 @@ Japanese describes around them: 「`ready` になるまで待ちます」.
 
 ## Names, spelled as their owners spell them
 
-`Minato` (the project) · `minato` (the command, always in a code span) ·
+`Kobune` (the project) · `kobune` (the command, always in a code span) ·
 `git` (lowercase, 25/25) · `Docker` · `Apple Container` · `Cloudflare Tunnel` ·
 `Cloudflare Pages` · `launchd` (lowercase, 28/28) · `systemd` · `Firecracker` ·
 `VitePress` · `Node` · `pnpm` · `Turborepo` · `wrangler`

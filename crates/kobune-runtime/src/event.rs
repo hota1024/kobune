@@ -3,8 +3,8 @@
 //! A runtime does not know what it is attached to — a CLI, a GUI, or
 //! nobody at all. All it does is emit events.
 
-use minato_api::{Event, LogLevel, OutputStream, StepStatus};
-use minato_core::ServiceState;
+use kobune_api::{Event, LogLevel, OutputStream, StepStatus};
+use kobune_core::ServiceState;
 use tokio::sync::mpsc;
 
 /// Where events go.

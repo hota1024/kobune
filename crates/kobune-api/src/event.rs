@@ -5,7 +5,7 @@
 //! bar and a log pane. **Both must be derivable from the same event
 //! stream** — that is a design requirement (`docs/DESIGN.md` §3).
 
-use minato_core::ServiceState;
+use kobune_core::ServiceState;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

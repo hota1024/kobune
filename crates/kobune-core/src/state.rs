@@ -1,9 +1,9 @@
 //! The workspace registry.
 //!
 //! **No runtime state lives here.** Whether a container is alive and which
-//! port it got are read from the runtime's own labels (`dev.minato.*`), so
+//! port it got are read from the runtime's own labels (`dev.kobune.*`), so
 //! the daemon can recover them after a restart. This store only records
-//! which worktrees Minato manages and the URL label issued to each.
+//! which worktrees Kobune manages and the URL label issued to each.
 //!
 //! Labels are persisted so that changing the rules in [`crate::naming`]
 //! later does not change the URL of an existing workspace.
@@ -26,7 +26,7 @@ pub const CURRENT_VERSION: u32 = 1;
 pub struct State {
     pub version: u32,
 
-    /// Keyed by project name (`[project] name` in `minato.toml`).
+    /// Keyed by project name (`[project] name` in `kobune.toml`).
     ///
     /// Since the name appears in URLs, two projects with the same name
     /// cannot coexist. So the name doubles as the identifier and clashes
@@ -67,7 +67,7 @@ pub struct TunnelRecord {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Whether Minato has routed this zone's wildcard record itself.
+    /// Whether Kobune has routed this zone's wildcard record itself.
     ///
     /// The one thing `cloudflared tunnel route dns` cannot tell us is who
     /// owns a record that already exists, and `*.{zone}` is a name a zone
@@ -284,7 +284,7 @@ impl ProjectRecord {
 /// Within the daemon that is the caller's job, and the daemon does it with
 /// one `Mutex` taken around every access (`apps/daemon/src/supervisor.rs`).
 /// Between processes, a second daemon stands down when something answers
-/// on `minatod.sock` (`apps/daemon/src/server.rs`) — near enough to a
+/// on `kobuned.sock` (`apps/daemon/src/server.rs`) — near enough to a
 /// single writer in practice, though two started together can both get
 /// past that check, so it is a reason not to worry rather than a promise
 /// to build on.
@@ -324,8 +324,8 @@ impl StateStore {
 
         if state.version > CURRENT_VERSION {
             return Err(Error::ConfigInvalid(format!(
-                "the state file {} is at version {}, which this minato \
-                 (supporting version {}) cannot read. Update minato",
+                "the state file {} is at version {}, which this kobune \
+                 (supporting version {}) cannot read. Update kobune",
                 self.path.display(),
                 state.version,
                 CURRENT_VERSION
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn recording_against_a_workspace_that_went_says_so() {
-        // `minato rm` can land while a setup is running.
+        // `kobune rm` can land while a setup is running.
         let mut state = State::default();
         state
             .upsert_project("myapp", Path::new("/repo"))
@@ -595,7 +595,7 @@ mod tests {
         std::fs::write(&path, r#"{"version": 999, "projects": {}}"#).expect("writes");
 
         let err = StateStore::new(path).load().unwrap_err();
-        assert!(err.to_string().contains("Update minato"), "got: {err}");
+        assert!(err.to_string().contains("Update kobune"), "got: {err}");
     }
 
     #[test]

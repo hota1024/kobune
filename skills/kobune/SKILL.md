@@ -1,9 +1,9 @@
 ---
-name: minato
-description: Work with the preview environment behind a git worktree. Use it to branch off and check something works, read a service's logs, run tests inside a container, or set environment variables. Active in any repository with a minato.toml.
+name: kobune
+description: Work with the preview environment behind a git worktree. Use it to branch off and check something works, read a service's logs, run tests inside a container, or set environment variables. Active in any repository with a kobune.toml.
 ---
 
-# Minato
+# Kobune
 
 One worktree, one environment. A worktree appears and its environment appears
 with it; the worktree goes and so does the environment. Hold on to that
@@ -13,10 +13,10 @@ at.
 ## Principles
 
 **Never reach for `docker`.** Anything `docker ps` or `docker logs` shows is
-visible through Minato too. Touching it directly puts the real state at odds
-with the state Minato knows about.
+visible through Kobune too. Touching it directly puts the real state at odds
+with the state Kobune knows about.
 
-**Never guess a port.** Ask `minato url <service>`. Ports change from one start
+**Never guess a port.** Ask `kobune url <service>`. Ports change from one start
 to the next; the URL does not.
 
 **Confirm by actually reaching it.** "It should be up" is not a check.
@@ -24,31 +24,31 @@ to the next; the URL does not.
 ## Start here
 
 ```bash
-minato status --json
+kobune status --json
 ```
 
 That gives the current workspace, the state of each service, and the URLs.
-With no `minato.toml`, `minato init` writes a starter one.
+With no `kobune.toml`, `kobune init` writes a starter one.
 
 ## Configuration
 
-`minato.toml` sits at the repository root and every worktree reads the same
+`kobune.toml` sits at the repository root and every worktree reads the same
 one. **The full reference is
-<https://minato.1024.works/reference/minato-toml>** — read it before writing
+<https://minato.1024.works/reference/kobune-toml>** — read it before writing
 one rather than guessing at key names.
 
-### There is no `minato.toml` yet
+### There is no `kobune.toml` yet
 
 **Look for a compose file first**, before writing anything:
 
 ```bash
-minato init --from-compose      # finds compose.yaml, docker-compose.yml, …
-minato init                     # only if there is no compose file
+kobune init --from-compose      # finds compose.yaml, docker-compose.yml, …
+kobune init                     # only if there is no compose file
 ```
 
 It converts what maps, leaves `TODO` comments where compose could not say
-what Minato needs, and names every key it had no equivalent for. **Read the
-TODOs before the first `minato up`** — that is the whole of what it could not
+what Kobune needs, and names every key it had no equivalent for. **Read the
+TODOs before the first `kobune up`** — that is the whole of what it could not
 decide for you.
 
 Deriving the same file by hand from a compose file you can see is slower and
@@ -84,17 +84,17 @@ Worth knowing before you hit them:
   The wait gives up after 15 seconds and carries on, so a dependency that
   takes longer than that is not a guarantee
 - A named volume (`cache:/path`) is per project and **shared by every
-  worktree**. Minato namespaces it, so writing your own project prefix
-  gets you `minato-myapp-myapp-cache`. Use `cache@workspace:/path` for one
+  worktree**. Kobune namespaces it, so writing your own project prefix
+  gets you `kobune-myapp-myapp-cache`. Use `cache@workspace:/path` for one
   per worktree — `node_modules` against a per-branch lockfile needs it
 - Your worktree is mounted at `/workspace`. Anything a build writes under
   it lands in the repository on the host — point caches at
-  `/var/cache/minato`, which every service gets as `MINATO_CACHE_DIR` and
+  `/var/cache/kobune`, which every service gets as `KOBUNE_CACHE_DIR` and
   every worktree shares. **`env` values are not interpolated**, so write the
-  path out there; `$MINATO_CACHE_DIR` only expands in a `command` or a
+  path out there; `$KOBUNE_CACHE_DIR` only expands in a `command` or a
   start-up script
 - `[project] carry = [".env"]` names the untracked files a new worktree
-  needs. Without it `minato new` produces an environment that cannot start
+  needs. Without it `kobune new` produces an environment that cannot start
 - `setup` runs once before a service first starts — put `pnpm install`
   there, not in `command`, so it does not run on every `down`/`up`. It runs
   again if you change what it says
@@ -106,26 +106,26 @@ Worth knowing before you hit them:
 ### Start on a new branch
 
 ```bash
-minato new feature/user-auth
+kobune new feature/user-auth
 ```
 
 Creates the worktree, brings the environment up, and prints the URLs. There is
-no need to run `git worktree add` yourself — though Minato recognises the
+no need to run `git worktree add` yourself — though Kobune recognises the
 worktree if you do.
 
 Move into the new worktree before working. Its path is the `path` field of
-`minato status --json`.
+`kobune status --json`.
 
 **A new worktree gets the tracked files and nothing else.** If the services
 need an untracked file — `.env` almost always — name it in `[project] carry`
-so `minato new` copies it over. Without that the new environment fails to
+so `kobune new` copies it over. Without that the new environment fails to
 start every time, and the logs blame a missing variable rather than a missing
 file.
 
 ### Check a change
 
 ```bash
-URL=$(minato url web)
+URL=$(kobune url web)
 curl -sS --fail-with-body "$URL/api/health"
 ```
 
@@ -133,10 +133,10 @@ curl -sS --fail-with-body "$URL/api/health"
 that looks like anything but an empty response. Use `-sS --fail-with-body`, or
 check the exit code.
 
-**Name the service.** `minato url web` returns one line, something like
-`https://web.feature-user-auth.myapp.localhost`. `minato url` with no name
+**Name the service.** `kobune url web` returns one line, something like
+`https://web.feature-user-auth.myapp.localhost`. `kobune url` with no name
 lists every service instead, which is for reading rather than substituting —
-`$(minato url)` puts a table where a URL was expected.
+`$(kobune url)` puts a table where a URL was expected.
 
 **That URL works while the service is stopped** — a request wakes the
 environment up. It can take a few seconds, but `curl` waits for readiness, so
@@ -144,17 +144,17 @@ use it as-is.
 
 **`curl: (60)` does not mean you are stuck.** It means the local CA is not in
 the system trust store, and putting it there needs sudo — which is a person's
-job. You do not need it. `minato doctor --json` reports where the certificate
+job. You do not need it. `kobune doctor --json` reports where the certificate
 is, and `--cacert` verifies against it properly:
 
 ```bash
-CA=$(minato doctor --json | jq -r '.checks[] | select(.id == "ca") | .detail')
-curl -sS --fail-with-body --cacert "$CA" "$(minato url web)/"
+CA=$(kobune doctor --json | jq -r '.checks[] | select(.id == "ca") | .detail')
+curl -sS --fail-with-body --cacert "$CA" "$(kobune url web)/"
 ```
 
 Use that rather than stopping, and rather than `-k`, which would hide a real
 certificate problem alongside this one. Mention to the user that
-`minato setup` would make the plain `curl` work.
+`kobune setup` would make the plain `curl` work.
 
 ### After editing a file
 
@@ -166,23 +166,23 @@ you save it. Whether the **process** notices is up to what `command` starts.
 - anything else, `node server.js` included, is still running the old code
 
 ```bash
-minato down --service api && minato up --service api
+kobune down --service api && kobune up --service api
 ```
 
 **Check this before you doubt the edit.** A stale process answers exactly like
 a change that did not work — a 404 on the route you just added — and the next
 move it invites is to go back and rewrite code that was already correct.
-`minato exec api -- grep <something-you-just-wrote> /workspace/api/server.js`
+`kobune exec api -- grep <something-you-just-wrote> /workspace/api/server.js`
 settles which of the two it is in one command.
 
-There is no `minato restart`.
+There is no `kobune restart`.
 
 ### Read the logs
 
 ```bash
-minato logs                 # every service
-minato logs web -n 50       # the last 50 lines of web
-minato logs web -f          # keep streaming (stop it yourself)
+kobune logs                 # every service
+kobune logs web -n 50       # the last 50 lines of web
+kobune logs web -f          # keep streaming (stop it yourself)
 ```
 
 A service configured with `tty = true` has a terminal, and following it from
@@ -194,7 +194,7 @@ have no terminal anyway, which is the usual case.
 ### Run a command in a container
 
 ```bash
-minato exec web -- pnpm test
+kobune exec web -- pnpm test
 ```
 
 **The command's exit code comes straight back**, so tests can be judged by exit
@@ -205,8 +205,8 @@ status alone. Output arrives split across stdout and stderr.
 When a service will not start, `--fresh` is the way in:
 
 ```bash
-minato exec --fresh api -- env
-minato exec --fresh api -- sh -c 'pnpm install'
+kobune exec --fresh api -- env
+kobune exec --fresh api -- sh -c 'pnpm install'
 ```
 
 No stdin is attached, so `-- sh` alone exits immediately — use `sh -c`.
@@ -218,31 +218,31 @@ real container has died, which is exactly when you need to look.
 ### Environment variables
 
 ```bash
-minato env ls               # shows which layer each value comes from
-minato env set API_KEY=xxx  # the workspace layer by default: this worktree only
-minato env set DEBUG=1 --scope project   # the whole repository
+kobune env ls               # shows which layer each value comes from
+kobune env set API_KEY=xxx  # the workspace layer by default: this worktree only
+kobune env set DEBUG=1 --scope project   # the whole repository
 ```
 
 Do not write `.env` directly. There are three layers, and editing one by hand
 leaves it unclear which is winning.
 
-**A change needs `minato down && minato up`.** Containers that are already
+**A change needs `kobune down && kobune up`.** Containers that are already
 running do not pick it up.
 
-Every service receives the other services' URLs as `MINATO_URL_<SERVICE>`
-(`MINATO_URL_API` for a service named `api`). Use those when the frontend calls
+Every service receives the other services' URLs as `KOBUNE_URL_<SERVICE>`
+(`KOBUNE_URL_API` for a service named `api`). Use those when the frontend calls
 the API — hardcoding breaks from one worktree to the next.
 
 **The same URL works from inside the container**, so server-to-server calls use
-it too: the hostnames are pointed at Minato's gateway in every container of the
+it too: the hostnames are pointed at Kobune's gateway in every container of the
 workspace. One Host and one Origin for both halves of an app is what keeps
 cookies and CORS from having to know about two.
 
-**Do not reach for `NODE_TLS_REJECT_UNAUTHORIZED=0`.** Minato's CA is mounted
-into every service, named as `MINATO_CA_FILE`, and already set as
+**Do not reach for `NODE_TLS_REJECT_UNAUTHORIZED=0`.** Kobune's CA is mounted
+into every service, named as `KOBUNE_CA_FILE`, and already set as
 `NODE_EXTRA_CA_CERTS` — a Node service verifies these URLs with nothing added
-to `minato.toml`. Another stack points its own additive variable at
-`${MINATO_CA_FILE}`; `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE`
+to `kobune.toml`. Another stack points its own additive variable at
+`${KOBUNE_CA_FILE}`; `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE`
 replace the trust store rather than adding to it, so a container set up through
 one of those trusts nothing else.
 
@@ -259,21 +259,21 @@ Read `/proc/<pid>/environ` of the process that actually fetches, not of pid 1,
 before concluding the variable is missing.
 
 To reach the name the application already reads, refer to it from `env` in
-`minato.toml`. `${NAME}` is expanded; a bare `$NAME` is not.
+`kobune.toml`. `${NAME}` is expanded; a bare `$NAME` is not.
 
-**Which name that is only exists in the application.** Minato knows the value
-to give — `MINATO_URL_API` — and cannot know that this project's web server
+**Which name that is only exists in the application.** Kobune knows the value
+to give — `KOBUNE_URL_API` — and cannot know that this project's web server
 reads it as `ROOMS_API`. Grep the source for the variable before writing the
 `env` block; a compose file, if there is one, usually names it too.
 
 ```toml
 [services.web.env]
-NEXT_PUBLIC_API_URL     = "${MINATO_URL_API}"
-NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
+NEXT_PUBLIC_API_URL     = "${KOBUNE_URL_API}"
+NEXT_ALLOWED_DEV_ORIGIN = "${KOBUNE_HOSTNAME_WEB}"
 ```
 
-`MINATO_HOSTNAME_<SERVICE>` is the host with no scheme or port — what a CORS
-origin, `allowedDevOrigins` and a cookie domain want. (`MINATO_HOST_<SERVICE>`
+`KOBUNE_HOSTNAME_<SERVICE>` is the host with no scheme or port — what a CORS
+origin, `allowedDevOrigins` and a cookie domain want. (`KOBUNE_HOST_<SERVICE>`
 is a different thing: Apple Container's peer IP.)
 
 For a tool that reads a file rather than its own environment (`wrangler dev`,
@@ -282,24 +282,24 @@ the service starts. Secrets are left out of it.
 
 ```toml
 [services.api]
-env_file = ".minato/env.api"
+env_file = ".kobune/env.api"
 ```
 
 **They are only there while the proxy is listening.** With no proxy there is
 no URL to hand out, so the variable is left unset rather than set to
 something that does not work, and a start-up script reading it fails with
-`MINATO_URL_WEB: parameter not set`. `minato up` warns when this is the case;
-`minato env ls` shows what is actually injected, and `minato doctor` says how
+`KOBUNE_URL_WEB: parameter not set`. `kobune up` warns when this is the case;
+`kobune env ls` shows what is actually injected, and `kobune doctor` says how
 to get the proxy up.
 
 ### Share it with someone
 
 ```bash
-minato tunnel status
+kobune tunnel status
 ```
 
-An environment can be published over Cloudflare Tunnel, and `minato status`
-then shows a second URL per service. **Do not run `minato tunnel enable`
+An environment can be published over Cloudflare Tunnel, and `kobune status`
+then shows a second URL per service. **Do not run `kobune tunnel enable`
 yourself** — it puts the environment on the public internet, and that is the
 user's call to make, not yours. If they ask for a shareable link, tell them the
 command and let them run it.
@@ -307,7 +307,7 @@ command and let them run it.
 ### Clean up
 
 ```bash
-minato rm -w feature-user-auth
+kobune rm -w feature-user-auth
 ```
 
 Removes the worktree and its environment. The branch stays.
@@ -316,41 +316,41 @@ Removes the worktree and its environment. The branch stays.
 
 **Work through these in order.** Do not fall back to `docker` on a hunch.
 
-1. `minato status --json` — look at each service's `state`, which is a
+1. `kobune status --json` — look at each service's `state`, which is a
    plain string:
 
    ```bash
-   minato status --json | jq -r '.workspace.services[] | "\(.name) \(.state)"'
+   kobune status --json | jq -r '.workspace.services[] | "\(.name) \(.state)"'
    ```
 
-   - `stopped` → reach for it, or run `minato up`
+   - `stopped` → reach for it, or run `kobune up`
    - `starting` → wait. The container is up but its `health` check is not
      answering, which is what a dev server still building looks like
    - `failed` → `reason`, beside the state, says why. A container that
      exited non-zero lands here, so this is what a start-up script that
      died looks like
-2. `minato logs <service>` — errors from the app itself
-3. `minato env ls --service <name>` — what that container is actually given,
+2. `kobune logs <service>` — errors from the app itself
+3. `kobune env ls --service <name>` — what that container is actually given,
    and which layer each value came from. Check here before concluding a
    variable is wrong; without `--service` you get only what every service
    shares. When a `${...}` will not settle the listing still arrives: that
    value is shown as written and carries `unsettled` in `--json`, with the
    name it refers to and why
-4. `minato doctor` — problems with the environment. **The fix is in `fix`**
+4. `kobune doctor` — problems with the environment. **The fix is in `fix`**
 
 ### Common symptoms
 
 | Symptom | Where to look |
 | --- | --- |
-| `curl` exits 60 | The CA is not in the system trust store. Verify with `--cacert` against the path `minato doctor --json` reports; trusting it needs sudo, so that is the user's to run |
-| The URL does not connect | `minato doctor`. Usually DNS or the proxy is not set up yet |
-| A 404 comes back | Wrong hostname. Get it again from `minato url <service>` |
-| A 502 comes back | The service is registered but not answering. `minato logs` |
-| `MINATO_URL_*: parameter not set` | The proxy is not listening, so no URL was injected. `minato doctor` |
-| `minato exec` says the container is not running | It died. `minato logs` for why, `minato exec --fresh` to get inside anyway |
-| Startup never finishes | Watch it with `minato logs -f` |
-| A config change does nothing | `minato down && minato up` |
-| A code change does nothing | The process is stale, not the file. `minato down --service X && minato up --service X` |
+| `curl` exits 60 | The CA is not in the system trust store. Verify with `--cacert` against the path `kobune doctor --json` reports; trusting it needs sudo, so that is the user's to run |
+| The URL does not connect | `kobune doctor`. Usually DNS or the proxy is not set up yet |
+| A 404 comes back | Wrong hostname. Get it again from `kobune url <service>` |
+| A 502 comes back | The service is registered but not answering. `kobune logs` |
+| `KOBUNE_URL_*: parameter not set` | The proxy is not listening, so no URL was injected. `kobune doctor` |
+| `kobune exec` says the container is not running | It died. `kobune logs` for why, `kobune exec --fresh` to get inside anyway |
+| Startup never finishes | Watch it with `kobune logs -f` |
+| A config change does nothing | `kobune down && kobune up` |
+| A code change does nothing | The process is stale, not the file. `kobune down --service X && kobune up --service X` |
 
 ## Reading the output
 
@@ -375,7 +375,7 @@ A `--json` error may carry a `hint`. **Read it — it says what to do next.**
 - Run `docker` or `container` directly
 - Put a port in a URL (`localhost:3000` and friends)
 - Edit `.env` by hand
-- Leave `minato logs -f` running
+- Leave `kobune logs -f` running
 - Report "it's up" without checking
 - Read empty `curl -s` output as an empty response (it may be a certificate
   error)

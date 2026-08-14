@@ -11,10 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use minato_api::ApiError;
-use minato_core::config::{MinatoConfig, ServiceScope};
-use minato_proxy::{Activation, Route};
-use minato_runtime::{EventSink, Runtime, WorkspaceKey};
+use kobune_api::ApiError;
+use kobune_core::config::{KobuneConfig, ServiceScope};
+use kobune_proxy::{Activation, Route};
+use kobune_runtime::{EventSink, Runtime, WorkspaceKey};
 
 use crate::env;
 use crate::spec;
@@ -34,7 +34,7 @@ impl Supervisor {
     /// request to wake.
     ///
     /// A project that cannot be refreshed is skipped rather than fatal:
-    /// its `minato.toml` may have moved, or the runtime may be down, and
+    /// its `kobune.toml` may have moved, or the runtime may be down, and
     /// neither is a reason to take the daemon with it.
     pub async fn restore_routes(&self) {
         let projects = match self.known_projects().await {
@@ -131,7 +131,7 @@ impl Supervisor {
     /// to be the one way in that did not.
     ///
     /// Under Apple Container it decides more than ordering:
-    /// `MINATO_HOST_<SERVICE>` carries a peer's address, read after the
+    /// `KOBUNE_HOST_<SERVICE>` carries a peer's address, read after the
     /// peer has started, so a service woken on its own gets no variable
     /// at all.
     async fn start_for_host(
@@ -179,7 +179,7 @@ impl Supervisor {
         let runtime = self.runtime(&config.runtime.default).await?;
 
         // start fails without the image, so prepare them all first.
-        let workspace_spec = minato_runtime::WorkspaceSpec {
+        let workspace_spec = kobune_runtime::WorkspaceSpec {
             key: WorkspaceKey::new(&route.project, &record.label),
             worktree_path: record.path.clone(),
             services: specs.clone(),
@@ -378,7 +378,7 @@ impl Supervisor {
     async fn sweep_internal(
         &self,
         project: &str,
-        config: &MinatoConfig,
+        config: &KobuneConfig,
         runtime: &dyn Runtime,
         routes: &[(String, Route)],
         events: &EventSink,
@@ -435,7 +435,7 @@ impl Supervisor {
 /// [`select_with_dependencies`] answers *which*; `startup_order` answers
 /// *in what order*. `up` gets the second for free by filtering a spec that
 /// is already ordered, and the wake path has no such spec to filter.
-fn wake_order(config: &MinatoConfig, service: &str) -> Result<Vec<String>, ApiError> {
+fn wake_order(config: &KobuneConfig, service: &str) -> Result<Vec<String>, ApiError> {
     let needed = select_with_dependencies(config, std::slice::from_ref(&service.to_string()))?;
 
     Ok(config
@@ -458,11 +458,11 @@ fn wake_order(config: &MinatoConfig, service: &str) -> Result<Vec<String>, ApiEr
 /// that has already gone quiet.
 fn unreached_internal_services(
     project: &str,
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     routes: &[(String, Route)],
     idle_for: &dyn Fn(&str) -> Option<Duration>,
     starting: &dyn Fn(&str) -> bool,
-) -> Vec<minato_runtime::ServiceKey> {
+) -> Vec<kobune_runtime::ServiceKey> {
     let internal: Vec<&str> = config
         .services
         .iter()

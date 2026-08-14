@@ -18,7 +18,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
-use minato_core::Modes;
+use kobune_core::Modes;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{broadcast, mpsc};

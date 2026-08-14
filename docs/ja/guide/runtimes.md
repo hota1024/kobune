@@ -1,17 +1,17 @@
 # ランタイム
 
-Minato は、プロジェクトごとに選択したバックエンドでコンテナを実行します。
+Kobune は、プロジェクトごとに選択したバックエンドでコンテナを実行します。
 
 ```toml
 [runtime]
 default = "docker"   # または "apple"
 ```
 
-`minato doctor` は、プロジェクトが使用するランタイムと、他に利用可能な
+`kobune doctor` は、プロジェクトが使用するランタイムと、他に利用可能な
 ランタイムを表示します。
 
 ```console
-$ minato doctor
+$ kobune doctor
 │ …
 │ ✓  container runtime            apple 1.2.1
 │ ✓  Docker (available)           docker 29.4.0
@@ -20,7 +20,7 @@ $ minato doctor
 
 ## Docker
 
-既定のランタイムで、サポートも充実しています。Minato は `bollard` を通じて
+既定のランタイムで、サポートも充実しています。Kobune は `bollard` を通じて
 Docker API を直接利用し、`docker` CLI は呼び出しません。そのため API に到達
 できれば動作し、Docker Desktop、OrbStack、colima のいずれでも構いません。
 
@@ -50,21 +50,21 @@ Apple Container にはネットワークエイリアスもコンテナ間 DNS �
 コンテナのネームサーバはネットワークのゲートウェイであり、コンテナ名に対して
 は NXDOMAIN を返します。`db:5432` では接続できません。
 
-代わりに Minato が、対象サービスの **IP アドレス**を注入します。
+代わりに Kobune が、対象サービスの **IP アドレス**を注入します。
 
 ```
-MINATO_HOST_DB = 192.168.64.7
+KOBUNE_HOST_DB = 192.168.64.7
 ```
 
 そのため、次のように記述します。
 
 ```js
-const db = process.env.MINATO_HOST_DB ?? 'db'
+const db = process.env.KOBUNE_HOST_DB ?? 'db'
 ```
 
 ::: warning depends_on の指定が必要です
 アドレスはサービスの起動時に取得するため、まだ起動していないサービスに対応する
-変数は作成されません。**`depends_on` を指定してください。** Minato が正しい
+変数は作成されません。**`depends_on` を指定してください。** Kobune が正しい
 順序で起動します。
 
 変数を未設定のままにしているのは意図的です。解決できないホスト名を渡すと、
@@ -75,17 +75,17 @@ const db = process.env.MINATO_HOST_DB ?? 'db'
 ### サービスの URL は /etc/hosts を経由する
 
 `--add-host` に相当する機能がないため、そのフラグが書き込むはずのファイルを
-Minato が生成し、`/etc/hosts` としてマウントします。workspace のホスト名は
+Kobune が生成し、`/etc/hosts` としてマウントします。workspace のホスト名は
 ネットワークのゲートウェイ、つまりホストに向けられます。コンテナからはホストの
 ループバックが見えないため、プロキシに到達できる経路はここだけです。
 
 **プロキシがそのアドレスで待ち受けている必要があり**、80 と 443 に置けるのは
-launchd だけです。そのソケットを plist に書き込むのは `minato setup` なので、
-Apple Container を入れるより前にセットアップしたマシンでは `minato setup` を
-実行し直す必要があります。該当する場合は `minato doctor` が指摘します。
+launchd だけです。そのソケットを plist に書き込むのは `kobune setup` なので、
+Apple Container を入れるより前にセットアップしたマシンでは `kobune setup` を
+実行し直す必要があります。該当する場合は `kobune doctor` が指摘します。
 
 ```console
-$ minato doctor
+$ kobune doctor
 ✗ reachable from containers  the proxy is not listening on 192.168.64.1, …
 ```
 
@@ -104,10 +104,10 @@ Apple Container では、コンテナは 1 つのネットワークにしか参�
 
 ### その他の相違点
 
-- **名前付きボリュームがありません。** Minato は
-  `~/.minato/volumes/<project>/` へのバインドマウントに置き換え、同等の
+- **名前付きボリュームがありません。** Kobune は
+  `~/.kobune/volumes/<project>/` へのバインドマウントに置き換え、同等の
   永続性を確保します。
-- `minato doctor` は、このランタイムを使用している場合に「Docker Desktop を
+- `kobune doctor` は、このランタイムを使用している場合に「Docker Desktop を
   起動」ではなく `container system start` を提示します。
 
 ## どちらを選ぶべきか
@@ -116,7 +116,7 @@ Apple Container では、コンテナは 1 つのネットワークにしか参�
 ボリューム、worktree ごとのネットワーク分離が利用できます。
 
 Apple Container が適しているのは、Docker Desktop を常駐させずコンテナごとに
-軽量な VM を使いたい場合で、かつサービス間通信を `MINATO_HOST_*` で記述でき、
+軽量な VM を使いたい場合で、かつサービス間通信を `KOBUNE_HOST_*` で記述でき、
 worktree 間のネットワーク分離が不要なケースです。
 
 ## Firecracker
@@ -132,10 +132,10 @@ Container の対応によってその設計が機能することは確認でき�
 設定を変更し、再起動します。
 
 ```console
-$ minato down --all
-$ # minato.toml を編集
-$ minato up
+$ kobune down --all
+$ # kobune.toml を編集
+$ kobune up
 ```
 
 コンテナは移行されません。以前のランタイムのコンテナは削除するまで残ります。
-Minato は自身のラベルが付与されたコンテナのみを管理対象とします。
+Kobune は自身のラベルが付与されたコンテナのみを管理対象とします。

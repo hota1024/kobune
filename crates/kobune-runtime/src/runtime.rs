@@ -10,7 +10,7 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use futures::StreamExt as _;
 use futures::stream::BoxStream;
-use minato_api::{OutputStream, Window};
+use kobune_api::{OutputStream, Window};
 use tokio::io::AsyncWrite;
 
 use crate::error::Result;
@@ -166,7 +166,7 @@ pub struct ExecOutcome {
     /// The exit code of the command that ran.
     ///
     /// **Passed straight back to the caller.** An agent has to be able to
-    /// judge `minato exec web -- pnpm test` by its exit code alone.
+    /// judge `kobune exec web -- pnpm test` by its exit code alone.
     pub exit_code: i32,
 }
 
@@ -184,7 +184,7 @@ impl<'a> Throwaway<'a> {
     /// A name that will not collide with the real container or with
     /// another throwaway running beside it.
     ///
-    /// Prefixed distinctly from `minato-`, so anything left behind by a
+    /// Prefixed distinctly from `kobune-`, so anything left behind by a
     /// daemon that died mid-command reads as debris rather than as a
     /// service.
     pub(crate) fn new(spec: &ServiceSpec, command: &'a [String], workdir: Option<&'a str>) -> Self {
@@ -195,7 +195,7 @@ impl<'a> Throwaway<'a> {
 
         Self {
             name: format!(
-                "minato-tmp-{}-{}-{stamp}",
+                "kobune-tmp-{}-{}-{stamp}",
                 spec.key.workspace.project, spec.key.service
             ),
             command,
@@ -204,7 +204,7 @@ impl<'a> Throwaway<'a> {
     }
 }
 
-/// What a runtime is. Shown by `minato doctor` and `minato ping`.
+/// What a runtime is. Shown by `kobune doctor` and `kobune ping`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeInfo {
     pub id: String,
@@ -219,7 +219,7 @@ pub struct RuntimeInfo {
 /// A virtualisation backend.
 #[async_trait]
 pub trait Runtime: Send + Sync {
-    /// The identifier written under `[runtime] default` in `minato.toml`.
+    /// The identifier written under `[runtime] default` in `kobune.toml`.
     fn id(&self) -> &'static str;
 
     /// Checks that it can be reached and that its version is usable.
@@ -294,7 +294,7 @@ pub trait Runtime: Send + Sync {
     /// Only for a service whose spec asked for `tty`; without one there is
     /// no terminal to open and this fails. That is a condition the caller
     /// is expected to have checked, not one to surprise a person with:
-    /// `minato logs` reads the service's configuration first and falls
+    /// `kobune logs` reads the service's configuration first and falls
     /// back to plain log reading.
     ///
     /// Several attachments to one service are possible and all see the
@@ -321,7 +321,7 @@ pub trait Runtime: Send + Sync {
     /// that is when someone most wants to look around. The image, the
     /// environment and the volumes are the service's; the command is not.
     ///
-    /// It publishes no ports and carries no Minato labels, so it cannot
+    /// It publishes no ports and carries no Kobune labels, so it cannot
     /// take the real container's ports, appear in `list_project`, or answer
     /// to the service's name on the network.
     async fn exec_fresh(
@@ -332,21 +332,21 @@ pub trait Runtime: Send + Sync {
         events: &EventSink,
     ) -> Result<ExecOutcome>;
 
-    /// Every Minato-managed service in a project.
+    /// Every Kobune-managed service in a project.
     ///
     /// This is how the daemon recovers its state after a restart. The
     /// runtime, not a state store, is the source of truth, so this listing
     /// has to be trustworthy.
     async fn list_project(&self, project: &str) -> Result<Vec<ServiceStatus>>;
 
-    /// Every volume this runtime is holding for Minato, whatever project it
+    /// Every volume this runtime is holding for Kobune, whatever project it
     /// belongs to.
     ///
     /// **Found by looking, not from the daemon's state.** This exists for
-    /// `minato uninstall`, and by the time anyone uninstalls, the
+    /// `kobune uninstall`, and by the time anyone uninstalls, the
     /// repository a project was registered from may well have been deleted
     /// already — its storage is then reachable from nothing, since the name
-    /// was Minato's invention rather than the user's. A workspace volume
+    /// was Kobune's invention rather than the user's. A workspace volume
     /// that `destroy_workspace` has already taken is simply not here.
     async fn managed_volumes(&self) -> Result<Vec<ManagedVolume>>;
 
@@ -366,16 +366,16 @@ pub trait Runtime: Send + Sync {
 /// The same keys across every runtime. These labels are all the daemon has
 /// to tell its own containers apart from everyone else's.
 pub mod labels {
-    /// Marks a container as Minato's. The value is `"1"`.
-    pub const MANAGED: &str = "dev.minato.managed";
-    pub const PROJECT: &str = "dev.minato.project";
+    /// Marks a container as Kobune's. The value is `"1"`.
+    pub const MANAGED: &str = "dev.kobune.managed";
+    pub const PROJECT: &str = "dev.kobune.project";
     /// The workspace label. `_shared` for a shared service.
-    pub const WORKSPACE: &str = "dev.minato.workspace";
-    pub const SERVICE: &str = "dev.minato.service";
+    pub const WORKSPACE: &str = "dev.kobune.workspace";
+    pub const SERVICE: &str = "dev.kobune.service";
     /// Either `workspace` or `project`.
-    pub const SCOPE: &str = "dev.minato.scope";
+    pub const SCOPE: &str = "dev.kobune.scope";
     /// The port listened on inside the container.
-    pub const PORT: &str = "dev.minato.port";
+    pub const PORT: &str = "dev.kobune.port";
 
     /// Marks a container created with a terminal. The value is `"1"`.
     ///
@@ -385,23 +385,23 @@ pub mod labels {
     /// `tty` was turned on since — and the listing that found the
     /// container already carries the labels, where asking the runtime
     /// would be another round trip per service per start.
-    pub const TTY: &str = "dev.minato.tty";
+    pub const TTY: &str = "dev.kobune.tty";
 
-    /// Marks a one-off container from `minato exec --fresh`.
+    /// Marks a one-off container from `kobune exec --fresh`.
     ///
     /// **It carries no `SERVICE` label**, which is what keeps it out of
-    /// `list_project` and therefore out of `minato status` and the routing
+    /// `list_project` and therefore out of `kobune status` and the routing
     /// table. It carries the rest so that one left behind by a daemon that
     /// died mid-command is still findable — an unlabelled container is
-    /// invisible to every Minato command for ever.
-    pub const THROWAWAY: &str = "dev.minato.throwaway";
+    /// invisible to every Kobune command for ever.
+    pub const THROWAWAY: &str = "dev.kobune.throwaway";
 
     /// What a built image was built from.
     ///
     /// Put on the image, not the container. A build is skipped when the
     /// image already carries the current value, so this is what decides
     /// whether `up` rebuilds.
-    pub const BUILD_FINGERPRINT: &str = "dev.minato.build";
+    pub const BUILD_FINGERPRINT: &str = "dev.kobune.build";
 
     pub const MANAGED_VALUE: &str = "1";
 }
@@ -416,7 +416,7 @@ pub mod names {
     /// `container ls`.
     pub fn container(key: &ServiceKey) -> String {
         format!(
-            "minato-{}-{}-{}",
+            "kobune-{}-{}-{}",
             key.workspace.project,
             sanitize_segment(&key.workspace.workspace),
             key.service
@@ -426,7 +426,7 @@ pub mod names {
     /// The network name for one workspace.
     pub fn network(key: &WorkspaceKey) -> String {
         format!(
-            "minato-{}-{}",
+            "kobune-{}-{}",
             key.project,
             sanitize_segment(&key.workspace)
         )
@@ -445,7 +445,7 @@ pub mod names {
     /// storage. A `.` cannot occur in a label, so the two can never meet.
     pub fn volume(key: &WorkspaceKey, name: &str, scope: crate::spec::VolumeScope) -> String {
         match scope {
-            crate::spec::VolumeScope::Project => format!("minato-{}-{name}", key.project),
+            crate::spec::VolumeScope::Project => format!("kobune-{}-{name}", key.project),
             crate::spec::VolumeScope::Workspace => {
                 debug_assert!(
                     !key.is_shared(),
@@ -454,7 +454,7 @@ pub mod names {
                 );
 
                 format!(
-                    "minato-{}-{}.{name}",
+                    "kobune-{}-{}.{name}",
                     key.project,
                     sanitize_segment(&key.workspace)
                 )
@@ -478,7 +478,7 @@ mod tests {
     fn a_terminals_carriage_return_is_taken_off() {
         // Both backends read logs by line, and a container with a
         // terminal ends every one of them `\r\n`. Left on, the `\r` sends
-        // the cursor back over whatever Minato prints next.
+        // the cursor back over whatever Kobune prints next.
         let line = LogLine::new(OutputStream::Stdout, "listening on 3000\r".into());
         assert_eq!(line.line, "listening on 3000");
     }
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn container_names_are_readable() {
         let key = WorkspaceKey::new("myapp", "feat-1").service("web");
-        assert_eq!(names::container(&key), "minato-myapp-feat-1-web");
+        assert_eq!(names::container(&key), "kobune-myapp-feat-1-web");
     }
 
     #[test]
@@ -504,7 +504,7 @@ mod tests {
         let key = WorkspaceKey::shared("myapp").service("db");
         let name = names::container(&key);
 
-        assert_eq!(name, "minato-myapp-shared-db");
+        assert_eq!(name, "kobune-myapp-shared-db");
         assert!(
             !name.contains('_'),
             "dropped because some implementations reject `_`: {name}"
@@ -516,7 +516,7 @@ mod tests {
         let a = names::network(&WorkspaceKey::new("myapp", "feat-1"));
         let b = names::network(&WorkspaceKey::new("myapp", "feat-2"));
         assert_ne!(a, b);
-        assert_eq!(a, "minato-myapp-feat-1");
+        assert_eq!(a, "kobune-myapp-feat-1");
     }
 
     #[test]
@@ -529,7 +529,7 @@ mod tests {
 
         assert_eq!(
             names::volume(&one, "pgdata", VolumeScope::Project),
-            "minato-myapp-pgdata"
+            "kobune-myapp-pgdata"
         );
         assert_eq!(
             names::volume(&one, "pgdata", VolumeScope::Project),
@@ -554,7 +554,7 @@ mod tests {
 
         assert_eq!(
             names::volume(&one, "node-modules", VolumeScope::Workspace),
-            "minato-myapp-feat-1.node-modules"
+            "kobune-myapp-feat-1.node-modules"
         );
         assert_ne!(
             names::volume(&one, "node-modules", VolumeScope::Workspace),

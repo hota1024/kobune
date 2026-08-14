@@ -1,4 +1,4 @@
-//! minatod — Minato's resident process.
+//! kobuned — Kobune's resident process.
 //!
 //! The port ledger, the reverse proxy, DNS and idle sweeping all need
 //! something to stay running, hence a daemon. At M0 there was only the
@@ -7,38 +7,38 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use minato_core::Paths;
+use kobune_core::Paths;
 use tokio::sync::Notify;
 use tracing_subscriber::EnvFilter;
 
-use minatod::activator::{DeferredActivator, SupervisorActivator};
-use minatod::gateway::{Gateway, GatewaySettings};
-use minatod::idle;
-use minatod::server::Server;
-use minatod::supervisor::Supervisor;
-use minatod::tunnel::TunnelHandle;
+use kobuned::activator::{DeferredActivator, SupervisorActivator};
+use kobuned::gateway::{Gateway, GatewaySettings};
+use kobuned::idle;
+use kobuned::server::Server;
+use kobuned::supervisor::Supervisor;
+use kobuned::tunnel::TunnelHandle;
 
 /// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
 /// is what tells one build from another.
 ///
-/// The same string a `Ping` is answered with — see [`minatod::version`],
+/// The same string a `Ping` is answered with — see [`kobuned::version`],
 /// which is where it is built, so what this daemon says it is cannot
 /// depend on who asked.
 fn version() -> &'static str {
     // Leaked once at startup: clap wants a `&'static str`, and the string is
     // built from two compile-time constants so there is nothing to free.
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VERSION.get_or_init(minatod::version)
+    VERSION.get_or_init(kobuned::version)
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "minatod", version = version(), about = "Minato's resident process")]
+#[command(name = "kobuned", version = version(), about = "Kobune's resident process")]
 struct Args {
     /// Also log to stderr. For debugging by hand.
     #[arg(long)]
     foreground: bool,
 
-    /// How verbose to log. `MINATO_LOG` works too.
+    /// How verbose to log. `KOBUNE_LOG` works too.
     #[arg(long, default_value = "info")]
     log_level: String,
 }
@@ -61,9 +61,9 @@ async fn main() -> anyhow::Result<()> {
     init_logging(&args, &paths)?;
 
     tracing::info!(
-        "starting minatod {} (protocol {})",
+        "starting kobuned {} (protocol {})",
         env!("CARGO_PKG_VERSION"),
-        minato_api::PROTOCOL_VERSION
+        kobune_api::PROTOCOL_VERSION
     );
 
     let shutdown = Arc::new(Notify::new());
@@ -106,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
     if !gateway.is_serving() {
         tracing::warn!(
             "the proxy is not listening, so no URLs will be issued. \
-             Check `minato doctor`"
+             Check `kobune doctor`"
         );
     }
 
@@ -140,14 +140,14 @@ async fn main() -> anyhow::Result<()> {
     // publishing an environment nothing is managing any more.
     tunnel.stop().await;
 
-    tracing::info!("minatod is shutting down");
+    tracing::info!("kobuned is shutting down");
 
     result
 }
 
 fn init_logging(args: &Args, paths: &Paths) -> anyhow::Result<()> {
     let filter =
-        EnvFilter::try_from_env("MINATO_LOG").unwrap_or_else(|_| EnvFilter::new(&args.log_level));
+        EnvFilter::try_from_env("KOBUNE_LOG").unwrap_or_else(|_| EnvFilter::new(&args.log_level));
 
     // A daemon started by the CLI has its stdout closed, so without a log
     // file there is nothing to go on at all.

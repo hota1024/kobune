@@ -4098,6 +4098,192 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kobune"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "dirs",
+ "flate2",
+ "kobune-api",
+ "kobune-client",
+ "kobune-core",
+ "libc",
+ "qrcode",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 0.8.23",
+ "unicode-width",
+ "yaml-rust2",
+]
+
+[[package]]
+name = "kobune-api"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "kobune-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "kobune-client"
+version = "0.1.0"
+dependencies = [
+ "kobune-api",
+ "kobune-core",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kobune-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "humantime",
+ "humantime-serde",
+ "indexmap 2.14.0",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml 0.8.23",
+ "tracing",
+]
+
+[[package]]
+name = "kobune-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "kobune-api",
+ "kobune-client",
+ "kobune-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tray-icon",
+]
+
+[[package]]
+name = "kobune-dns"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hickory-proto",
+ "hickory-server",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kobune-proxy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "kobune-core",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
+]
+
+[[package]]
+name = "kobune-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bollard",
+ "chrono",
+ "futures",
+ "kobune-api",
+ "kobune-core",
+ "libc",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "kobune-tunnel"
+version = "0.1.0"
+dependencies = [
+ "kobune-core",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kobuned"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "futures",
+ "humantime",
+ "indexmap 2.14.0",
+ "kobune-api",
+ "kobune-core",
+ "kobune-dns",
+ "kobune-proxy",
+ "kobune-runtime",
+ "kobune-tunnel",
+ "libc",
+ "serde_json",
+ "sha2 0.10.9",
+ "shell-words",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4619,192 +4805,6 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
-]
-
-[[package]]
-name = "minato"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "dirs",
- "flate2",
- "libc",
- "minato-api",
- "minato-client",
- "minato-core",
- "qrcode",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tar",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "toml 0.8.23",
- "unicode-width",
- "yaml-rust2",
-]
-
-[[package]]
-name = "minato-api"
-version = "0.1.0"
-dependencies = [
- "base64",
- "minato-core",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "minato-client"
-version = "0.1.0"
-dependencies = [
- "minato-api",
- "minato-core",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "minato-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "humantime",
- "humantime-serde",
- "indexmap 2.14.0",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.20",
- "toml 0.8.23",
- "tracing",
-]
-
-[[package]]
-name = "minato-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
- "minato-api",
- "minato-client",
- "minato-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "tray-icon",
-]
-
-[[package]]
-name = "minato-dns"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "hickory-proto",
- "hickory-server",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "minato-proxy"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-util",
- "minato-core",
- "rcgen",
- "rustls",
- "rustls-pemfile",
- "tempfile",
- "thiserror 2.0.20",
- "time",
- "tokio",
- "tokio-rustls",
- "tracing",
- "x509-parser",
-]
-
-[[package]]
-name = "minato-runtime"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bollard",
- "chrono",
- "futures",
- "libc",
- "minato-api",
- "minato-core",
- "serde",
- "serde_json",
- "shell-words",
- "tar",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
-name = "minato-tunnel"
-version = "0.1.0"
-dependencies = [
- "minato-core",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "minatod"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "futures",
- "humantime",
- "indexmap 2.14.0",
- "libc",
- "minato-api",
- "minato-core",
- "minato-dns",
- "minato-proxy",
- "minato-runtime",
- "minato-tunnel",
- "serde_json",
- "sha2 0.10.9",
- "shell-words",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

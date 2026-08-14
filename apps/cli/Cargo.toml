@@ -1,5 +1,5 @@
 [package]
-name = "minato"
+name = "kobune"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,13 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "minato"
+name = "kobune"
 path = "src/main.rs"
 
 [dependencies]
-minato-core.workspace = true
-minato-api.workspace = true
-minato-client.workspace = true
+kobune-core.workspace = true
+kobune-api.workspace = true
+kobune-client.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process"] }
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete.workspace = true

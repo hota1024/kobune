@@ -1,5 +1,5 @@
 [package]
-name = "minato-tunnel"
+name = "kobune-tunnel"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-minato-core = { workspace = true }
+kobune-core = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

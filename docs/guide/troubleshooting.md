@@ -4,12 +4,12 @@ Work through it in this order. Reaching for `docker` on a hunch is how state
 ends up disagreeing.
 
 ```console
-$ minato status      # what state is the service in?
-$ minato logs web    # what does the app say?
-$ minato doctor      # what does the environment say?
+$ kobune status      # what state is the service in?
+$ kobune logs web    # what does the app say?
+$ kobune doctor      # what does the environment say?
 ```
 
-`minato doctor` prints a fix for every line that is not `✓`.
+`kobune doctor` prints a fix for every line that is not `✓`.
 
 ## Common symptoms
 
@@ -18,7 +18,7 @@ $ minato doctor      # what does the environment say?
 The local CA is not trusted.
 
 ```console
-$ minato doctor
+$ kobune doctor
 │ …
 │ !  local CA trust  not trusted; browsers and curl will warn over HTTPS
 │
@@ -33,7 +33,7 @@ error and looks like an empty response — use `-sS --fail-with-body`.
 ### The URL does not resolve
 
 ```console
-$ minato doctor
+$ kobune doctor
 │ …
 │ ✗  DNS resolver (/etc/resolver/localhost)  not installed
 │ …
@@ -45,21 +45,21 @@ includes the right port for how your daemon is running.
 ### A 404 from the proxy
 
 ```
-Minato: there is no environment behind `web.feat-1.myapp.localhost`.
-Run `minato ls` to see which workspaces are up.
+Kobune: there is no environment behind `web.feat-1.myapp.localhost`.
+Run `kobune ls` to see which workspaces are up.
 ```
 
 The hostname does not match a registered service. Usually a typo, a stale URL
-after a rename, or `expose = false`. Get it again with `minato url`.
+after a rename, or `expose = false`. Get it again with `kobune url`.
 
 ### A 502
 
 The service is registered but not answering. It started and then fell over, or
-it is listening on a different port than `minato.toml` says.
+it is listening on a different port than `kobune.toml` says.
 
 ```console
-$ minato logs web -n 50
-$ minato status          # is the state ready, or failed?
+$ kobune logs web -n 50
+$ kobune status          # is the state ready, or failed?
 ```
 
 Check that `port` matches what the app actually binds, and that it binds
@@ -69,10 +69,10 @@ container is unreachable from outside it.
 ### Startup never finishes
 
 ```console
-$ minato logs web -f
+$ kobune logs web -f
 ```
 
-Minato waits 15 seconds for readiness, then carries on and warns. A first start
+Kobune waits 15 seconds for readiness, then carries on and warns. A first start
 that compiles or installs dependencies takes longer than that; the container is
 still coming up.
 
@@ -84,25 +84,25 @@ TCP connection succeeded.
 Containers that are already running do not pick up changes.
 
 ```console
-$ minato down && minato up
+$ kobune down && kobune up
 ```
 
-True for `minato.toml` and for environment variables alike.
+True for `kobune.toml` and for environment variables alike.
 
 ### Nothing works after a reboot
 
 ```console
-$ minato daemon status
-$ minato doctor
+$ kobune daemon status
+$ kobune doctor
 ```
 
 Without the LaunchDaemon installed, the daemon does not come back on its own.
-`minato setup` offers to install it.
+`kobune setup` offers to install it.
 
 ### The LaunchDaemon is installed, but its job never runs
 
 ```console
-$ minato doctor
+$ kobune doctor
 │ !  launchd socket activation  inactive, though launchd has the LaunchDaemon
 ```
 
@@ -111,36 +111,36 @@ it taken and stands down — and a clean exit is not restarted. It is that first
 daemon still holding the fallback ports, not a setup that failed.
 
 ```console
-$ minato daemon restart
+$ kobune daemon restart
 ```
 
 Stopping hands the socket back, and starting reaches for :80 — which is
 launchd's to answer — so what comes up is launchd's job, holding 80, 443 and 53.
-No root is needed for that; a `launchctl kickstart` would want it. `minato
-doctor` and `minato setup` both name this same command.
+No root is needed for that; a `launchctl kickstart` would want it. `kobune
+doctor` and `kobune setup` both name this same command.
 
 Stopping alone would work eventually, since the next request to arrive wakes the
-job, but it leaves the machine with no daemon in the meantime and `minato daemon
+job, but it leaves the machine with no daemon in the meantime and `kobune daemon
 status` reporting it stopped.
 
 The restart says so when that does not work: reaching :80 found nothing to wake
 — something else holds the port, or the job's socket never bound — and the start
 fell through to a daemon of its own. It exits non-zero and names what is left,
-so neither you nor a script has to run `minato doctor` to find out.
+so neither you nor a script has to run `kobune doctor` to find out.
 
 ```console
-$ sudo launchctl kickstart -k system/dev.minato.daemon
+$ sudo launchctl kickstart -k system/dev.kobune.daemon
 ```
 
-**Installing it again is not the fix**, and `minato setup` no longer offers to:
+**Installing it again is not the fix**, and `kobune setup` no longer offers to:
 launchd answers a second `bootstrap` of a label it already has with `Bootstrap
 failed: 5: Input/output error`.
 
-### launchd's job is for a different `MINATO_HOME`
+### launchd's job is for a different `KOBUNE_HOME`
 
 ```console
-$ minato doctor
-│ !  launchd socket activation  inactive: launchd's job serves MINATO_HOME=/Users/hotaka/.minato, and this daemon runs under /tmp/minato-elsewhere
+$ kobune doctor
+│ !  launchd socket activation  inactive: launchd's job serves KOBUNE_HOME=/Users/hotaka/.kobune, and this daemon runs under /tmp/kobune-elsewhere
 ```
 
 The plist carries the home it was installed for, and this shell is using another
@@ -148,29 +148,29 @@ one. launchd holds 80, 443 and 53 for the job it has, that job serves the other
 home, and nothing run from here takes them away from it.
 
 ```console
-$ minato daemon restart
+$ kobune daemon restart
 ✗ error: started a daemon outside launchd, so 80 and 443 are out and no URL will answer
-  hint: launchd's job serves MINATO_HOME=/Users/hotaka/.minato, so those ports are held for a daemon that is not this one. Point MINATO_HOME there to reach it, or keep the ports this daemon fell back to
+  hint: launchd's job serves KOBUNE_HOME=/Users/hotaka/.kobune, so those ports are held for a daemon that is not this one. Point KOBUNE_HOME there to reach it, or keep the ports this daemon fell back to
 ```
 
 The other two commands are no better. A `launchctl kickstart` starts that same
-job again, for that same home, and `minato setup` offers no launchd step here at
+job again, for that same home, and `kobune setup` offers no launchd step here at
 all — a second `bootstrap` of a label launchd already has comes back as
 `Input/output error`, so it says what the state is and leaves the rest alone.
 
-Point `MINATO_HOME` at the home the job serves to reach the daemon those ports
+Point `KOBUNE_HOME` at the home the job serves to reach the daemon those ports
 belong to. Otherwise this is a second instance, deliberately, and it keeps the
 fallback ports every URL then carries.
 
 ### "the Unix socket path is too long"
 
-`MINATO_HOME` is somewhere deep. A socket path is limited to about 100 bytes.
-Point it somewhere shorter — the default `~/.minato` is fine.
+`KOBUNE_HOME` is somewhere deep. A socket path is limited to about 100 bytes.
+Point it somewhere shorter — the default `~/.kobune` is fine.
 
 ### Requests reach the wrong application
 
 ```console
-$ minato doctor
+$ kobune doctor
 │ …
 │ ✗  listening addresses  the HTTPS proxy could not hold [::1]. *.localhost
 │                         resolves to both families and clients prefer IPv6,
@@ -180,8 +180,8 @@ $ minato doctor
 
 Something else holds one of the loopback addresses. Since `*.localhost`
 resolves to both `::1` and `127.0.0.1` and clients prefer IPv6, holding only
-one sends traffic somewhere else. Stop the other process, or move Minato with
-`MINATO_HTTP_PORT`.
+one sends traffic somewhere else. Stop the other process, or move Kobune with
+`KOBUNE_HTTP_PORT`.
 
 **The two proxies are reported separately** because they bind separately: HTTP
 can hold both families while HTTPS has lost one, and it is the named one that
@@ -189,7 +189,7 @@ needs looking at.
 
 ## Apple Container
 
-### `MINATO_HOST_<SERVICE>` is unset
+### `KOBUNE_HOST_<SERVICE>` is unset
 
 The peer was not running when this service started. Add `depends_on` so it
 starts first.
@@ -205,22 +205,22 @@ resolve and you would go looking for the wrong problem. See
 $ container system start
 ```
 
-Minato does not start it for you, the same way it does not start Docker.
+Kobune does not start it for you, the same way it does not start Docker.
 
 ## Looking deeper
 
 ```console
-$ tail -f ~/.minato/logs/minatod.log
-$ MINATO_LOG=debug minatod          # in the foreground
+$ tail -f ~/.kobune/logs/kobuned.log
+$ KOBUNE_LOG=debug kobuned          # in the foreground
 ```
 
 If you do end up inspecting containers directly, only read:
 
 ```console
-$ docker ps --filter label=dev.minato.managed=1
+$ docker ps --filter label=dev.kobune.managed=1
 $ container ls --all
 ```
 
-Everything Minato manages carries `dev.minato.*` labels, and those labels are
+Everything Kobune manages carries `dev.kobune.*` labels, and those labels are
 the source of truth. Changing containers behind its back is what makes the two
 disagree.

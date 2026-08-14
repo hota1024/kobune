@@ -5,7 +5,7 @@
 //! parsed, piped and grepped, and every decoration would be something to
 //! strip back off. What a person reads lives in [`crate::ui`].
 
-use minato_api::{ApiError, Event, LogLevel};
+use kobune_api::{ApiError, Event, LogLevel};
 
 /// What `logs` and `exec` print.
 ///
@@ -14,8 +14,8 @@ use minato_api::{ApiError, Event, LogLevel};
 pub fn print_output_event(event: &Event) {
     match event {
         Event::Output { line, stream, .. } => match stream {
-            minato_api::OutputStream::Stdout => println!("{line}"),
-            minato_api::OutputStream::Stderr => eprintln!("{line}"),
+            kobune_api::OutputStream::Stdout => println!("{line}"),
+            kobune_api::OutputStream::Stderr => eprintln!("{line}"),
         },
         Event::Log {
             level: LogLevel::Warn,

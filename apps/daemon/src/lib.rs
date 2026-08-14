@@ -1,4 +1,4 @@
-//! minatod — Minato's resident process, as a library.
+//! kobuned — Kobune's resident process, as a library.
 //!
 //! **This exists so the daemon can have integration tests.** A binary
 //! crate cannot: `tests/` has nothing to import. Everything the daemon is
@@ -10,14 +10,14 @@
 //! parts that only make sense once, in a process.
 
 /// `0.1.0 (abc1234)` — what a `Ping` is answered with, and what
-/// `minatod --version` prints.
+/// `kobuned --version` prints.
 ///
 /// **The commit is the part that carries information.** Every nightly
 /// reports the same crate version, so it is the commit that tells one
 /// daemon from another — which is what lets a CLI notice that the process
 /// answering it was started from a binary that has since been replaced.
 pub fn version() -> String {
-    minato_core::version_string(env!("CARGO_PKG_VERSION"))
+    kobune_core::version_string(env!("CARGO_PKG_VERSION"))
 }
 
 pub mod activation;
@@ -51,8 +51,8 @@ mod tests {
         // pair, so the commit is the whole of what differs — and without
         // it the two builds would compare equal.
         assert_eq!(
-            version.contains(minato_core::BUILD_COMMIT_SHORT),
-            minato_core::BUILD_COMMIT != "unknown",
+            version.contains(kobune_core::BUILD_COMMIT_SHORT),
+            kobune_core::BUILD_COMMIT != "unknown",
             "got: {version}",
         );
     }

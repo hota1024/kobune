@@ -1,4 +1,4 @@
-use minato_api::{ApiError, ErrorCode};
+use kobune_api::{ApiError, ErrorCode};
 
 pub type Result<T, E = RuntimeError> = std::result::Result<T, E>;
 

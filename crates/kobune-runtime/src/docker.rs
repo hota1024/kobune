@@ -29,8 +29,8 @@ use bollard::network::{ConnectNetworkOptions, CreateNetworkOptions, ListNetworks
 use bollard::volume::ListVolumesOptions;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use minato_api::OutputStream;
-use minato_core::{Modes, ServiceScope, ServiceState};
+use kobune_api::OutputStream;
+use kobune_core::{Modes, ServiceScope, ServiceState};
 
 use crate::error::{Result, RuntimeError};
 use crate::event::EventSink;
@@ -60,7 +60,7 @@ const MODE_SCAN_LIMIT: usize = 1024 * 1024;
 /// **Both bounds are needed.** The size cap alone bounds the volume and
 /// not the time, and the read is on the way to an attachment: a log driver
 /// that answers slowly, or a daemon that stalls mid-stream, would leave
-/// `minato logs -f` waiting with nothing said, because the client is not
+/// `kobune logs -f` waiting with nothing said, because the client is not
 /// told it is attached until this returns. Running out of either loses the
 /// mouse and the alternate screen, which is where every attachment stood
 /// before any of this existed.
@@ -125,7 +125,7 @@ struct DockerTerminal {
 
 #[async_trait]
 impl Resize for DockerTerminal {
-    async fn resize(&self, window: minato_api::Window) -> Result<()> {
+    async fn resize(&self, window: kobune_api::Window) -> Result<()> {
         self.docker
             .resize_container_tty(
                 &self.container,
@@ -148,7 +148,7 @@ const BUILD_CONTEXT_LINES: usize = 12;
 /// Where a Dockerfile from outside the build context is placed in the tar.
 ///
 /// Prefixed so it cannot collide with a real file in the context.
-const DOCKERFILE_ENTRY: &str = ".minato-dockerfile";
+const DOCKERFILE_ENTRY: &str = ".kobune-dockerfile";
 
 /// How many seconds a stop waits before it escalates to SIGKILL.
 const STOP_TIMEOUT_SECS: i64 = 10;
@@ -157,7 +157,7 @@ const STOP_TIMEOUT_SECS: i64 = 10;
 ///
 /// `docker stop` sends SIGTERM and then SIGKILL, and a process that lets
 /// either through exits `128 + signal`. Reading those as failures would
-/// paint every `minato down` red.
+/// paint every `kobune down` red.
 ///
 /// 137 is therefore forgiven, which also forgives an OOM kill. Telling them
 /// apart needs `oom_killed`, and that only comes from inspecting each
@@ -187,7 +187,7 @@ fn exit_code_from(status: &str) -> Option<i64> {
 
 pub struct DockerRuntime {
     docker: Docker,
-    /// The services Minato itself stopped. See [`DockerRuntime::stop`].
+    /// The services Kobune itself stopped. See [`DockerRuntime::stop`].
     asked_to_stop: Mutex<HashSet<ServiceKey>>,
     /// One lock per network name, held across
     /// [`DockerRuntime::ensure_network`]. See there for why.
@@ -228,7 +228,7 @@ impl DockerRuntime {
     /// **Poisoning is not an error here.** A wave takes this from several
     /// tasks at once, so one panic while it is held would otherwise turn
     /// every later start and stop into a panic inside a request handler.
-    /// What it holds is advisory — which services Minato stopped, used to
+    /// What it holds is advisory — which services Kobune stopped, used to
     /// tell a clean stop from a crash — so carrying on with whatever is in
     /// it beats taking the daemon down over it.
     fn stopped_set(&self) -> std::sync::MutexGuard<'_, HashSet<ServiceKey>> {
@@ -786,13 +786,13 @@ impl DockerRuntime {
 
         // **And never gets a terminal.** `run_throwaway` reads stdout and
         // stderr apart to report them apart, and a terminal is one stream.
-        // `minato exec` is also how an agent runs a command, and an agent
+        // `kobune exec` is also how an agent runs a command, and an agent
         // has no use for a program redrawing itself.
         let terminal = throwaway.is_none() && spec.tty;
 
         // **A throwaway carries no `SERVICE` label.** That is the one
         // `summary_to_status` needs, so without it a throwaway cannot turn
-        // up in `minato status`, in the routing table, or in what `down`
+        // up in `kobune status`, in the routing table, or in what `down`
         // stops. It keeps the others, so one left behind by a daemon that
         // died mid-command is still something `rm` and `purge` can find.
         let mut container_labels = HashMap::new();
@@ -920,7 +920,7 @@ impl DockerRuntime {
             open_stdin: Some(terminal),
             // **Off, deliberately.** With it on, Docker closes the
             // container's stdin as soon as the first attachment leaves,
-            // and the next `minato logs` finds a terminal that takes no
+            // and the next `kobune logs` finds a terminal that takes no
             // keys — for the rest of the container's life.
             stdin_once: Some(false),
             cmd: match throwaway {
@@ -1041,7 +1041,7 @@ impl DockerRuntime {
         let state = match summary.state.as_deref() {
             Some("running") => ServiceState::Ready,
             Some("created" | "restarting") => ServiceState::Starting,
-            // A stop Minato asked for is a stop whatever the process made
+            // A stop Kobune asked for is a stop whatever the process made
             // of the signal. `turbo` and `next` catch SIGTERM and exit 1
             // themselves, which is indistinguishable from a crash by the
             // exit code alone — and leaves an idle-stopped service sitting
@@ -1051,12 +1051,12 @@ impl DockerRuntime {
             Some("exited") => match crash_code(summary.status.as_deref()) {
                 Some(code) => ServiceState::failed(format!(
                     "the container exited with code {code}. \
-                     `minato logs {service}` has the output"
+                     `kobune logs {service}` has the output"
                 )),
                 None => ServiceState::Stopped,
             },
             Some("dead") => ServiceState::failed(format!(
-                "the container is dead. `minato logs {service}` has whatever it \
+                "the container is dead. `kobune logs {service}` has whatever it \
                  managed to write"
             )),
             Some("paused" | "removing") => ServiceState::Stopped,
@@ -1173,7 +1173,7 @@ impl Runtime for DockerRuntime {
         // Whatever it exits with next is nothing to do with the last stop.
         self.stopped_set().remove(&spec.key);
 
-        // Already running: do nothing. `minato up` gives the same result
+        // Already running: do nothing. `kobune up` gives the same result
         // however many times it is run.
         if let Some(existing) = self.find_container(&spec.key).await? {
             let id = existing.id.clone().unwrap_or_default();
@@ -1189,7 +1189,7 @@ impl Runtime for DockerRuntime {
 
             // Or without the terminal it should have. Whether a container
             // has one is fixed when it is created, so a `tty` turned on in
-            // `minato.toml` reaches a running service only this way. Left
+            // `kobune.toml` reaches a running service only this way. Left
             // out, the setting would appear to do nothing until something
             // else happened to recreate the container.
             //
@@ -1308,7 +1308,7 @@ impl Runtime for DockerRuntime {
         events.step_done("start", format!("starting {}", spec.name()));
 
         // A container being up does not mean the app inside is listening.
-        // Without this wait, the curl right after `minato new` fails with
+        // Without this wait, the curl right after `kobune new` fails with
         // connection refused.
         let probe = DockerCommandProbe {
             docker: self.docker.clone(),
@@ -1531,14 +1531,14 @@ impl Runtime for DockerRuntime {
         let container = self.find_container(key).await?.ok_or_else(|| {
             RuntimeError::failed(
                 format!("attaching to {}", key.service),
-                "there is no container. Start it with `minato up`",
+                "there is no container. Start it with `kobune up`",
             )
         })?;
 
         if container.state.as_deref() != Some("running") {
             return Err(RuntimeError::failed(
                 format!("attaching to {}", key.service),
-                "the container is not running. Start it with `minato up`",
+                "the container is not running. Start it with `kobune up`",
             ));
         }
 
@@ -1556,7 +1556,7 @@ impl Runtime for DockerRuntime {
                     // output is a record of a screen that no longer
                     // exists; drawing it again produces a mess, and the
                     // program redraws in full anyway. Whoever wants the
-                    // history has `minato logs` without `-f`.
+                    // history has `kobune logs` without `-f`.
                     //
                     // What the program *said about the terminal* is
                     // replayed, and separately — see the preamble below.
@@ -1616,20 +1616,20 @@ impl Runtime for DockerRuntime {
         let container = self.find_container(key).await?.ok_or_else(|| {
             RuntimeError::failed(
                 format!("running a command in {}", key.service),
-                "there is no container. Start it with `minato up`",
+                "there is no container. Start it with `kobune up`",
             )
         })?;
 
         if container.state.as_deref() != Some("running") {
             // Wanting to exec into a container is at its most likely just
-            // after one fell over, and "start it with `minato up`" describes
+            // after one fell over, and "start it with `kobune up`" describes
             // the wrong problem.
             let detail = match crash_code(container.status.as_deref()) {
                 Some(code) => format!(
-                    "the container exited with code {code}. `minato logs {}` says why",
+                    "the container exited with code {code}. `kobune logs {}` says why",
                     key.service
                 ),
-                None => "the container is not running. Start it with `minato up`".to_string(),
+                None => "the container is not running. Start it with `kobune up`".to_string(),
             };
 
             return Err(RuntimeError::failed(
@@ -1855,7 +1855,7 @@ fn append_dockerfile(context: &mut Vec<u8>, dockerfile: &Path) -> std::io::Resul
 /// instead would be naming Docker Desktop's internals, which are not ours
 /// to depend on.
 ///
-/// **A throwaway gets them too.** `minato exec` is where a service is
+/// **A throwaway gets them too.** `kobune exec` is where a service is
 /// poked at by hand, and a curl that works in the service but not in the
 /// shell beside it is the confusing kind of difference.
 fn extra_hosts(spec: &ServiceSpec) -> Vec<String> {
@@ -1892,7 +1892,7 @@ mod tests {
         HashSet::new()
     }
 
-    fn minato_labels() -> HashMap<String, String> {
+    fn kobune_labels() -> HashMap<String, String> {
         HashMap::from([
             (labels::MANAGED.to_string(), "1".to_string()),
             (labels::PROJECT.to_string(), "myapp".to_string()),
@@ -1954,10 +1954,10 @@ mod tests {
         // A daemon restart has nothing but this to recover its state
         // from.
         let status = DockerRuntime::summary_to_status(
-            &summary_with(minato_labels(), "running"),
+            &summary_with(kobune_labels(), "running"),
             &not_stopped(),
         )
-        .expect("recovers when the Minato labels are all there");
+        .expect("recovers when the Kobune labels are all there");
 
         assert_eq!(status.key.workspace.project, "myapp");
         assert_eq!(status.key.workspace.workspace, "feat-1");
@@ -1972,7 +1972,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_containers_without_minato_labels() {
+    fn ignores_containers_without_kobune_labels() {
         let mut foreign = HashMap::new();
         foreign.insert("com.example.app".to_string(), "other".to_string());
 
@@ -1994,7 +1994,7 @@ mod tests {
 
         for (docker_state, expected) in cases {
             let status = DockerRuntime::summary_to_status(
-                &summary_with(minato_labels(), docker_state),
+                &summary_with(kobune_labels(), docker_state),
                 &not_stopped(),
             )
             .expect("recovers");
@@ -2006,7 +2006,7 @@ mod tests {
     fn exited_with(status: &str) -> ContainerSummary {
         ContainerSummary {
             status: Some(status.into()),
-            ..summary_with(minato_labels(), "exited")
+            ..summary_with(kobune_labels(), "exited")
         }
     }
 
@@ -2025,7 +2025,7 @@ mod tests {
         };
         assert!(reason.contains("127"), "name the exit code: {reason}");
         assert!(
-            reason.contains("minato logs web"),
+            reason.contains("kobune logs web"),
             "say where to look: {reason}"
         );
     }
@@ -2033,7 +2033,7 @@ mod tests {
     #[test]
     fn a_dead_container_is_failed_too() {
         let status = DockerRuntime::summary_to_status(
-            &summary_with(minato_labels(), "dead"),
+            &summary_with(kobune_labels(), "dead"),
             &not_stopped(),
         )
         .expect("recovers");
@@ -2041,13 +2041,13 @@ mod tests {
         let ServiceState::Failed { reason } = &status.state else {
             panic!("expected a failure, got {:?}", status.state);
         };
-        assert!(reason.contains("minato logs web"), "{reason}");
+        assert!(reason.contains("kobune logs web"), "{reason}");
     }
 
     #[test]
     fn anything_but_a_crash_stays_stopped() {
         // `docker stop` sends SIGTERM, and a shell exits 143 for it, so
-        // every `minato down` would otherwise end in red. An unreadable or
+        // every `kobune down` would otherwise end in red. An unreadable or
         // absent status line must not be guessed at either.
         for line in [
             "Exited (0) 1 second ago",
@@ -2061,7 +2061,7 @@ mod tests {
         }
 
         let no_status = DockerRuntime::summary_to_status(
-            &summary_with(minato_labels(), "exited"),
+            &summary_with(kobune_labels(), "exited"),
             &not_stopped(),
         )
         .expect("ok");
@@ -2116,7 +2116,7 @@ mod tests {
 
     #[test]
     fn recognises_shared_scope() {
-        let mut shared = minato_labels();
+        let mut shared = kobune_labels();
         shared.insert(labels::SCOPE.to_string(), "project".to_string());
         shared.insert(labels::WORKSPACE.to_string(), "_shared".to_string());
 
@@ -2130,7 +2130,7 @@ mod tests {
 
     #[test]
     fn endpoint_is_absent_when_port_not_published() {
-        let mut no_port = minato_labels();
+        let mut no_port = kobune_labels();
         no_port.remove(labels::PORT);
 
         let mut summary = summary_with(no_port, "running");

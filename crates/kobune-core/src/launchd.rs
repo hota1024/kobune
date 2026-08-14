@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 /// The launchd job name.
-pub const LABEL: &str = "dev.minato.daemon";
+pub const LABEL: &str = "dev.kobune.daemon";
 
 /// Where system-wide LaunchDaemons live.
 ///
@@ -35,7 +35,7 @@ pub const ACTIVATION_PORT: u16 = 80;
 /// each site they drift, and a rename leaves some of them advising a
 /// command that no longer parses.
 ///
-/// It replaces `minato daemon stop` plus a `sudo launchctl kickstart` as
+/// It replaces `kobune daemon stop` plus a `sudo launchctl kickstart` as
 /// the *first* answer: stopping alone leaves the machine with no daemon
 /// until something happens to reach a port, and the kickstart needs root,
 /// which an agent cannot supply. Restarting does both halves and needs
@@ -46,7 +46,7 @@ pub const ACTIVATION_PORT: u16 = 80;
 /// else holds :80 the start produces a daemon of its own instead — and
 /// forcing the job up from there still takes root. Sites that can be run
 /// again after a failure say so as the next step.
-pub const RESTART_COMMAND: &str = "minato daemon restart";
+pub const RESTART_COMMAND: &str = "kobune daemon restart";
 
 /// Where the installed plist lives.
 pub fn plist_path() -> PathBuf {
@@ -56,9 +56,9 @@ pub fn plist_path() -> PathBuf {
 /// Whether the LaunchDaemon has been installed.
 ///
 /// **The file being there is not the same as the job running.** After
-/// `minato daemon stop` the plist stays put while the job is idle, and that
+/// `kobune daemon stop` the plist stays put while the job is idle, and that
 /// combination is exactly the one worth telling apart: it means socket
-/// activation can be had back, rather than needing `minato setup` again.
+/// activation can be had back, rather than needing `kobune setup` again.
 #[cfg(target_os = "macos")]
 pub fn is_installed() -> bool {
     plist_path().is_file()
@@ -113,8 +113,8 @@ pub fn is_loaded() -> bool {
 ///
 /// | State | What helps |
 /// | --- | --- |
-/// | [`Job::Missing`] | `minato setup`, which writes the plist |
-/// | [`Job::Unregistered`] | `minato setup`; `kickstart` has no service to name |
+/// | [`Job::Missing`] | `kobune setup`, which writes the plist |
+/// | [`Job::Unregistered`] | `kobune setup`; `kickstart` has no service to name |
 /// | [`Job::Registered`] | [`RESTART_COMMAND`], then [`kickstart_command`] |
 /// | [`Job::Elsewhere`] | neither: the ports are held for another home |
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,14 +126,14 @@ pub enum Job {
     Unregistered,
     /// launchd has the job, and it serves this home.
     Registered,
-    /// launchd has the job, but its plist names another `MINATO_HOME`.
+    /// launchd has the job, but its plist names another `KOBUNE_HOME`.
     Elsewhere(PathBuf),
 }
 
 /// Which of the four states this machine is in, for `home`.
 ///
 /// The home is asked for rather than resolved here: the answer belongs to
-/// the daemon a caller is talking about, and under `MINATO_HOME` that is
+/// the daemon a caller is talking about, and under `KOBUNE_HOME` that is
 /// not the same as the one launchd's job serves.
 pub fn job(home: &Path) -> Job {
     if !is_installed() {
@@ -150,21 +150,21 @@ pub fn job(home: &Path) -> Job {
     }
 }
 
-/// The `MINATO_HOME` launchd's job serves, when it is not this one.
+/// The `KOBUNE_HOME` launchd's job serves, when it is not this one.
 ///
 /// **A fourth state.** The plist carries the home it was installed for, and
-/// a machine can be running under another one — `MINATO_HOME` set for a
+/// a machine can be running under another one — `KOBUNE_HOME` set for a
 /// second instance, or a plist installed from a different account. launchd
 /// has a job and holds 80, 443 and 53 for it, and none of that reaches the
 /// daemon this process is talking to.
 ///
 /// It is worth its own answer because every command the other three states
-/// take is wrong here. `minato daemon restart` reaches for :80 and gets a
+/// take is wrong here. `kobune daemon restart` reaches for :80 and gets a
 /// daemon serving somewhere else, so it falls back to a direct one;
-/// `kickstart` starts that same job again; and `minato setup` writes a
+/// `kickstart` starts that same job again; and `kobune setup` writes a
 /// plist for this home whose `bootstrap` launchd answers with `Input/output
 /// error`, the label being one it already has. What is left is to point
-/// `MINATO_HOME` at the home the job serves, or to accept the fallback
+/// `KOBUNE_HOME` at the home the job serves, or to accept the fallback
 /// ports.
 ///
 /// `None` where there is nothing to say: no plist, one for this home, or
@@ -184,13 +184,13 @@ fn job_elsewhere(_home: &Path) -> Option<PathBuf> {
     None
 }
 
-/// The `MINATO_HOME` a plist names.
+/// The `KOBUNE_HOME` a plist names.
 ///
 /// The CLI writes it into `EnvironmentVariables`, which is how the job
 /// finds its home at all. Read back here rather than in the CLI, because
 /// the daemon compares it against its own root as well.
 pub fn job_home(plist: &str) -> Option<PathBuf> {
-    let (_, rest) = plist.split_once("<key>MINATO_HOME</key>")?;
+    let (_, rest) = plist.split_once("<key>KOBUNE_HOME</key>")?;
     let (_, value) = rest.split_once("<string>")?;
     let (value, _) = value.split_once("</string>")?;
 
@@ -226,7 +226,7 @@ fn same_path(one: &Path, other: &Path) -> bool {
 ///
 /// `kickstart` needs root because the job is in the system domain. It is
 /// the fallback for when reaching the socket does not wake it — see
-/// `minato-client`, which tries that first precisely so nobody has to run
+/// `kobune-client`, which tries that first precisely so nobody has to run
 /// this.
 pub fn kickstart_command() -> String {
     format!("sudo launchctl kickstart -k system/{LABEL}")
@@ -240,7 +240,7 @@ mod tests {
     fn the_plist_sits_where_setup_puts_it() {
         assert_eq!(
             plist_path(),
-            PathBuf::from("/Library/LaunchDaemons/dev.minato.daemon.plist")
+            PathBuf::from("/Library/LaunchDaemons/dev.kobune.daemon.plist")
         );
     }
 
@@ -248,7 +248,7 @@ mod tests {
     fn the_kickstart_command_names_the_system_domain() {
         // A user-domain kickstart would not touch a LaunchDaemon.
         let command = kickstart_command();
-        assert!(command.contains("system/dev.minato.daemon"), "{command}");
+        assert!(command.contains("system/dev.kobune.daemon"), "{command}");
         assert!(command.starts_with("sudo "), "{command}");
     }
 
@@ -259,7 +259,7 @@ mod tests {
         assert!(!is_loaded());
         // There is no launchd to have a job, so the one state that leaves
         // a caller with nothing to run must not be reachable here.
-        assert_eq!(job(Path::new("/home/someone/.minato")), Job::Missing);
+        assert_eq!(job(Path::new("/home/someone/.kobune")), Job::Missing);
     }
 
     #[cfg(target_os = "macos")]
@@ -271,7 +271,7 @@ mod tests {
         // a home out of.
         if !is_installed() {
             assert!(!is_loaded());
-            assert_eq!(job(Path::new("/Users/someone/.minato")), Job::Missing);
+            assert_eq!(job(Path::new("/Users/someone/.kobune")), Job::Missing);
         }
     }
 
@@ -280,14 +280,14 @@ mod tests {
         let plist = "\
   <key>EnvironmentVariables</key>
   <dict>
-    <key>MINATO_HOME</key>
-    <string>/Users/someone/.minato</string>
+    <key>KOBUNE_HOME</key>
+    <string>/Users/someone/.kobune</string>
   </dict>
 ";
 
         assert_eq!(
             job_home(plist),
-            Some(PathBuf::from("/Users/someone/.minato"))
+            Some(PathBuf::from("/Users/someone/.kobune"))
         );
     }
 
@@ -295,16 +295,16 @@ mod tests {
     fn a_plist_from_before_the_home_was_written_names_none() {
         // Left alone deliberately, as with the revision marker: an
         // installation that works is not worth a state of its own.
-        assert!(job_home("<key>Label</key>\n<string>dev.minato.daemon</string>").is_none());
+        assert!(job_home("<key>Label</key>\n<string>dev.kobune.daemon</string>").is_none());
     }
 
     #[test]
     fn a_home_that_had_to_be_escaped_comes_back_as_it_was_written() {
         // `escape_xml` on the way in, so a directory with an `&` in it
         // would otherwise read as a different home every time.
-        let plist = "<key>MINATO_HOME</key>\n<string>/Users/a&amp;b/.minato</string>";
+        let plist = "<key>KOBUNE_HOME</key>\n<string>/Users/a&amp;b/.kobune</string>";
 
-        assert_eq!(job_home(plist), Some(PathBuf::from("/Users/a&b/.minato")));
+        assert_eq!(job_home(plist), Some(PathBuf::from("/Users/a&b/.kobune")));
     }
 
     #[cfg(target_os = "macos")]
@@ -313,12 +313,12 @@ mod tests {
         // A trailing slash is not a different directory, and neither is a
         // symlinked one — `/tmp` against `/private/tmp` on macOS.
         assert!(same_path(
-            Path::new("/Users/someone/.minato/"),
-            Path::new("/Users/someone/.minato")
+            Path::new("/Users/someone/.kobune/"),
+            Path::new("/Users/someone/.kobune")
         ));
         assert!(!same_path(
-            Path::new("/Users/someone/.minato"),
-            Path::new("/Users/someone/.minato-test")
+            Path::new("/Users/someone/.kobune"),
+            Path::new("/Users/someone/.kobune-test")
         ));
     }
 }

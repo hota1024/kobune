@@ -2,7 +2,7 @@
 //!
 //! **The socket is the whole API, and it asks for nothing.** Whatever
 //! reaches it can start containers, read logs and run commands inside
-//! them — and `minato exec <service> -- env` prints the secrets
+//! them — and `kobune exec <service> -- env` prints the secrets
 //! `crate::secrets` resolved from 1Password and the Keychain. Keeping
 //! those out of files buys nothing if anyone with an account on the
 //! machine can ask for them down a socket, so who may connect is decided
@@ -14,10 +14,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use minato_api::{
+use kobune_api::{
     ApiError, ClientMessage, MessageStream, Request, RequestId, ServerMessage, Typed, write_message,
 };
-use minato_runtime::EventSink;
+use kobune_runtime::EventSink;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify, mpsc};
 
@@ -119,7 +119,7 @@ fn bind(socket: &Path) -> anyhow::Result<Option<UnixListener>> {
 
     let listener = UnixListener::bind(socket)?;
 
-    // Belt and braces, and the only thing left if `MINATO_HOME` names a
+    // Belt and braces, and the only thing left if `KOBUNE_HOME` names a
     // directory somebody else's account can reach.
     restrict(socket, SOCKET_MODE)?;
 
@@ -156,7 +156,7 @@ fn restrict(path: &Path, mode: u32) -> std::io::Result<()> {
 ///
 /// The directory mode already keeps everyone else out of the path, so
 /// this is the second answer rather than the first. It is what covers a
-/// `MINATO_HOME` pointed somewhere shared.
+/// `KOBUNE_HOME` pointed somewhere shared.
 fn is_ours(stream: &UnixStream) -> bool {
     match peer_uid(stream) {
         Some(uid) => uid == unsafe { libc::geteuid() },
@@ -350,7 +350,7 @@ mod tests {
         // An error here exits non-zero, and launchd restarts a job that
         // exits non-zero. Losing the race has to look like success.
         let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("minatod.sock");
+        let socket = dir.path().join("kobuned.sock");
 
         let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
 
@@ -360,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn replaces_a_stale_socket_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("minatod.sock");
+        let socket = dir.path().join("kobuned.sock");
 
         // Leftovers nobody is listening on.
         std::fs::write(&socket, b"").expect("creates it");
@@ -372,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn creates_the_parent_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("nested").join("minatod.sock");
+        let socket = dir.path().join("nested").join("kobuned.sock");
 
         let listener = bind(&socket).expect("creates the parent too");
         assert!(socket.exists());
@@ -390,11 +390,11 @@ mod tests {
     #[tokio::test]
     async fn the_socket_and_its_directory_are_the_owner_s_alone() {
         // Nothing on the other side of this socket asks who is calling,
-        // and `minato exec -- env` prints resolved secrets. Under the
+        // and `kobune exec -- env` prints resolved secrets. Under the
         // default umask the bind alone leaves it 0755.
         let dir = tempfile::tempdir().expect("tempdir");
         let home = dir.path().join("home");
-        let socket = home.join("minatod.sock");
+        let socket = home.join("kobuned.sock");
 
         let listener = bind(&socket).expect("binds").expect("is ours");
 
@@ -406,14 +406,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_directory_that_predates_this_is_narrowed_too() {
-        // Every existing installation has a 0755 ~/.minato. Tightening
+        // Every existing installation has a 0755 ~/.kobune. Tightening
         // only what this creates would leave all of them open.
         let dir = tempfile::tempdir().expect("tempdir");
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).expect("creates");
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-        let listener = bind(&home.join("minatod.sock")).expect("binds");
+        let listener = bind(&home.join("kobuned.sock")).expect("binds");
 
         assert_eq!(mode_of(&home), HOME_MODE);
         drop(listener);
@@ -427,7 +427,7 @@ mod tests {
         // everywhere would let everything through and still pass a test
         // that only asserted acceptance.
         let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("minatod.sock");
+        let socket = dir.path().join("kobuned.sock");
 
         let listener = bind(&socket).expect("binds").expect("is ours");
         let client = UnixStream::connect(&socket).await.expect("connects");

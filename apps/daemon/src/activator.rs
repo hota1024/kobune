@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use minato_proxy::{Activation, Activator};
+use kobune_proxy::{Activation, Activator};
 
 use crate::supervisor::Supervisor;
 
@@ -124,7 +124,7 @@ mod tests {
     async fn setting_twice_keeps_the_first() {
         let deferred = DeferredActivator::new();
         deferred.set(Arc::new(Counting(AtomicUsize::new(0))));
-        deferred.set(Arc::new(minato_proxy::NoopActivator));
+        deferred.set(Arc::new(kobune_proxy::NoopActivator));
 
         // Had the second call taken, this would be Unknown.
         let result = deferred

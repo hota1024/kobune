@@ -16,35 +16,35 @@ what is happening now, and let finished steps scroll up above it.
 
 Piped, redirected or captured, the same views print as plain text: no frame,
 no colour, no cursor movement, and nothing wrapped or truncated however long a
-URL is. So `minato status | grep web` reads the same as it always did.
+URL is. So `kobune status | grep web` reads the same as it always did.
 
 | | |
 | --- | --- |
 | `--json` | Never decorated, whatever it is printing to |
 | `NO_COLOR` | Set to anything: keeps the layout, drops the colour |
 | `TERM=dumb` | Treated as a pipe throughout |
-| `minato url <service>`, `minato env get` | One bare line, always. They exist to be substituted into other commands |
-| `minato logs`, `minato exec` | Passed through verbatim, stdout and stderr kept apart |
-| `minato logs -f <service>` | With `tty`, the terminal is the service's — see [Typing at a service](#typing-at-a-service) |
+| `kobune url <service>`, `kobune env get` | One bare line, always. They exist to be substituted into other commands |
+| `kobune logs`, `kobune exec` | Passed through verbatim, stdout and stderr kept apart |
+| `kobune logs -f <service>` | With `tty`, the terminal is the service's — see [Typing at a service](#typing-at-a-service) |
 
 ## Setting up
 
-### `minato init`
+### `kobune init`
 
-Writes a starter `minato.toml` at the repository root, guessing the project
+Writes a starter `kobune.toml` at the repository root, guessing the project
 name from the directory. Run from inside a worktree it still writes to the main
 one.
 
 ```console
-$ minato init
-$ minato init --force    # overwrite an existing file
+$ kobune init
+$ kobune init --force    # overwrite an existing file
 ```
 
 #### Converting a compose file
 
 ```console
-$ minato init --from-compose              # finds compose.yaml, docker-compose.yml, …
-$ minato init --from-compose infra.yml    # or that one
+$ kobune init --from-compose              # finds compose.yaml, docker-compose.yml, …
+$ kobune init --from-compose infra.yml    # or that one
 ```
 
 **Not a complete conversion, on purpose.** Compose is large and half of it has
@@ -58,27 +58,27 @@ silence:
 - **named in the report** — `restart`, `deploy`, `networks`, `logging` and the
   rest, per service
 
-Read the TODOs before the first `minato up`. A generated file that looks
+Read the TODOs before the first `kobune up`. A generated file that looks
 finished and is not costs more than no conversion at all.
 
 Two conversions are worth knowing about:
 
 - **`env_file` becomes `carry`.** The key means the opposite in the two
-  formats — compose *reads* the file, Minato *writes* it — so mapping it
+  formats — compose *reads* the file, Kobune *writes* it — so mapping it
   across would overwrite your `.env` on the first `up`. `carry` is what it
   actually implies: a file each new worktree needs and git does not bring
-- **`ports: ["3000:8000"]` takes the container side**, `8000`. Minato
+- **`ports: ["3000:8000"]` takes the container side**, `8000`. Kobune
   publishes on a port it chooses; what it needs is where the app listens
   inside
 
-### `minato doctor`
+### `kobune doctor`
 
 Diagnoses the environment and prints a fix for anything that is not `✓`. It
 checks the runtime your project uses, the proxy and DNS listeners, launchd
 socket activation, the local CA and whether it is trusted, `/etc/resolver`, and
 whether a name actually resolves to 127.0.0.1.
 
-### `minato setup`
+### `kobune setup`
 
 Walks through the parts that need root: the LaunchDaemon, the resolver entry,
 and trusting the CA. Each step's commands are printed and then offered, one at
@@ -87,9 +87,9 @@ terminal to answer at — an agent, a pipe, `--json` — the commands are printe
 for you to run yourself and none of them are run.
 
 ```console
-$ minato setup
-$ minato setup --yes       # every step, without asking
-$ minato setup --dry-run   # print the commands, run none of them
+$ kobune setup
+$ kobune setup --yes       # every step, without asking
+$ kobune setup --dry-run   # print the commands, run none of them
 ```
 
 | Flag | |
@@ -113,15 +113,15 @@ run by hand. A failed step is also a non-zero exit code; a declined one is not.
 
 ## Workspaces
 
-### `minato new <branch>`
+### `kobune new <branch>`
 
 Creates a worktree, starts its environment, prints the URLs.
 
 ```console
-$ minato new feature/user-auth
-$ minato new hotfix/x --base v1.2.0
-$ minato new feature/x --path ../elsewhere
-$ minato new feature/x --no-start
+$ kobune new feature/user-auth
+$ kobune new hotfix/x --base v1.2.0
+$ kobune new feature/x --path ../elsewhere
+$ kobune new feature/x --no-start
 ```
 
 | Flag | |
@@ -133,13 +133,13 @@ $ minato new feature/x --no-start
 
 An existing branch is checked out rather than created.
 
-### `minato ls`
+### `kobune ls`
 
 Every workspace, with how many of its services are running.
 
 ```console
-$ minato ls
-$ minato ls --all-projects   # every project this daemon knows about
+$ kobune ls
+$ kobune ls --all-projects   # every project this daemon knows about
 ```
 
 With `--all-projects` a `PROJECT` column appears. Other projects contribute
@@ -147,7 +147,7 @@ their **registered** worktrees only — finding unregistered ones would mean
 opening someone else's repository — so a project you have never run a command
 in shows fewer rows than it would from inside.
 
-### `minato status`
+### `kobune status`
 
 The current workspace in detail: each service's state, URL, and the address the
 proxy forwards to.
@@ -169,28 +169,28 @@ Without it, `ready` means "the container is running", which is all that can be
 known from outside. A connection attempt would not add anything: Docker
 publishes a port by putting a forwarder in front of it, and that forwarder
 accepts whether or not anything inside is listening. **If you want `ready` to
-mean served, set [`health`](./minato-toml#readiness).**
+mean served, set [`health`](./kobune-toml#readiness).**
 :::
 
-### `minato rm`
+### `kobune rm`
 
 Removes the worktree and its containers. The branch stays, and a shared
 `scope = "project"` service stays because other worktrees use it.
 
 ```console
-$ minato rm -w feature-auth
-$ minato rm -w feature-auth -f   # even with uncommitted changes
+$ kobune rm -w feature-auth
+$ kobune rm -w feature-auth -f   # even with uncommitted changes
 ```
 
 ## Services
 
-### `minato up [services…]`
+### `kobune up [services…]`
 
 Starts services, and whatever they depend on. Everything when none are named.
 
 | Flag | |
 | --- | --- |
-| `--build` | Rebuild images even when nothing Minato can see has changed |
+| `--build` | Rebuild images even when nothing Kobune can see has changed |
 
 A running container is left alone unless its image has changed. A stopped one
 is recreated so configuration changes take effect.
@@ -198,31 +198,31 @@ is recreated so configuration changes take effect.
 `--build` is for a change the fingerprint cannot see, such as a file the
 Dockerfile copies in.
 
-### `minato down [services…]`
+### `kobune down [services…]`
 
 ```console
-$ minato down
-$ minato down web
-$ minato down --all    # every workspace in the project
+$ kobune down
+$ kobune down web
+$ kobune down --all    # every workspace in the project
 ```
 
 A shared service only stops when you name it, because other worktrees may be
 using it.
 
-### `minato url [service] [--qr]`
+### `kobune url [service] [--qr]`
 
 Naming a service prints one line and nothing else, to be substituted into
 another command:
 
 ```console
-$ curl -sS --fail-with-body "$(minato url web)/api/health"
+$ curl -sS --fail-with-body "$(kobune url web)/api/health"
 ```
 
 Naming none lists every service and where it can be reached, including the
 ones with no way in and the tunnel URLs when a tunnel is up:
 
 ```console
-$ minato url
+$ kobune url
 web   https://web.feat-1.myapp.localhost
 api   https://api.feat-1.myapp.localhost
 db    internal only
@@ -233,18 +233,18 @@ is used when there is one — a `.localhost` name resolves on this machine
 and nowhere else, and the code says so when that is all there is.
 
 ```console
-$ minato url web --qr
+$ kobune url web --qr
 ```
 
 The URL works while the service is stopped — a request starts it.
 
-### `minato logs [services…]`
+### `kobune logs [services…]`
 
 ```console
-$ minato logs
-$ minato logs web -n 100
-$ minato logs web -f
-$ minato logs -f dev          # a service with `tty`: type at it
+$ kobune logs
+$ kobune logs web -n 100
+$ kobune logs web -f
+$ kobune logs -f dev          # a service with `tty`: type at it
 ```
 
 | Flag | |
@@ -257,15 +257,15 @@ Undecorated, with stdout and stderr kept separate.
 
 #### Typing at a service
 
-A service configured with [`tty`](./minato-toml#tty) has a terminal, and
-`minato logs -f` lends it this one: colour comes through, a full-screen
+A service configured with [`tty`](./kobune-toml#tty) has a terminal, and
+`kobune logs -f` lends it this one: colour comes through, a full-screen
 interface draws itself, and keys reach the program. This is how Turborepo's
 task switcher, a watching test runner and anything else interactive works
-under Minato.
+under Kobune.
 
 It happens on its own when it can hardly mean anything else — following
 **one named service**, from a terminal, without `--json`. A pipeline, an
-agent, and `minato logs -f` with no service named all get the plain stream
+agent, and `kobune logs -f` with no service named all get the plain stream
 they always did. `--no-input` turns it off for the times you want to watch
 without being able to type by accident.
 
@@ -287,36 +287,36 @@ Ctrl-C belongs to the program: in a task runner it usually means "quit",
 which stops the service. Ctrl-P Ctrl-Q is how you leave without stopping
 anything — the sequence `docker attach` uses.
 
-Asking for a service that has no terminal is not an error. Minato says so,
+Asking for a service that has no terminal is not an error. Kobune says so,
 in one line, and streams the logs as usual.
 
 ::: warning Apple Container fixes the size at start-up
 Its terminal takes its size when the service starts and cannot be resized
 afterwards, so a full-screen program draws to 120×40 however big the window
-is. Minato says so when you attach. Docker follows the window.
+is. Kobune says so when you attach. Docker follows the window.
 :::
 
-### `minato exec <service> -- <command>`
+### `kobune exec <service> -- <command>`
 
 ```console
-$ minato exec web -- npm test
-$ minato exec web -- sh
-$ minato exec -C /workspace/apps/api api -- pnpm test   # somewhere else
+$ kobune exec web -- npm test
+$ kobune exec web -- sh
+$ kobune exec -C /workspace/apps/api api -- pnpm test   # somewhere else
 ```
 
 **The exit code is the command's own.** No TTY is requested, so anything
 waiting for input hangs rather than prompts.
 
 `-C` sets the working directory, defaulting to the service's
-[`workdir`](./minato-toml#image-and-command). It is `-C` rather than `-w`
+[`workdir`](./kobune-toml#image-and-command). It is `-C` rather than `-w`
 because `-w` already selects the workspace.
 
 #### `--fresh`
 
 ```console
-$ minato exec --fresh api -- env
-$ minato exec --fresh api -- cat /workspace/.env
-$ minato exec --fresh api -- sh -c 'pnpm install --frozen-lockfile'
+$ kobune exec --fresh api -- env
+$ kobune exec --fresh api -- cat /workspace/.env
+$ kobune exec --fresh api -- sh -c 'pnpm install --frozen-lockfile'
 ```
 
 No stdin is attached, so `-- sh` on its own reads end-of-file and exits at
@@ -330,8 +330,8 @@ start-up command**.
 script that fails leaves nothing to exec into, and that is when you most want
 to look around.
 
-It publishes no ports and carries no Minato labels, so it cannot take the real
-container's ports, appear in `minato status`, or answer to the service's name
+It publishes no ports and carries no Kobune labels, so it cannot take the real
+container's ports, appear in `kobune status`, or answer to the service's name
 on the network. The image is pulled or built first if it is not there yet, so
 this works before a service has ever come up cleanly.
 
@@ -341,19 +341,19 @@ Ctrl-C asks the daemon to stop and waits for its reply, rather than killing the
 CLI where it stands. The exit code is 130.
 
 Work already done is not undone: a cancelled `up` can leave a container
-running, which `minato status` shows and `minato down` clears.
+running, which `kobune status` shows and `kobune down` clears.
 
-`minato logs -f` is the exception — Ctrl-C is simply how you leave it. Where
+`kobune logs -f` is the exception — Ctrl-C is simply how you leave it. Where
 it has [taken the terminal](#typing-at-a-service), Ctrl-C is the program's,
 and Ctrl-P Ctrl-Q leaves.
 
 ## Environment variables
 
 ```console
-$ minato env ls [--reveal] [--service <name>]
-$ minato env get <KEY>
-$ minato env set <KEY=VALUE> [--scope global|project|workspace]
-$ minato env unset <KEY> [--scope …]
+$ kobune env ls [--reveal] [--service <name>]
+$ kobune env get <KEY>
+$ kobune env set <KEY=VALUE> [--scope global|project|workspace]
+$ kobune env unset <KEY> [--scope …]
 ```
 
 `ls` shows which layer each value came from and masks secrets. `--reveal` shows
@@ -361,11 +361,11 @@ plain values but still leaves secret *references* as references. `get` prints
 one value for piping.
 
 `--service` shows what one container is given, its own
-[`env`](./minato-toml#environment) included, so
-`minato env ls --service api` answers "is `MINATO_URL_WEB` actually reaching
+[`env`](./kobune-toml#environment) included, so
+`kobune env ls --service api` answers "is `KOBUNE_URL_WEB` actually reaching
 `api`?" without starting anything. Without it, only what every service shares:
 a service's own `env` belongs to that service, and there is no
-`MINATO_SERVICE` because no service is being named. `get` takes it too.
+`KOBUNE_SERVICE` because no service is being named. `get` takes it too.
 
 When a `${...}` will not settle, `ls` shows *that* value as written and says
 why underneath rather than refusing — the one at fault can only be found by
@@ -377,21 +377,21 @@ code 7, since what it prints is meant to be used.
 
 The layer column names five of them, innermost winning: `injected`, `global`,
 `project`, `service`, `workspace`. `service` is a service's own `env` in
-`minato.toml` — it has its own name because reading it as `project` would
-send you to edit `.minato/env` for a value the service overrides.
+`kobune.toml` — it has its own name because reading it as `project` would
+send you to edit `.kobune/env` for a value the service overrides.
 
 `--scope` defaults to `workspace`.
 
 ## The tunnel
 
 ```console
-$ minato tunnel enable --domain example.com --public
-$ minato tunnel disable
-$ minato tunnel status
+$ kobune tunnel enable --domain example.com --public
+$ kobune tunnel disable
+$ kobune tunnel status
 ```
 
 `--public` is required, and acknowledges that the environment goes on the
-internet with no Access policy Minato can verify. The domain is remembered
+internet with no Access policy Kobune can verify. The domain is remembered
 after the first time.
 
 `--domain` takes the zone itself — `example.com`, not `dev.example.com`. One
@@ -401,19 +401,19 @@ hostname sits exactly there.
 ## Agents
 
 ```console
-$ minato skill install [--force]
-$ minato skill show
+$ kobune skill install [--force]
+$ kobune skill show
 ```
 
-Writes `.claude/skills/minato/SKILL.md`. Unchanged content is left alone.
+Writes `.claude/skills/kobune/SKILL.md`. Unchanged content is left alone.
 
 ## The daemon
 
 ```console
-$ minato daemon start
-$ minato daemon stop
-$ minato daemon restart
-$ minato daemon status
+$ kobune daemon start
+$ kobune daemon stop
+$ kobune daemon restart
+$ kobune daemon status
 ```
 
 Any command starts the daemon if it is down, so these are rarely needed. On a
@@ -428,8 +428,8 @@ from an older build. It answers every command happily and speaks a protocol the
 new CLI does not, which reads as
 
 ```
-error: the daemon speaks protocol 3, which this minato (protocol 5) cannot
-talk to. Restart it with `minato daemon restart`
+error: the daemon speaks protocol 3, which this kobune (protocol 5) cannot
+talk to. Restart it with `kobune daemon restart`
 ```
 
 Updating the binaries does not replace the process that is already running.
@@ -437,17 +437,17 @@ Updating the binaries does not replace the process that is already running.
 `start` and `restart` fail when what came up is not launchd's job. The daemon is
 running, launchd still holds 80, 443 and 53 for the job that did not, and no URL
 answers — so the exit code says 1 and the hint says which of those states the
-machine is in. Nothing else changes its exit code over this: `minato up` and the
+machine is in. Nothing else changes its exit code over this: `kobune up` and the
 rest did what they were asked, and print the same wording as a notice.
 
 ## Keeping it current
 
 ```console
-$ minato update
-$ minato update --check
+$ kobune update
+$ kobune update --check
 ```
 
-Replaces both binaries in the directory the running `minato` came from with the
+Replaces both binaries in the directory the running `kobune` came from with the
 current `nightly`. `--check` reports and installs nothing. Under `--json`:
 
 ```json
@@ -465,7 +465,7 @@ binaries have moved, each with the state that makes it worth running.
   "status": "installed",
   "commit": "…",
   "next": [
-    { "command": "minato daemon restart", "reason": "the daemon is still the previous build" }
+    { "command": "kobune daemon restart", "reason": "the daemon is still the previous build" }
   ]
 }
 ```
@@ -473,33 +473,33 @@ binaries have moved, each with the state that makes it worth running.
 It is empty when there is nothing to do — no daemon was running — and it holds
 only what the build being replaced can still be sure of. The rest is printed by
 the build that lands, on its first run: one line per step on **stderr**, under
-`minato changed to 9f3c1a2 since the last run`, once per build and never under
+`kobune changed to 9f3c1a2 since the last run`, once per build and never under
 `--json`. The Skill step is about the repository the command ran in. The commit
-that last ran is kept in `~/.minato/build.json`, written after the lines are
-printed, and `minato daemon` carries no notice at all — `stop` returns before
+that last ran is kept in `~/.kobune/build.json`, written after the lines are
+printed, and `kobune daemon` carries no notice at all — `stop` returns before
 the socket goes quiet, so the answer would be about a daemon it has just asked
 to leave.
 
 A check runs by itself once a day after any command and prints one line to
-stderr. `MINATO_NO_UPDATE_CHECK` turns it off, and `--json` never includes it.
+stderr. `KOBUNE_NO_UPDATE_CHECK` turns it off, and `--json` never includes it.
 
-`minato --version` checks too, every time rather than once a day, and after
+`kobune --version` checks too, every time rather than once a day, and after
 the version line rather than before it:
 
 ```console
-$ minato --version
-minato 0.1.0 (c7282b8)
-› a newer build is available (9f3c1a2). Install it with minato update
+$ kobune --version
+kobune 0.1.0 (c7282b8)
+› a newer build is available (9f3c1a2). Install it with kobune update
 ```
 
 The line is stderr, there is none when the running build is the published one,
-and `--json` and `MINATO_NO_UPDATE_CHECK` skip the check as they do the daily
+and `--json` and `KOBUNE_NO_UPDATE_CHECK` skip the check as they do the daily
 one.
 
 ## Taking it off again
 
 ```console
-$ minato uninstall
+$ kobune uninstall
 ╭ uninstall ─────────────────────────────────────────────────────────────────╮
 │ containers:                                                                │
 │ myapp / main               web                                             │
@@ -507,21 +507,21 @@ $ minato uninstall
 │ myapp / feature-user-auth  web                                             │
 │                                                                            │
 │ storage — the data in it goes too:                                         │
-│ myapp  minato-myapp-pgdata                                                 │
-│ myapp  minato-myapp-feature-user-auth.node-modules                         │
+│ myapp  kobune-myapp-pgdata                                                 │
+│ myapp  kobune-myapp-feature-user-auth.node-modules                         │
 │                                                                            │
 │ files:                                                                     │
-│ state, logs and the local CA  /home/u/.minato                              │
-│ shell completions             /home/u/.config/fish/completions/minato.fish │
-│ the binary                    /home/u/.local/bin/minato                    │
-│ the binary                    /home/u/.local/bin/minatod                   │
+│ state, logs and the local CA  /home/u/.kobune                              │
+│ shell completions             /home/u/.config/fish/completions/kobune.fish │
+│ the binary                    /home/u/.local/bin/kobune                    │
+│ the binary                    /home/u/.local/bin/kobuned                   │
 │                                                                            │
 │ needs root:                                                                │
 │   stop the LaunchDaemon holding 80/443/53                                  │
-│     sudo launchctl bootout system/dev.minato.daemon                        │
-│     sudo rm /Library/LaunchDaemons/dev.minato.daemon.plist                 │
+│     sudo launchctl bootout system/dev.kobune.daemon                        │
+│     sudo rm /Library/LaunchDaemons/dev.kobune.daemon.plist                 │
 │   stop trusting the local CA                                               │
-│     sudo security remove-trusted-cert -d ~/.minato/ca/minato-ca.crt        │
+│     sudo security remove-trusted-cert -d ~/.kobune/ca/kobune-ca.crt        │
 │                                                                            │
 │ left alone — 2 worktrees:                                                  │
 │   /path/to/myapp                                                           │
@@ -536,13 +536,13 @@ Remove all of this? [y/N]
 | `--dry-run` | Print the list and remove nothing |
 
 **Worktrees are never touched.** They are your checkouts, with your
-uncommitted work in them; `minato rm` removes one at a time, and asks for
+uncommitted work in them; `kobune rm` removes one at a time, and asks for
 `--force` when git objects. They are listed so you can see what is being left
 behind.
 
 **Named volumes go, and are named before they do.** A project volume is
 shared between worktrees and outlives every one of them, so nothing on the
-`minato rm` path ever removes it — an uninstall is where it finally goes. It
+`kobune rm` path ever removes it — an uninstall is where it finally goes. It
 is listed under the name the runtime knows it by, the one `docker volume ls`
 prints, so a database worth keeping can be copied out before you answer. They
 are found by that label rather than from the daemon's records, which is how
@@ -555,34 +555,34 @@ would not go. Both mean an uninstall that left something behind, and both
 make the exit code non-zero.
 
 Nothing is listed that is not there, so the list is what is actually on the
-machine rather than everywhere Minato might have put something. The binaries
+machine rather than everywhere Kobune might have put something. The binaries
 are left alone when they are `cargo build` output — running `uninstall` from a
 checkout removes the installation, not your build.
 
 The steps that need root are run with `sudo`, which asks for your password.
 Without a terminal to type into — an agent, a pipe, CI — they are printed
-instead, the same as `minato setup` does, and the rest of the uninstall still
+instead, the same as `kobune setup` does, and the rest of the uninstall still
 happens.
 
 ## Completions
 
 ```console
-$ minato completions <bash|zsh|fish|elvish|powershell>
+$ kobune completions <bash|zsh|fish|elvish|powershell>
 ```
 
 Writes the script to stdout. See
 [Installation](../guide/installation#shell-completions) for where each shell
 expects it; the install script does this already.
 
-## Environment variables that configure Minato
+## Environment variables that configure Kobune
 
 | | |
 | --- | --- |
-| `MINATO_HOME` | Where state, logs, the socket and the CA live. Default `~/.minato` |
-| `MINATO_HTTP_PORT` | Proxy HTTP port. Default 80, falling back to 18080. A port named here is used as given |
-| `MINATO_HTTPS_PORT` | Proxy HTTPS port. Default 443, falling back to 18443. A port named here is used as given |
-| `MINATO_DNS_PORT` | DNS port. Default 53 |
-| `MINATO_CLOUDFLARED` | A `cloudflared` binary somewhere neither `PATH` nor the usual install prefixes reach |
-| `MINATO_CONTAINER` | The same, for Apple Container's `container` |
-| `MINATO_LOG` | Log filter for the daemon, e.g. `debug` |
-| `MINATO_NO_UPDATE_CHECK` | Set to anything to stop the update check, both the daily one and `--version`'s |
+| `KOBUNE_HOME` | Where state, logs, the socket and the CA live. Default `~/.kobune` |
+| `KOBUNE_HTTP_PORT` | Proxy HTTP port. Default 80, falling back to 18080. A port named here is used as given |
+| `KOBUNE_HTTPS_PORT` | Proxy HTTPS port. Default 443, falling back to 18443. A port named here is used as given |
+| `KOBUNE_DNS_PORT` | DNS port. Default 53 |
+| `KOBUNE_CLOUDFLARED` | A `cloudflared` binary somewhere neither `PATH` nor the usual install prefixes reach |
+| `KOBUNE_CONTAINER` | The same, for Apple Container's `container` |
+| `KOBUNE_LOG` | Log filter for the daemon, e.g. `debug` |
+| `KOBUNE_NO_UPDATE_CHECK` | Set to anything to stop the update check, both the daily one and `--version`'s |

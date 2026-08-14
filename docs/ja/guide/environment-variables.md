@@ -1,21 +1,21 @@
 # 環境変数
 
-3 つの層を後勝ちで解決します。さらにその下に、Minato が自動的に注入する変数が
+3 つの層を後勝ちで解決します。さらにその下に、Kobune が自動的に注入する変数が
 あります。
 
 ## 3 つの層
 
 | 層 | 保存先 | コミット対象 |
 | --- | --- | --- |
-| **global** | `~/.minato/env` | 対象外。マシン固有の設定 |
-| **project** | `minato.toml` の `env` と `.minato/env` | 対象 |
-| **workspace** | `.minato/env.local` | 対象外。gitignore に追加する |
+| **global** | `~/.kobune/env` | 対象外。マシン固有の設定 |
+| **project** | `kobune.toml` の `env` と `.kobune/env` | 対象 |
+| **workspace** | `.kobune/env.local` | 対象外。gitignore に追加する |
 
 後に定義された層が優先されます。workspace が project より優先され、project が
 global より優先されます。
 
 ```console
-$ minato env ls
+$ kobune env ls
 ╭ environment ────────────────────────────────────╮
 │ KEY           SCOPE      VALUE                  │
 │ DATABASE_URL  project    postgres://db:5432/app │
@@ -30,18 +30,18 @@ $ minato env ls
 ## 値を設定する
 
 ```console
-$ minato env set LOG_LEVEL=debug                    # 既定は workspace
-$ minato env set DATABASE_URL=… --scope project     # コミット対象、全体で共有
-$ minato env set GITHUB_TOKEN=… --scope global      # 全プロジェクト共通
-$ minato env unset LOG_LEVEL
+$ kobune env set LOG_LEVEL=debug                    # 既定は workspace
+$ kobune env set DATABASE_URL=… --scope project     # コミット対象、全体で共有
+$ kobune env set GITHUB_TOKEN=… --scope global      # 全プロジェクト共通
+$ kobune env unset LOG_LEVEL
 ```
 
-ファイルを直接編集せず、`minato env` から設定してください。指定した層に確実に
+ファイルを直接編集せず、`kobune env` から設定してください。指定した層に確実に
 書き込まれ、書式も統一されます。
 
 ::: warning 反映には再起動が必要です
 すでに稼働しているコンテナは、新しい値を読み込みません。
-`minato down && minato up` を実行してください。
+`kobune down && kobune up` を実行してください。
 :::
 
 ## 自動的に注入される変数
@@ -50,24 +50,24 @@ $ minato env unset LOG_LEVEL
 ため、いずれも上書きできます。
 
 ```
-MINATO_PROJECT      = myapp
-MINATO_WORKSPACE    = feature-user-auth
-MINATO_SERVICE      = web
-MINATO_CACHE_DIR    = /var/cache/minato
-MINATO_CA_FILE      = /etc/minato/ca.crt
-NODE_EXTRA_CA_CERTS = /etc/minato/ca.crt
-MINATO_URL_WEB      = https://web.feature-user-auth.myapp.localhost
-MINATO_URL_API      = https://api.feature-user-auth.myapp.localhost
-MINATO_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
-MINATO_HOSTNAME_API = api.feature-user-auth.myapp.localhost
+KOBUNE_PROJECT      = myapp
+KOBUNE_WORKSPACE    = feature-user-auth
+KOBUNE_SERVICE      = web
+KOBUNE_CACHE_DIR    = /var/cache/kobune
+KOBUNE_CA_FILE      = /etc/kobune/ca.crt
+NODE_EXTRA_CA_CERTS = /etc/kobune/ca.crt
+KOBUNE_URL_WEB      = https://web.feature-user-auth.myapp.localhost
+KOBUNE_URL_API      = https://api.feature-user-auth.myapp.localhost
+KOBUNE_HOSTNAME_WEB = web.feature-user-auth.myapp.localhost
+KOBUNE_HOSTNAME_API = api.feature-user-auth.myapp.localhost
 ```
 
-### `MINATO_CA_FILE`
+### `KOBUNE_CA_FILE`
 
-Minato 自身の CA 証明書です。すべてのサービスに読み取り専用でマウントされ、
-`MINATO_URL_<SERVICE>` への HTTPS 通信を検証付きで通せるようにします。
+Kobune 自身の CA 証明書です。すべてのサービスに読み取り専用でマウントされ、
+`KOBUNE_URL_<SERVICE>` への HTTPS 通信を検証付きで通せるようにします。
 
-ブラウザがこの証明書を信頼しているのは `minato setup` がホストのキーチェーンに
+ブラウザがこの証明書を信頼しているのは `kobune setup` がホストのキーチェーンに
 入れたからで、コンテナは自前のトラストストアを持つため何も知りません。これが
 無いと URL には到達するのに証明書で落ち、結局プロセス全体の検証を切ることに
 なります。
@@ -79,22 +79,22 @@ Minato 自身の CA 証明書です。すべてのサービスに読み取り専
 
 ```toml
 [services.web.env]
-NODE_EXTRA_CA_CERTS = "/etc/ssl/corporate-and-minato.pem"
+NODE_EXTRA_CA_CERTS = "/etc/ssl/corporate-and-kobune.pem"
 ```
 
 この変数はファイルを 1 つしか取れないので、両方を信頼したいなら 1 つの
 ファイルにまとめてください。
 
-**Minato が設定するのは Node の分だけです。** `NODE_EXTRA_CA_CERTS` は追加ですが
+**Kobune が設定するのは Node の分だけです。** `NODE_EXTRA_CA_CERTS` は追加ですが
 `SSL_CERT_FILE` / `CURL_CA_BUNDLE` / `REQUESTS_CA_BUNDLE` は置き換えで、後者で
-Minato を信頼させたコンテナは他のどこも信頼しなくなり、Minato 以外への HTTPS
+Kobune を信頼させたコンテナは他のどこも信頼しなくなり、Kobune 以外への HTTPS
 通信が止まります。自分で作ったバンドルを指すか、下のシステムトラストストアを
 使ってください。
 
 `NODE_EXTRA_CA_CERTS` は、注入される値の中で唯一
 [`env_file`](#ファイルに書き出す) に書き出されません。あちらは*ホスト*で読まれる
-ファイルで、`/etc/minato/ca.crt` は存在せず Node が起動のたびに警告を出すため
-です。パスを自分で使いたい場合の `MINATO_CA_FILE` は書き出されます。
+ファイルで、`/etc/kobune/ca.crt` は存在せず Node が起動のたびに警告を出すため
+です。パスを自分で使いたい場合の `KOBUNE_CA_FILE` は書き出されます。
 
 ### 証明書がプロセスまで届かないとき
 
@@ -116,46 +116,46 @@ Minato を信頼させたコンテナは他のどこも信頼しなくなり、M
 ```
 
 Node は追加の証明書を環境変数からしか受け取らないため、環境を濾すツールの
-向こう側へは Minato の注入は届きません。コンテナには設定されているのに
+向こう側へは Kobune の注入は届きません。コンテナには設定されているのに
 プロセスには無い、というときは間に挟まっているものを疑ってください。
 
 システムのトラストストアを読むスタックでは、起動時に追加してください。
 
 ```toml
 [services.api]
-command = "sh -c 'cp $MINATO_CA_FILE /usr/local/share/ca-certificates/ && update-ca-certificates && ./serve'"
+command = "sh -c 'cp $KOBUNE_CA_FILE /usr/local/share/ca-certificates/ && update-ca-certificates && ./serve'"
 ```
 
 検証すべき HTTPS が無いとき（443 を保持できていないなど）は設定されません。
 他の値と同じく、すでに稼働中のコンテナには反映されません
-（`minato down && minato up`）。
+（`kobune down && kobune up`）。
 
-`/etc/minato/ca.crt` は Minato 自身のマウント先なので、そのパスちょうどへの
-`volumes` は `/var/cache/minato` と同様に拒否されます。
+`/etc/kobune/ca.crt` は Kobune 自身のマウント先なので、そのパスちょうどへの
+`volumes` は `/var/cache/kobune` と同様に拒否されます。
 
-### `MINATO_CACHE_DIR`
+### `KOBUNE_CACHE_DIR`
 
-残す価値はあるがコミットする必要はないものの置き場所です。Minato が管理する
+残す価値はあるがコミットする必要はないものの置き場所です。Kobune が管理する
 ボリュームで、すべてのサービスにマウントされます。
 
 ```toml
 [services.web.env]
-npm_config_store_dir = "${MINATO_CACHE_DIR}/pnpm"
-CARGO_HOME = "${MINATO_CACHE_DIR}/cargo"
+npm_config_store_dir = "${KOBUNE_CACHE_DIR}/pnpm"
+CARGO_HOME = "${KOBUNE_CACHE_DIR}/cargo"
 ```
 
 ::: warning 波括弧は省略できません
-`${MINATO_CACHE_DIR}` は[参照](#他の変数を参照する)であり、Minato が展開します。
-波括弧の無い `$MINATO_CACHE_DIR` は書いたまま渡され、Docker も展開しません。
-`npm_config_store_dir = "$MINATO_CACHE_DIR/pnpm"` と書くと、workdir すなわち
-worktree からの相対パスとして `$MINATO_CACHE_DIR` という名前のディレクトリが
+`${KOBUNE_CACHE_DIR}` は[参照](#他の変数を参照する)であり、Kobune が展開します。
+波括弧の無い `$KOBUNE_CACHE_DIR` は書いたまま渡され、Docker も展開しません。
+`npm_config_store_dir = "$KOBUNE_CACHE_DIR/pnpm"` と書くと、workdir すなわち
+worktree からの相対パスとして `$KOBUNE_CACHE_DIR` という名前のディレクトリが
 作られます。これはまさに、この仕組みが防ごうとしている「リポジトリ内に数 GB」
-そのものです。この書き方をした値には `minato up` が警告します。
+そのものです。この書き方をした値には `kobune up` が警告します。
 
 シェルが展開する場所——`command` や起動スクリプト——では波括弧は不要です。
 
 ```toml
-command = "sh -c 'pnpm config set store-dir $MINATO_CACHE_DIR/pnpm && pnpm dev'"
+command = "sh -c 'pnpm config set store-dir $KOBUNE_CACHE_DIR/pnpm && pnpm dev'"
 ```
 :::
 
@@ -167,71 +167,71 @@ pnpm の store であれば数 GB の追跡対象外ファイルがチェック�
 プロジェクト内のすべての worktree で共有されます。パッケージの取得を 1 回で
 済ませるのが目的だからです。ブランチによって内容が変わるもの（ブランチごとに
 lockfile が異なる `node_modules` など）には
-[`@workspace` ボリューム](../reference/minato-toml#スコープ) を使ってください。
+[`@workspace` ボリューム](../reference/kobune-toml#スコープ) を使ってください。
 
 ::: warning root 以外で動作するコンテナの場合
 ボリュームは空かつ root 所有で作成されるため、別のユーザで動作するサービスは
 自分が所有するディレクトリが作られるまで書き込めません。インストール処理だけ
 `USER root` にするか、起動スクリプトで
-`mkdir -p "$MINATO_CACHE_DIR/x" && chown` してください。
+`mkdir -p "$KOBUNE_CACHE_DIR/x" && chown` してください。
 :::
 
 コンテナは作成時のマウント構成を保持するため、アップグレード時にすでに起動して
-いたサービスには `minato down && minato up` するまで反映されません。また
-`/var/cache/minato` に自前のボリュームをマウントすることはできません。1 つの
+いたサービスには `kobune down && kobune up` するまで反映されません。また
+`/var/cache/kobune` に自前のボリュームをマウントすることはできません。1 つの
 パスへの二重マウントはコンテナエンジンのエラーになり、原因となった記述から
 遠い場所で表面化するためです。
 
-`minato env ls` が表示するのは全サービスに共通する内容だけです。
-`MINATO_SERVICE` とサービス固有の `env` は
-`minato env ls --service <name>` で確認してください。
+`kobune env ls` が表示するのは全サービスに共通する内容だけです。
+`KOBUNE_SERVICE` とサービス固有の `env` は
+`kobune env ls --service <name>` で確認してください。
 
-### `MINATO_URL_<SERVICE>`
+### `KOBUNE_URL_<SERVICE>`
 
 **とくに重要な変数です。** URL はブランチごとに異なるため、フロントエンドは
 API の URL をハードコードできません。worktree ごとの環境が成立するのは、この
 変数があるためです。
 
 ```js
-const api = process.env.MINATO_URL_API ?? 'http://localhost:8080'
+const api = process.env.KOBUNE_URL_API ?? 'http://localhost:8080'
 ```
 
 サービス名に含まれる `-` は `_` に変換されます。`api-server` であれば
-`MINATO_URL_API_SERVER` になります。
+`KOBUNE_URL_API_SERVER` になります。
 
 ::: tip プロキシが停止している場合
 プロキシが待ち受けていないときは、空文字ではなく変数自体が設定されません。
 空文字を設定すると「値はあるのに接続できない」状態になり、変数が存在しない
 場合よりも原因の特定が困難になるためです。
 
-コンテナ側では `MINATO_URL_WEB: parameter not set` として現れますが、この
+コンテナ側では `KOBUNE_URL_WEB: parameter not set` として現れますが、この
 メッセージからここに辿り着く手がかりはありません。プロキシが無い状態で
-サービスを起動した場合は `minato up` が警告し、対処方法は `minato doctor`
+サービスを起動した場合は `kobune up` が警告し、対処方法は `kobune doctor`
 が示します。
 :::
 
-### `MINATO_HOSTNAME_<SERVICE>`
+### `KOBUNE_HOSTNAME_<SERVICE>`
 
 同じホストを、周りに何も付けずに渡します。スキームもポートも末尾のスラッシュも
 ありません。
 
 ```toml
 [services.web.env]
-NEXT_ALLOWED_DEV_ORIGIN = "${MINATO_HOSTNAME_WEB}"
+NEXT_ALLOWED_DEV_ORIGIN = "${KOBUNE_HOSTNAME_WEB}"
 
 [services.api.env]
-COOKIE_DOMAIN = "${MINATO_HOSTNAME_API}"
+COOKIE_DOMAIN = "${KOBUNE_HOSTNAME_API}"
 ```
 
 **CORS の origin、`allowedDevOrigins`、cookie の domain はいずれも URL ではなく
-これを要求します。** この変数が無いと、`MINATO_URL_<SERVICE>` から `sed` で
+これを要求します。** この変数が無いと、`KOBUNE_URL_<SERVICE>` から `sed` で
 スキームを削ぎ落とす処理がプロジェクト側に生まれます。
 
 注入される条件は URL と同じです。プロキシが待ち受けている間、かつ URL を公開
 しているサービスに限ります。応答しないホスト名を渡すのは、URL 側で避けている
 「値はあるのに繋がらない」と同じ状態だからです。
 
-::: warning `MINATO_HOST_<SERVICE>` とは別物です
+::: warning `KOBUNE_HOST_<SERVICE>` とは別物です
 そちらは Apple Container のもので、他サービスの IP アドレスを保持します。
 [ランタイム](./runtimes) を参照してください。
 :::
@@ -242,40 +242,40 @@ COOKIE_DOMAIN = "${MINATO_HOSTNAME_API}"
 
 ```toml
 [services.web.env]
-NEXT_PUBLIC_WEB_URL = "${MINATO_URL_WEB}"
-NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
-FILE_BASE_URL       = "${MINATO_URL_API}/dev/r2"
+NEXT_PUBLIC_WEB_URL = "${KOBUNE_URL_WEB}"
+NEXT_PUBLIC_API_URL = "${KOBUNE_URL_API}"
+FILE_BASE_URL       = "${KOBUNE_URL_API}/dev/r2"
 ```
 
 **worktree ごとに変わる URL を、アプリケーションが既に読んでいる名前で渡すため
-の仕組みです。** `MINATO_URL_API` は Minato の名前で届くため、これを書けないと、
+の仕組みです。** `KOBUNE_URL_API` は Kobune の名前で届くため、これを書けないと、
 変数を別の変数に写すためだけの起動スクリプトがどのプロジェクトにも生まれます。
 
 参照が解決するのは、どの層が優先されたかを問わず、コンテナに実際に渡る値です。
-したがって `.minato/env.local` で `MINATO_URL_API` を上書きすれば、そこから
+したがって `.kobune/env.local` で `KOBUNE_URL_API` を上書きすれば、そこから
 組み立てられる値もまとめて変わります。参照は連鎖できます。展開後の値は
-`minato env ls` にも表示されます。展開前の値の一覧は、どこでも動いていない
+`kobune env ls` にも表示されます。展開前の値の一覧は、どこでも動いていない
 ものの一覧だからです。
 
 - **波括弧の無い `$NAME` は展開されません。** これらの値はこれまで書いたまま
   渡されてきたため、いま展開を始めると既存の設定の意味が変わってしまいます。
-  存在する変数名がこの形で書かれている場合は `minato up` が警告するので、
+  存在する変数名がこの形で書かれている場合は `kobune up` が警告するので、
   症状から探し当てる必要はありません。
 - **`$$` は `$` そのものです。** `$${A}` は `${A}` のまま渡ります。
 - **変数名でないものは参照ではありません。** `${PORT:-3000}` はシェルの記法
   として、そのままシェルに届きます。
 - **どこにも定義の無い名前はエラーです。** 空文字にはしません。プロキシが無い
-  ときに `MINATO_URL_<SERVICE>` を未設定のままにするのと同じ理由です。その
-  ため `${MINATO_URL_API}` を参照していると、プロキシが動いていない間はその
+  ときに `KOBUNE_URL_<SERVICE>` を未設定のままにするのと同じ理由です。その
+  ため `${KOBUNE_URL_API}` を参照していると、プロキシが動いていない間はその
   変数が欠けたまま起動するのではなく、サービスの起動自体が止まります。復旧の
-  手順は `minato doctor` が示します。
+  手順は `kobune doctor` が示します。
 
-解決できない値があっても `minato env ls` は一覧を表示します。**書かれたまま
+解決できない値があっても `kobune env ls` は一覧を表示します。**書かれたまま
 表示されるのは原因の値だけ**で、理由は一覧の下に添えられます。原因の値は値を
 眺めてしか見つけられないためです。解決できた値はそのまま解決済みで表示される
 ので、両者は区別できます。
 
-サービスを指定しない一覧には `MINATO_SERVICE` とサービス固有の `env` が含まれ
+サービスを指定しない一覧には `KOBUNE_SERVICE` とサービス固有の `env` が含まれ
 ません。そのため、それらから組み立てた値は**この一覧では**解決できません。
 サービス自体は問題なく起動します。その場合はその旨と、解決できる一覧を持つ
 サービス名を表示します。解決できるのはそのサービスだけだからです。
@@ -287,14 +287,14 @@ FILE_BASE_URL       = "${MINATO_URL_API}/dev/r2"
 ::: warning この機能より前に書かれた値について
 `${...}` と `$$` には、これまで無かった意味が付きました。既にこれらを含む値は
 挙動が変わります。`$$` は `$` 1 文字になり、存在しない変数名を指す `${NAME}`
-はそのまま渡されるのではなく `minato up` を止めます。文字として渡したい場合は
+はそのまま渡されるのではなく `kobune up` を止めます。文字として渡したい場合は
 ドルを重ねてください（`$` は `$$`、`${` は `$${`）。
 :::
 
 ::: warning シークレットを他の値に埋め込むことはできません
 `PASSWORD` が `op://` や `keychain://` の参照である場合、
 `DATABASE_URL = "postgres://user:${PASSWORD}@db/app"` は拒否されます。これらは
-コンテナ起動時にメモリ上で解決される値であり、ここで展開すると `minato env ls`
+コンテナ起動時にメモリ上で解決される値であり、ここで展開すると `kobune env ls`
 や、そこから書き出されるあらゆる出力に平文が載ってしまいます。
 
 組み立て済みの値をシークレットとして保存するか、2 つの変数のままアプリケー
@@ -309,22 +309,22 @@ Worker に渡さず、Vite や dotenvx はディスク上のファイルを読�
 
 ```toml
 [services.api]
-env_file = ".minato/env.api"
+env_file = ".kobune/env.api"
 ```
 
 ```sh
-wrangler dev --env-file .env --env-file .minato/env.api
+wrangler dev --env-file .env --env-file .kobune/env.api
 ```
 
-パスは worktree からの相対で、サービスの起動直前——`minato up` のときと、
+パスは worktree からの相対で、サービスの起動直前——`kobune up` のときと、
 scale-to-zero が起こすたび——に書かれます。停止後も残るため、worktree で
 `pnpm dev` を直接動かす場合も同じ値を読めます。
 
-**書き出されるのは起動するサービスの分だけです。** `minato up web` が書くのは
+**書き出されるのは起動するサービスの分だけです。** `kobune up web` が書くのは
 `web` と、その `depends_on` が引き連れてくるサービスの分だけで、`api` の分は
 書きません。起動を頼まれていないサービスが、頼まれたサービスを巻き添えに失敗
 させることはなく、`api` だけに指定されたパスは `api` が動くときにだけ書かれ
-ます。`minato exec` は何も書きません。コマンドを実行するだけで、サービスを
+ます。`kobune exec` は何も書きません。コマンドを実行するだけで、サービスを
 起動するわけではないからです。
 
 **内容が変わらない場合は書き込みません。** ファイルを監視している dev server
@@ -332,13 +332,13 @@ scale-to-zero が起こすたび——に書かれます。停止後も残るた
 
 - **git が追跡しているパスは拒否します。** 生成ファイルは worktree を永久に
   dirty にし、コミットすれば 1 つのブランチの URL が他のすべてのチェックアウト
-  に混入します。gitignore された場所——`.minato/` は既にそうです——を指定して
+  に混入します。gitignore された場所——`.kobune/` は既にそうです——を指定して
   ください。
-- **Minato が書いたのでないファイルは上書きしません。** 目印は先頭行のヘッダ
+- **Kobune が書いたのでないファイルは上書きしません。** 目印は先頭行のヘッダ
   です。自分で用意した `.env.local` は安全で、置き換えではなくファイル名を
   含むエラーが返ります。
-- **`.minato/env` と `.minato/env.local` は指定できません。** この 2 つは
-  Minato 自身が層として読むファイルです。書き出すと生成ファイルがそのまま
+- **`.kobune/env` と `.kobune/env.local` は指定できません。** この 2 つは
+  Kobune 自身が層として読むファイルです。書き出すと生成ファイルがそのまま
   入力に戻り、しかも workspace 層は最も優先度が高いため、前回の値が今回
   注入される値を上書きしてしまいます。隣に別名で書いてください。
 - **1 つのパスにつき 1 サービスです。** 2 つのサービスが同じファイルを指すと、
@@ -359,16 +359,16 @@ scale-to-zero が起こすたび——に書かれます。停止後も残るた
 ## シークレット
 
 秘匿すべき値はコミットしないでください。参照形式で記述しておけば、コンテナの
-起動時に Minato が解決します。
+起動時に Kobune が解決します。
 
 ```
 DATABASE_PASSWORD = op://Development/myapp/password    # 1Password CLI
-API_KEY           = keychain://minato/myapp/api-key    # macOS Keychain
+API_KEY           = keychain://kobune/myapp/api-key    # macOS Keychain
 STRIPE_KEY        = env://STRIPE_KEY                   # daemon の環境変数
 ```
 
 解決された値はメモリ上でコンテナに渡され、**ディスクには書き込まれません。**
-`minato env ls` は値ではなく参照を表示します。`--reveal` を指定した場合も
+`kobune env ls` は値ではなく参照を表示します。`--reveal` を指定した場合も
 同様です。実際の値を表示するには解決処理が必要ですが、それは起動時にのみ
 実行するためです。
 
@@ -388,7 +388,7 @@ warning: cannot resolve the secret for DATABASE_PASSWORD: cannot reach op
 ## 単一の値を取得する
 
 ```console
-$ minato env get DATABASE_URL
+$ kobune env get DATABASE_URL
 postgres://db:5432/app
 ```
 
@@ -402,10 +402,10 @@ postgres://db:5432/app
 ## ファイルで管理する場合
 
 ```
-~/.minato/env              global
-.minato/env                project、コミット対象
-.minato/env.local          workspace、gitignore に追加する
+~/.kobune/env              global
+.kobune/env                project、コミット対象
+.kobune/env.local          workspace、gitignore に追加する
 ```
 
 書式は 1 行につき `KEY=value` で、`#` から始まる行はコメントです。
-`.minato/env.local` は `.gitignore` に追加してください。
+`.kobune/env.local` は `.gitignore` に追加してください。

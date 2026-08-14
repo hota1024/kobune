@@ -1,4 +1,4 @@
-//! minato — a thin client for the daemon.
+//! kobune — a thin client for the daemon.
 //!
 //! No logic lives here. Every decision is the daemon's; the CLI builds
 //! requests and prints results (`docs/DESIGN.md` §3).
@@ -20,8 +20,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use minato_api::{Event, Request, Response, Target, Window};
-use minato_client::{Client, ClientError, DaemonStart};
+use kobune_api::{Event, Request, Response, Target, Window};
+use kobune_client::{Client, ClientError, DaemonStart};
 
 /// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
 /// is what tells one build from another.
@@ -29,7 +29,7 @@ fn version() -> &'static str {
     // Leaked once at startup: clap wants a `&'static str`, and the string is
     // built from two compile-time constants so there is nothing to free.
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VERSION.get_or_init(|| minato_core::version_string(env!("CARGO_PKG_VERSION")))
+    VERSION.get_or_init(|| kobune_core::version_string(env!("CARGO_PKG_VERSION")))
 }
 
 /// The suffix used when `[project] domain` is left out. It is also what
@@ -38,7 +38,7 @@ const DEFAULT_DOMAIN_SUFFIX: &str = "localhost";
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "minato",
+    name = "kobune",
     version = version(),
     about = "A development environment manager built around git worktrees",
     long_about = "Manages a preview environment per git worktree.\n\
@@ -60,9 +60,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Write a starter minato.toml
+    /// Write a starter kobune.toml
     Init {
-        /// Overwrite an existing minato.toml
+        /// Overwrite an existing kobune.toml
         #[arg(long)]
         force: bool,
 
@@ -121,7 +121,7 @@ enum Command {
         #[arg(long)]
         no_start: bool,
 
-        /// Rebuild images even when nothing Minato can see has changed
+        /// Rebuild images even when nothing Kobune can see has changed
         #[arg(long)]
         build: bool,
     },
@@ -138,7 +138,7 @@ enum Command {
         /// Which services. All of them when left out
         services: Vec<String>,
 
-        /// Rebuild images even when nothing Minato can see has changed
+        /// Rebuild images even when nothing Kobune can see has changed
         ///
         /// A build is skipped when an image built from the same Dockerfile
         /// and build args is already there. That check cannot see a file
@@ -163,7 +163,7 @@ enum Command {
     /// Print where services can be reached
     ///
     /// Naming one prints its URL and nothing else, for
-    /// `curl "$(minato url web)/"`. Naming none lists them all.
+    /// `curl "$(kobune url web)/"`. Naming none lists them all.
     Url {
         /// The service name. Every service when left out
         service: Option<String>,
@@ -254,11 +254,11 @@ enum Command {
         check: bool,
     },
 
-    /// Take Minato back off this machine
+    /// Take Kobune back off this machine
     ///
     /// Containers, the daemon's state, the binaries and the shell
     /// completions. **Worktrees are left alone** — they are your
-    /// checkouts, and `minato rm` is how one goes.
+    /// checkouts, and `kobune rm` is how one goes.
     ///
     /// What it found is shown first, and nothing happens until you say so.
     Uninstall {
@@ -305,7 +305,7 @@ enum TunnelCommand {
 
         /// Confirm that this goes on the public internet
         ///
-        /// Minato cannot apply a Cloudflare Access policy — that needs the
+        /// Kobune cannot apply a Cloudflare Access policy — that needs the
         /// API, not cloudflared — so it will not expose an environment
         /// without being asked.
         #[arg(long)]
@@ -324,7 +324,7 @@ enum EnvCommand {
     /// List environment variables
     ///
     /// Without --service, only what every service shares. A service's own
-    /// `env` in minato.toml belongs to that service.
+    /// `env` in kobune.toml belongs to that service.
     Ls {
         /// Show the values instead of masking them
         #[arg(long)]
@@ -365,7 +365,7 @@ enum EnvCommand {
 
 #[derive(Subcommand, Debug)]
 enum SkillCommand {
-    /// Install it at .claude/skills/minato/SKILL.md
+    /// Install it at .claude/skills/kobune/SKILL.md
     Install {
         /// Overwrite an existing file whose contents differ
         #[arg(long)]
@@ -422,7 +422,7 @@ async fn main() -> ExitCode {
     // After the command, so a slow network cannot delay the output anyone is
     // waiting for. Never under `--json`: that stream is parsed, and a line
     // about a new build landing in it would be a bug rather than a nuisance.
-    // stderr regardless, so `$(minato url web)` never picks it up.
+    // stderr regardless, so `$(kobune url web)` never picks it up.
     if !cli.json
         && wants_update_notice(&cli.command)
         && let Some(commit) = update_notice().await
@@ -437,7 +437,7 @@ async fn main() -> ExitCode {
                 if let Some(api_error) = as_api_error(&err) {
                     output::print_error_json(api_error);
                 } else {
-                    output::print_error_json(&minato_api::ApiError::internal(err.to_string()));
+                    output::print_error_json(&kobune_api::ApiError::internal(err.to_string()));
                 }
             } else {
                 ui::error(&err.to_string(), hint_for(&err));
@@ -449,12 +449,12 @@ async fn main() -> ExitCode {
 }
 
 /// The group a parse failure is about, when it is about a group that was
-/// named without one of its subcommands — `["skill"]` for `minato skill`,
-/// and empty for `minato` itself. `None` for every other failure.
+/// named without one of its subcommands — `["skill"]` for `kobune skill`,
+/// and empty for `kobune` itself. `None` for every other failure.
 ///
-/// Clap answers `minato skill` with the group's help, but only because
+/// Clap answers `kobune skill` with the group's help, but only because
 /// nothing at all followed it: `arg_required_else_help` counts arguments,
-/// and a global flag is one. So `minato skill --json` came back as a usage
+/// and a global flag is one. So `kobune skill --json` came back as a usage
 /// error instead — the same missing subcommand, a different answer,
 /// decided by a flag that says nothing about which subcommand was meant.
 fn missing_subcommand(err: &clap::Error) -> Option<Vec<String>> {
@@ -465,7 +465,7 @@ fn missing_subcommand(err: &clap::Error) -> Option<Vec<String>> {
     }
 
     // Clap names the invocation that was left without one, the binary
-    // first: `minato skill`.
+    // first: `kobune skill`.
     let Some(ContextValue::String(invocation)) = err.get(ContextKind::InvalidSubcommand) else {
         return None;
     };
@@ -484,10 +484,10 @@ fn missing_subcommand(err: &clap::Error) -> Option<Vec<String>> {
 /// Under `--json` it goes to stderr, and unstyled: stdout carries the one
 /// JSON document a command answers with, this is not one, and nobody
 /// parsing it wants escape codes. Everywhere else it is stdout, which is
-/// where `minato skill` has always put it.
+/// where `kobune skill` has always put it.
 fn print_group_help(group: &[String], json: bool) -> ExitCode {
     // Built first, so the groups carry their full name: the usage line
-    // reads `minato skill`, not `skill`.
+    // reads `kobune skill`, not `skill`.
     let mut help = <Cli as CommandFactory>::command();
     help.build();
 
@@ -552,7 +552,7 @@ fn wants_json() -> bool {
 ///
 /// Rust ignores it at startup, which turns a closed pipe into a write error
 /// and then a panic inside `println!`. Since the documentation tells people
-/// to pipe this — `minato url | …`, `minato logs | grep` — a panic on
+/// to pipe this — `kobune url | …`, `kobune logs | grep` — a panic on
 /// `| head` is a papercut worth removing.
 ///
 /// SAFETY: called once, before any thread is spawned, and restores the
@@ -579,13 +579,13 @@ struct Unprivileged {
 /// **Only when a LaunchDaemon is installed.** Without one, listening
 /// elsewhere is the normal arrangement and saying so every time would be
 /// noise. With one, it means launchd was meant to hand the ports over and
-/// did not — the state that leaves every URL dead while `minato up` still
+/// did not — the state that leaves every URL dead while `kobune up` still
 /// reports success.
 ///
 /// The three states it can be are three different answers, and the home is
 /// what tells the last one apart: launchd's job may be holding those ports
-/// for a `MINATO_HOME` that is not this daemon's, in which case nothing
-/// here can move them — see [`minato_core::launchd::Job`].
+/// for a `KOBUNE_HOME` that is not this daemon's, in which case nothing
+/// here can move them — see [`kobune_core::launchd::Job`].
 fn unprivileged_start(start: DaemonStart, home: &std::path::Path) -> Option<Unprivileged> {
     // Asked only where the answer can matter: this runs `launchctl print`,
     // and most commands on the machine start a daemon one way or another.
@@ -593,15 +593,15 @@ fn unprivileged_start(start: DaemonStart, home: &std::path::Path) -> Option<Unpr
         return None;
     }
 
-    unprivileged(minato_core::launchd::job(home))
+    unprivileged(kobune_core::launchd::job(home))
 }
 
 /// The same, for a state that has already been read.
 ///
 /// Split out so each state's wording can be tested on a machine with no
 /// LaunchDaemon on it, which is every machine that runs the tests.
-fn unprivileged(job: minato_core::launchd::Job) -> Option<Unprivileged> {
-    use minato_core::launchd::Job;
+fn unprivileged(job: kobune_core::launchd::Job) -> Option<Unprivileged> {
+    use kobune_core::launchd::Job;
 
     let said = "started a daemon outside launchd, so 80 and 443 are out and no URL will answer"
         .to_string();
@@ -612,12 +612,12 @@ fn unprivileged(job: minato_core::launchd::Job) -> Option<Unprivileged> {
 
         // Reaching :80 is what has just failed — `wake_launchd` runs
         // before the fall-back to a direct start — so naming
-        // `minato daemon restart` here would hand back the step that was
+        // `kobune daemon restart` here would hand back the step that was
         // taken. Forcing the job is what is left, and it needs root.
         Job::Registered => Some(Unprivileged {
             said,
             next: "reaching :80 did not wake launchd's job. Force it with".to_string(),
-            command: Some(minato_core::launchd::kickstart_command()),
+            command: Some(kobune_core::launchd::kickstart_command()),
         }),
 
         // `kickstart` has no service to name here and comes back
@@ -626,17 +626,17 @@ fn unprivileged(job: minato_core::launchd::Job) -> Option<Unprivileged> {
             said,
             next: "the plist is on disk but launchd does not have the job. Register it with"
                 .to_string(),
-            command: Some("minato setup".to_string()),
+            command: Some("kobune setup".to_string()),
         }),
 
         // Nothing to run. The job holds 80, 443 and 53 for another home,
-        // `minato setup` would ask launchd to bootstrap a label it already
+        // `kobune setup` would ask launchd to bootstrap a label it already
         // has, and a `kickstart` starts that same job again.
         Job::Elsewhere(other) => Some(Unprivileged {
             said,
             next: format!(
-                "launchd's job serves MINATO_HOME={}, so those ports are held for a daemon \
-                 that is not this one. Point MINATO_HOME there to reach it, or keep the \
+                "launchd's job serves KOBUNE_HOME={}, so those ports are held for a daemon \
+                 that is not this one. Point KOBUNE_HOME there to reach it, or keep the \
                  ports this daemon fell back to",
                 other.display()
             ),
@@ -689,7 +689,7 @@ fn wants_update_notice(command: &Command) -> bool {
 /// this runs after a command that already worked, and has nothing to add
 /// when it cannot reach GitHub.
 async fn update_notice() -> Option<String> {
-    let paths = minato_core::Paths::resolve().ok()?;
+    let paths = kobune_core::Paths::resolve().ok()?;
     update::background_notice(&paths).await
 }
 
@@ -699,18 +699,18 @@ async fn update_notice() -> Option<String> {
 /// Silent on the same failures, including having no configuration directory
 /// to leave the answer in.
 async fn version_update_notice() -> Option<String> {
-    let paths = minato_core::Paths::resolve().ok()?;
+    let paths = kobune_core::Paths::resolve().ok()?;
     update::version_notice(&paths).await
 }
 
 /// What either check has to say, in the one wording both use.
 ///
-/// On stderr, through [`ui::notice`]: `$(minato url web)` must never pick
+/// On stderr, through [`ui::notice`]: `$(kobune url web)` must never pick
 /// it up, and neither must anything parsing `--json`.
 fn print_update_notice(commit: &str) {
     ui::notice(vec![ui::hint(
         &format!("a newer build is available ({commit}). Install it with"),
-        "minato update",
+        "kobune update",
     )]);
 }
 
@@ -718,7 +718,7 @@ fn print_update_notice(commit: &str) {
 ///
 /// `update` has already printed the steps it could be sure of, and a
 /// second list under the panel would read as a different one. `completions`
-/// is redirected into a file and `uninstall` has just taken Minato off the
+/// is redirected into a file and `uninstall` has just taken Kobune off the
 /// machine.
 ///
 /// **`daemon` is out for a reason of its own**: it is the command the steps
@@ -747,7 +747,7 @@ fn wants_followup_notice(command: &Command) -> bool {
 /// command interrupted in between finds them again rather than having
 /// marked itself as read.
 async fn followup_notice() {
-    let Ok(paths) = minato_core::Paths::resolve() else {
+    let Ok(paths) = kobune_core::Paths::resolve() else {
         return;
     };
 
@@ -767,7 +767,7 @@ async fn followup_notice() {
 }
 
 /// Where the Skill for the current directory lives, for the step that is
-/// about it. The same answer `minato skill install` would act on.
+/// about it. The same answer `kobune skill install` would act on.
 fn skill_root() -> Option<PathBuf> {
     std::env::current_dir()
         .ok()
@@ -776,7 +776,7 @@ fn skill_root() -> Option<PathBuf> {
 
 /// The steps, under a line saying what they are doing there.
 ///
-/// Without it a `minato status` in the morning grows a remark about the
+/// Without it a `kobune status` in the morning grows a remark about the
 /// daemon out of nowhere. With it, the build that changed is named — which
 /// is also the answer to "since when?".
 fn print_followup(steps: &[followup::Step]) {
@@ -785,8 +785,8 @@ fn print_followup(steps: &[followup::Step]) {
     }
 
     let mut lines = vec![ui::note(&format!(
-        "minato changed to {} since the last run",
-        minato_core::BUILD_COMMIT_SHORT
+        "kobune changed to {} since the last run",
+        kobune_core::BUILD_COMMIT_SHORT
     ))];
 
     lines.extend(
@@ -818,7 +818,7 @@ enum CliError {
     Unprivileged { message: String, hint: String },
 }
 
-fn as_api_error(err: &CliError) -> Option<&minato_api::ApiError> {
+fn as_api_error(err: &CliError) -> Option<&kobune_api::ApiError> {
     match err {
         CliError::Client(ClientError::Api(api)) => Some(api),
         _ => None,
@@ -882,10 +882,10 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
 
             let next = if outcome.from.is_some() {
                 vec![ui::note(
-                    "read the TODOs in it before the first `minato up`",
+                    "read the TODOs in it before the first `kobune up`",
                 )]
             } else {
-                vec![ui::hint("bring the environment up with", "minato up")]
+                vec![ui::hint("bring the environment up with", "kobune up")]
             };
 
             ui::done("init", &fields, next);
@@ -1002,7 +1002,7 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     let code = present(cli, &response)?;
 
     // exec passes the command's exit code straight through: an agent has
-    // to be able to judge `minato exec web -- pnpm test` by exit status
+    // to be able to judge `kobune exec web -- pnpm test` by exit status
     // alone.
     if let Response::Exec { exit_code } = &response {
         return Ok(ExitCode::from(clamp_exit_code(*exit_code)));
@@ -1018,7 +1018,7 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
 /// printing the reason it was not, which is the whole point of finding out
 /// from an event rather than assuming.
 async fn run_attached(
-    connection: &mut minato_client::Connection,
+    connection: &mut kobune_client::Connection,
     request: Request,
 ) -> Result<ExitCode, CliError> {
     let (typed, keys) = tokio::sync::mpsc::unbounded_channel();
@@ -1052,7 +1052,7 @@ async fn run_attached(
                         None => {}
                     }
                 }
-                Event::Bytes { data } => screen.show(&minato_api::decode_bytes(&data)),
+                Event::Bytes { data } => screen.show(&kobune_api::decode_bytes(&data)),
                 other => output::print_output_event(&other),
             },
             keys,
@@ -1072,8 +1072,8 @@ async fn run_attached(
     // what they did. The terminal closing on its own does: the last frame
     // is still on screen, and without a word it reads as the session
     // having frozen rather than the service having gone.
-    if attached && matches!(outcome, Ok(minato_client::Attached::Finished(_))) {
-        eprintln!("the service's terminal closed. `minato status` says why");
+    if attached && matches!(outcome, Ok(kobune_client::Attached::Finished(_))) {
+        eprintln!("the service's terminal closed. `kobune status` says why");
     }
 
     outcome?;
@@ -1089,7 +1089,7 @@ async fn run_attached(
 /// person watching every service at once all want the plain stream.
 ///
 /// Whether the service *has* a terminal is the daemon's to say. Only it
-/// has read `minato.toml`, and it answers by attaching or by explaining
+/// has read `kobune.toml`, and it answers by attaching or by explaining
 /// why it did not.
 fn terminal_to_offer(
     cli: &Cli,
@@ -1222,12 +1222,12 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
             if cli.json {
                 output::print_json(&serde_json::json!({
                     "status": "current",
-                    "commit": minato_core::BUILD_COMMIT,
+                    "commit": kobune_core::BUILD_COMMIT,
                 }));
             } else {
                 ui::done(
                     "update",
-                    &[("up to date", minato_core::BUILD_COMMIT_SHORT.to_string())],
+                    &[("up to date", kobune_core::BUILD_COMMIT_SHORT.to_string())],
                     vec![],
                 );
             }
@@ -1239,7 +1239,7 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
             if cli.json {
                 output::print_json(&serde_json::json!({
                     "status": "unknown",
-                    "commit": minato_core::BUILD_COMMIT,
+                    "commit": kobune_core::BUILD_COMMIT,
                 }));
             } else {
                 ui::done(
@@ -1254,16 +1254,16 @@ async fn handle_update(cli: &Cli, check_only: bool) -> Result<ExitCode, CliError
                 output::print_json(&serde_json::json!({
                     "status": "available",
                     "commit": commit,
-                    "running": minato_core::BUILD_COMMIT,
+                    "running": kobune_core::BUILD_COMMIT,
                 }));
             } else {
                 ui::done(
                     "update",
                     &[
                         ("available", short_commit(&commit)),
-                        ("running", minato_core::BUILD_COMMIT_SHORT.to_string()),
+                        ("running", kobune_core::BUILD_COMMIT_SHORT.to_string()),
                     ],
-                    vec![ui::hint("install it with", "minato update")],
+                    vec![ui::hint("install it with", "kobune update")],
                 );
             }
         }
@@ -1365,7 +1365,7 @@ async fn run_update(
             }
             update::Stage::Installing => {
                 progress.settle(UNPACKING);
-                progress.begin(INSTALLING, "installing minato and minatod");
+                progress.begin(INSTALLING, "installing kobune and kobuned");
             }
         }
     })
@@ -1393,7 +1393,7 @@ fn short_commit(commit: &str) -> String {
     commit.chars().take(7).collect()
 }
 
-/// Takes Minato off the machine.
+/// Takes Kobune off the machine.
 ///
 /// Two halves. The daemon takes down what it made, because only it knows
 /// what that is; everything else is removed here, because only this side
@@ -1417,7 +1417,7 @@ async fn handle_uninstall(
     // nothing of its to remove; "the daemon said no" means there may well
     // be, and it is about to become unreachable. Collapsing the two would
     // let an uninstall leave containers running and say nothing.
-    let daemon: Result<minato_api::PurgeReport, String> = match &mut connection {
+    let daemon: Result<kobune_api::PurgeReport, String> = match &mut connection {
         None => Err("it is not running, so it has nothing to take down".to_string()),
         Some(connection) => match connection.request(Request::Purge { dry_run: true }).await {
             Ok(Response::Purge(report)) => Ok(report),
@@ -1428,9 +1428,9 @@ async fn handle_uninstall(
 
     // The CA lives under the daemon's root whether or not it answers, so
     // the keychain step does not depend on reaching it.
-    let ca_path = minato_core::Paths::resolve()
+    let ca_path = kobune_core::Paths::resolve()
         .ok()
-        .map(|paths| paths.ca_dir().join("minato-ca.crt"));
+        .map(|paths| paths.ca_dir().join("kobune-ca.crt"));
 
     let plan = uninstall::plan(DEFAULT_DOMAIN_SUFFIX, ca_path.as_deref());
 
@@ -1538,7 +1538,7 @@ async fn handle_uninstall(
     // The privileged steps come before anything is deleted, because two of
     // them depend on the state that deleting would destroy.
     //
-    // `security remove-trusted-cert` names a *file*. Remove `~/.minato`
+    // `security remove-trusted-cert` names a *file*. Remove `~/.kobune`
     // first and there is no certificate left to point at, the command
     // fails, and the CA stays trusted for good — which is the one thing an
     // uninstall really has to get right, since a trusted CA goes on
@@ -1551,7 +1551,7 @@ async fn handle_uninstall(
     // the state directory, a moment before it was to be deleted.
     //
     // Has the job, not has a plist: a file that was never bootstrapped
-    // holds nothing (`minato_core::launchd::is_loaded`). The ordering
+    // holds nothing (`kobune_core::launchd::is_loaded`). The ordering
     // costs nothing there and is required wherever it was, so it is not
     // conditional.
     let privileged = run_privileged(&plan, yes, cli.json);
@@ -1611,7 +1611,7 @@ async fn handle_uninstall(
 ///
 /// sudo only where there is a terminal to type a password into. Under an
 /// agent or a pipe it would hang at the prompt with nothing to say — the
-/// same reason `minato setup` only walks through its steps on a terminal —
+/// same reason `kobune setup` only walks through its steps on a terminal —
 /// so there the commands are handed back to be run by hand.
 fn run_privileged(plan: &uninstall::Plan, yes: bool, json: bool) -> Vec<uninstall::Privileged> {
     use std::io::IsTerminal;
@@ -1656,7 +1656,7 @@ fn run_privileged(plan: &uninstall::Plan, yes: bool, json: bool) -> Vec<uninstal
 /// Runs one command through the shell, and says whether it worked.
 ///
 /// Through `sh -c` because the commands are pipelines — `printf … | sudo
-/// tee …` — and they are the same strings `minato setup` prints, so what
+/// tee …` — and they are the same strings `kobune setup` prints, so what
 /// runs is what the documentation says runs.
 fn run_shell(command: &str, quiet_stdout: bool) -> bool {
     let mut shell = std::process::Command::new("sh");
@@ -1712,7 +1712,7 @@ fn report_conversion(outcome: &init::InitOutcome) {
         ui::note_lines(
             "compose's `env_file` became `carry`",
             &[format!(
-                "{} — copied into each new worktree. Minato's own `env_file` \
+                "{} — copied into each new worktree. Kobune's own `env_file` \
                  writes rather than reads, so mapping it across would have \
                  overwritten these",
                 outcome.carried.join(", ")
@@ -1796,8 +1796,8 @@ fn clamp_exit_code(code: i32) -> u8 {
 }
 
 fn build_env_request(command: &EnvCommand, target: Target) -> Result<Request, CliError> {
-    let parse_scope = |raw: &str| -> Result<minato_api::EnvScope, CliError> {
-        raw.parse::<minato_api::EnvScope>().map_err(CliError::Local)
+    let parse_scope = |raw: &str| -> Result<kobune_api::EnvScope, CliError> {
+        raw.parse::<kobune_api::EnvScope>().map_err(CliError::Local)
     };
 
     Ok(match command {
@@ -1882,7 +1882,7 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
             ) {
                 ui::notice(vec![ui::hint(
                     "to pick this up, run",
-                    "minato down && minato up",
+                    "kobune down && kobune up",
                 )]);
             }
         }
@@ -1899,7 +1899,7 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// What `minato url` prints.
+/// What `kobune url` prints.
 ///
 /// **Naming a service and naming none are different questions.** One is
 /// "give me the address", asked from inside `$(…)` and answered with a
@@ -1953,15 +1953,15 @@ fn present_url(
 /// Every service, including the ones with nowhere to go: a listing that
 /// silently leaves those out reads as a workspace that does not define
 /// them. Nothing reachable at all is still an error, so a script that
-/// waits on `minato url` keeps its signal.
+/// waits on `kobune url` keeps its signal.
 fn present_urls(
     cli: &Cli,
-    workspace: &minato_api::WorkspaceInfo,
+    workspace: &kobune_api::WorkspaceInfo,
     qr: bool,
 ) -> Result<ExitCode, CliError> {
     if !workspace.services.iter().any(|s| s.access().is_some()) {
         return Err(CliError::Local(
-            "no service is reachable. Start one with `minato up`".to_string(),
+            "no service is reachable. Start one with `kobune up`".to_string(),
         ));
     }
 
@@ -1979,7 +1979,7 @@ fn present_urls(
 ///
 /// `url` is absent rather than null when there is nowhere to go, which is
 /// the shape every optional field in the API already has.
-fn url_json(service: &minato_api::ServiceInfo) -> serde_json::Value {
+fn url_json(service: &kobune_api::ServiceInfo) -> serde_json::Value {
     let mut fields = serde_json::Map::new();
     fields.insert("service".into(), service.name.clone().into());
     fields.insert("state".into(), serde_json::json!(service.state));
@@ -1994,7 +1994,7 @@ fn url_json(service: &minato_api::ServiceInfo) -> serde_json::Value {
     serde_json::Value::Object(fields)
 }
 
-/// What `minato env get` prints: the value, on one line.
+/// What `kobune env get` prints: the value, on one line.
 fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCode, CliError> {
     let Response::Env {
         entries, service, ..
@@ -2005,8 +2005,8 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCo
 
     // Whichever listing this came from is the one to send someone back to.
     let listing = match service {
-        Some(name) => format!("minato env ls --service {name}"),
-        None => "minato env ls".to_string(),
+        Some(name) => format!("kobune env ls --service {name}"),
+        None => "kobune env ls".to_string(),
     };
 
     let entry = entries
@@ -2014,8 +2014,8 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCo
         .find(|entry| entry.key == key)
         .ok_or_else(|| {
             CliError::Local(format!(
-                "`{key}` is not defined. Run `minato env ls` to see what is, \
-                 or `minato env ls --service <name>` for one service's own"
+                "`{key}` is not defined. Run `kobune env ls` to see what is, \
+                 or `kobune env ls --service <name>` for one service's own"
             ))
         })?;
 
@@ -2023,10 +2023,10 @@ fn present_env_value(cli: &Cli, response: &Response, key: &str) -> Result<ExitCo
     // that did not settle is shown as written, and handing one over as
     // though it had would put `${...}` into whatever read it. Refused as
     // a configuration problem, so a script sees the same exit code it
-    // would have got from `minato up`.
+    // would have got from `kobune up`.
     if let Some(unsettled) = &entry.unsettled {
-        let mut err = minato_api::ApiError::new(
-            minato_api::ErrorCode::InvalidConfig,
+        let mut err = kobune_api::ApiError::new(
+            kobune_api::ErrorCode::InvalidConfig,
             format!("`{key}` {}", ui::unsettled_reason(unsettled)),
         );
 
@@ -2066,7 +2066,7 @@ fn present_diagnostics(cli: &Cli, response: &Response) -> Result<ExitCode, CliEr
         ca_path.as_deref(),
     ));
 
-    let combined = minato_api::Diagnostics::new(all);
+    let combined = kobune_api::Diagnostics::new(all);
 
     if let Command::Setup { yes, dry_run } = &cli.command {
         return present_setup(cli, &combined, dns_port, ca_path.as_deref(), *yes, *dry_run);
@@ -2090,7 +2090,7 @@ fn present_diagnostics(cli: &Cli, response: &Response) -> Result<ExitCode, CliEr
 /// offered, and anywhere else the commands are printed to be run by hand.
 fn present_setup(
     cli: &Cli,
-    diagnostics: &minato_api::Diagnostics,
+    diagnostics: &kobune_api::Diagnostics,
     dns_port: Option<u16>,
     ca_path: Option<&std::path::Path>,
     yes: bool,
@@ -2100,14 +2100,14 @@ fn present_setup(
         diagnostics
             .checks
             .iter()
-            .any(|check| check.id == id && check.status != minato_api::CheckStatus::Ok)
+            .any(|check| check.id == id && check.status != kobune_api::CheckStatus::Ok)
     };
 
     let mut steps: Vec<ui::SetupStep> = Vec::new();
     let launchd_pending = pending("launchd");
 
     // Privileged ports being unavailable has more than one cause, and they
-    // take different steps — see [`minato_core::launchd::Job`]. Asked only
+    // take different steps — see [`kobune_core::launchd::Job`]. Asked only
     // where the answer can matter: with the sockets already handed over
     // there is nothing to install and nothing to wake.
     //
@@ -2116,17 +2116,17 @@ fn present_setup(
     // 53 for a daemon that is not the one being set up, and neither step
     // below is the answer.
     let job = launchd_pending.then(|| {
-        minato_core::Paths::resolve()
-            .map(|paths| minato_core::launchd::job(paths.root()))
-            .unwrap_or(minato_core::launchd::Job::Missing)
+        kobune_core::Paths::resolve()
+            .map(|paths| kobune_core::launchd::job(paths.root()))
+            .unwrap_or(kobune_core::launchd::Job::Missing)
     });
 
     let elsewhere = match &job {
-        Some(minato_core::launchd::Job::Elsewhere(home)) => Some(home.clone()),
+        Some(kobune_core::launchd::Job::Elsewhere(home)) => Some(home.clone()),
         _ => None,
     };
 
-    let wakes_launchd = job == Some(minato_core::launchd::Job::Registered);
+    let wakes_launchd = job == Some(kobune_core::launchd::Job::Registered);
     let mut launchd_step = None;
 
     if let Some(home) = &elsewhere {
@@ -2135,12 +2135,12 @@ fn present_setup(
         // would start the job serving that other home again.
         ui::notice(vec![
             ui::note(&format!(
-                "launchd's job serves MINATO_HOME={}, so 80, 443 and 53 are held for a \
+                "launchd's job serves KOBUNE_HOME={}, so 80, 443 and 53 are held for a \
                  daemon that is not this one",
                 home.display()
             )),
             ui::note(
-                "point MINATO_HOME there to reach it, or leave this home on the ports it \
+                "point KOBUNE_HOME there to reach it, or leave this home on the ports it \
                  fell back to",
             ),
         ]);
@@ -2157,7 +2157,7 @@ fn present_setup(
                 "the LaunchDaemon is installed already; its job is the part \
                  that is not running. If it stays inactive afterwards, \
                  `{}` forces it",
-                minato_core::launchd::kickstart_command()
+                kobune_core::launchd::kickstart_command()
             )),
             commands: launchd::wake_commands(),
         });
@@ -2198,7 +2198,7 @@ fn present_setup(
     if pending("resolver") || launchd_pending {
         resolver_step = Some(steps.len());
         steps.push(ui::SetupStep {
-            description: format!("point *.{DEFAULT_DOMAIN_SUFFIX} at Minato's DNS"),
+            description: format!("point *.{DEFAULT_DOMAIN_SUFFIX} at Kobune's DNS"),
             note: None,
             commands: vec![system::resolver_command(
                 DEFAULT_DOMAIN_SUFFIX,
@@ -2308,7 +2308,7 @@ fn present_setup(
         };
 
         if Some(index) == launchd_step {
-            // **The step's own exit status says.** `minato daemon start`
+            // **The step's own exit status says.** `kobune daemon start`
             // fails where it could not go through launchd, and the
             // installation's commands are `bootstrap`, whose status has
             // always said — so a step that ran is a step that landed.
@@ -2325,11 +2325,11 @@ fn present_setup(
                 // a step's commands under "still to run", so this is what
                 // it has to be carrying by then; the command itself has
                 // already said why it failed.
-                step.commands = vec![minato_core::launchd::kickstart_command()];
+                step.commands = vec![kobune_core::launchd::kickstart_command()];
 
                 ui::error(
                     "the resolver step below names the port DNS is on now, so run \
-                     `minato setup` again once the job is up",
+                     `kobune setup` again once the job is up",
                     None,
                 );
             }
@@ -2360,7 +2360,7 @@ fn present_setup(
 }
 
 /// Picks the port out of a check's detail (`127.0.0.1:15353`).
-fn find_port(diagnostics: &minato_api::Diagnostics, id: &str) -> Option<u16> {
+fn find_port(diagnostics: &kobune_api::Diagnostics, id: &str) -> Option<u16> {
     diagnostics
         .checks
         .iter()
@@ -2372,7 +2372,7 @@ fn find_port(diagnostics: &minato_api::Diagnostics, id: &str) -> Option<u16> {
         .ok()
 }
 
-fn find_detail<'a>(diagnostics: &'a minato_api::Diagnostics, id: &str) -> Option<&'a str> {
+fn find_detail<'a>(diagnostics: &'a kobune_api::Diagnostics, id: &str) -> Option<&'a str> {
     let check = diagnostics.checks.iter().find(|check| check.id == id)?;
     if check.detail.starts_with('/') {
         Some(&check.detail)
@@ -2383,13 +2383,13 @@ fn find_detail<'a>(diagnostics: &'a minato_api::Diagnostics, id: &str) -> Option
 
 /// Writes the launchd plist and returns the commands to install it.
 fn prepare_launchd() -> anyhow::Result<(PathBuf, Vec<String>)> {
-    let paths = minato_core::Paths::resolve()?;
+    let paths = kobune_core::Paths::resolve()?;
 
     // The CLI and the daemon ship together, so it is next door.
     let program = std::env::current_exe()?
         .parent()
-        .map(|dir| dir.join("minatod"))
-        .unwrap_or_else(|| PathBuf::from("minatod"));
+        .map(|dir| dir.join("kobuned"))
+        .unwrap_or_else(|| PathBuf::from("kobuned"));
 
     let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
 
@@ -2447,7 +2447,7 @@ async fn handle_daemon(
 /// **A start that could not go through launchd is a failed start.** The
 /// daemon is running, and holds none of the ports it was installed to hold,
 /// so no URL answers — and the exit code is the only part of this that
-/// `minato setup`'s wake step, an agent, or a script reads. Saying 0 there
+/// `kobune setup`'s wake step, an agent, or a script reads. Saying 0 there
 /// is how a `setup` run came to write `/etc/resolver/localhost` for a port
 /// nothing was listening on.
 ///
@@ -2502,7 +2502,7 @@ async fn stop_daemon(client: &Client) -> Result<bool, CliError> {
 /// a fix that every other part of the CLI now recommends.
 ///
 /// A second round exists because starting shakes hands with whatever
-/// answers ([`minato_client::Client::connect_or_spawn`]), so a daemon that
+/// answers ([`kobune_client::Client::connect_or_spawn`]), so a daemon that
 /// outlived the wait is met, not replaced — and it is met exactly when it
 /// is too old to talk to, which is when someone is most likely to be
 /// restarting. The second round stops it again rather than only waiting
@@ -2584,22 +2584,22 @@ mod tests {
     #[test]
     fn a_machine_with_no_launchdaemon_is_not_told_anything() {
         // Listening on the fallback ports is the whole arrangement on
-        // Linux, and on a Mac that never ran `minato setup`. Saying it
+        // Linux, and on a Mac that never ran `kobune setup`. Saying it
         // every time the daemon starts would be noise.
-        assert!(unprivileged(minato_core::launchd::Job::Missing).is_none());
+        assert!(unprivileged(kobune_core::launchd::Job::Missing).is_none());
     }
 
     #[test]
     fn a_job_launchd_has_is_answered_with_the_kickstart() {
-        // **Not `minato daemon restart`.** This is only reached after
+        // **Not `kobune daemon restart`.** This is only reached after
         // starting already reached for :80 and found nothing to wake, and
         // the restart does exactly that — so naming it hands back the step
         // that has just been taken.
-        let said = unprivileged(minato_core::launchd::Job::Registered).expect("says something");
+        let said = unprivileged(kobune_core::launchd::Job::Registered).expect("says something");
 
         assert_eq!(
             said.command.as_deref(),
-            Some(minato_core::launchd::kickstart_command().as_str())
+            Some(kobune_core::launchd::kickstart_command().as_str())
         );
     }
 
@@ -2607,24 +2607,24 @@ mod tests {
     fn a_plist_launchd_does_not_have_is_answered_with_setup() {
         // `kickstart` has no service to name here: launchd was never asked
         // to take the job, so what is missing is the installation.
-        let said = unprivileged(minato_core::launchd::Job::Unregistered).expect("says something");
+        let said = unprivileged(kobune_core::launchd::Job::Unregistered).expect("says something");
 
-        assert_eq!(said.command.as_deref(), Some("minato setup"));
+        assert_eq!(said.command.as_deref(), Some("kobune setup"));
     }
 
     #[test]
     fn a_job_for_another_home_is_answered_with_no_command_at_all() {
         // Every command the other states take is wrong here, and offering
-        // one anyway is how somebody ends up running `minato setup` into
+        // one anyway is how somebody ends up running `kobune setup` into
         // launchd's `Input/output error` for a label it already has.
-        let said = unprivileged(minato_core::launchd::Job::Elsewhere(PathBuf::from(
-            "/Users/someone/.minato",
+        let said = unprivileged(kobune_core::launchd::Job::Elsewhere(PathBuf::from(
+            "/Users/someone/.kobune",
         )))
         .expect("says something");
 
         assert!(said.command.is_none(), "{:?}", said.command);
         assert!(
-            said.next.contains("/Users/someone/.minato"),
+            said.next.contains("/Users/someone/.kobune"),
             "name the home the ports are held for: {}",
             said.next
         );
@@ -2632,7 +2632,7 @@ mod tests {
 
     #[test]
     fn a_start_that_could_not_reach_launchd_fails_with_its_hint() {
-        // The exit code is the whole point: `minato setup`'s wake step
+        // The exit code is the whole point: `kobune setup`'s wake step
         // reads it, and so does anything else driving the CLI. 1 is the
         // generic failure, and 2 belongs to clap.
         let err = CliError::Unprivileged {
@@ -2682,7 +2682,7 @@ mod tests {
     fn the_remedy_for_an_old_daemon_is_a_command_that_exists() {
         // The message names a command, and for a while there was no such
         // command: a daemon left running from an older build told people
-        // to run `minato daemon restart` and clap answered "unrecognized
+        // to run `kobune daemon restart` and clap answered "unrecognized
         // subcommand". Whatever the message says has to parse.
         let message = ClientError::VersionMismatch {
             client: 5,
@@ -2719,40 +2719,40 @@ mod tests {
 
     #[test]
     fn following_one_service_from_a_terminal_offers_it() {
-        assert!(would_attach(&["minato", "logs", "-f", "web"], true));
+        assert!(would_attach(&["kobune", "logs", "-f", "web"], true));
     }
 
     #[test]
     fn nothing_is_offered_without_a_terminal() {
-        // `minato logs -f web | grep ready` and every agent invocation
+        // `kobune logs -f web | grep ready` and every agent invocation
         // land here. Raw mode needs a terminal on both sides, and escape
         // sequences in a pipe are noise.
-        assert!(!would_attach(&["minato", "logs", "-f", "web"], false));
+        assert!(!would_attach(&["kobune", "logs", "-f", "web"], false));
     }
 
     #[test]
     fn watching_every_service_stays_a_read() {
         // There is no one service to type at, and picking one would be a
-        // guess. `minato logs -f` keeps meaning what it always meant.
-        assert!(!would_attach(&["minato", "logs", "-f"], true));
-        assert!(!would_attach(&["minato", "logs", "-f", "web", "api"], true));
+        // guess. `kobune logs -f` keeps meaning what it always meant.
+        assert!(!would_attach(&["kobune", "logs", "-f"], true));
+        assert!(!would_attach(&["kobune", "logs", "-f", "web", "api"], true));
     }
 
     #[test]
     fn a_finite_read_is_never_interactive() {
         // Without `-f` this prints what there is and stops. Taking the
         // terminal for that would be a session nobody asked to start.
-        assert!(!would_attach(&["minato", "logs", "web"], true));
+        assert!(!would_attach(&["kobune", "logs", "web"], true));
     }
 
     #[test]
     fn json_and_no_input_both_opt_out() {
         assert!(!would_attach(
-            &["minato", "logs", "-f", "web", "--json"],
+            &["kobune", "logs", "-f", "web", "--json"],
             true
         ));
         assert!(!would_attach(
-            &["minato", "logs", "-f", "web", "--no-input"],
+            &["kobune", "logs", "-f", "web", "--no-input"],
             true
         ));
     }
@@ -2761,12 +2761,12 @@ mod tests {
     fn json_flag_is_available_on_every_subcommand() {
         // An agent has to be able to reach for --json anywhere.
         for args in [
-            vec!["minato", "ls", "--json"],
-            vec!["minato", "status", "--json"],
-            vec!["minato", "up", "--json"],
-            vec!["minato", "new", "feature/x", "--json"],
-            vec!["minato", "url", "web", "--json"],
-            vec!["minato", "daemon", "status", "--json"],
+            vec!["kobune", "ls", "--json"],
+            vec!["kobune", "status", "--json"],
+            vec!["kobune", "up", "--json"],
+            vec!["kobune", "new", "feature/x", "--json"],
+            vec!["kobune", "url", "web", "--json"],
+            vec!["kobune", "daemon", "status", "--json"],
         ] {
             let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert!(cli.json, "{args:?}");
@@ -2775,10 +2775,10 @@ mod tests {
 
     #[test]
     fn setup_takes_an_answer_up_front_and_a_way_to_run_nothing() {
-        // Plain `minato setup` asks. The flags are for the two cases that
+        // Plain `kobune setup` asks. The flags are for the two cases that
         // cannot: something that will not be there to answer, and someone
         // who only wants to read the commands.
-        let cli = Cli::try_parse_from(["minato", "setup"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "setup"]).expect("parses");
         assert!(matches!(
             cli.command,
             Command::Setup {
@@ -2788,8 +2788,8 @@ mod tests {
         ));
 
         for args in [
-            vec!["minato", "setup", "--yes"],
-            vec!["minato", "setup", "-y"],
+            vec!["kobune", "setup", "--yes"],
+            vec!["kobune", "setup", "-y"],
         ] {
             let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert!(
@@ -2798,25 +2798,25 @@ mod tests {
             );
         }
 
-        let cli = Cli::try_parse_from(["minato", "setup", "--dry-run"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "setup", "--dry-run"]).expect("parses");
         assert!(matches!(cli.command, Command::Setup { dry_run: true, .. }));
     }
 
     #[test]
     fn a_group_named_without_a_subcommand_is_answered_with_its_help() {
-        // `minato skill` prints the group's help, and adding a global
+        // `kobune skill` prints the group's help, and adding a global
         // flag must not turn that into a usage error: --json says
         // nothing about which subcommand was meant.
         for (args, expected) in [
-            (vec!["minato", "skill", "--json"], vec!["skill"]),
-            (vec!["minato", "env", "--json"], vec!["env"]),
+            (vec!["kobune", "skill", "--json"], vec!["skill"]),
+            (vec!["kobune", "env", "--json"], vec!["env"]),
             (
-                vec!["minato", "daemon", "--workspace", "feat-1"],
+                vec!["kobune", "daemon", "--workspace", "feat-1"],
                 vec!["daemon"],
             ),
-            (vec!["minato", "tunnel", "-w", "feat-1"], vec!["tunnel"]),
+            (vec!["kobune", "tunnel", "-w", "feat-1"], vec!["tunnel"]),
             // The root has the same shape, and the same flag on it.
-            (vec!["minato", "--json"], vec![]),
+            (vec!["kobune", "--json"], vec![]),
         ] {
             let err = Cli::try_parse_from(&args).expect_err("no subcommand was named");
             let group = missing_subcommand(&err)
@@ -2841,7 +2841,7 @@ mod tests {
         // `--version` never reaches a subcommand, so clap answers it with
         // the version and stops. It is caught rather than left to exit on
         // its own, because the check that goes with it comes after.
-        for args in [vec!["minato", "--version"], vec!["minato", "-V"]] {
+        for args in [vec!["kobune", "--version"], vec!["kobune", "-V"]] {
             let err = Cli::try_parse_from(&args).expect_err("does not parse");
 
             assert_eq!(err.kind(), ErrorKind::DisplayVersion, "{args:?}");
@@ -2854,10 +2854,10 @@ mod tests {
         // Help, a typo and a missing argument each say something clap
         // says better than a group's help would.
         for args in [
-            vec!["minato", "--help"],
-            vec!["minato", "bogus"],
-            vec!["minato", "exec"],
-            vec!["minato", "ls", "--nope"],
+            vec!["kobune", "--help"],
+            vec!["kobune", "bogus"],
+            vec!["kobune", "exec"],
+            vec!["kobune", "ls", "--nope"],
         ] {
             let err = Cli::try_parse_from(&args).expect_err("does not parse");
             assert!(
@@ -2870,12 +2870,12 @@ mod tests {
 
     #[test]
     fn new_starts_services_by_default() {
-        let cli = Cli::try_parse_from(["minato", "new", "feature/x"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "new", "feature/x"]).expect("parses");
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
         match request {
             Request::New { start, branch, .. } => {
-                assert!(start, "`minato new` brings the environment up by default");
+                assert!(start, "`kobune new` brings the environment up by default");
                 assert_eq!(branch, "feature/x");
             }
             other => panic!("unexpected: {other:?}"),
@@ -2885,7 +2885,7 @@ mod tests {
     #[test]
     fn no_start_flag_is_respected() {
         let cli =
-            Cli::try_parse_from(["minato", "new", "feature/x", "--no-start"]).expect("parses");
+            Cli::try_parse_from(["kobune", "new", "feature/x", "--no-start"]).expect("parses");
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
         match request {
@@ -2896,7 +2896,7 @@ mod tests {
 
     #[test]
     fn workspace_flag_reaches_the_request() {
-        let cli = Cli::try_parse_from(["minato", "up", "--workspace", "feat-1"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "up", "--workspace", "feat-1"]).expect("parses");
         let target = Target::new(PathBuf::from("/repo")).workspace(cli.workspace.clone());
         let request = build_request(&cli, target).expect("builds");
 
@@ -2911,7 +2911,7 @@ mod tests {
     #[test]
     fn url_asks_for_status() {
         // `url` has no request of its own; it reads the status result.
-        let cli = Cli::try_parse_from(["minato", "url", "web"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "url", "web"]).expect("parses");
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
         assert!(matches!(request, Request::Status { .. }));
@@ -2919,18 +2919,18 @@ mod tests {
 
     #[test]
     fn a_code_is_asked_for_and_never_assumed() {
-        // Plain `minato url web` goes inside `$(…)`. A QR code there
+        // Plain `kobune url web` goes inside `$(…)`. A QR code there
         // would be a screenful of blocks where a URL was expected.
-        let plain = Cli::try_parse_from(["minato", "url", "web"]).expect("parses");
+        let plain = Cli::try_parse_from(["kobune", "url", "web"]).expect("parses");
         assert!(matches!(plain.command, Command::Url { qr: false, .. }));
 
-        let asked = Cli::try_parse_from(["minato", "url", "web", "--qr"]).expect("parses");
+        let asked = Cli::try_parse_from(["kobune", "url", "web", "--qr"]).expect("parses");
         assert!(matches!(asked.command, Command::Url { qr: true, .. }));
     }
 
     #[test]
     fn a_code_can_be_asked_for_without_naming_a_service() {
-        let cli = Cli::try_parse_from(["minato", "url", "--qr"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "url", "--qr"]).expect("parses");
 
         match cli.command {
             Command::Url { service, qr } => {
@@ -2943,11 +2943,11 @@ mod tests {
 
     #[test]
     fn the_json_for_a_service_carries_both_urls() {
-        let mut web = minato_api::ServiceInfo {
+        let mut web = kobune_api::ServiceInfo {
             name: "web".into(),
-            state: minato_core::ServiceState::Ready,
+            state: kobune_core::ServiceState::Ready,
             reason: None,
-            scope: minato_core::ServiceScope::Workspace,
+            scope: kobune_core::ServiceScope::Workspace,
             url: Some("https://web.localhost".into()),
             tunnel_url: None,
             endpoint: None,
@@ -2973,11 +2973,11 @@ mod tests {
         // Absent rather than null, which is the shape every optional field
         // in the API already has — `.url // empty` in jq works either way,
         // and `has("url")` is the question being asked.
-        let db = minato_api::ServiceInfo {
+        let db = kobune_api::ServiceInfo {
             name: "db".into(),
-            state: minato_core::ServiceState::Ready,
+            state: kobune_core::ServiceState::Ready,
             reason: None,
-            scope: minato_core::ServiceScope::Workspace,
+            scope: kobune_core::ServiceScope::Workspace,
             url: None,
             tunnel_url: None,
             endpoint: None,
@@ -2993,7 +2993,7 @@ mod tests {
 
     #[test]
     fn up_collects_service_names() {
-        let cli = Cli::try_parse_from(["minato", "up", "web", "api"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "up", "web", "api"]).expect("parses");
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
         match request {
@@ -3004,10 +3004,10 @@ mod tests {
 
     #[test]
     fn enabling_a_tunnel_requires_saying_public_out_loud() {
-        // Minato cannot apply a Cloudflare Access policy, so it cannot
+        // Kobune cannot apply a Cloudflare Access policy, so it cannot
         // promise one is there. The flag is the acknowledgement, and it
         // defaults off.
-        let cli = Cli::try_parse_from(["minato", "tunnel", "enable", "--domain", "example.com"])
+        let cli = Cli::try_parse_from(["kobune", "tunnel", "enable", "--domain", "example.com"])
             .expect("parses");
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
@@ -3022,7 +3022,7 @@ mod tests {
 
     #[test]
     fn a_domain_can_be_left_out_once_it_is_known() {
-        let cli = Cli::try_parse_from(["minato", "tunnel", "enable", "--public"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "tunnel", "enable", "--public"]).expect("parses");
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
         match request {
@@ -3036,7 +3036,7 @@ mod tests {
 
     #[test]
     fn tunnel_status_asks_for_nothing_else() {
-        let cli = Cli::try_parse_from(["minato", "tunnel", "status"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "tunnel", "status"]).expect("parses");
         let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
 
         assert!(matches!(request, Request::TunnelStatus { .. }));
@@ -3046,7 +3046,7 @@ mod tests {
     fn uninstall_asks_before_it_acts() {
         // Neither flag set is the safe shape: the plan is shown and a
         // terminal is asked.
-        let cli = Cli::try_parse_from(["minato", "uninstall"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "uninstall"]).expect("parses");
         match cli.command {
             Command::Uninstall { yes, dry_run } => {
                 assert!(!yes, "confirmation is not skipped by default");
@@ -3059,8 +3059,8 @@ mod tests {
     #[test]
     fn uninstall_can_be_told_to_go_ahead() {
         for args in [
-            vec!["minato", "uninstall", "--yes"],
-            vec!["minato", "uninstall", "-y"],
+            vec!["kobune", "uninstall", "--yes"],
+            vec!["kobune", "uninstall", "-y"],
         ] {
             let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert!(matches!(cli.command, Command::Uninstall { yes: true, .. }));
@@ -3069,7 +3069,7 @@ mod tests {
 
     #[test]
     fn uninstall_can_report_without_removing() {
-        let cli = Cli::try_parse_from(["minato", "uninstall", "--dry-run"]).expect("parses");
+        let cli = Cli::try_parse_from(["kobune", "uninstall", "--dry-run"]).expect("parses");
         assert!(matches!(
             cli.command,
             Command::Uninstall { dry_run: true, .. }

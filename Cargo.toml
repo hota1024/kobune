@@ -1,13 +1,13 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/minato-core",
-    "crates/minato-api",
-    "crates/minato-client",
-    "crates/minato-runtime",
-    "crates/minato-proxy",
-    "crates/minato-dns",
-    "crates/minato-tunnel",
+    "crates/kobune-core",
+    "crates/kobune-api",
+    "crates/kobune-client",
+    "crates/kobune-runtime",
+    "crates/kobune-proxy",
+    "crates/kobune-dns",
+    "crates/kobune-tunnel",
     "apps/daemon",
     "apps/cli",
     "apps/desktop",
@@ -21,17 +21,17 @@ edition = "2024"
 # and the CLI draws everything it prints with ratatui.
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/hota1024/minato"
+repository = "https://github.com/hota1024/kobune"
 
 [workspace.dependencies]
 # Internal crates. For the direction of dependencies, see docs/DESIGN.md §13.
-minato-core = { path = "crates/minato-core" }
-minato-api = { path = "crates/minato-api" }
-minato-client = { path = "crates/minato-client" }
-minato-runtime = { path = "crates/minato-runtime" }
-minato-proxy = { path = "crates/minato-proxy" }
-minato-dns = { path = "crates/minato-dns" }
-minato-tunnel = { path = "crates/minato-tunnel" }
+kobune-core = { path = "crates/kobune-core" }
+kobune-api = { path = "crates/kobune-api" }
+kobune-client = { path = "crates/kobune-client" }
+kobune-runtime = { path = "crates/kobune-runtime" }
+kobune-proxy = { path = "crates/kobune-proxy" }
+kobune-dns = { path = "crates/kobune-dns" }
+kobune-tunnel = { path = "crates/kobune-tunnel" }
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -43,7 +43,7 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-# Compose files, for `minato init --from-compose`. A parser rather than a
+# Compose files, for `kobune init --from-compose`. A parser rather than a
 # `serde` mapping on purpose: the point of that command is to name every
 # key it did not convert, and a struct either ignores unknown keys
 # silently or refuses the whole file. Walking the document is what lets it
@@ -84,7 +84,7 @@ clap_complete = "4"
 # keep in step (ratatui re-exports it as `ratatui::crossterm`).
 ratatui = "0.30"
 
-# `minato url --qr`. The encoder only — the default features add PNG and
+# `kobune url --qr`. The encoder only — the default features add PNG and
 # SVG writers, and what this needs is the module grid, which it draws with
 # ratatui like everything else the CLI shows.
 qrcode = { version = "0.14", default-features = false }
@@ -103,7 +103,7 @@ rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 # certificate's name constraints back: `CertificateParams::from_ca_cert_der`
 # went `pub(crate)`, and the `Issuer` that replaced it keeps the signing key
 # and the distinguished name and drops the constraints. Reading them is how
-# `minato doctor` tells a CA made under the rule from one made before it, so
+# `kobune doctor` tells a CA made under the rule from one made before it, so
 # it now parses the certificate here — which is where rcgen was reading them
 # from anyway. Kept in step with rcgen's own x509-parser to avoid two copies.
 x509-parser = "0.18"

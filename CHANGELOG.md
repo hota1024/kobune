@@ -15,15 +15,15 @@ less accurately.
 ### Security
 
 - The local CA is narrowed to `localhost` with an X.509 name constraint, so a
-  key that escaped could sign nothing anyone could be fooled by. `minato setup` puts this certificate in the system trust store, and
+  key that escaped could sign nothing anyone could be fooled by. `kobune setup` puts this certificate in the system trust store, and
   without the constraint the key behind it signed any host at all. A CA
   generated before this is left alone rather than replaced — swapping a
   trusted certificate breaks every URL until somebody notices — and
-  `minato doctor` reports it
-- The daemon's control socket is the owner's alone. `MINATO_HOME` is `0700`
+  `kobune doctor` reports it
+- The daemon's control socket is the owner's alone. `KOBUNE_HOME` is `0700`
   and the socket `0600`, narrowed on every start rather than only at
   creation, and the uid on the other end is checked on connect. The socket
-  asks its callers for nothing, and `minato exec` prints the secrets resolved
+  asks its callers for nothing, and `kobune exec` prints the secrets resolved
   from 1Password and the Keychain — so who can reach it was the whole of the
   access control, and it was whatever the umask allowed (#51)
 - `install.sh` stops rather than warning when it cannot verify a download.
@@ -35,14 +35,14 @@ less accurately.
 
 ### Added
 
-- `minato url --qr` draws the URL as a QR code, for opening an environment on
+- `kobune url --qr` draws the URL as a QR code, for opening an environment on
   a phone. It uses the tunnel URL when there is one, since a `.localhost` name
   resolves through this machine's resolver and nowhere else, and says so when
   the local URL is all there is. Drawn black on white rather than in the
   terminal's own colours: a code in a dark theme's foreground is inverted, and
   an inverted code is one iOS' camera will not read
 
-- The mouse and the trackpad reach a service you have `minato logs -f`
+- The mouse and the trackpad reach a service you have `kobune logs -f`
   attached to, so turborepo's log pane scrolls under the pointer as it does
   when you run it yourself. A full-screen program asks for mouse reports once,
   in the first bytes it writes, and an attachment that arrives later missed
@@ -52,16 +52,16 @@ less accurately.
   you attach — the modes only, not the picture, which the program redraws
   anyway — and put back when you leave
 
-- The daemon says which build it is: a `Ping` — and so `minato daemon status` —
+- The daemon says which build it is: a `Ping` — and so `kobune daemon status` —
   now carries `0.1.0 (abc1234)` rather than the crate version alone, which is
   the same string in every nightly and could tell no two builds apart
 
 - An update says what is left to run, worked out from the machine rather than
   stated: a daemon still on the previous build, a Skill in this repository that
-  is not this build's, a LaunchDaemon written to an older shape. `minato
+  is not this build's, a LaunchDaemon written to an older shape. `kobune
   update` prints the one it can be sure of and carries it as `next` under
   `--json`; the build that lands prints the rest on its first run, which is
-  what covers the updates `minato update` never sees — `install.sh` again, a
+  what covers the updates `kobune update` never sees — `install.sh` again, a
   package manager, a build of your own. Once per build, on stderr, never under
   `--json`, and silent when there is nothing to do
 
@@ -72,7 +72,7 @@ less accurately.
   `/vX.Y/` snapshots, superseded documentation being the last thing to hand
   an agent
 
-- `minato init --from-compose` converts a `docker-compose.yml`, turning the
+- `kobune init --from-compose` converts a `docker-compose.yml`, turning the
   entry cost from rewriting a working file into reviewing a generated one.
   Deliberately not a complete conversion: what has no equivalent is named per
   service, and what compose cannot express is left as a `TODO` beside the
@@ -83,51 +83,51 @@ less accurately.
 - `docs/AGENT-RUN.md` — the record of driving a real two-service task with
   nothing but the Skill, and the four places the instructions did not say
   enough. All four are fixed: verifying with `--cacert` rather than waiting on
-  `sudo`, what to do after editing source, that there is no `minato restart`,
+  `sudo`, what to do after editing source, that there is no `kobune restart`,
   and that `state` in `--json` is an object rather than the string its example
   showed
 
-- A container verifies Minato's own HTTPS URLs without being told to. The CA is
-  mounted read-only, named as `MINATO_CA_FILE`, and handed to Node as
+- A container verifies Kobune's own HTTPS URLs without being told to. The CA is
+  mounted read-only, named as `KOBUNE_CA_FILE`, and handed to Node as
   `NODE_EXTRA_CA_CERTS`, so a service reaching another over
-  `MINATO_URL_<SERVICE>` need not turn verification off. Naming the file and
+  `KOBUNE_URL_<SERVICE>` need not turn verification off. Naming the file and
   leaving the wiring to the service left `SELF_SIGNED_CERT_IN_CHAIN` in
   projects that had the certificate mounted and unused (#68)
 - A service URL resolves from inside a container as well as from the browser,
   so one hostname works for both halves of an application and cookies and CORS
   need know about only one
-- `MINATO_HOSTNAME_<SERVICE>` — the host with no scheme or port, which is what
+- `KOBUNE_HOSTNAME_<SERVICE>` — the host with no scheme or port, which is what
   a CORS origin, `allowedDevOrigins` and a cookie domain want (#40)
 - `env_file`, which writes a service's settled environment into the worktree
   before it starts, for tools that read a file rather than their own
   environment: `wrangler dev`, Vite, dotenvx. Secrets are left out (#38)
-- `${ANOTHER_KEY}` in an environment value, so `MINATO_URL_API` can be handed
+- `${ANOTHER_KEY}` in an environment value, so `KOBUNE_URL_API` can be handed
   to an application under the name it already reads (#37)
-- `minato logs` is an interactive terminal where a service has `tty = true`,
+- `kobune logs` is an interactive terminal where a service has `tty = true`,
   so a task runner's own interface works (#33)
 
 ### Fixed
 
-- **`minato daemon start` and `restart` say whether launchd took the
+- **`kobune daemon start` and `restart` say whether launchd took the
   sockets.** A start that fell back to a daemon of its own leaves 80, 443 and
   53 with the job that did not come up, so no URL answers — and every caller
   reading the exit code was told it had worked. They exit 1 now, with a hint
-  naming which of the states the machine is in, and `minato setup`'s wake step
+  naming which of the states the machine is in, and `kobune setup`'s wake step
   reads that rather than asking launchd a second question of its own. Nothing
-  else changes its exit code over this: `minato up` and the rest did what they
+  else changes its exit code over this: `kobune up` and the rest did what they
   were asked, and keep printing the same wording as a notice (#103)
 
-- **launchd's job serving a different `MINATO_HOME` is its own state.** It
+- **launchd's job serving a different `KOBUNE_HOME` is its own state.** It
   holds 80, 443 and 53 for a daemon that is not this one, and every command
   the other states take is wrong here — a restart falls back, a `kickstart`
-  starts that same job again, and `minato setup` would ask launchd to
+  starts that same job again, and `kobune setup` would ask launchd to
   bootstrap a label it already has. `doctor` names the home the job serves and
   the one this daemon runs under, `setup` offers no launchd step and leaves
   the resolver on the port DNS is actually on, and the notice after a direct
   start says there is nothing to run (#102)
 
-- **`minato setup` no longer reports a wake that did not happen.** Its wake
-  step is `minato daemon restart`, which exits 0 whether launchd's job came up
+- **`kobune setup` no longer reports a wake that did not happen.** Its wake
+  step is `kobune daemon restart`, which exits 0 whether launchd's job came up
   or a daemon started directly in its place — throttled after the stop,
   disabled, its program moved — so setup asks launchd rather than reading that
   exit code. Where the job is still not running it says so, marks the step
@@ -138,14 +138,14 @@ less accurately.
 
 - A daemon that started outside launchd names the step that has not been taken
   yet. Starting one already reaches for :80 to wake launchd's job, so
-  `minato daemon restart` was being offered as the way back from a machine
+  `kobune daemon restart` was being offered as the way back from a machine
   where that had just failed. Where launchd has the job it now names the
   kickstart that forces it, and where it has only the plist — copied in, or
-  with its `bootstrap` declined — it names `minato setup`, since `kickstart`
+  with its `bootstrap` declined — it names `kobune setup`, since `kickstart`
   there has no service to name (#101)
 
-- `minato doctor` walks a port launchd is holding down one ladder rather than
-  two: `minato daemon restart` first, and the `sudo launchctl kickstart` that
+- `kobune doctor` walks a port launchd is holding down one ladder rather than
+  two: `kobune daemon restart` first, and the `sudo launchctl kickstart` that
   needs root only after it, which is what its launchd check and
   `docs/guide/troubleshooting.md` already said. It reads whether launchd has
   the job rather than whether the plist is on disk, so a machine that was
@@ -153,32 +153,32 @@ less accurately.
   process holds (#101)
 
 - **`doctor` and `setup` give the same answer as everything else** for a
-  daemon holding the socket launchd's job wants: `minato daemon restart`.
-  Both still said `minato daemon stop` and then a `sudo launchctl kickstart`,
+  daemon holding the socket launchd's job wants: `kobune daemon restart`.
+  Both still said `kobune daemon stop` and then a `sudo launchctl kickstart`,
   and `setup` ran the pair with `all(...)` — so declining the password prompt
   ran only the stop and left the machine with no daemon, which is the harm
   the step exists to prevent. Restarting does both halves and needs no root
 
-- `minato daemon restart` survives a slow shutdown. It skips the handshake on
+- `kobune daemon restart` survives a slow shutdown. It skips the handshake on
   the way out, deliberately, because the usual reason to restart is a daemon
   too old to talk to — but starting again does shake hands, so an old daemon
   still answering after the five-second wait came back as the protocol
   mismatch error, telling the user to run the command that had just failed.
   The wait is given a second run instead
 
-- The step after an update reads `minato daemon restart` on every machine,
-  rather than `minato daemon stop` where launchd holds the job. Stopping was
+- The step after an update reads `kobune daemon restart` on every machine,
+  rather than `kobune daemon stop` where launchd holds the job. Stopping was
   once the only safe way back — restarting by hand started a daemon outside
   launchd, and 80 and 443 stayed with launchd — but starting one has gone
   through launchd since #17, so the two end at the same daemon. Stopping is
   the worse half of it: a clean exit is not restarted, so the daemon stays
-  down until something arrives on a port, and `minato daemon status` reports
+  down until something arrives on a port, and `kobune daemon status` reports
   it stopped in the meantime. It was also the one answer to a daemon from
   another build that did not say `restart`, which is what the error a stale
   daemon produces has always said
 
-- `minato setup` says `minato daemon restart` afterwards, in place of
-  `minato daemon stop` and the promise that "launchd starts it again". It
+- `kobune setup` says `kobune daemon restart` afterwards, in place of
+  `kobune daemon stop` and the promise that "launchd starts it again". It
   does not: a clean exit is not restarted, and neither is the job launchd
   started the moment it was handed the plist, which exits cleanly too when it
   finds the socket already owned. Following it left the machine with no daemon
@@ -187,26 +187,26 @@ less accurately.
 
 - Ctrl-P Ctrl-Q detaches. It stopped passing keys on and then waited: the
   window watcher held a second sender for the channel whose closing *is* the
-  message that somebody left, so the message was never sent and `minato logs`
+  message that somebody left, so the message was never sent and `kobune logs`
   sat there with nobody reading the terminal, needing Ctrl-C — which is the
   one key the sequence exists to avoid
 
-- `minato uninstall` takes the named volumes with it, and lists them before
+- `kobune uninstall` takes the named volumes with it, and lists them before
   asking. A project volume is shared between worktrees and outlives all of
-  them, so nothing on the `minato rm` path ever removed one — a command that
-  says it takes Minato off the machine left behind storage only Minato knew
+  them, so nothing on the `kobune rm` path ever removed one — a command that
+  says it takes Kobune off the machine left behind storage only Kobune knew
   the name of. They are found by label rather than from the daemon's records,
   which also reaches the storage of a project whose repository has already
   been deleted. A project whose containers could not be taken down keeps its
   data *where keeping it is possible*: Apple Container's volumes are
-  directories under `MINATO_HOME`, which the uninstaller removes as one, so
+  directories under `KOBUNE_HOME`, which the uninstaller removes as one, so
   there they are listed as going rather than promised to somebody as kept.
   Storage that could not be listed, or would not go, is named in the plan and
   in what the command reports at the end — a runtime that cannot be asked
   answers exactly as one holding nothing does, and the difference decides
   whether an uninstall that left volumes behind says so (#84)
-- `minato init --from-compose` rewrites a sibling's URL — compose's
-  `http://api:8080` — into `${MINATO_URL_API}`. Carried across verbatim it
+- `kobune init --from-compose` rewrites a sibling's URL — compose's
+  `http://api:8080` — into `${KOBUNE_URL_API}`. Carried across verbatim it
   bypasses the proxy, hands the application a different URL from the
   browser's, and does not resolve under Apple Container at all. Found by an
   agent that had never seen this codebase: it got this right writing the
@@ -222,10 +222,10 @@ less accurately.
   The same edges are now read backwards when stopping: an `expose = false`
   service follows the exposed ones that depend on it, where before it stayed
   up for as long as the daemon did (#49)
-- `env_file` is written only for the services being started. `minato up web`
-  used to fail over `api`'s, and `minato exec` left files behind as a side
+- `env_file` is written only for the services being started. `kobune up web`
+  used to fail over `api`'s, and `kobune exec` left files behind as a side
   effect of running a command (#48)
-- `minato env ls` lists when a value will not settle, marking that value and
+- `kobune env ls` lists when a value will not settle, marking that value and
   saying why, rather than refusing the whole listing — it is the tool for
   finding the one at fault (#44)
 - A service is not called ready before the application inside it answers (#32)
@@ -250,15 +250,15 @@ less accurately.
   `*.other.com.example.com` and exits 0 — so a tunnel can report `running`,
   print a DNS record, and be unreachable at every URL. Found by running it
 
-- **`minato url` with no service named lists every service**, where it used to
+- **`kobune url` with no service named lists every service**, where it used to
   print the first reachable one's URL on a bare line. Answering "which URL"
   with one of several is how a request ends up at the wrong service. Naming a
-  service is unchanged — one bare line, for `curl "$(minato url web)/"` — so
+  service is unchanged — one bare line, for `curl "$(kobune url web)/"` — so
   the substitution to fix is the one that named nothing. `--json` returns an
   array of the same objects the single form returns
 
 - A warning is yellow and carries `!`; red is kept for something that failed.
-  `minato tunnel enable --public` printed "this environment is reachable from
+  `kobune tunnel enable --public` printed "this environment is reachable from
   the internet" in red on its way out of a command that had worked, and it was
   read as the command having failed
 
@@ -269,7 +269,7 @@ less accurately.
   together and say so on a mismatch
 
 - `rcgen` 0.14. It removed the only public way to read a certificate's name
-  constraints back, which is how `minato doctor` tells a CA made under the
+  constraints back, which is how `kobune doctor` tells a CA made under the
   `localhost` rule from one made before it, so that now reads the certificate
   directly. A CA generated by the older version still loads, keeps its bytes,
   and reports what it actually carries

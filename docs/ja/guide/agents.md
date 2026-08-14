@@ -1,14 +1,14 @@
 # AI エージェントと使う
 
-Minato はエージェントによる操作を前提に設計しています。それが具体的に何を
+Kobune はエージェントによる操作を前提に設計しています。それが具体的に何を
 意味するか、また必要な設定について説明します。
 
 ## Skill を配置する
 
 ```console
-$ minato skill install
+$ kobune skill install
 ╭ skill ───────────────────────────────────────────────────╮
-│ installed  /path/to/myapp/.claude/skills/minato/SKILL.md │
+│ installed  /path/to/myapp/.claude/skills/kobune/SKILL.md │
 ╰──────────────────────────────────────────────────────────╯
 ```
 
@@ -16,8 +16,8 @@ Claude Code が自動的に読み込む Skill ファイルを生成します。�
 すべての worktree とチームメンバーが同じ指針を参照できます。
 
 ```console
-$ minato skill show              # 書き込まずに内容を表示する
-$ minato skill install --force   # 手動で編集した内容を上書きする
+$ kobune skill show              # 書き込まずに内容を表示する
+$ kobune skill install --force   # 手動で編集した内容を上書きする
 ```
 
 内容に変更がなければ書き込みを行わないため、差分は発生しません。
@@ -27,10 +27,10 @@ $ minato skill install --force   # 手動で編集した内容を上書きする
 コマンドのリファレンスではありません。それは `--help` の役割です。記述して
 いるのは、エージェントが自力では導けない判断基準です。
 
-- **`docker` を直接使用しない。** `docker ps` で確認できる情報は Minato 経由
-  でも取得できます。直接操作すると、実際の状態と Minato が把握している状態が
+- **`docker` を直接使用しない。** `docker ps` で確認できる情報は Kobune 経由
+  でも取得できます。直接操作すると、実際の状態と Kobune が把握している状態が
   食い違います。
-- **ポート番号を推測しない。** `minato url` で取得します。ポート番号は変わり
+- **ポート番号を推測しない。** `kobune url` で取得します。ポート番号は変わり
   ますが、URL は変わりません。
 - **確認は必ず実際のアクセスで行う。** 「起動したはず」では確認したことに
   なりません。
@@ -47,7 +47,7 @@ $ minato skill install --force   # 手動で編集した内容を上書きする
 ### すべてのコマンドが JSON を出力する
 
 ```console
-$ minato status --json
+$ kobune status --json
 {
   "result": "workspace",
   "workspace": {
@@ -68,14 +68,14 @@ $ minato status --json
 ときの CLI は結果を描画します——枠、桁の揃った表、意味を持つ部分への色付け
 ——が、エージェントが端末の先にいることはありません。キャプチャされた出力は
 素のテキストで、エスケープシーケンスも罫線もなく、URL がどれだけ長くても
-折り返しも切り詰めも起きません。`minato url <service>` と `minato env get` は
+折り返しも切り詰めも起きません。`kobune url <service>` と `kobune env get` は
 どちらの場合も 1 行だけを出力し、`logs` と `exec` はコンテナの出力をそのまま
 渡します。
 
 ### 終了コードで失敗の種類が分かる
 
 ```console
-$ minato url nope; echo $?
+$ kobune url nope; echo $?
 4
 ```
 
@@ -95,7 +95,7 @@ $ minato url nope; echo $?
 ### `exec` は終了コードをそのまま返す
 
 ```console
-$ minato exec web -- npm test; echo $?
+$ kobune exec web -- npm test; echo $?
 1
 ```
 
@@ -104,7 +104,7 @@ $ minato exec web -- npm test; echo $?
 ### エラーには hint が付与される
 
 ```console
-$ minato tunnel enable --domain example.com --json
+$ kobune tunnel enable --domain example.com --json
 {
   "error": {
     "code": "unsupported",
@@ -132,14 +132,14 @@ $ minato tunnel enable --domain example.com --json
 ## 実用的な処理の流れ
 
 ```bash
-minato status --json                       # 現在の状態を把握する
-minato new feature/x                       # ブランチと環境をまとめて作成
+kobune status --json                       # 現在の状態を把握する
+kobune new feature/x                       # ブランチと環境をまとめて作成
 cd ../myapp.wt/feature-x
 # … 編集 …
-minato exec web -- npm test                # 終了コードがテスト結果になる
-curl -sS --fail-with-body "$(minato url web)/api/health"
-minato logs web -n 50                      # 失敗した場合
-minato doctor                              # 環境側が原因の場合
+kobune exec web -- npm test                # 終了コードがテスト結果になる
+curl -sS --fail-with-body "$(kobune url web)/api/health"
+kobune logs web -n 50                      # 失敗した場合
+kobune doctor                              # 環境側が原因の場合
 ```
 
 ## MCP サーバを提供していない理由
@@ -150,7 +150,7 @@ Bash 経由で十分に扱えます。インタフェースを二重に維持す
 ## 実際に機能するのか
 
 エージェント向けを名乗る以上、当然の問いです。
-[`docs/AGENT-RUN.md`](https://github.com/hota1024/minato/blob/main/docs/AGENT-RUN.md)
+[`docs/AGENT-RUN.md`](https://github.com/hota1024/kobune/blob/main/docs/AGENT-RUN.md)
 に、Skill だけを頼りに 2 サービス構成のプロジェクトで実際のタスクを完遂した
 記録があります。一度目で通った部分と、説明が足りなかった 4 箇所です。4 箇所は
 修正済みで、記録は次回の実行と比較できるように残してあります。

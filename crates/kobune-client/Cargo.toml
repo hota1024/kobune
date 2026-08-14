@@ -1,5 +1,5 @@
 [package]
-name = "minato-client"
+name = "kobune-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,8 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-minato-core.workspace = true
-minato-api.workspace = true
+kobune-core.workspace = true
+kobune-api.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time", "process", "rt"] }
 thiserror.workspace = true
 tracing.workspace = true

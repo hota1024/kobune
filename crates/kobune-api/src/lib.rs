@@ -2,7 +2,7 @@
 //!
 //! **No human-facing formatting belongs here.** Presentation is the CLI's
 //! and the GUI's job. Likewise, no client crate may depend on
-//! `minato-runtime` or any other implementation (`docs/DESIGN.md` §3, §13).
+//! `kobune-runtime` or any other implementation (`docs/DESIGN.md` §3, §13).
 
 pub mod codec;
 pub mod diagnostics;
@@ -24,5 +24,5 @@ pub use response::{
     UnsettledReason, WorkspaceInfo,
 };
 
-/// Re-exported for convenience, so clients need not pull in `minato-core`.
-pub use minato_core::{EnvScope, ServiceScope, ServiceState};
+/// Re-exported for convenience, so clients need not pull in `kobune-core`.
+pub use kobune_core::{EnvScope, ServiceScope, ServiceState};

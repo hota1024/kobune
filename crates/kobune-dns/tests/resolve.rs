@@ -10,7 +10,7 @@ use std::time::Duration;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
-use minato_dns::{DnsConfig, serve};
+use kobune_dns::{DnsConfig, serve};
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
 
@@ -126,12 +126,12 @@ async fn refuses_names_outside_its_scope() {
 #[tokio::test]
 async fn serves_configured_suffixes() {
     let server = spawn_dns(DnsConfig {
-        suffixes: vec!["minato.test".into()],
+        suffixes: vec!["kobune.test".into()],
         ttl: 5,
     })
     .await;
 
-    let served = query(server, "web.myapp.minato.test.", RecordType::A).await;
+    let served = query(server, "web.myapp.kobune.test.", RecordType::A).await;
     assert_eq!(served.response_code(), ResponseCode::NoError);
     assert_eq!(served.answers().len(), 1);
 

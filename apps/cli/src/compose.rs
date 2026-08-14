@@ -1,8 +1,8 @@
-//! Turning a `docker-compose.yml` into a `minato.toml`.
+//! Turning a `docker-compose.yml` into a `kobune.toml`.
 //!
 //! **Not a complete conversion, and it does not pretend to be.** Compose
 //! is enormous and half of it means nothing here — there is no `restart`
-//! policy when the daemon owns the lifecycle, no `networks` when Minato
+//! policy when the daemon owns the lifecycle, no `networks` when Kobune
 //! wires them, no `deploy` at all. Converting what maps and saying
 //! nothing about the rest would produce a file that looks finished and is
 //! not, which is worse than no conversion: the failure arrives later,
@@ -12,12 +12,12 @@
 //! So everything lands in one of three places, and every key is in
 //! exactly one of them:
 //!
-//! - **converted** — written into `minato.toml`
+//! - **converted** — written into `kobune.toml`
 //! - **left to you** — what compose cannot say, written into the file as
 //!   a `TODO` comment beside the service it belongs to
 //! - **dropped** — named in the report, per service, never in silence
 //!
-//! The point is to turn trying Minato from *rewriting a working file*
+//! The point is to turn trying Kobune from *rewriting a working file*
 //! into *reviewing a generated one*.
 
 use std::collections::BTreeMap;
@@ -35,7 +35,7 @@ pub const CANDIDATES: [&str; 4] = [
 /// What a conversion produced.
 #[derive(Debug)]
 pub struct Converted {
-    /// The `minato.toml` to write.
+    /// The `kobune.toml` to write.
     pub toml: String,
     /// Keys that had no equivalent, per service. Reported, never silent.
     pub dropped: Vec<Dropped>,
@@ -50,7 +50,7 @@ pub struct Dropped {
     pub key: String,
 }
 
-/// Keys Minato has an answer for. Everything else is reported.
+/// Keys Kobune has an answer for. Everything else is reported.
 const CONVERTED_KEYS: [&str; 12] = [
     "image",
     "build",
@@ -69,7 +69,7 @@ const CONVERTED_KEYS: [&str; 12] = [
 /// Keys worth saying nothing about, because they carry no information a
 /// reader would miss.
 ///
-/// `container_name` is the clearest: Minato names containers itself, from
+/// `container_name` is the clearest: Kobune names containers itself, from
 /// the project and the worktree, and it has to — two worktrees of one
 /// repository cannot both be `myapp_web`.
 const QUIETLY_IGNORED: [&str; 4] = ["container_name", "hostname", "stdin_open", "platform"];
@@ -118,7 +118,7 @@ pub fn convert(project: &str, path: &str, yaml: &str) -> Result<Converted, Compo
     let mut blocks = Vec::new();
 
     // Read once up front: rewriting `http://api:8080` into
-    // `${MINATO_URL_API}` needs to know which names are services here and
+    // `${KOBUNE_URL_API}` needs to know which names are services here and
     // which are somebody's real hostname.
     let names: Vec<String> = services
         .keys()
@@ -128,7 +128,7 @@ pub fn convert(project: &str, path: &str, yaml: &str) -> Result<Converted, Compo
     for (name, body) in services {
         let Some(name) = name.as_str() else { continue };
         let mut service = Service::read(name, body, &mut dropped, &mut carried);
-        service.point_urls_at_minato(&names);
+        service.point_urls_at_kobune(&names);
         blocks.push(service.render());
     }
 
@@ -142,7 +142,7 @@ pub fn convert(project: &str, path: &str, yaml: &str) -> Result<Converted, Compo
     })
 }
 
-/// One service, as far as Minato can describe it.
+/// One service, as far as Kobune can describe it.
 #[derive(Default)]
 struct Service {
     name: String,
@@ -216,7 +216,7 @@ impl Service {
             "command" => self.command = command_of(value),
             "environment" => self.env = pairs_of(value),
             // **The one that would have destroyed data.** Compose reads
-            // this file into the environment; Minato writes the settled
+            // this file into the environment; Kobune writes the settled
             // environment out to it. Mapped across, `up` would overwrite
             // the user's `.env`. What it actually means here is a file the
             // worktree needs that git does not carry.
@@ -278,12 +278,12 @@ impl Service {
         }
     }
 
-    /// Turns compose's way of reaching a sibling into Minato's.
+    /// Turns compose's way of reaching a sibling into Kobune's.
     ///
     /// **`http://api:8080` is faithful and wrong.** It is how compose
     /// names another service, and here it bypasses the proxy, hands the
     /// application a different URL from the one the browser uses — which
-    /// is what `MINATO_URL_*` exists to prevent — and does not resolve at
+    /// is what `KOBUNE_URL_*` exists to prevent — and does not resolve at
     /// all under Apple Container, which has no container-to-container
     /// DNS.
     ///
@@ -294,7 +294,7 @@ impl Service {
     /// Found by an agent that had never seen this codebase: writing the
     /// configuration by hand from the Skill, it got this right, and the
     /// converter meant to save that work got it wrong.
-    fn point_urls_at_minato(&mut self, services: &[String]) {
+    fn point_urls_at_kobune(&mut self, services: &[String]) {
         for value in self.env.values_mut() {
             let Some(rest) = value
                 .strip_prefix("http://")
@@ -321,7 +321,7 @@ impl Service {
                 .map(|(_, path)| format!("/{path}"))
                 .unwrap_or_default();
 
-            *value = format!("${{MINATO_URL_{variable}}}{path}");
+            *value = format!("${{KOBUNE_URL_{variable}}}{path}");
         }
     }
 
@@ -398,10 +398,10 @@ impl Service {
 fn render(project: &str, carried: &[String], blocks: &[String]) -> String {
     let mut out = String::new();
 
-    out.push_str("# Converted from compose by `minato init --from-compose`.\n");
-    out.push_str("# Every key: https://minato.1024.works/reference/minato-toml\n");
+    out.push_str("# Converted from compose by `kobune init --from-compose`.\n");
+    out.push_str("# Every key: https://minato.1024.works/reference/kobune-toml\n");
     out.push_str("#\n");
-    out.push_str("# Read the TODOs before the first `minato up`. They are the\n");
+    out.push_str("# Read the TODOs before the first `kobune up`. They are the\n");
     out.push_str("# decisions compose had no way to express.\n\n");
 
     out.push_str("[project]\n");
@@ -455,7 +455,7 @@ fn first_port(value: &Yaml) -> Option<u16> {
     })
 }
 
-/// `command` is a string or a list. Minato takes a string and splits it
+/// `command` is a string or a list. Kobune takes a string and splits it
 /// shell-style, so a list is joined back.
 fn command_of(value: &Yaml) -> Option<String> {
     if let Some(text) = value.as_str() {
@@ -507,10 +507,10 @@ fn depends_on_of(value: &Yaml) -> Vec<String> {
     strings_of(value)
 }
 
-/// `healthcheck.test`, as Minato's `cmd:` form.
+/// `healthcheck.test`, as Kobune's `cmd:` form.
 ///
 /// Only `cmd:` — a compose health check is a command, and the `http://`
-/// form Minato also takes is a different thing that cannot be derived
+/// form Kobune also takes is a different thing that cannot be derived
 /// from one.
 fn health_of(value: &Yaml) -> Option<String> {
     let test = &value["test"];
@@ -610,7 +610,7 @@ services:
     #[test]
     fn env_file_becomes_carry_and_never_env_file() {
         // **The one that would have destroyed data.** Compose reads this
-        // file; Minato's `env_file` writes it. Mapped across, the first
+        // file; Kobune's `env_file` writes it. Mapped across, the first
         // `up` would overwrite the user's `.env`.
         let out = convert_ok(
             r#"
@@ -625,7 +625,7 @@ services:
         // comment beside `carry` says the words "env_file" on purpose,
         // and a test that could not tell the two apart would be pinning
         // the prose instead of the behaviour.
-        let config: minato_core::config::MinatoConfig =
+        let config: kobune_core::config::KobuneConfig =
             toml::from_str(&out.toml).unwrap_or_else(|err| panic!("{err}\n{}", out.toml));
 
         assert!(
@@ -633,7 +633,7 @@ services:
                 .services
                 .values()
                 .all(|service| service.env_file.is_none()),
-            "compose's env_file must not become Minato's: {}",
+            "compose's env_file must not become Kobune's: {}",
             out.toml
         );
         assert_eq!(config.project.carry, vec![".env".to_string()]);
@@ -642,7 +642,7 @@ services:
 
     #[test]
     fn the_container_side_of_a_port_is_the_one_that_matters() {
-        // Minato publishes on a port it chooses; what it needs is the one
+        // Kobune publishes on a port it chooses; what it needs is the one
         // the app listens on inside.
         for (ports, expected) in [
             ("[\"3000:3000\"]", 3000),
@@ -758,7 +758,7 @@ services:
     }
 
     #[test]
-    fn a_url_pointing_at_a_sibling_becomes_the_one_minato_issues() {
+    fn a_url_pointing_at_a_sibling_becomes_the_one_kobune_issues() {
         // Compose reaches a sibling by service name. Carried across
         // verbatim that bypasses the proxy, hands the app a different URL
         // from the browser's, and does not resolve at all under Apple
@@ -780,12 +780,12 @@ services:
         );
 
         assert!(
-            out.toml.contains(r#"ROOMS_API = "${MINATO_URL_API}""#),
+            out.toml.contains(r#"ROOMS_API = "${KOBUNE_URL_API}""#),
             "{}",
             out.toml
         );
         assert!(
-            out.toml.contains(r#"WITH_A_PATH = "${MINATO_URL_API}/v1""#),
+            out.toml.contains(r#"WITH_A_PATH = "${KOBUNE_URL_API}/v1""#),
             "the path has to survive: {}",
             out.toml
         );
@@ -805,7 +805,7 @@ services:
 
     #[test]
     fn a_hyphenated_service_becomes_a_legal_variable_name() {
-        // `MINATO_URL_` names cannot carry a hyphen, and Minato's own
+        // `KOBUNE_URL_` names cannot carry a hyphen, and Kobune's own
         // injection replaces it the same way.
         let out = convert_ok(
             r#"
@@ -820,7 +820,7 @@ services:
         );
 
         assert!(
-            out.toml.contains(r#"API = "${MINATO_URL_API_SERVER}""#),
+            out.toml.contains(r#"API = "${KOBUNE_URL_API_SERVER}""#),
             "{}",
             out.toml
         );
@@ -853,7 +853,7 @@ services:
     }
 
     #[test]
-    fn what_minato_names_itself_is_not_reported_as_lost() {
+    fn what_kobune_names_itself_is_not_reported_as_lost() {
         // `container_name` cannot survive and nobody should be asked about
         // it: two worktrees of one repository cannot share a name.
         let out = convert_ok(
@@ -901,7 +901,7 @@ services:
     }
 
     #[test]
-    fn what_it_writes_is_a_configuration_minato_reads() {
+    fn what_it_writes_is_a_configuration_kobune_reads() {
         // The whole point: reviewing rather than rewriting. A file that
         // does not parse is neither.
         let out = convert_ok(
@@ -920,7 +920,7 @@ services:
 "#,
         );
 
-        let config: minato_core::config::MinatoConfig =
+        let config: kobune_core::config::KobuneConfig =
             toml::from_str(&out.toml).unwrap_or_else(|err| panic!("{err}\n---\n{}", out.toml));
 
         config

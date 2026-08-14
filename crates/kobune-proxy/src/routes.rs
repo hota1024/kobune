@@ -122,7 +122,7 @@ impl Routes {
         for (host, route) in entries {
             if let Some(key) = normalize_host(&host) {
                 // A tunnel hostname joins project, workspace and service
-                // into one label (`minato_core::naming::tunnel_host`), so
+                // into one label (`kobune_core::naming::tunnel_host`), so
                 // two of them can come out the same — across projects, and
                 // within one, where `web` of `feat-1` and `web-feat` of `1`
                 // both give `web-feat-1-…`. Whichever is registered last

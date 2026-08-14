@@ -1,22 +1,22 @@
-//! Turning `minato.toml` into the spec a runtime is handed.
+//! Turning `kobune.toml` into the spec a runtime is handed.
 //!
-//! A runtime knows nothing about `minato.toml`. Every question of
+//! A runtime knows nothing about `kobune.toml`. Every question of
 //! interpretation is settled here, and the runtime receives resolved
 //! values only.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use minato_api::ApiError;
-use minato_core::config::MOUNT_TARGET;
-use minato_core::{MinatoConfig, ServiceConfig, ServiceScope};
-use minato_runtime::{
+use kobune_api::ApiError;
+use kobune_core::config::MOUNT_TARGET;
+use kobune_core::{KobuneConfig, ServiceConfig, ServiceScope};
+use kobune_runtime::{
     BuildSpec, ServiceSpec, SourceMount, VolumeMount, WorkspaceKey, WorkspaceSpec,
 };
 
 /// Builds the spec for a whole workspace.
 pub fn build_workspace_spec(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     project: &str,
     workspace: &str,
     worktree_path: &Path,
@@ -82,7 +82,7 @@ fn build_spec(
 
     if !dockerfile.is_file() {
         return Err(ApiError::new(
-            minato_api::ErrorCode::InvalidConfig,
+            kobune_api::ErrorCode::InvalidConfig,
             format!(
                 "service `{name}`: no Dockerfile at {}",
                 dockerfile.display()
@@ -101,7 +101,7 @@ fn build_spec(
     Ok(BuildSpec {
         context,
         dockerfile,
-        tag: format!("minato-{project}-{name}:{fingerprint}"),
+        tag: format!("kobune-{project}-{name}:{fingerprint}"),
         fingerprint,
         args: service.build_args.clone(),
     })
@@ -125,7 +125,7 @@ fn resolve_within(
     // deserves its own message rather than a confusing io error.
     if !joined.exists() {
         return Err(ApiError::new(
-            minato_api::ErrorCode::InvalidConfig,
+            kobune_api::ErrorCode::InvalidConfig,
             format!(
                 "service `{service}`: {key} points at {}, which does not exist",
                 joined.display()
@@ -139,7 +139,7 @@ fn resolve_within(
             joined.display()
         )),
         crate::paths::Containment::Outside(landed) => ApiError::new(
-            minato_api::ErrorCode::InvalidConfig,
+            kobune_api::ErrorCode::InvalidConfig,
             format!(
                 "service `{service}`: {key} points outside the worktree ({})",
                 landed.display()
@@ -154,7 +154,7 @@ fn resolve_within(
 /// Covers the Dockerfile and the build args. **A file the Dockerfile copies
 /// in is not covered** — that would mean parsing the Dockerfile to find out
 /// which files those are. So editing `package.json` does not by itself cause
-/// a rebuild; `minato up --build` forces one. The same limitation applies to
+/// a rebuild; `kobune up --build` forces one. The same limitation applies to
 /// `docker compose up`.
 fn fingerprint(dockerfile: &Path, args: &BTreeMap<String, String>) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
@@ -184,11 +184,11 @@ pub struct WorkspaceContext {
     pub services: Vec<String>,
     /// The hostnames the workspace's services answer to.
     ///
-    /// See [`minato_runtime::ServiceSpec::gateway_hosts`].
+    /// See [`kobune_runtime::ServiceSpec::gateway_hosts`].
     pub gateway_hosts: Vec<String>,
-    /// Minato's CA certificate on the host, when HTTPS is being served.
+    /// Kobune's CA certificate on the host, when HTTPS is being served.
     ///
-    /// Mounted read-only at [`minato_core::config::CA_TARGET`] so a
+    /// Mounted read-only at [`kobune_core::config::CA_TARGET`] so a
     /// service can verify the certificate the proxy presents, instead of
     /// being pushed into turning verification off to call the URL it was
     /// handed. `None` when there is no HTTPS to trust.
@@ -231,7 +231,7 @@ pub fn build_service_spec(
     let command = match &service.command {
         Some(raw) => Some(shell_words::split(raw).map_err(|err| {
             ApiError::new(
-                minato_api::ErrorCode::InvalidConfig,
+                kobune_api::ErrorCode::InvalidConfig,
                 format!("service `{name}`: cannot make sense of command: {err}"),
             )
         })?),
@@ -264,10 +264,10 @@ pub fn build_service_spec(
     // The cache volume and, when there is HTTPS to verify, the CA.
     let mut volumes = Vec::with_capacity(service.volumes.len() + 2);
     volumes.push(VolumeMount::Named {
-        name: minato_core::config::CACHE_VOLUME.to_string(),
-        target: minato_core::config::CACHE_TARGET.to_string(),
+        name: kobune_core::config::CACHE_VOLUME.to_string(),
+        target: kobune_core::config::CACHE_TARGET.to_string(),
         read_only: false,
-        scope: minato_runtime::VolumeScope::Project,
+        scope: kobune_runtime::VolumeScope::Project,
     });
 
     // **Read-only, and the certificate alone.** The key beside it on disk
@@ -275,13 +275,13 @@ pub fn build_service_spec(
     // business in a container.
     //
     // Checked here rather than trusted from the daemon's start: the file
-    // can be removed under a running daemon (`minato setup` undone, the
+    // can be removed under a running daemon (`kobune setup` undone, the
     // directory cleared), and Docker answers a bind of a missing source by
     // creating an empty *directory* at the host path and mounting that.
     if let Some(ca_file) = context.ca_file.as_ref().filter(|path| path.is_file()) {
         volumes.push(VolumeMount::Bind {
             source: ca_file.clone(),
-            target: minato_core::config::CA_TARGET.to_string(),
+            target: kobune_core::config::CA_TARGET.to_string(),
             read_only: true,
         });
     }
@@ -289,7 +289,7 @@ pub fn build_service_spec(
     for raw in &service.volumes {
         volumes.push(VolumeMount::parse(raw, worktree_path).map_err(|message| {
             ApiError::new(
-                minato_api::ErrorCode::InvalidConfig,
+                kobune_api::ErrorCode::InvalidConfig,
                 format!("service `{name}`: {message}"),
             )
         })?);
@@ -328,8 +328,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn config(toml: &str) -> MinatoConfig {
-        let config: MinatoConfig = toml::from_str(toml).expect("is syntactically valid");
+    fn config(toml: &str) -> KobuneConfig {
+        let config: KobuneConfig = toml::from_str(toml).expect("is syntactically valid");
         config.validate().expect("is semantically valid");
         config
     }
@@ -355,7 +355,7 @@ mod tests {
 
     /// What every service in the workspace is told about the rest of it.
     /// Most tests care about none of it.
-    fn context(config: &MinatoConfig) -> WorkspaceContext {
+    fn context(config: &KobuneConfig) -> WorkspaceContext {
         WorkspaceContext {
             services: config.services.keys().cloned().collect(),
             gateway_hosts: vec![],
@@ -464,7 +464,7 @@ mod tests {
     fn mounts_the_certificate_read_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         // The name `LocalCa::certificate_path` really writes.
-        let ca = dir.path().join("minato-ca.crt");
+        let ca = dir.path().join("kobune-ca.crt");
         std::fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").expect("writes");
 
         let spec = build_workspace_spec(
@@ -482,7 +482,7 @@ mod tests {
             .expect("web")
             .volumes
             .iter()
-            .find(|volume| volume.target() == minato_core::config::CA_TARGET)
+            .find(|volume| volume.target() == kobune_core::config::CA_TARGET)
             .expect("the CA is mounted");
 
         assert!(
@@ -518,7 +518,7 @@ mod tests {
                 .expect("web")
                 .volumes
                 .iter()
-                .any(|volume| volume.target() == minato_core::config::CA_TARGET)
+                .any(|volume| volume.target() == kobune_core::config::CA_TARGET)
         );
     }
 
@@ -542,7 +542,7 @@ mod tests {
                 .expect("web")
                 .volumes
                 .iter()
-                .any(|volume| volume.target() == minato_core::config::CA_TARGET)
+                .any(|volume| volume.target() == kobune_core::config::CA_TARGET)
         );
     }
 
@@ -568,11 +568,11 @@ mod tests {
             let cache = service
                 .volumes
                 .iter()
-                .find(|volume| matches!(volume, VolumeMount::Named { target, .. } if target == minato_core::config::CACHE_TARGET))
+                .find(|volume| matches!(volume, VolumeMount::Named { target, .. } if target == kobune_core::config::CACHE_TARGET))
                 .unwrap_or_else(|| panic!("{} has nowhere to write", service.name()));
 
             assert!(
-                matches!(cache, VolumeMount::Named { scope, .. } if *scope == minato_runtime::VolumeScope::Project),
+                matches!(cache, VolumeMount::Named { scope, .. } if *scope == kobune_runtime::VolumeScope::Project),
                 "a package store is worth sharing between worktrees"
             );
         }
@@ -583,9 +583,9 @@ mod tests {
         // Under /workspace it would be on the host's disk, in the
         // repository — which is the gigabyte this exists to prevent.
         assert!(
-            !minato_core::config::CACHE_TARGET.starts_with(minato_core::config::MOUNT_TARGET),
+            !kobune_core::config::CACHE_TARGET.starts_with(kobune_core::config::MOUNT_TARGET),
             "{} is inside the bind mount",
-            minato_core::config::CACHE_TARGET
+            kobune_core::config::CACHE_TARGET
         );
     }
 
@@ -599,16 +599,16 @@ mod tests {
             db.volumes,
             vec![
                 VolumeMount::Named {
-                    name: minato_core::config::CACHE_VOLUME.into(),
-                    target: minato_core::config::CACHE_TARGET.into(),
+                    name: kobune_core::config::CACHE_VOLUME.into(),
+                    target: kobune_core::config::CACHE_TARGET.into(),
                     read_only: false,
-                    scope: minato_runtime::VolumeScope::Project,
+                    scope: kobune_runtime::VolumeScope::Project,
                 },
                 VolumeMount::Named {
                     name: "pgdata".into(),
                     target: "/var/lib/postgresql/data".into(),
                     read_only: false,
-                    scope: minato_runtime::VolumeScope::Project,
+                    scope: kobune_runtime::VolumeScope::Project,
                 }
             ]
         );
@@ -651,7 +651,7 @@ mod tests {
         let build = web.build.as_ref().expect("has a build");
         assert_eq!(web.image, build.tag, "the image to run is what gets built");
         assert!(
-            build.tag.starts_with("minato-myapp-web:"),
+            build.tag.starts_with("kobune-myapp-web:"),
             "got: {}",
             build.tag
         );
@@ -723,7 +723,7 @@ mod tests {
 
         let err = built(dir.path(), BUILDS).unwrap_err();
 
-        assert_eq!(err.code, minato_api::ErrorCode::InvalidConfig);
+        assert_eq!(err.code, kobune_api::ErrorCode::InvalidConfig);
         assert!(err.message.contains("Dockerfile"), "got: {err}");
     }
 
@@ -817,6 +817,6 @@ mod tests {
             &context(&config),
         )
         .unwrap_err();
-        assert_eq!(err.code, minato_api::ErrorCode::InvalidConfig);
+        assert_eq!(err.code, kobune_api::ErrorCode::InvalidConfig);
     }
 }

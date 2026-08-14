@@ -14,7 +14,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::label::Label;
 use gpui_component::theme::{ActiveTheme, Theme, ThemeMode};
 use gpui_component::{Disableable, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
-use minato_api::{ServiceInfo, ServiceState, WorkspaceInfo};
+use kobune_api::{ServiceInfo, ServiceState, WorkspaceInfo};
 
 use crate::bridge::Command;
 use crate::state::{Connection, SharedState};
@@ -25,7 +25,7 @@ const SIDEBAR_WIDTH: f32 = 232.0;
 /// The height of the log pane.
 const LOG_HEIGHT: f32 = 220.0;
 
-pub struct MinatoApp {
+pub struct KobuneApp {
     state: SharedState,
     commands: tokio::sync::mpsc::UnboundedSender<Command>,
     /// The workspace shown in the detail pane.
@@ -35,7 +35,7 @@ pub struct MinatoApp {
     _appearance: Option<gpui::Subscription>,
 }
 
-impl MinatoApp {
+impl KobuneApp {
     pub fn new(state: SharedState, commands: tokio::sync::mpsc::UnboundedSender<Command>) -> Self {
         Self {
             state,
@@ -112,7 +112,7 @@ impl MinatoApp {
     }
 }
 
-impl Render for MinatoApp {
+impl Render for KobuneApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.current();
 
@@ -125,7 +125,7 @@ impl Render for MinatoApp {
     }
 }
 
-impl MinatoApp {
+impl KobuneApp {
     fn sidebar(&self, selected: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
         let workspaces = self
             .state
@@ -174,7 +174,7 @@ impl MinatoApp {
 
         let (color, note) = match &connection {
             Connection::Connected(pong) => {
-                (cx.theme().success, format!("minatod {}", pong.version))
+                (cx.theme().success, format!("kobuned {}", pong.version))
             }
             Connection::Connecting => (cx.theme().muted_foreground, "Connecting…".to_string()),
             Connection::Failed(_) => (cx.theme().danger, "Disconnected".to_string()),
@@ -192,7 +192,7 @@ impl MinatoApp {
                     .w_full()
                     .gap_2()
                     .items_center()
-                    .child(div().text_lg().font_semibold().child("Minato"))
+                    .child(div().text_lg().font_semibold().child("Kobune"))
                     .child(div().flex_1())
                     .child(
                         Button::new("theme")
@@ -338,7 +338,7 @@ impl MinatoApp {
                 .gap_2()
                 .child(Label::new("No workspaces").text_color(cx.theme().muted_foreground))
                 .child(
-                    Label::new("Create one with `minato new <branch>`")
+                    Label::new("Create one with `kobune new <branch>`")
                         .text_color(cx.theme().muted_foreground),
                 )
                 .into_any_element(),

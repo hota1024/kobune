@@ -3,12 +3,12 @@
 //! ratatui draws into a [`Buffer`] and a backend then paints it by moving
 //! the cursor around the screen. A command that prints once and exits
 //! wants none of that: the lines have to land in the scrollback, in order,
-//! so that `minato status | grep web` keeps working and so that scrolling
+//! so that `kobune status | grep web` keeps working and so that scrolling
 //! up tomorrow still shows what happened.
 //!
 //! So the buffer is walked here and written as ordinary lines. The widgets
 //! above are unchanged by it — the same views can be handed to a real
-//! [`ratatui::Terminal`] the day `minato` grows a full-screen mode.
+//! [`ratatui::Terminal`] the day `kobune` grows a full-screen mode.
 
 use std::io::{IsTerminal, Write};
 
@@ -257,10 +257,10 @@ fn terminal_width() -> u16 {
 /// answer is not a layout to fall back on: it is handed to a program that
 /// will draw to exactly what it is told, and a terminal reported as 0×0
 /// would have it draw to nothing.
-pub fn window() -> Option<minato_api::Window> {
+pub fn window() -> Option<kobune_api::Window> {
     match ratatui::crossterm::terminal::size() {
         Ok((columns, rows)) if columns >= MIN_WIDTH && rows > 0 => {
-            Some(minato_api::Window::new(columns, rows))
+            Some(kobune_api::Window::new(columns, rows))
         }
         _ => None,
     }
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn a_background_nobody_will_write_is_padding_after_all() {
         // Unstyled, that quiet zone reaches the file as two spaces at the
-        // end of a line — which is what this trim is for. `minato url --qr
+        // end of a line — which is what this trim is for. `kobune url --qr
         // | tee log` should not be the one thing that leaves them behind.
         let buffer = draw(8, 1, &[Line::from(vec!["x".into(), "  ".bg(Color::White)])]);
         assert_eq!(render_to_string(&buffer, false), "x\n");

@@ -14,7 +14,7 @@
 //! On top of that **there is no container-to-container name resolution at
 //! all** — no aliases, and no DNS either. A container's nameserver is its
 //! network gateway, which answers NXDOMAIN for every container name. So a
-//! peer's IP address is injected as `MINATO_HOST_<SERVICE>` instead.
+//! peer's IP address is injected as `KOBUNE_HOST_<SERVICE>` instead.
 //!
 //! That last one is why this backend leaves
 //! [`Runtime::starts_concurrently`] alone: an address can only be read off
@@ -32,8 +32,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use minato_api::OutputStream;
-use minato_core::{ServiceScope, ServiceState};
+use kobune_api::OutputStream;
+use kobune_core::{ServiceScope, ServiceState};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -63,7 +63,7 @@ const RUNTIME_ID: &str = "apple";
 /// restarted. The cost is a handful of `stat` calls in front of a process
 /// spawn.
 fn cli(program: &str) -> Command {
-    Command::new(minato_core::program::resolve(program))
+    Command::new(kobune_core::program::resolve(program))
 }
 
 /// Where the generated `/etc/hosts` files live, under the volume storage.
@@ -108,17 +108,17 @@ pub struct AppleContainerRuntime {
 }
 
 impl AppleContainerRuntime {
-    /// Storage under the given Minato home.
+    /// Storage under the given Kobune home.
     ///
     /// **Given rather than resolved from the environment.** This used to
-    /// read `MINATO_HOME` itself, which agreed with its caller as long as
+    /// read `KOBUNE_HOME` itself, which agreed with its caller as long as
     /// the directory was only ever written to. `purge_volumes` deletes
     /// from it, and a runtime that picks its own root while the daemon
     /// holding it was built with another is a recursive delete aimed
     /// somewhere nobody chose — a daemon test, which is handed a temporary
     /// home, would have swept the developer's real storage.
     pub fn for_home(root: &std::path::Path) -> Self {
-        Self::with_settings(minato_core::apple::program(), root.join("volumes"))
+        Self::with_settings(kobune_core::apple::program(), root.join("volumes"))
     }
 
     pub fn with_settings(program: String, volume_root: PathBuf) -> Self {
@@ -179,7 +179,7 @@ impl AppleContainerRuntime {
             .unwrap_or(false)
     }
 
-    /// Every container Minato manages.
+    /// Every container Kobune manages.
     ///
     /// The CLI cannot filter by label, so the whole listing comes back and
     /// is narrowed down here.
@@ -481,7 +481,7 @@ impl AppleContainerRuntime {
                 continue;
             };
 
-            let var = format!("MINATO_HOST_{}", peer.to_uppercase().replace('-', "_"));
+            let var = format!("KOBUNE_HOST_{}", peer.to_uppercase().replace('-', "_"));
 
             // Never overwrite what the user set explicitly.
             env.entry(var).or_insert_with(|| address.to_string());
@@ -497,16 +497,16 @@ impl AppleContainerRuntime {
     /// loopback, so this is the only address a container can find the
     /// proxy at.
     async fn network_gateway(&self) -> Option<Ipv4Addr> {
-        let listed = self.run(&minato_core::apple::LIST_ARGS).await.ok()?;
+        let listed = self.run(&kobune_core::apple::LIST_ARGS).await.ok()?;
 
-        minato_core::apple::parse_gateway(&listed, minato_core::apple::DEFAULT_NETWORK)
+        kobune_core::apple::parse_gateway(&listed, kobune_core::apple::DEFAULT_NETWORK)
     }
 
     /// Writes the `/etc/hosts` this container gets, and says where it is.
     ///
     /// **Apple Container has no `--add-host`.** `container run --help` in
     /// 1.2.1 offers `--dns` and nothing else, and pointing the whole
-    /// resolver at Minato's DNS would answer NXDOMAIN for every name
+    /// resolver at Kobune's DNS would answer NXDOMAIN for every name
     /// outside `.localhost` — the container would lose the internet to
     /// gain an internal URL. Mounting the file Docker's flag writes for
     /// itself is the same thing without that cost.
@@ -519,7 +519,7 @@ impl AppleContainerRuntime {
     ///
     /// **One file per service, not per container.** A throwaway is named
     /// for the instant it was created, so keying on that would leave a
-    /// file behind for every `minato exec` ever run, with nothing to sweep
+    /// file behind for every `kobune exec` ever run, with nothing to sweep
     /// them: the workspace's own prefix does not match them. The contents
     /// are the same either way.
     ///
@@ -537,8 +537,8 @@ impl AppleContainerRuntime {
             .map_err(|err| RuntimeError::failed(format!("creating {}", dir.display()), err))?;
 
         let mut contents = String::from(
-            "# Written by Minato. The gateway is the host, where the proxy\n\
-             # listens, so MINATO_URL_<SERVICE> reaches it from in here too.\n\
+            "# Written by Kobune. The gateway is the host, where the proxy\n\
+             # listens, so KOBUNE_URL_<SERVICE> reaches it from in here too.\n\
              127.0.0.1\tlocalhost\n\
              ::1\tlocalhost ip6-localhost ip6-loopback\n",
         );
@@ -693,9 +693,9 @@ impl AppleContainerRuntime {
             args.push(format!("{key}={value}"));
         }
 
-        // **A throwaway carries no labels.** They are how Minato finds its
+        // **A throwaway carries no labels.** They are how Kobune finds its
         // own containers, so a labelled one would turn up in
-        // `minato status` and in what `down` stops.
+        // `kobune status` and in what `down` stops.
         if throwaway.is_none() {
             for (key, value) in container_labels(spec) {
                 args.push("--label".into());
@@ -708,7 +708,7 @@ impl AppleContainerRuntime {
             args.push(network.to_string());
         }
 
-        // **A throwaway gets the hostnames too.** `minato exec` is where a
+        // **A throwaway gets the hostnames too.** `kobune exec` is where a
         // service is poked at by hand, and a curl that works in the service
         // but not in the shell beside it is the confusing kind of
         // difference.
@@ -903,7 +903,7 @@ impl Runtime for AppleContainerRuntime {
                 .is_some_and(|reference| reference != spec.image);
 
             // Whether a container has a terminal is settled when it is
-            // created, so `tty` turned on in `minato.toml` reaches a
+            // created, so `tty` turned on in `kobune.toml` reaches a
             // running service only by recreating it. The label is stamped
             // at creation and came back with the listing.
             let wrong_terminal =
@@ -1193,7 +1193,7 @@ impl Runtime for AppleContainerRuntime {
                          Container hands one out only to whoever starts a \
                          container, so a service that gained `tty` after it \
                          started — or one started by a daemon that has since \
-                         restarted — needs `minato down && minato up` first",
+                         restarted — needs `kobune down && kobune up` first",
                     )
                 })?;
 
@@ -1233,14 +1233,14 @@ impl Runtime for AppleContainerRuntime {
         let Some(record) = self.find_container(key).await? else {
             return Err(RuntimeError::failed(
                 format!("running a command in {}", key.service),
-                "there is no container. Start it with `minato up`",
+                "there is no container. Start it with `kobune up`",
             ));
         };
 
         if !record.is_running() {
             return Err(RuntimeError::failed(
                 format!("running a command in {}", key.service),
-                "the container is not running. Start it with `minato up`",
+                "the container is not running. Start it with `kobune up`",
             ));
         }
 
@@ -1333,14 +1333,14 @@ impl Runtime for AppleContainerRuntime {
     /// The directories under the volume root, which is all a volume is here.
     ///
     /// **No `container` command is run, and none has to be.** These are
-    /// Minato's own directories: they can be listed with the service down,
+    /// Kobune's own directories: they can be listed with the service down,
     /// with the CLI uninstalled, or on a machine that never had it — which
     /// is the point, since somebody who has switched to Docker still has
     /// what Apple Container left behind.
     ///
     /// Only the two levels [`Self::ensure_volume_dir`] writes —
     /// `<root>/<project>/<volume>` — and only directories. A stray file
-    /// under the volume root is not something Minato put there, and this is
+    /// under the volume root is not something Kobune put there, and this is
     /// a listing whose entries get deleted.
     async fn managed_volumes(&self) -> Result<Vec<ManagedVolume>> {
         let Ok(projects) = std::fs::read_dir(&self.volume_root) else {
@@ -1380,7 +1380,7 @@ impl Runtime for AppleContainerRuntime {
 
         // The trait says the volume has to be one this runtime listed, and
         // this is what happens when it is not. A Docker volume's `id` is a
-        // name rather than a path — `minato-myapp-pgdata` — and handing one
+        // name rather than a path — `kobune-myapp-pgdata` — and handing one
         // here would otherwise have `remove_dir_all` resolve it against the
         // daemon's working directory and delete whatever it found.
         if !path.starts_with(&self.volume_root) {
@@ -1414,7 +1414,7 @@ impl Runtime for AppleContainerRuntime {
 // Shaped after what `container ls --all --format json` really prints, as of
 // Apple Container 1.2.1:
 //
-// [{ "id": "minato-myapp-feat-1-web",
+// [{ "id": "kobune-myapp-feat-1-web",
 //    "status": { "state": "running",
 //                "networks": [{"ipv4Address": "192.168.64.3/24",
 //                              "hostname": "...", "network": "default"}] },
@@ -1574,7 +1574,7 @@ fn parse_container_list(json: &str) -> Result<Vec<AppleContainerRecord>> {
 /// The tags `container image list --format json` reports.
 ///
 /// The tag lives at `configuration.name`, complete with registry and tag —
-/// `docker.io/library/busybox:latest`, or `minato-bldapp-web:79ef7f8c89e1`
+/// `docker.io/library/busybox:latest`, or `kobune-bldapp-web:79ef7f8c89e1`
 /// for something built here. Captured from the real command rather than
 /// guessed: the first attempt looked for a top-level `reference`, found
 /// nothing, and quietly rebuilt on every `up`.
@@ -1662,7 +1662,7 @@ mod tests {
     use super::*;
 
     /// The name the runtime is built with when nothing overrides it.
-    use minato_core::apple::PROGRAM;
+    use kobune_core::apple::PROGRAM;
 
     /// Captured from a real container on Apple Container 1.2.1.
     ///
@@ -1672,11 +1672,11 @@ mod tests {
     /// while the tests stayed green.
     const SAMPLE: &str = r#"[
       {
-        "id": "minato-myapp-feat-1-web",
+        "id": "kobune-myapp-feat-1-web",
         "status": {
           "networks": [
             {
-              "hostname": "minato-myapp-feat-1-web",
+              "hostname": "kobune-myapp-feat-1-web",
               "ipv4Address": "192.168.64.3/24",
               "ipv4Gateway": "192.168.64.1",
               "ipv6Address": "fd8f:b27a:cf00:5842:f08f:d2ff:fe1b:efa2/64",
@@ -1690,14 +1690,14 @@ mod tests {
           "state": "running"
         },
         "configuration": {
-          "id": "minato-myapp-feat-1-web",
+          "id": "kobune-myapp-feat-1-web",
           "labels": {
-            "dev.minato.managed": "1",
-            "dev.minato.port": "5678",
-            "dev.minato.project": "myapp",
-            "dev.minato.scope": "workspace",
-            "dev.minato.service": "web",
-            "dev.minato.workspace": "feat-1"
+            "dev.kobune.managed": "1",
+            "dev.kobune.port": "5678",
+            "dev.kobune.project": "myapp",
+            "dev.kobune.scope": "workspace",
+            "dev.kobune.service": "web",
+            "dev.kobune.workspace": "feat-1"
           },
           "image": { "reference": "docker.io/hashicorp/http-echo:latest" }
         }
@@ -1711,7 +1711,7 @@ mod tests {
 
         let record = &records[0];
         assert!(record.is_running());
-        assert_eq!(record.configuration.id, "minato-myapp-feat-1-web");
+        assert_eq!(record.configuration.id, "kobune-myapp-feat-1-web");
         assert_eq!(record.label(labels::SERVICE), Some("web"));
         assert_eq!(record.ip(), Some(Ipv4Addr::new(192, 168, 64, 3)));
     }
@@ -1845,12 +1845,12 @@ mod tests {
           {"id": "abc",
            "configuration": {"name": "docker.io/library/busybox:latest"}},
           {"id": "def",
-           "configuration": {"name": "minato-bldapp-web:79ef7f8c89e1"}}
+           "configuration": {"name": "kobune-bldapp-web:79ef7f8c89e1"}}
         ]"#;
 
         let tags = parse_image_tags(json).expect("parses");
 
-        assert!(tags.iter().any(|t| t == "minato-bldapp-web:79ef7f8c89e1"));
+        assert!(tags.iter().any(|t| t == "kobune-bldapp-web:79ef7f8c89e1"));
         assert_eq!(tags.len(), 2);
     }
 
@@ -1868,12 +1868,12 @@ mod tests {
           {"id": "default",
            "configuration": {"name": "default", "mode": "nat"},
            "status": {"ipv4Subnet": "192.168.64.0/24"}},
-          {"id": "minato-myapp-feat-1",
-           "configuration": {"name": "minato-myapp-feat-1"}}
+          {"id": "kobune-myapp-feat-1",
+           "configuration": {"name": "kobune-myapp-feat-1"}}
         ]"#;
 
         let names = parse_network_names(json).expect("parses");
-        assert_eq!(names, vec!["default", "minato-myapp-feat-1"]);
+        assert_eq!(names, vec!["default", "kobune-myapp-feat-1"]);
     }
 
     fn spec_with_peers(peers: Vec<String>) -> ServiceSpec {
@@ -1997,7 +1997,7 @@ mod tests {
         // environment.
         let runtime = AppleContainerRuntime::with_settings(
             PROGRAM.into(),
-            PathBuf::from("/tmp/minato-test-volumes"),
+            PathBuf::from("/tmp/kobune-test-volumes"),
         );
         let addresses = BTreeMap::from([
             ("db".to_string(), Ipv4Addr::new(192, 168, 64, 3)),
@@ -2009,11 +2009,11 @@ mod tests {
         );
 
         assert_eq!(
-            env.get("MINATO_HOST_DB").map(String::as_str),
+            env.get("KOBUNE_HOST_DB").map(String::as_str),
             Some("192.168.64.3")
         );
         assert_eq!(
-            env.get("MINATO_HOST_CACHE_STORE").map(String::as_str),
+            env.get("KOBUNE_HOST_CACHE_STORE").map(String::as_str),
             Some("192.168.64.4"),
             "a hyphen is not valid in an environment variable name"
         );
@@ -2026,30 +2026,30 @@ mod tests {
         // for a DNS problem that does not exist.
         let runtime = AppleContainerRuntime::with_settings(
             PROGRAM.into(),
-            PathBuf::from("/tmp/minato-test-volumes"),
+            PathBuf::from("/tmp/kobune-test-volumes"),
         );
 
         let env = runtime.env_with_peers(&spec_with_peers(vec!["db".into()]), &BTreeMap::new());
 
-        assert!(!env.contains_key("MINATO_HOST_DB"), "got: {env:?}");
+        assert!(!env.contains_key("KOBUNE_HOST_DB"), "got: {env:?}");
     }
 
     #[test]
     fn does_not_override_user_supplied_env() {
         let runtime = AppleContainerRuntime::with_settings(
             PROGRAM.into(),
-            PathBuf::from("/tmp/minato-test-volumes"),
+            PathBuf::from("/tmp/kobune-test-volumes"),
         );
 
         let mut spec = spec_with_peers(vec!["db".into()]);
         spec.env
-            .insert("MINATO_HOST_DB".into(), "custom-host".into());
+            .insert("KOBUNE_HOST_DB".into(), "custom-host".into());
 
         let addresses = BTreeMap::from([("db".to_string(), Ipv4Addr::new(192, 168, 64, 3))]);
         let env = runtime.env_with_peers(&spec, &addresses);
 
         assert_eq!(
-            env.get("MINATO_HOST_DB").map(String::as_str),
+            env.get("KOBUNE_HOST_DB").map(String::as_str),
             Some("custom-host")
         );
     }
@@ -2058,7 +2058,7 @@ mod tests {
     fn builds_create_args_without_publishing_ports() {
         let runtime = AppleContainerRuntime::with_settings(
             PROGRAM.into(),
-            PathBuf::from("/tmp/minato-test-volumes"),
+            PathBuf::from("/tmp/kobune-test-volumes"),
         );
 
         let mut spec = spec_with_peers(vec![]);
@@ -2071,7 +2071,7 @@ mod tests {
         let args = runtime
             .create_args(
                 &spec,
-                Some("minato-myapp-feat-1"),
+                Some("kobune-myapp-feat-1"),
                 &BTreeMap::new(),
                 None,
                 None,
@@ -2102,7 +2102,7 @@ mod tests {
         );
         assert!(
             args.windows(2)
-                .any(|w| w[0] == "--label" && w[1] == "dev.minato.service=api"),
+                .any(|w| w[0] == "--label" && w[1] == "dev.kobune.service=api"),
             "the labels are there: {args:?}"
         );
     }
@@ -2133,8 +2133,8 @@ mod tests {
 
     #[test]
     fn a_throwaway_carries_no_labels() {
-        // Labels are how Minato finds its own containers. A labelled
-        // throwaway would show up in `minato status` and in what `down`
+        // Labels are how Kobune finds its own containers. A labelled
+        // throwaway would show up in `kobune status` and in what `down`
         // stops.
         let dir = tempfile::tempdir().expect("tempdir");
         let runtime =
@@ -2188,7 +2188,7 @@ mod tests {
         let one_off = Throwaway::new(&spec, &command, None);
 
         assert_ne!(one_off.name, names::container(&spec.key));
-        assert!(one_off.name.starts_with("minato-tmp-"), "{}", one_off.name);
+        assert!(one_off.name.starts_with("kobune-tmp-"), "{}", one_off.name);
     }
 
     #[test]

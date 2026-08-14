@@ -1,6 +1,6 @@
 //! The bridge between the tokio thread and the UI.
 //!
-//! `minato-client` only runs on tokio, and GPUI has an executor of its
+//! `kobune-client` only runs on tokio, and GPUI has an executor of its
 //! own. Rather than mix them, tokio gets its own thread and hands over
 //! nothing but results.
 //!
@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use minato_api::{Event, OutputStream, Request, Response, Target};
-use minato_client::Client;
+use kobune_api::{Event, OutputStream, Request, Response, Target};
+use kobune_client::Client;
 
 use crate::state::{Connection, LogLine, SharedState};
 
@@ -67,7 +67,7 @@ pub fn spawn(
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
 
     std::thread::Builder::new()
-        .name("minato-bridge".to_string())
+        .name("kobune-bridge".to_string())
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -208,7 +208,7 @@ async fn refresh(state: &SharedState, cwd: &Path, notifier: &Notifier) {
         }),
         Err(err) => state.write(|state| {
             // The connection is fine, so this is the listing's own
-            // failure — started in a directory with no minato.toml, say.
+            // failure — started in a directory with no kobune.toml, say.
             state.error = Some(err.to_string());
             state.workspaces.clear();
         }),
@@ -283,7 +283,7 @@ async fn follow_logs(state: SharedState, cwd: PathBuf, notifier: Notifier, works
     let Ok(mut connection) = client.connect().await else {
         state.write(|state| {
             state.push_log(LogLine {
-                service: "minato".into(),
+                service: "kobune".into(),
                 line: "cannot connect to the daemon".into(),
                 is_error: true,
             });
@@ -325,7 +325,7 @@ async fn follow_logs(state: SharedState, cwd: PathBuf, notifier: Notifier, works
     if let Err(err) = outcome {
         state.write(|state| {
             state.push_log(LogLine {
-                service: "minato".into(),
+                service: "kobune".into(),
                 line: format!("log stream ended: {err}"),
                 is_error: true,
             });

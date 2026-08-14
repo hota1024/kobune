@@ -1,14 +1,14 @@
 # Working with AI agents
 
-Minato is built to be driven by an agent. This page is about what that means in
+Kobune is built to be driven by an agent. This page is about what that means in
 practice, and how to set it up.
 
 ## Install the Skill
 
 ```console
-$ minato skill install
+$ kobune skill install
 ╭ skill ───────────────────────────────────────────────────╮
-│ installed  /path/to/myapp/.claude/skills/minato/SKILL.md │
+│ installed  /path/to/myapp/.claude/skills/kobune/SKILL.md │
 ╰──────────────────────────────────────────────────────────╯
 ```
 
@@ -16,8 +16,8 @@ That writes a Skill file Claude Code picks up automatically. Commit it — every
 worktree and every teammate then gets the same instructions.
 
 ```console
-$ minato skill show     # print it without writing
-$ minato skill install --force   # overwrite local edits
+$ kobune skill show     # print it without writing
+$ kobune skill install --force   # overwrite local edits
 ```
 
 Re-running with unchanged content does nothing, so it will not dirty your
@@ -29,9 +29,9 @@ It is not a command reference — `--help` covers that. It carries the judgement
 an agent cannot infer:
 
 - **Never reach for `docker`.** Anything `docker ps` shows is visible through
-  Minato, and touching containers directly puts the real state at odds with
-  what Minato believes.
-- **Never guess a port.** Ask `minato url`. Ports change; URLs do not.
+  Kobune, and touching containers directly puts the real state at odds with
+  what Kobune believes.
+- **Never guess a port.** Ask `kobune url`. Ports change; URLs do not.
 - **Confirm by actually reaching it.** "It should be up" is not a check.
 - **`curl -s` alone is not enough** — it swallows errors and an untrusted
   certificate looks identical to an empty response.
@@ -44,7 +44,7 @@ Three decisions exist because an agent, not a person, is reading the output.
 ### Every command speaks JSON
 
 ```console
-$ minato status --json
+$ kobune status --json
 {
   "result": "workspace",
   "workspace": {
@@ -65,14 +65,14 @@ Without `--json` there is still nothing to strip. On a terminal the CLI draws
 its results — a frame, aligned columns, colour on the parts that carry meaning
 — but an agent is never on one. Captured output is plain text, with no escape
 sequences, no box-drawing characters, and nothing wrapped or truncated however
-long a URL is. `minato url <service>` and `minato env get` print one bare line
+long a URL is. `kobune url <service>` and `kobune env get` print one bare line
 either way, and `logs` and `exec` pass the container's output through
 untouched.
 
 ### Exit codes say what went wrong
 
 ```console
-$ minato url nope; echo $?
+$ kobune url nope; echo $?
 4
 ```
 
@@ -92,7 +92,7 @@ An agent can branch on these without reading anything. The full list is in the
 ### `exec` passes the exit code through
 
 ```console
-$ minato exec web -- npm test; echo $?
+$ kobune exec web -- npm test; echo $?
 1
 ```
 
@@ -101,7 +101,7 @@ Test success is readable from the exit status alone, which is the whole point.
 ### Errors carry a hint
 
 ```console
-$ minato tunnel enable --domain example.com --json
+$ kobune tunnel enable --domain example.com --json
 {
   "error": {
     "code": "unsupported",
@@ -129,14 +129,14 @@ wrong.
 ## A workable loop
 
 ```bash
-minato status --json                       # where are we?
-minato new feature/x                       # branch and environment together
+kobune status --json                       # where are we?
+kobune new feature/x                       # branch and environment together
 cd ../myapp.wt/feature-x
 # … edit …
-minato exec web -- npm test                # exit code is the test result
-curl -sS --fail-with-body "$(minato url web)/api/health"
-minato logs web -n 50                      # when that fails
-minato doctor                              # when the environment is at fault
+kobune exec web -- npm test                # exit code is the test result
+curl -sS --fail-with-body "$(kobune url web)/api/health"
+kobune logs web -n 50                      # when that fails
+kobune doctor                              # when the environment is at fault
 ```
 
 ## Not an MCP server
@@ -147,7 +147,7 @@ is enough, and a second surface would be another thing to keep correct.
 ## Does it actually work?
 
 Fair question to ask of anything that calls itself agent-friendly.
-[`docs/AGENT-RUN.md`](https://github.com/hota1024/minato/blob/main/docs/AGENT-RUN.md)
+[`docs/AGENT-RUN.md`](https://github.com/hota1024/kobune/blob/main/docs/AGENT-RUN.md)
 is the record of driving a two-service project through a real task with
 nothing but the Skill — what worked first time, and the four places the
 instructions did not say enough. The four have been fixed; the record is kept

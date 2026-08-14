@@ -1,7 +1,7 @@
-# Driving Minato as an agent would
+# Driving Kobune as an agent would
 
 The README's first line calls this a development environment manager that is
-agent-friendly by design. `skills/minato/SKILL.md` is written for one. Nothing
+agent-friendly by design. `skills/kobune/SKILL.md` is written for one. Nothing
 in this repository had ever checked whether an agent can get through a task
 with it.
 
@@ -12,7 +12,7 @@ so it can be repeated rather than remembered.
 
 - a real two-service project, not a fixture: a web that fetches from an api
   and renders what it gets
-- everything through `minato`. **`docker` only to observe**, never to act
+- everything through `kobune`. **`docker` only to observe**, never to act
 - `SKILL.md` as the only instructions, followed as written
 - every place it did not say enough gets written down, including the ones that
   are nobody's fault
@@ -43,24 +43,24 @@ port = 3000
 command = "sh -c 'node web/server.js'"
 depends_on = ["api"]
 health = "http://localhost:3000/healthz"
-env = { API_URL = "${MINATO_URL_API}" }
+env = { API_URL = "${KOBUNE_URL_API}" }
 ```
 
 Written from `SKILL.md`'s two-service template plus its notes on `carry`,
-`health` and `${MINATO_URL_...}`. It was right first time, which is worth
+`health` and `${KOBUNE_URL_...}`. It was right first time, which is worth
 saying: the format did not need guessing at.
 
 ## What worked
 
-**Getting started.** `minato status --json` in a project with no
+**Getting started.** `kobune status --json` in a project with no
 configuration answers with `config_not_found`, exit 6, and a hint naming
-`minato init`. `minato init` writes a starter file. Nothing to work out.
+`kobune init`. `kobune init` writes a starter file. Nothing to work out.
 
-**Bringing it up.** `minato up` pulled, started both services in dependency
+**Bringing it up.** `kobune up` pulled, started both services in dependency
 order, waited for both health checks and printed two URLs. First time.
 
 **The service-to-service URL.** `web` reached `api` through
-`MINATO_URL_API` — the same hostname from inside the container as from
+`KOBUNE_URL_API` — the same hostname from inside the container as from
 outside — and rendered its data:
 
 ```console
@@ -71,7 +71,7 @@ $ curl --cacert "$CA" https://web.agentproj.localhost:19443/
 **A worktree, which is the whole point.**
 
 ```console
-$ minato new feature/counts
+$ kobune new feature/counts
   ✓ starting api
   ✓ starting web
 ● api  ready  https://api.feature-counts.agentproj.localhost:19443
@@ -92,15 +92,15 @@ fix in the real flow rather than in a test.
 ### 1. An agent is told to stop when it does not have to
 
 `SKILL.md` says to confirm by actually reaching the URL. Doing that on a
-machine where `minato setup` has not run:
+machine where `kobune setup` has not run:
 
 ```console
-$ curl -sS --fail-with-body "$(minato url web)/"
+$ curl -sS --fail-with-body "$(kobune url web)/"
 curl: (60) SSL certificate problem: self signed certificate in certificate chain
 ```
 
 The trail from there works exactly as designed — `SKILL.md` names exit 60,
-points at `minato doctor`, and `doctor` says `local CA trust: not trusted`
+points at `kobune doctor`, and `doctor` says `local CA trust: not trusted`
 with the `sudo` command to fix it. And then `SKILL.md` says trusting it is a
 person's job, so ask.
 
@@ -108,15 +108,15 @@ person's job, so ask.
 reports where the certificate is:
 
 ```console
-$ CA=$(minato doctor --json | jq -r '.checks[] | select(.id == "ca") | .detail')
-$ curl -sS --fail-with-body --cacert "$CA" "$(minato url web)/"
+$ CA=$(kobune doctor --json | jq -r '.checks[] | select(.id == "ca") | .detail')
+$ curl -sS --fail-with-body --cacert "$CA" "$(kobune url web)/"
 <h1>Todos</h1><ul><li>write the review</li></ul>
 ```
 
 Everything needed was already there, in a command `SKILL.md` sends the agent
 to. It blocked at the one step it calls the most important.
 
-Fixed: `SKILL.md` now shows the `--cacert` form, and says to mention `minato
+Fixed: `SKILL.md` now shows the `--cacert` form, and says to mention `kobune
 setup` to the user rather than waiting on it.
 
 ### 2. Nothing said what to do after editing source
@@ -124,7 +124,7 @@ setup` to the user rather than waiting on it.
 Adding a route to `api/server.js` and checking it:
 
 ```console
-$ curl --cacert "$CA" "$(minato url api)/todos/count"
+$ curl --cacert "$CA" "$(kobune url api)/todos/count"
 not found
 ```
 
@@ -135,7 +135,7 @@ the next move it invites is to rewrite code that was already correct.
 The file was in the container all along — the worktree is bind-mounted:
 
 ```console
-$ minato exec api -- grep -c "todos/count" /workspace/api/server.js
+$ kobune exec api -- grep -c "todos/count" /workspace/api/server.js
 1
 ```
 
@@ -144,22 +144,22 @@ The *process* was stale. `node server.js` has no watcher.
 Fixed: a section on what changes when you save a file and what does not, the
 one-command way to tell a stale process from a bad edit, and the recovery.
 
-### 3. `minato restart` was documented and does not exist
+### 3. `kobune restart` was documented and does not exist
 
 The obvious recovery for a stale process. `docs/DESIGN.md` §10 listed it; the
 CLI has no such command, and `--help` does not mention it. What works is
-`minato down --service api && minato up --service api`.
+`kobune down --service api && kobune up --service api`.
 
 Fixed: removed from `DESIGN.md`, and `SKILL.md` says outright that there is
-no `minato restart`, because an agent that has seen the design will try it.
+no `kobune restart`, because an agent that has seen the design will try it.
 
 ### 4. `--json` does not match its own documented example
 
-`SKILL.md` opens with `minato status --json` and says to look at each
+`SKILL.md` opens with `kobune status --json` and says to look at each
 service's `state`. The obvious way to do that:
 
 ```console
-$ minato status --json | jq -r '.workspace.services[] | "\(.name): \(.state)"'
+$ kobune status --json | jq -r '.workspace.services[] | "\(.name): \(.state)"'
 api: {"state":"ready"}
 web: {"state":"ready"}
 ```
@@ -179,7 +179,7 @@ Fixed here: the documented example, and `SKILL.md` now says to read
 `PROTOCOL_VERSION` 6:
 
 ```console
-$ minato status --json | jq -r '.workspace.services[] | "\(.name): \(.state)"'
+$ kobune status --json | jq -r '.workspace.services[] | "\(.name): \(.state)"'
 web: ready
 broken: failed
 ```
@@ -203,14 +203,14 @@ behind it — and nothing but the Skill. Its only configuration was a
 
 **It finished the task and never once reached for `docker`.** The `--cacert`
 recipe added above worked first try for someone who did not write it, and the
-prediction of `curl: (60)` reproduced verbatim. `${MINATO_URL_API}`,
+prediction of `curl: (60)` reproduced verbatim. `${KOBUNE_URL_API}`,
 `depends_on`, `health` — all used correctly, from the Skill alone.
 
 It found two things I could not have.
 
 ### It never used `--from-compose`, in the one project that needed it
 
-It read the compose file for the port numbers, then **hand-wrote `minato.toml`
+It read the compose file for the port numbers, then **hand-wrote `kobune.toml`
 from the reference documentation**, deriving ports, commands and health paths
 itself. `--from-compose` had shipped four commits earlier.
 
@@ -218,7 +218,7 @@ It is documented in `DESIGN.md`, in both CLI references and in the changelog,
 and mentioned **zero times in `SKILL.md`** — the only file an agent reads. In
 its own words:
 
-> The Skill is silent on the "no `minato.toml` exists, and there's a stray
+> The Skill is silent on the "no `kobune.toml` exists, and there's a stray
 > `docker-compose.yml` instead" scenario, which is exactly what I hit.
 
 A feature built to remove the entry barrier, invisible to the reader standing
@@ -246,6 +246,6 @@ at all.
 - the Skill's worked example assumes npm scripts; this project was a bare
   `node main.js` with no `package.json`, and the agent had to notice rather
   than copy
-- `MINATO_URL_<SERVICE>` is the value, but which variable *name* the
+- `KOBUNE_URL_<SERVICE>` is the value, but which variable *name* the
   application reads exists only in its source. The Skill said the first and
   not the second

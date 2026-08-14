@@ -1,7 +1,7 @@
 //! The runtime state of a service.
 //!
 //! The state machine is a concept, not an implementation, so it lives here
-//! rather than in the runtime. Both `minato-api` and `minato-runtime`
+//! rather than in the runtime. Both `kobune-api` and `kobune-runtime`
 //! share this type.
 
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// **`reason` travels beside it, not inside it.** Whatever carries a
 /// state carries an optional `reason` next to it — see
-/// [`minato_api::ServiceInfo`]. That is the cost of the flat form, and it
+/// [`kobune_api::ServiceInfo`]. That is the cost of the flat form, and it
 /// is paid where the value is put together rather than by the reader.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceState {

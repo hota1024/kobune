@@ -230,7 +230,7 @@ fn parse_worktree_list(output: &str) -> Vec<Worktree> {
 
 /// Whether git tracks `relative` within `worktree`.
 ///
-/// **A file Minato generates must not be one git is watching.** Writing it
+/// **A file Kobune generates must not be one git is watching.** Writing it
 /// would leave the worktree permanently dirty, and committing it would put
 /// one branch's URLs into every other checkout.
 pub fn is_tracked(worktree: &Path, relative: &str) -> bool {

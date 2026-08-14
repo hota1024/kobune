@@ -2,16 +2,16 @@
 //!
 //! A container having started and the app inside being able to answer are
 //! two different things. Confusing them makes the `curl` right after
-//! `minato up` fail with connection refused, and an agent reads that as
+//! `kobune up` fail with connection refused, and an agent reads that as
 //! "the server is broken".
 //!
-//! Follows `health` from `minato.toml` when it is set; otherwise all that
+//! Follows `health` from `kobune.toml` when it is set; otherwise all that
 //! matters is whether the endpoint holds a connection open.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use minato_core::HealthCheck;
+use kobune_core::HealthCheck;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::{Result, RuntimeError};
@@ -21,7 +21,7 @@ use crate::event::EventSink;
 ///
 /// A dev server's first start — resolving dependencies, compiling — can
 /// take longer than this. When it does, carry on and warn rather than
-/// wait: waiting forever means `minato up` never returns.
+/// wait: waiting forever means `kobune up` never returns.
 pub const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How often to check.
@@ -152,7 +152,7 @@ async fn probe_http(endpoint: SocketAddr, url: &str) -> bool {
     // A minimal HTTP/1.1 request, written by hand to avoid another
     // dependency. A health check only needs the status line.
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {endpoint}\r\nConnection: close\r\nUser-Agent: minato-health\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {endpoint}\r\nConnection: close\r\nUser-Agent: kobune-health\r\n\r\n"
     );
 
     if tokio::time::timeout(PROBE_TIMEOUT, stream.write_all(request.as_bytes()))
@@ -649,8 +649,8 @@ mod tests {
 
         let mut saw_warning = false;
         while let Some(event) = rx.recv().await {
-            if let minato_api::Event::Log {
-                level: minato_api::LogLevel::Warn,
+            if let kobune_api::Event::Log {
+                level: kobune_api::LogLevel::Warn,
                 ..
             } = event
             {

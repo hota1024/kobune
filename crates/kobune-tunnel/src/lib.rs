@@ -23,17 +23,17 @@ pub use process::{StepOutcome, TunnelProcess};
 ///
 /// One per machine. Reusing the name means `tunnel enable` is idempotent
 /// across projects.
-pub const DEFAULT_TUNNEL_NAME: &str = "minato";
+pub const DEFAULT_TUNNEL_NAME: &str = "kobune";
 
 /// The CLI this drives.
 pub const PROGRAM: &str = "cloudflared";
 
 /// Overrides which binary is run.
 ///
-/// For a cloudflared that is installed somewhere [`minato_core::program`]
+/// For a cloudflared that is installed somewhere [`kobune_core::program`]
 /// does not think to look, and for exercising the daemon's tunnel path
 /// without a Cloudflare account.
-pub const PROGRAM_ENV: &str = "MINATO_CLOUDFLARED";
+pub const PROGRAM_ENV: &str = "KOBUNE_CLOUDFLARED";
 
 /// The command to run, honouring [`PROGRAM_ENV`].
 ///
@@ -41,7 +41,7 @@ pub const PROGRAM_ENV: &str = "MINATO_CLOUDFLARED";
 /// whose `PATH` holds nothing a package manager can install into, so a bare
 /// `cloudflared` reads as missing on a machine that has it.
 pub fn program() -> String {
-    minato_core::program::resolve_with(std::env::var(PROGRAM_ENV).ok().as_deref(), PROGRAM)
+    kobune_core::program::resolve_with(std::env::var(PROGRAM_ENV).ok().as_deref(), PROGRAM)
 }
 
 /// Where `cloudflared tunnel login` leaves its certificate.
@@ -151,7 +151,7 @@ impl TunnelSettings {
     /// The wildcard record that routes the zone's hostnames here.
     ///
     /// One for the whole zone. A tunnel hostname is a single label
-    /// ([`minato_core::naming::tunnel_host`]), so there is no per-project
+    /// ([`kobune_core::naming::tunnel_host`]), so there is no per-project
     /// prefix left to cut a record at — and the ingress rule already
     /// claims the zone, so this is the DNS side saying the same thing.
     /// Projects and worktrees come and go without a DNS write.
@@ -169,7 +169,7 @@ impl TunnelSettings {
 pub fn readiness(settings: &TunnelSettings) -> Readiness {
     // Looked up rather than spawned: readiness is reported before anything
     // is run, and "not installed" has to be answerable without running it.
-    if minato_core::program::find(&settings.program).is_none() {
+    if kobune_core::program::find(&settings.program).is_none() {
         return Readiness::NotInstalled;
     }
 
@@ -186,7 +186,7 @@ mod tests {
     use super::*;
 
     fn settings() -> TunnelSettings {
-        TunnelSettings::new("example.com", "/tmp/minato-tunnel", 80)
+        TunnelSettings::new("example.com", "/tmp/kobune-tunnel", 80)
     }
 
     #[test]
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn missing_program_is_reported_before_anything_runs() {
-        let settings = settings().with_program("minato-definitely-not-a-real-program");
+        let settings = settings().with_program("kobune-definitely-not-a-real-program");
         assert_eq!(readiness(&settings), Readiness::NotInstalled);
     }
 
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn the_program_can_be_pointed_elsewhere() {
-        use minato_core::program::resolve_with;
+        use kobune_core::program::resolve_with;
 
         // For a cloudflared installed somewhere the lookup does not think
         // to look, and the hook the daemon's own tunnel path is exercised
@@ -244,7 +244,7 @@ mod tests {
     fn config_lives_beside_the_other_generated_files() {
         assert_eq!(
             settings().config_path(),
-            PathBuf::from("/tmp/minato-tunnel/config.yml")
+            PathBuf::from("/tmp/kobune-tunnel/config.yml")
         );
     }
 }

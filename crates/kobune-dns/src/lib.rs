@@ -1,4 +1,4 @@
-//! A DNS server for the domains Minato manages.
+//! A DNS server for the domains Kobune manages.
 //!
 //! macOS does not resolve `*.localhost` at the system level. Chrome maps it
 //! to 127.0.0.1 on its own, but `curl`, Safari and Node's fetch do not.
@@ -64,17 +64,17 @@ impl DnsConfig {
     }
 }
 
-/// Points Minato's domains at 127.0.0.1.
+/// Points Kobune's domains at 127.0.0.1.
 ///
 /// **Answers regardless of whether a route exists.** Unknown hostnames also
 /// resolve to 127.0.0.1 so the proxy can return a 404. A DNS failure only
 /// says "the name does not resolve"; reaching the proxy can say which
 /// workspaces are actually running.
-pub struct MinatoDns {
+pub struct KobuneDns {
     config: DnsConfig,
 }
 
-impl MinatoDns {
+impl KobuneDns {
     pub fn new(config: DnsConfig) -> Self {
         Self { config }
     }
@@ -85,7 +85,7 @@ impl MinatoDns {
 }
 
 #[async_trait::async_trait]
-impl RequestHandler for MinatoDns {
+impl RequestHandler for KobuneDns {
     async fn handle_request<R: ResponseHandler>(
         &self,
         request: &Request,
@@ -173,7 +173,7 @@ pub async fn serve_sockets(
         ));
     }
 
-    let mut server = ServerFuture::new(MinatoDns::new(config));
+    let mut server = ServerFuture::new(KobuneDns::new(config));
 
     for socket in udp {
         server.register_socket(socket);
@@ -227,13 +227,13 @@ mod tests {
     #[test]
     fn honours_additional_suffixes() {
         let config = DnsConfig {
-            suffixes: vec!["localhost".into(), "minato.test".into()],
+            suffixes: vec!["localhost".into(), "kobune.test".into()],
             ttl: 5,
         };
 
-        assert!(config.serves("web.myapp.minato.test"));
-        assert!(config.serves("minato.test"));
-        assert!(!config.serves("minato.test.evil.com"));
+        assert!(config.serves("web.myapp.kobune.test"));
+        assert!(config.serves("kobune.test"));
+        assert!(!config.serves("kobune.test.evil.com"));
     }
 
     #[test]

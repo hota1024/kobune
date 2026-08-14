@@ -1,6 +1,6 @@
 //! How errors travel on the wire.
 //!
-//! `minato_core::Error` is not sent as-is; it is split into a code, a
+//! `kobune_core::Error` is not sent as-is; it is split into a code, a
 //! message and a remedy. `hint` is what an agent uses to decide its next
 //! move — it is not decoration.
 
@@ -66,9 +66,9 @@ pub enum ErrorCode {
     NotFound,
     /// Already exists, so it cannot be created.
     AlreadyExists,
-    /// No `minato.toml` was found.
+    /// No `kobune.toml` was found.
     ConfigNotFound,
-    /// The contents of `minato.toml` are invalid.
+    /// The contents of `kobune.toml` are invalid.
     InvalidConfig,
     /// Run outside a git repository.
     NotAGitRepository,
@@ -110,14 +110,14 @@ impl ErrorCode {
     }
 }
 
-impl From<minato_core::Error> for ApiError {
-    fn from(err: minato_core::Error) -> Self {
-        use minato_core::Error as E;
+impl From<kobune_core::Error> for ApiError {
+    fn from(err: kobune_core::Error) -> Self {
+        use kobune_core::Error as E;
 
         let message = err.to_string();
         match err {
             E::ConfigNotFound(_) => Self::new(ErrorCode::ConfigNotFound, message)
-                .with_hint("run `minato init` at the project root to create minato.toml"),
+                .with_hint("run `kobune init` at the project root to create kobune.toml"),
             E::ConfigParse { .. } | E::ConfigInvalid(_) => {
                 Self::new(ErrorCode::InvalidConfig, message)
             }
@@ -125,9 +125,9 @@ impl From<minato_core::Error> for ApiError {
             E::NotAGitRepository(_) => Self::new(ErrorCode::NotAGitRepository, message)
                 .with_hint("run this inside a git repository"),
             E::WorkspaceNotFound(_) => Self::new(ErrorCode::NotFound, message)
-                .with_hint("run `minato ls` to see the available workspaces"),
+                .with_hint("run `kobune ls` to see the available workspaces"),
             E::ServiceNotFound(_) => Self::new(ErrorCode::NotFound, message)
-                .with_hint("use a name defined under [services] in minato.toml"),
+                .with_hint("use a name defined under [services] in kobune.toml"),
             E::WorkspaceExists(_) => Self::new(ErrorCode::AlreadyExists, message),
             E::GitSpawn(_) => Self::new(ErrorCode::Internal, message)
                 .with_hint("check that git is installed and on PATH"),
@@ -169,35 +169,35 @@ mod tests {
 
     #[test]
     fn missing_config_carries_actionable_hint() {
-        let err: ApiError = minato_core::Error::ConfigNotFound(PathBuf::from("/repo")).into();
+        let err: ApiError = kobune_core::Error::ConfigNotFound(PathBuf::from("/repo")).into();
         assert_eq!(err.code, ErrorCode::ConfigNotFound);
         assert!(
-            err.hint.expect("a hint is present").contains("minato init"),
+            err.hint.expect("a hint is present").contains("kobune init"),
             "it must say what to do next"
         );
     }
 
     #[test]
     fn maps_core_errors_to_codes() {
-        let cases: Vec<(minato_core::Error, ErrorCode)> = vec![
+        let cases: Vec<(kobune_core::Error, ErrorCode)> = vec![
             (
-                minato_core::Error::NotAGitRepository(PathBuf::from("/tmp")),
+                kobune_core::Error::NotAGitRepository(PathBuf::from("/tmp")),
                 ErrorCode::NotAGitRepository,
             ),
             (
-                minato_core::Error::WorkspaceNotFound("feat-1".into()),
+                kobune_core::Error::WorkspaceNotFound("feat-1".into()),
                 ErrorCode::NotFound,
             ),
             (
-                minato_core::Error::ServiceNotFound("web".into()),
+                kobune_core::Error::ServiceNotFound("web".into()),
                 ErrorCode::NotFound,
             ),
             (
-                minato_core::Error::ConfigInvalid("bad".into()),
+                kobune_core::Error::ConfigInvalid("bad".into()),
                 ErrorCode::InvalidConfig,
             ),
             (
-                minato_core::Error::WorkspaceExists("feat-1".into()),
+                kobune_core::Error::WorkspaceExists("feat-1".into()),
                 ErrorCode::AlreadyExists,
             ),
         ];

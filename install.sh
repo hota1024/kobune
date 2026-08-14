@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Installs Minato.
+# Installs Kobune.
 #
 #   curl -fsSL https://minato.1024.works/install.sh | sh
 #
@@ -9,15 +9,15 @@
 # advice at the end are written for whichever shells are actually installed.
 #
 # Environment:
-#   MINATO_INSTALL_DIR   where the binaries go (default ~/.local/bin)
-#   MINATO_CHANNEL       the release tag to install (default nightly)
-#   MINATO_NO_COMPLETIONS  set to skip writing completion scripts
+#   KOBUNE_INSTALL_DIR   where the binaries go (default ~/.local/bin)
+#   KOBUNE_CHANNEL       the release tag to install (default nightly)
+#   KOBUNE_NO_COMPLETIONS  set to skip writing completion scripts
 
 set -eu
 
-REPO="${MINATO_REPO:-hota1024/minato}"
-CHANNEL="${MINATO_CHANNEL:-nightly}"
-INSTALL_DIR="${MINATO_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="${KOBUNE_REPO:-hota1024/kobune}"
+CHANNEL="${KOBUNE_CHANNEL:-nightly}"
+INSTALL_DIR="${KOBUNE_INSTALL_DIR:-$HOME/.local/bin}"
 
 # Whether there is a line to rewrite in place.
 #
@@ -65,7 +65,7 @@ need() {
 #
 # What the install is doing, one step at a time: the current one is held on
 # the bottom line with a spinner, and finished ones are left above it with a
-# tick. This is what `minato` itself shows while the daemon works, in the one
+# tick. This is what `kobune` itself shows while the daemon works, in the one
 # form a POSIX shell can manage.
 # ---------------------------------------------------------------------------
 
@@ -221,7 +221,7 @@ detect_target() {
             esac
             ;;
         *)
-            die "unsupported operating system: $os. Minato needs macOS or Linux"
+            die "unsupported operating system: $os. Kobune needs macOS or Linux"
             ;;
     esac
 }
@@ -380,8 +380,8 @@ verify() {
 # default, so the file lands in the conventional place and the caller is
 # told the one line to add.
 install_completions() {
-    # $1 the installed minato binary
-    [ -z "${MINATO_NO_COMPLETIONS:-}" ] || return 0
+    # $1 the installed kobune binary
+    [ -z "${KOBUNE_NO_COMPLETIONS:-}" ] || return 0
 
     data="${XDG_DATA_HOME:-$HOME/.local/share}"
     config="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -389,20 +389,20 @@ install_completions() {
     # `|| true` on every call, and it is not decoration. `set -e` aborts
     # on a failing command in an `if` *body*, and `write_completion`
     # failing is an expected path — it is how a build too old to have
-    # `minato completions` is handled. Without this the script dies here,
+    # `kobune completions` is handled. Without this the script dies here,
     # before the summary, the paths and the PATH advice, and says nothing
     # about why.
     if need bash; then
-        write_completion "$1" bash "$data/bash-completion/completions" minato || true
+        write_completion "$1" bash "$data/bash-completion/completions" kobune || true
     fi
 
     # Only advertise the fpath line when a file was actually written.
-    if need zsh && write_completion "$1" zsh "$data/zsh/site-functions" _minato; then
+    if need zsh && write_completion "$1" zsh "$data/zsh/site-functions" _kobune; then
         zsh_fpath="$data/zsh/site-functions"
     fi
 
     if need fish; then
-        write_completion "$1" fish "$config/fish/completions" minato.fish || true
+        write_completion "$1" fish "$config/fish/completions" kobune.fish || true
     fi
 
     # And not the status of the last `if` either. Completions are a
@@ -412,7 +412,7 @@ install_completions() {
 
 # Writes one script, and says whether it managed to.
 #
-# A build without `minato completions` — anything older than this script —
+# A build without `kobune completions` — anything older than this script —
 # leaves nothing behind rather than an empty file the shell would source.
 write_completion() {
     # $1 binary, $2 shell, $3 directory, $4 filename
@@ -546,12 +546,12 @@ path_advice() {
 }
 
 target="$(detect_target)"
-archive="minato-$target.tar.gz"
+archive="kobune-$target.tar.gz"
 base="https://github.com/$REPO/releases/download/$CHANNEL"
 
 need tar || die "tar is not installed"
 
-say "Minato"
+say "Kobune"
 say "  release  $CHANNEL"
 say "  target   $target"
 say "  into     $INSTALL_DIR"
@@ -615,25 +615,25 @@ step_done
 
 # The archive nests the binaries under a directory named after the target,
 # so that unpacking it by hand does not scatter files into the current one.
-if [ -f "$tmp/minato-$target/minato" ]; then
-    payload="$tmp/minato-$target"
-elif [ -f "$tmp/minato" ]; then
+if [ -f "$tmp/kobune-$target/kobune" ]; then
+    payload="$tmp/kobune-$target"
+elif [ -f "$tmp/kobune" ]; then
     payload="$tmp"
 else
-    die "$archive does not contain minato"
+    die "$archive does not contain kobune"
 fi
 
-for binary in minato minatod; do
+for binary in kobune kobuned; do
     [ -f "$payload/$binary" ] || die "$archive does not contain $binary"
 done
 
-step "installing minato and minatod"
+step "installing kobune and kobuned"
 
 mkdir -p "$INSTALL_DIR" || die "cannot create $INSTALL_DIR"
 
-# `minato` finds the daemon next to itself, so the two move together or
-# the CLI starts a version of minatod it was not built against.
-for binary in minato minatod; do
+# `kobune` finds the daemon next to itself, so the two move together or
+# the CLI starts a version of kobuned it was not built against.
+for binary in kobune kobuned; do
     chmod +x "$payload/$binary"
     # Replaced rather than written through: the running daemon's own
     # executable cannot be opened for writing, but it can be renamed over.
@@ -643,14 +643,14 @@ done
 
 # Unsigned, so macOS refuses to run them until the download flag is gone.
 if [ "$(uname -s)" = "Darwin" ] && need xattr; then
-    xattr -d com.apple.quarantine "$INSTALL_DIR/minato" 2>/dev/null || true
-    xattr -d com.apple.quarantine "$INSTALL_DIR/minatod" 2>/dev/null || true
+    xattr -d com.apple.quarantine "$INSTALL_DIR/kobune" 2>/dev/null || true
+    xattr -d com.apple.quarantine "$INSTALL_DIR/kobuned" 2>/dev/null || true
 fi
 
 # `--version` checks for a newer build, which this has just installed and
 # would only wait on the network to be told about. The check is turned off
 # for the one call rather than left to time out mid-install.
-version="$(MINATO_NO_UPDATE_CHECK=1 "$INSTALL_DIR/minato" --version 2>/dev/null || true)"
+version="$(KOBUNE_NO_UPDATE_CHECK=1 "$INSTALL_DIR/kobune" --version 2>/dev/null || true)"
 [ -n "$version" ] || die "the installed binary does not run. Report this at https://github.com/$REPO/issues"
 
 # No directory after it: the header said where this was going, and the
@@ -658,11 +658,11 @@ version="$(MINATO_NO_UPDATE_CHECK=1 "$INSTALL_DIR/minato" --version 2>/dev/null 
 step_done
 
 # Quick enough that there is nothing to watch, and it can come to nothing
-# at all — no shell to write for, or a build too old to have `minato
+# at all — no shell to write for, or a build too old to have `kobune
 # completions`. So it is announced afterwards, and only if it happened: a
 # step named before the fact would sit there having claimed something.
 completions_written=""
-install_completions "$INSTALL_DIR/minato"
+install_completions "$INSTALL_DIR/kobune"
 
 if [ -n "$completions_written" ]; then
     step "writing completions"
@@ -671,8 +671,8 @@ fi
 
 say ""
 say "installed $version"
-say "  $INSTALL_DIR/minato"
-say "  $INSTALL_DIR/minatod"
+say "  $INSTALL_DIR/kobune"
+say "  $INSTALL_DIR/kobuned"
 
 # Only when it is not already reachable, and in the syntax of the shell the
 # person is actually in. A wrong line here gets pasted into a config file
@@ -712,8 +712,8 @@ fi
 say ""
 say "Next:"
 say ""
-say "  minato doctor         # what is missing"
-say "  minato setup          # the privileged one-off steps, asked one at a time"
-say "  minato init           # in a repository"
+say "  kobune doctor         # what is missing"
+say "  kobune setup          # the privileged one-off steps, asked one at a time"
+say "  kobune init           # in a repository"
 say ""
 say "https://minato.1024.works"
