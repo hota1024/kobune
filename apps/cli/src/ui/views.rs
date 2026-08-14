@@ -270,11 +270,24 @@ pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: 
 }
 
 /// What to do with the daemon once a step has changed what launchd holds.
+///
+/// **`restart`, and it used to be `stop`.** Nothing here starts the daemon
+/// again by itself: a clean exit is not restarted
+/// (`KeepAlive { SuccessfulExit: false }`), and the job launchd started the
+/// moment it was handed the plist exits cleanly too when it finds the
+/// socket already owned. So stopping leaves the machine with no daemon at
+/// all until something arrives on a port, which is a strange thing to leave
+/// behind a command someone ran to make the URLs work.
+///
+/// `restart` starts one the way every other command does, and that asks
+/// launchd first ([`minato_client::Client::connect_or_spawn`]) — so what
+/// comes back is the job, holding the ports and reading what these steps
+/// changed.
 fn restart_hint() -> Vec<Line<'static>> {
     vec![
-        hint("afterwards run", "minato daemon stop"),
+        hint("afterwards run", "minato daemon restart"),
         Line::styled(
-            "  launchd starts it again, with the new settings",
+            "  it comes back as launchd's job, with the new settings",
             theme::muted(),
         ),
     ]
@@ -1150,13 +1163,13 @@ mod tests {
         assert!(text.contains("2. point"), "got:\n{text}");
         assert!(text.contains("/tmp/x.plist"), "got:\n{text}");
         assert!(text.contains("to undo:"), "got:\n{text}");
-        assert!(text.contains("minato daemon stop"), "got:\n{text}");
+        assert!(text.contains("minato daemon restart"), "got:\n{text}");
     }
 
     #[test]
     fn a_plan_that_restarts_the_daemon_itself_does_not_ask_for_it_again() {
         // Waking launchd's job stops the daemon on the way. Being told to
-        // stop it afterwards would stop what had just been started.
+        // restart it afterwards would take down what had just come up.
         let steps = vec![SetupStep {
             description: "wake launchd's job".into(),
             note: None,
@@ -1250,7 +1263,7 @@ mod tests {
         // The one that ran needs nothing done to it.
         assert!(!text.contains("sudo cp /tmp/x.plist"), "got:\n{text}");
         // Something landed, so the daemon has to be restarted to see it.
-        assert!(text.contains("minato daemon stop"), "got:\n{text}");
+        assert!(text.contains("minato daemon restart"), "got:\n{text}");
         assert!(text.contains("to undo:"), "got:\n{text}");
     }
 
@@ -1269,7 +1282,7 @@ mod tests {
         assert!(text.contains("0 of 2 steps done"), "got:\n{text}");
         assert!(text.contains("still to run, as root:"), "got:\n{text}");
         // Nothing landed, so there is nothing for the daemon to pick up.
-        assert!(!text.contains("minato daemon stop"), "got:\n{text}");
+        assert!(!text.contains("minato daemon restart"), "got:\n{text}");
     }
 
     #[test]
@@ -1285,7 +1298,7 @@ mod tests {
 
         assert!(text.contains("every step is done"), "got:\n{text}");
         assert!(!text.contains("still to run"), "got:\n{text}");
-        assert!(text.contains("minato daemon stop"), "got:\n{text}");
+        assert!(text.contains("minato daemon restart"), "got:\n{text}");
     }
 
     #[test]

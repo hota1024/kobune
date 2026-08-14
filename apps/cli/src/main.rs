@@ -1437,10 +1437,10 @@ async fn handle_uninstall(
     // trusting anything signed by it.
     //
     // Booting the LaunchDaemon out has to come before asking the daemon to
-    // stop, too. That is the whole point of launchd: `minato daemon stop`
-    // with it installed is immediately followed by launchd starting the
-    // daemon again, which would recreate the state directory a moment
-    // before it was deleted.
+    // stop, too. That is the whole point of launchd: while the job is
+    // installed it holds 80, 443 and 53, so anything reaching one of them
+    // demand-launches the daemon again — and a daemon that starts recreates
+    // the state directory, a moment before it was to be deleted.
     let privileged = run_privileged(&plan, yes, cli.json);
 
     // Now nothing will restart it, so it can go. This releases the socket

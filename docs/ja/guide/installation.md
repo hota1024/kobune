@@ -422,7 +422,7 @@ run this? [y/N] n
 実行後は次のようにします。
 
 ```console
-$ minato daemon stop   # launchd が起動し直し、標準ポートを確保します
+$ minato daemon restart   # launchd のジョブとして戻り、標準ポートを確保します
 $ minato doctor
 ```
 

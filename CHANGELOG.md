@@ -108,9 +108,17 @@ less accurately.
   through launchd since #17, so the two end at the same daemon. Stopping is
   the worse half of it: a clean exit is not restarted, so the daemon stays
   down until something arrives on a port, and `minato daemon status` reports
-  it stopped in the meantime. It was also the only place saying `stop` — the
-  error a stale daemon produces has always answered `restart` — and the advice
-  no longer depends on a plist, so `--json` carries one command for one state
+  it stopped in the meantime. It was also the one answer to a daemon from
+  another build that did not say `restart`, which is what the error a stale
+  daemon produces has always said
+
+- `minato setup` says `minato daemon restart` afterwards, in place of
+  `minato daemon stop` and the promise that "launchd starts it again". It
+  does not: a clean exit is not restarted, and neither is the job launchd
+  started the moment it was handed the plist, which exits cleanly too when it
+  finds the socket already owned. Following it left the machine with no daemon
+  until something arrived on a port — an odd thing to be left with by the
+  command you ran to make the URLs work
 
 - Ctrl-P Ctrl-Q detaches. It stopped passing keys on and then waited: the
   window watcher held a second sender for the channel whose closing *is* the

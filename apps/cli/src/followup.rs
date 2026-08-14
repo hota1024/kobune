@@ -306,14 +306,20 @@ mod tests {
     }
 
     #[test]
-    fn the_daemon_is_restarted_whatever_the_machine_is() {
-        // It once read `minato daemon stop` where launchd owned the job,
-        // on the grounds that restarting by hand would start a daemon
-        // outside it and leave 80 and 443 unheld. Starting one goes
-        // through launchd now, so the two are the same daemon in the end —
-        // and a step that does not depend on a plist is one command for
-        // one state, in the notice and in `--json` alike.
-        assert_eq!(daemon_step("").command, "minato daemon restart");
+    fn both_paths_answer_an_older_daemon_with_a_restart() {
+        // Through the entry points rather than `daemon_step`, which now
+        // returns a constant: what is worth pinning is the command that
+        // reaches a notice and a `--json` document, and that it is the
+        // same one on a machine with a LaunchDaemon and a machine
+        // without.
+        assert_eq!(
+            steps_after_replacing(Daemon::Other)[0].command,
+            "minato daemon restart"
+        );
+        assert_eq!(
+            steps(Daemon::Other, None)[0].command,
+            "minato daemon restart"
+        );
     }
 
     #[test]

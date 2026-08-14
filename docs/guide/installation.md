@@ -425,7 +425,7 @@ prompt, and from your side it would look like a silent privilege escalation.
 Afterwards:
 
 ```console
-$ minato daemon stop   # launchd starts it again, holding the real ports
+$ minato daemon restart   # it comes back as launchd's job, holding the real ports
 $ minato doctor
 ```
 
