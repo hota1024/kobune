@@ -113,10 +113,10 @@ pub async fn ensure_tunnel(settings: &TunnelSettings) -> Result<()> {
 /// Points the zone's wildcard hostname at the tunnel.
 ///
 /// The outcome is returned rather than swallowed. `*.{zone}` is a record a
-/// zone may well already have for its own reasons, and cloudflared's
-/// "already exists" says nothing about what it points at — an existing
-/// record that is not this tunnel means every Minato hostname silently
-/// goes nowhere, which is worth saying out loud.
+/// zone may well already have for its own reasons, and cloudflared refuses
+/// with "already exists" without saying what holds the name — a record
+/// that is not this tunnel means every Minato hostname silently goes
+/// nowhere, which is worth saying out loud.
 pub async fn ensure_dns(settings: &TunnelSettings) -> Result<DnsOutcome> {
     let record = settings.dns_record();
 
@@ -150,9 +150,15 @@ pub async fn delete_tunnel(settings: &TunnelSettings) -> Result<()> {
 /// are told apart rather than collapsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DnsOutcome {
-    /// cloudflared created the record.
-    Created,
-    /// A record with that name was already there, owner unknown.
+    /// cloudflared accepted the route, so the record reaches this tunnel.
+    ///
+    /// Not the same as "created it": a record already pointing at this
+    /// tunnel is accepted too, and exit 0 does not say which happened. It
+    /// does not need to — either way the name arrives here.
+    Routed,
+    /// cloudflared refused because the name is taken.
+    ///
+    /// By what, it does not say. This is the case Minato cannot see past.
     AlreadyExisted,
 }
 
@@ -180,7 +186,7 @@ async fn run(
     .map_err(|err| spawn_error(&settings.program, err))?;
 
     if output.status.success() {
-        return Ok(DnsOutcome::Created);
+        return Ok(DnsOutcome::Routed);
     }
 
     let message = String::from_utf8_lossy(&output.stderr).trim().to_string();

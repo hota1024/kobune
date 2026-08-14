@@ -304,11 +304,11 @@ fn zone_notes(record: &TunnelRecord, dns: DnsOutcome) -> Vec<String> {
         // Minato routed it before and Cloudflare agrees it is there.
         (true, _) => Vec::new(),
 
-        // Minato created it. Worth saying once what that now covers: the
-        // record answers for every name in the zone that has none of its
-        // own, so a name that used to be NXDOMAIN now reaches this machine
-        // — including the ones an ACME HTTP-01 challenge would use.
-        (false, DnsOutcome::Created) => vec![format!(
+        // The record reaches this tunnel. Worth saying once what that now
+        // covers: it answers for every name in the zone that has none of
+        // its own, so a name that used to be NXDOMAIN now reaches this
+        // machine — including the ones an ACME HTTP-01 challenge uses.
+        (false, DnsOutcome::Routed) => vec![format!(
             "{wildcard} now points here. Names in the zone with a record of \
              their own are unaffected; any other name reaches this machine \
              and gets a 404"
@@ -367,8 +367,8 @@ mod tests {
     }
 
     #[test]
-    fn creating_the_record_says_what_it_now_covers() {
-        let notes = zone_notes(&record(false), DnsOutcome::Created);
+    fn routing_the_record_says_what_it_now_covers() {
+        let notes = zone_notes(&record(false), DnsOutcome::Routed);
 
         assert_eq!(notes.len(), 1, "got: {notes:?}");
         assert!(notes[0].contains("*.example.com"), "got: {notes:?}");
@@ -383,8 +383,8 @@ mod tests {
             "the usual case is silent"
         );
         assert!(
-            zone_notes(&record(true), DnsOutcome::Created).is_empty(),
-            "re-created after being deleted by hand is still not news"
+            zone_notes(&record(true), DnsOutcome::Routed).is_empty(),
+            "re-routed after being deleted by hand is still not news"
         );
     }
 }
