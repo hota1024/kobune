@@ -173,7 +173,7 @@ pub fn steps_after_replacing(daemon: Daemon) -> Vec<Step> {
 /// state. `restart` is also what the CLI already says when it meets an old
 /// daemon head-on ([`minato_client::ClientError::VersionMismatch`]).
 fn daemon_step(reason: &str) -> Step {
-    Step::new(reason, "minato daemon restart")
+    Step::new(reason, minato_core::launchd::RESTART_COMMAND)
 }
 
 /// `minato setup`, when the installed plist predates the shape this build
@@ -309,17 +309,41 @@ mod tests {
     fn both_paths_answer_an_older_daemon_with_a_restart() {
         // Through the entry points rather than `daemon_step`, which now
         // returns a constant: what is worth pinning is the command that
-        // reaches a notice and a `--json` document, and that it is the
-        // same one on a machine with a LaunchDaemon and a machine
-        // without.
+        // reaches a notice and a `--json` document.
+        //
+        // Both machines, with a LaunchDaemon and without, is what the
+        // *absence* of a branch in `daemon_step` gives — reading the real
+        // `/Library/LaunchDaemons` here would only test the host this runs
+        // on, so it is not claimed.
         assert_eq!(
             steps_after_replacing(Daemon::Other)[0].command,
-            "minato daemon restart"
+            minato_core::launchd::RESTART_COMMAND
         );
         assert_eq!(
             steps(Daemon::Other, None)[0].command,
-            "minato daemon restart"
+            minato_core::launchd::RESTART_COMMAND
         );
+    }
+
+    #[test]
+    fn every_step_names_a_command_that_parses() {
+        // These reach a person as a notice and an agent as `--json`
+        // `next`, and an agent runs what it is given. A command that has
+        // been renamed out from under one of them fails at the prompt,
+        // which is how `minato daemon restart` was once advised before it
+        // existed.
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+        for step in steps(Daemon::Other, Some(repository))
+            .into_iter()
+            .chain(steps_after_replacing(Daemon::Other))
+        {
+            use clap::Parser;
+            let argv = step.command.split_whitespace();
+
+            crate::Cli::try_parse_from(argv)
+                .unwrap_or_else(|err| panic!("`{}` does not parse: {err}", step.command));
+        }
     }
 
     #[test]

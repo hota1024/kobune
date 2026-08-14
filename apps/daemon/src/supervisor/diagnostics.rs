@@ -218,11 +218,16 @@ impl Supervisor {
             // running**: that one stands down when it finds the socket
             // taken, and a clean exit is not restarted. Waking it without
             // this one going first only repeats that.
+            //
+            // Restarting is the whole fix: stopping hands the socket over,
+            // and starting reaches for :80, which is launchd's to answer.
+            // Stopping alone would leave the machine with no daemon, and a
+            // `launchctl kickstart` needs root that nothing here has.
             .with_fix(format!(
                 "this daemon was not started by launchd, so it holds the \
-                 socket launchd's job wants. `minato daemon stop` hands it \
-                 over; if it stays inactive, run `{}`",
-                minato_core::launchd::kickstart_command()
+                 socket launchd's job wants. `{}` hands it over and lets \
+                 launchd start its own",
+                minato_core::launchd::RESTART_COMMAND
             ))
         } else {
             Check::warn(

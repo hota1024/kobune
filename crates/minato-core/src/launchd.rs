@@ -26,6 +26,22 @@ pub const INSTALL_DIR: &str = "/Library/LaunchDaemons";
 /// constant rather than something to read back out of it.
 pub const ACTIVATION_PORT: u16 = 80;
 
+/// The command that hands the socket back to launchd's job.
+///
+/// **One string, because several places have to say the same thing.** The
+/// client names it in the protocol-mismatch error, `doctor` names it as a
+/// fix, `setup` names it as a step, and the post-update notice names it as
+/// what to run next — all about the same machine state. Spelled out at
+/// each site they drift, and a rename leaves some of them advising a
+/// command that no longer parses.
+///
+/// It replaces `minato daemon stop` plus a `sudo launchctl kickstart` for
+/// this: stopping alone leaves the machine with no daemon until something
+/// happens to reach a port, and the kickstart half needs root, which an
+/// agent cannot supply. Restarting does both and needs neither, because
+/// starting reaches for the socket launchd is holding.
+pub const RESTART_COMMAND: &str = "minato daemon restart";
+
 /// Where the installed plist lives.
 pub fn plist_path() -> PathBuf {
     Path::new(INSTALL_DIR).join(format!("{LABEL}.plist"))

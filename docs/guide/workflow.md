@@ -197,6 +197,7 @@ worktrees are using it.
 $ minato daemon status
 $ minato daemon start
 $ minato daemon stop
+$ minato daemon restart
 ```
 
 You rarely touch these. Any command starts the daemon if it is down. Stopping

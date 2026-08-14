@@ -1452,10 +1452,15 @@ async fn handle_uninstall(
     // trusting anything signed by it.
     //
     // Booting the LaunchDaemon out has to come before asking the daemon to
-    // stop, too. That is the whole point of launchd: while the job is
-    // installed it holds 80, 443 and 53, so anything reaching one of them
+    // stop, too. That is the whole point of launchd: while launchd *has*
+    // the job it holds 80, 443 and 53, so anything reaching one of them
     // demand-launches the daemon again — and a daemon that starts recreates
     // the state directory, a moment before it was to be deleted.
+    //
+    // Has the job, not has a plist: a file that was never bootstrapped
+    // holds nothing (`minato_core::launchd::is_loaded`). The ordering
+    // costs nothing there and is required wherever it was, so it is not
+    // conditional.
     let privileged = run_privileged(&plan, yes, cli.json);
 
     // Now nothing will restart it, so it can go. This releases the socket
@@ -2258,7 +2263,21 @@ async fn handle_daemon(
             // a daemon on its way out still holds it.
             wait_until_stopped(client).await;
 
-            start_daemon(cli, client).await
+            match start_daemon(cli, client).await {
+                // A daemon that outlived the wait is the one just asked to
+                // stop, and `connect_or_spawn` shakes hands with whatever
+                // answers — so the old build's protocol comes back as an
+                // error telling the user to run this very command.
+                //
+                // It is also the case restarting exists for: an old daemon
+                // is the usual reason to restart. So the wait is given a
+                // second run rather than the failure handed over.
+                Err(CliError::Client(ClientError::VersionMismatch { .. })) => {
+                    wait_until_stopped(client).await;
+                    start_daemon(cli, client).await
+                }
+                other => other,
+            }
         }
         DaemonCommand::Status => match client.connect().await {
             Ok(mut connection) => {
@@ -2315,8 +2334,12 @@ async fn stop_daemon(client: &Client) -> Result<bool, CliError> {
 /// Waits for the socket to stop answering, within reason.
 ///
 /// Returning early would race the daemon's own shutdown for the socket.
-/// Giving up quietly is right too: `connect_or_spawn` clears a socket
-/// nothing answers on, so the worst a slow stop costs is one retry.
+///
+/// Giving up quietly is right too, but not because nothing goes wrong: a
+/// socket that still answers is *not* cleared by `connect_or_spawn` — that
+/// only happens for one nothing answers on — so a daemon still on its way
+/// out is shaken hands with instead. The caller runs this again when that
+/// produces a protocol mismatch.
 async fn wait_until_stopped(client: &Client) {
     const PATIENCE: Duration = Duration::from_secs(5);
     const GLANCE: Duration = Duration::from_millis(50);
