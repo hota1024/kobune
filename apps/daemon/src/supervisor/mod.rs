@@ -1836,7 +1836,7 @@ pub(super) mod tests {
             .expect("the local hostname is registered");
         let tunnel = entries
             .iter()
-            .find(|(host, _)| host == "web-feat-1.myapp.example.com")
+            .find(|(host, _)| host == "web-feat-1-myapp.example.com")
             .expect("the tunnel hostname is registered");
 
         assert_eq!(local.1.endpoint, tunnel.1.endpoint, "the same service");
@@ -1852,7 +1852,7 @@ pub(super) mod tests {
 
         let tunnel = entries
             .iter()
-            .find(|(host, _)| host == "web-feat-1.myapp.example.com")
+            .find(|(host, _)| host == "web-feat-1-myapp.example.com")
             .expect("registered while stopped");
 
         assert!(!tunnel.1.is_running(), "stopped, but known to exist");
@@ -1878,9 +1878,33 @@ pub(super) mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(host, _)| host == "web.myapp.example.com"),
+                .any(|(host, _)| host == "web-myapp.example.com"),
             "got: {entries:?}"
         );
+    }
+
+    #[test]
+    fn a_tunnel_hostname_is_one_label_under_the_zone() {
+        // Universal SSL covers first-level subdomains only, so a second
+        // label is refused at Cloudflare's edge with a TLS handshake
+        // failure — nothing local goes wrong and nothing local shows it.
+        let records = vec![record("feat-1", false)];
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
+
+        let tunnel_hosts: Vec<&str> = entries
+            .iter()
+            .map(|(host, _)| host.as_str())
+            .filter(|host| host.ends_with(".example.com"))
+            .collect();
+
+        // Without this the loop below passes on an empty list, which is
+        // the regression it exists to catch.
+        assert!(!tunnel_hosts.is_empty(), "got: {entries:?}");
+
+        for host in tunnel_hosts {
+            let label = host.strip_suffix(".example.com").expect("under the zone");
+            assert!(!label.contains('.'), "got: {host}");
+        }
     }
 
     #[test]
