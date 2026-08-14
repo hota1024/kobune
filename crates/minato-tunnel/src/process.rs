@@ -47,12 +47,9 @@ impl TunnelProcess {
     ///
     /// Creating the tunnel and routing DNS are both idempotent, so this is
     /// safe to call on every daemon start rather than only the first.
-    pub async fn start(settings: TunnelSettings, projects: &[String]) -> Result<Self> {
+    pub async fn start(settings: TunnelSettings) -> Result<Self> {
         ensure_tunnel(&settings).await?;
-
-        for project in projects {
-            ensure_dns(&settings, project).await?;
-        }
+        ensure_dns(&settings).await?;
 
         let path = config::write_config(&settings)?;
 
@@ -108,9 +105,9 @@ pub async fn ensure_tunnel(settings: &TunnelSettings) -> Result<()> {
     .await
 }
 
-/// Points a project's wildcard hostname at the tunnel.
-pub async fn ensure_dns(settings: &TunnelSettings, project: &str) -> Result<()> {
-    let record = settings.dns_record(project);
+/// Points the zone's wildcard hostname at the tunnel.
+pub async fn ensure_dns(settings: &TunnelSettings) -> Result<()> {
+    let record = settings.dns_record();
 
     run(
         settings,
@@ -282,9 +279,7 @@ mod tests {
             r#"echo 'Failed to add route: code: 1003, reason: An A, AAAA, or CNAME record with that host already exists' >&2; exit 1"#,
         );
 
-        ensure_dns(&settings, "myapp")
-            .await
-            .expect("treated as success");
+        ensure_dns(&settings).await.expect("treated as success");
     }
 
     #[tokio::test]
@@ -306,10 +301,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let settings = settings(dir.path(), r#"echo 'zone not found' >&2; exit 1"#);
 
-        let err = ensure_dns(&settings, "myapp").await.unwrap_err();
+        let err = ensure_dns(&settings).await.unwrap_err();
         assert!(err.to_string().contains("zone not found"), "got: {err}");
         assert!(
-            err.to_string().contains("*.myapp.example.com"),
+            err.to_string().contains("*.example.com"),
             "the operation says which record: {err}"
         );
     }
@@ -324,9 +319,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routes_every_project_before_running() {
-        // A project with no DNS record is unreachable, and nothing about
-        // the running tunnel would say why.
+    async fn routes_the_zone_before_running() {
+        // Without the DNS record nothing reaches the tunnel, and nothing
+        // about the running tunnel would say why.
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("calls.log");
         let settings = settings(
@@ -338,14 +333,11 @@ if [ "$2" = "run" ] || [ "$4" = "run" ]; then sleep 30; fi"#,
             ),
         );
 
-        let tunnel = TunnelProcess::start(settings, &["myapp".into(), "other".into()])
-            .await
-            .expect("starts");
+        let tunnel = TunnelProcess::start(settings).await.expect("starts");
         tunnel.stop().await;
 
         let calls = std::fs::read_to_string(&log).expect("reads");
-        assert!(calls.contains("*.myapp.example.com"), "got:\n{calls}");
-        assert!(calls.contains("*.other.example.com"), "got:\n{calls}");
+        assert!(calls.contains("*.example.com"), "got:\n{calls}");
     }
 
     #[tokio::test]
@@ -353,7 +345,7 @@ if [ "$2" = "run" ] || [ "$4" = "run" ]; then sleep 30; fi"#,
         let dir = tempfile::tempdir().expect("tempdir");
         let settings = settings(dir.path(), "exit 0");
 
-        let mut tunnel = TunnelProcess::start(settings, &[]).await.expect("starts");
+        let mut tunnel = TunnelProcess::start(settings).await.expect("starts");
 
         // The stub exits immediately; give it a moment to be reaped.
         tokio::time::sleep(Duration::from_millis(200)).await;

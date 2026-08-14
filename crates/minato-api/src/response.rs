@@ -202,7 +202,7 @@ pub struct TunnelInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
 
-    /// The wildcard record routed for this project.
+    /// The wildcard record routed for the zone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
 

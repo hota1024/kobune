@@ -2,11 +2,11 @@
 //! bringing it back after a restart.
 //!
 //! **One named tunnel per machine**, carrying every project, with the
-//! project as a label in the hostname (`docs/DESIGN.md` §9). Everything
-//! after `cloudflared tunnel login` is non-interactive and the daemon
-//! does it — `tunnel create` and `tunnel route dns` run on every enable
-//! and every start, with "it already exists" read as success, because a
-//! flag in the state file can disagree with what Cloudflare has.
+//! project inside the hostname's single label (`docs/DESIGN.md` §9).
+//! Everything after `cloudflared tunnel login` is non-interactive and the
+//! daemon does it — `tunnel create` and `tunnel route dns` run on every
+//! enable and every start, with "it already exists" read as success,
+//! because a flag in the state file can disagree with what Cloudflare has.
 
 use minato_api::{ApiError, ErrorCode, Response, Target};
 use minato_core::TunnelRecord;
@@ -68,7 +68,6 @@ impl Supervisor {
                 .unwrap_or_else(|| minato_tunnel::DEFAULT_TUNNEL_NAME.to_string()),
             domain,
             enabled: true,
-            routed: existing.map(|record| record.routed).unwrap_or_default(),
         };
 
         let settings = self.tunnel_settings(&record)?;
@@ -79,23 +78,12 @@ impl Supervisor {
         let readiness = minato_tunnel::readiness(&settings);
         if !readiness.is_ready() {
             return Ok(Response::Tunnel(
-                tunnel::info(
-                    Some(&record),
-                    &self.tunnel,
-                    Some(&settings),
-                    &context.project,
-                )
-                .await,
+                tunnel::info(Some(&record), &self.tunnel, Some(&settings)).await,
             ));
         }
 
-        // Every known project gets a DNS route, not just this one. The
-        // tunnel is machine-wide, and a project left unrouted is silently
-        // unreachable.
-        let projects = self.known_projects().await?;
-
         events.step_started("tunnel", "starting the tunnel");
-        match self.tunnel.start(settings.clone(), projects.clone()).await {
+        match self.tunnel.start(settings.clone()).await {
             Ok(()) => events.step_done("tunnel", "starting the tunnel"),
             Err(err) => {
                 events.step_failed("tunnel", "starting the tunnel", err.to_string());
@@ -103,8 +91,6 @@ impl Supervisor {
             }
         }
 
-        let mut record = record;
-        record.routed.extend(projects);
         self.save_tunnel_record(Some(record.clone())).await?;
 
         // The routing table is rebuilt so the tunnel hostnames resolve.
@@ -113,13 +99,7 @@ impl Supervisor {
         self.refresh(&context.project, &context.config).await?;
 
         Ok(Response::Tunnel(
-            tunnel::info(
-                Some(&record),
-                &self.tunnel,
-                Some(&settings),
-                &context.project,
-            )
-            .await,
+            tunnel::info(Some(&record), &self.tunnel, Some(&settings)).await,
         ))
     }
     /// Stops the tunnel, keeping the record.
@@ -149,18 +129,16 @@ impl Supervisor {
             .and_then(|record| self.tunnel_settings(record).ok());
 
         Ok(Response::Tunnel(
-            tunnel::info(
-                record.as_ref(),
-                &self.tunnel,
-                settings.as_ref(),
-                &context.project,
-            )
-            .await,
+            tunnel::info(record.as_ref(), &self.tunnel, settings.as_ref()).await,
         ))
     }
     /// Reports where the tunnel stands. Runs nothing.
     pub(super) async fn tunnel_status(&self, target: Target) -> Result<Response, ApiError> {
-        let context = self.resolve_project_only(&target).await?;
+        // Nothing in the answer is per-project any more, but the target is
+        // still resolved: `tunnel status` run somewhere that is not a
+        // Minato project should say so rather than report on a tunnel the
+        // caller has nothing to do with.
+        self.resolve_project_only(&target).await?;
         let record = self.tunnel_record().await?;
 
         let settings = record
@@ -168,13 +146,7 @@ impl Supervisor {
             .and_then(|record| self.tunnel_settings(record).ok());
 
         Ok(Response::Tunnel(
-            tunnel::info(
-                record.as_ref(),
-                &self.tunnel,
-                settings.as_ref(),
-                &context.project,
-            )
-            .await,
+            tunnel::info(record.as_ref(), &self.tunnel, settings.as_ref()).await,
         ))
     }
     /// The tunnel as the state store has it.
@@ -245,9 +217,7 @@ impl Supervisor {
             return;
         }
 
-        let projects = self.known_projects().await.unwrap_or_default();
-
-        match self.tunnel.start(settings, projects).await {
+        match self.tunnel.start(settings).await {
             Ok(()) => tracing::info!("tunnel restored for *.{}", record.domain),
             Err(err) => tracing::warn!("cannot start the tunnel: {err}"),
         }

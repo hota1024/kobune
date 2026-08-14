@@ -8,7 +8,7 @@
 //! Labels are persisted so that changing the rules in [`crate::naming`]
 //! later does not change the URL of an existing workspace.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -37,8 +37,8 @@ pub struct State {
     /// The Cloudflare Tunnel, if one has been set up.
     ///
     /// Machine-wide rather than per-project: one named tunnel carries every
-    /// project, and the project name is a label in the hostname
-    /// (`docs/DESIGN.md` §9).
+    /// project, and the project name is part of the hostname's single
+    /// label (`docs/DESIGN.md` §9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelRecord>,
 }
@@ -66,12 +66,6 @@ pub struct TunnelRecord {
     /// mean naming the domain again.
     #[serde(default)]
     pub enabled: bool,
-    /// Projects a DNS route has been created for.
-    ///
-    /// One wildcard record per project (`*.{project}.{domain}`), so
-    /// workspaces come and go without touching DNS.
-    #[serde(default)]
-    pub routed: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
