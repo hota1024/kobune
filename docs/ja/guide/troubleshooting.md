@@ -113,11 +113,26 @@ launchd 以外の方法で起動した daemon が Unix ソケットを保持し�
 ため、以降もフォールバックのポートで動作し続けます。設定の失敗ではありません。
 
 ```console
-$ minato daemon stop
+$ minato daemon restart
 ```
 
-次のリクエストが :80 に到達すると launchd がジョブを起動し、そちらが 80・443・
-53 を保持します。`minato setup` も同じ内容を 1 つのステップとして提示します。
+停止でソケットを明け渡し、起動で :80——launchd が保持しているポート——に到達する
+ため、立ち上がるのは launchd のジョブで、80・443・53 を保持します。root は不要
+です（`launchctl kickstart` には必要になります）。`minato doctor` と
+`minato setup` も同じコマンドを提示します。
+
+停止するだけでも、次に届いたリクエストがジョブを起こすため最終的には復旧します
+が、それまでのあいだ daemon は不在で、`minato daemon status` も停止と報告
+します。
+
+実行後も `minato doctor` の表示が変わらない場合、:80 に到達しても launchd が
+そこにいなかった——別のプロセスがポートを保持している、あるいはジョブの
+ソケットが bind できていない——ということで、起動は独自の daemon にフォール
+バックしています。その場合は強制的に起動します。
+
+```console
+$ sudo launchctl kickstart -k system/dev.minato.daemon
+```
 
 **再インストールは解決になりません。** launchd は登録済みのラベルに対する 2 度目
 の `bootstrap` を `Bootstrap failed: 5: Input/output error` として拒否するため、
