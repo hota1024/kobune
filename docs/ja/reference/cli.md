@@ -428,8 +428,7 @@ launchd 経由になります。これが 80/443 番ポートを保持したま�
 
 `restart` があるのは、自動では解消しない唯一のケースのためです。古いビルドの
 まま動き続けている daemon がそれにあたります。コマンドには普通に応答しますが、
-新しい CLI が話す
-プロトコルとは食い違い、次のように表示されます。
+新しい CLI が話すプロトコルとは食い違い、次のように表示されます。
 
 ```
 error: the daemon speaks protocol 3, which this minato (protocol 5) cannot
