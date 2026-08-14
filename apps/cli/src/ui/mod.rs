@@ -16,6 +16,7 @@
 
 mod panel;
 mod progress;
+mod qr;
 mod surface;
 mod theme;
 mod views;
@@ -68,6 +69,16 @@ pub fn workspace(info: &WorkspaceInfo) {
 /// `ls`.
 pub fn workspaces(list: &[WorkspaceInfo]) {
     Surface::stdout().print(|decor| views::workspaces(list, decor));
+}
+
+/// `url` with no service named: the whole list.
+pub fn urls(info: &WorkspaceInfo, qr: bool) {
+    Surface::stdout().print(|decor| views::urls(info, qr, decor));
+}
+
+/// `url <service> --qr`: the one URL, as a code to photograph.
+pub fn url(service: &minato_api::ServiceInfo) {
+    Surface::stdout().print(|decor| views::url(service, decor));
 }
 
 /// `doctor`.
