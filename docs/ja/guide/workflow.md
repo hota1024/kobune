@@ -199,6 +199,7 @@ $ minato rm -w feature-user-auth -f     # 未コミットの変更があって�
 $ minato daemon status
 $ minato daemon start
 $ minato daemon stop
+$ minato daemon restart
 ```
 
 通常は使用しません。いずれのコマンドも、daemon が停止していれば自動的に
