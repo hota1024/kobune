@@ -1,9 +1,10 @@
 # A preview per branch
 
-We will take a small Node app, give it a preview environment, and end with two
-branches running side by side on their own URLs.
+Take a small Node app, give it a preview environment, and end with two branches
+running side by side on their own URLs.
 
-About fifteen minutes. You need Minato installed and `minato doctor` happy.
+About fifteen minutes. You need Minato installed and `minato doctor` with
+nothing to say.
 
 ## The app
 

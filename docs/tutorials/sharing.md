@@ -131,6 +131,7 @@ is a real named tunnel against a real zone.
 
 ## Next
 
-- [Sharing over Cloudflare Tunnel](../guide/tunnel) — how it is arranged, and why
+- [Sharing over Cloudflare Tunnel](../guide/tunnel) — how it is arranged, and
+  why
 - [Working with AI agents](../guide/agents) — including why an agent should
   never run `tunnel enable` itself

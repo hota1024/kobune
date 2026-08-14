@@ -124,7 +124,7 @@ $ minato up
 ╰───────────────────────────────────────────╯
 ```
 
-`(internal only)` is `expose = false` doing its job.
+`internal only` is `expose = false` doing its job.
 
 ## Confirming the sharing
 
