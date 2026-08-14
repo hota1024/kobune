@@ -128,7 +128,7 @@ service it came from.
 
 ### Interactive services
 
-A service that runs something you would normally interact with — turborepo's
+A service that runs something you would normally interact with — Turborepo's
 task switcher, a test runner in watch mode — needs a terminal to draw on and
 a keyboard to answer. Give it one:
 
