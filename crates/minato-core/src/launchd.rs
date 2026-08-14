@@ -85,23 +85,83 @@ pub fn is_installed() -> bool {
 /// password.
 #[cfg(target_os = "macos")]
 pub fn is_loaded() -> bool {
-    if !is_installed() {
-        return false;
-    }
-
-    std::process::Command::new("launchctl")
-        .arg("print")
-        .arg(format!("system/{LABEL}"))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    print_job().is_some()
 }
 
 /// Always false where there is no launchd.
 #[cfg(not(target_os = "macos"))]
 pub fn is_loaded() -> bool {
     false
+}
+
+/// Whether launchd's job is running, rather than only registered.
+///
+/// **Three states, not two.** [`is_installed`] is the plist on disk,
+/// [`is_loaded`] is launchd knowing the job, and this is something actually
+/// behind the sockets. After `minato daemon stop` the middle one still
+/// holds while nothing answers, which is the state [`RESTART_COMMAND`]
+/// exists to leave.
+///
+/// It is what tells a wake that worked from one that did not.
+/// `minato daemon restart` exits 0 either way — a daemon started directly,
+/// outside launchd, is still a daemon — so its exit status cannot answer
+/// this and asking launchd is the only thing that can.
+///
+/// `launchctl print` names a `pid` only while the job has one. Asking needs
+/// no privileges; being told the state should never cost a password.
+#[cfg(target_os = "macos")]
+pub fn is_running() -> bool {
+    print_job().is_some_and(|job| names_a_pid(&job))
+}
+
+/// Always false where there is no launchd.
+#[cfg(not(target_os = "macos"))]
+pub fn is_running() -> bool {
+    false
+}
+
+/// What launchd has to say about the job, or nothing where it has no job.
+///
+/// **One place runs `launchctl print`.** [`is_loaded`] and [`is_running`]
+/// are two readings of the same answer, and asking twice spawns the same
+/// process to be told the same thing — or, across the gap between the two
+/// calls, something else.
+#[cfg(target_os = "macos")]
+fn print_job() -> Option<String> {
+    if !is_installed() {
+        return None;
+    }
+
+    let output = std::process::Command::new("launchctl")
+        .arg("print")
+        .arg(format!("system/{LABEL}"))
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Whether that output names a running process.
+///
+/// **Split out because it is the half that can be tested** — the rest is
+/// `launchctl` itself, which no CI runner has a job for. `launchctl` leaves
+/// the line out entirely rather than naming an absent pid, so the property
+/// is a `pid` key with a number after it, read loosely enough to survive
+/// the spacing changing: reading it wrong the other way says a wake landed
+/// when it did not, and writes `/etc/resolver/localhost` for a port nothing
+/// is listening on.
+#[cfg(target_os = "macos")]
+fn names_a_pid(job: &str) -> bool {
+    job.lines().any(|line| {
+        line.trim()
+            .strip_prefix("pid")
+            .and_then(|rest| rest.trim_start().strip_prefix('='))
+            .is_some_and(|value| value.trim().parse::<u32>().is_ok())
+    })
 }
 
 /// The command that starts the job again, for a `fix` or a hint.
@@ -139,6 +199,10 @@ mod tests {
     fn nothing_is_installed_without_launchd() {
         assert!(!is_installed());
         assert!(!is_loaded());
+        // The third state is a state too. `setup` reads it to decide
+        // whether the resolver names :53, so a stub that ever answered
+        // otherwise would have it write one for a port nothing holds.
+        assert!(!is_running());
     }
 
     #[cfg(target_os = "macos")]
@@ -146,9 +210,43 @@ mod tests {
     fn no_plist_means_launchd_does_not_have_the_job() {
         // The machine running the tests may well have one installed, so
         // this only pins the half that holds either way: without the file
-        // there is nothing to have been bootstrapped.
+        // there is nothing to have been bootstrapped, and nothing
+        // bootstrapped is nothing running.
         if !is_installed() {
             assert!(!is_loaded());
+            assert!(!is_running());
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_job_with_a_pid_is_running() {
+        // Trimmed from `launchctl print system/dev.minato.daemon`.
+        let job = "\tstate = running\n\tpid = 4821\n\tprogram = /usr/local/bin/minato-daemon\n";
+
+        assert!(names_a_pid(job));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_registered_job_with_no_pid_is_not_running() {
+        // What launchd prints for the job `minato daemon stop` left: it
+        // still has it, and the pid line is simply absent.
+        let job = "\tstate = not running\n\tprogram = /usr/local/bin/minato-daemon\n";
+
+        assert!(!names_a_pid(job));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_pid_is_read_loosely_enough_to_survive_the_spacing() {
+        // The output is `launchctl`'s to format, and a false negative here
+        // is the same failure as a false positive, from the other side.
+        assert!(names_a_pid("  pid   =   4821"));
+        assert!(names_a_pid("pid=4821"));
+
+        // Not every key that starts with those three letters.
+        assert!(!names_a_pid("\tpidfile = /var/run/minato.pid"));
+        assert!(!names_a_pid("\tpid = (none)"));
     }
 }

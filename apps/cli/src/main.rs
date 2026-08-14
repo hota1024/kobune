@@ -576,12 +576,32 @@ fn warn_if_unprivileged(cli: &Cli, start: DaemonStart) {
         return;
     }
 
+    // **The two states this covers take opposite steps**, and until now
+    // both were told to run `kickstart`. Where launchd does not have the
+    // job — a plist copied in, or one whose `bootstrap` was declined — it
+    // has no service to name and comes back `Could not find service`, and
+    // what is missing is the installation.
+    //
+    // Where launchd does have it, forcing the job is what is left. This is
+    // reached only after the client reached for :80 and found launchd not
+    // answering there (`minato-client`, `wake_launchd`), which is the same
+    // thing `minato daemon restart` does — so naming the restart here would
+    // hand back the step that has just been taken.
+    let (what, command) = if minato_core::launchd::is_loaded() {
+        (
+            "reaching :80 did not wake launchd's job, so forcing it is what is left",
+            minato_core::launchd::kickstart_command(),
+        )
+    } else {
+        (
+            "the plist is on disk but launchd does not have the job. Register it with",
+            "minato setup".to_string(),
+        )
+    };
+
     ui::notice(vec![
         ui::note("started a daemon outside launchd, so 80 and 443 are out and no URL will answer"),
-        ui::hint(
-            "bring socket activation back with",
-            &minato_core::launchd::kickstart_command(),
-        ),
+        ui::hint(what, &command),
     ]);
 }
 
@@ -2170,14 +2190,50 @@ fn present_setup(
             .iter()
             .all(|command| run_shell(command, cli.json));
 
-        let outcome = if ran {
+        let mut outcome = if ran {
             ui::SetupOutcome::Ran
         } else {
             ui::SetupOutcome::Failed
         };
 
         if Some(index) == launchd_step && outcome == ui::SetupOutcome::Ran {
-            launchd_landed = true;
+            // **Running the command is not the same as launchd taking the
+            // ports.** The wake step is `minato daemon restart`, which exits
+            // 0 whether the job came up or a daemon started directly in its
+            // place — throttled after the stop, disabled, its program moved.
+            // Believing it there writes `/etc/resolver/localhost` for :53
+            // while DNS is still on the fallback port, which is the failure
+            // the resolver step's own note exists to prevent.
+            //
+            // The installation is not asked the same question: its commands
+            // are `bootstrap` and their exit status does say. A job it has
+            // just registered is idle by design until a request arrives.
+            launchd_landed = !wakes_launchd || minato_core::launchd::is_running();
+
+            if !launchd_landed {
+                // **A step that did not do what it is for is a failed
+                // step**, whatever its commands exited with — the machine
+                // is not set up, and an agent reading the exit code of
+                // `minato setup --yes` would otherwise be told it is by
+                // the very run that printed this.
+                outcome = ui::SetupOutcome::Failed;
+
+                // What is left to run is the escalation, not the command
+                // that has just been run to no effect. The summary prints
+                // a step's commands under "still to run", so this is what
+                // it has to be carrying by then.
+                step.commands = vec![minato_core::launchd::kickstart_command()];
+
+                // launchd is still holding 80, 443 and 53 — it does that
+                // whether or not the job runs, which is why nothing else
+                // can have them. What is missing is something behind them.
+                ui::error(
+                    "the job did not come up, so nothing is answering on 80/443/53. \
+                     The resolver step names the port DNS is on now, so run \
+                     `minato setup` again once the job is up",
+                    None,
+                );
+            }
         }
 
         outcomes.push(outcome);
