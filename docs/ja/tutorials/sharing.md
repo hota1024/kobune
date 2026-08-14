@@ -41,9 +41,9 @@ $ minato tunnel enable --domain example.com --public
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
-内部では named tunnel の作成、プロジェクト用ワイルドカード DNS レコードの
-登録、`cloudflared` の起動を行っています。いずれも冪等なため、繰り返し実行
-しても問題ありません。
+内部では named tunnel の作成、ゾーン全体のワイルドカード DNS レコードの登録、
+`cloudflared` の起動をまとめて実行しています。いずれも冪等なため、繰り返し
+実行しても問題ありません。
 
 ## 共有する URL
 
@@ -84,8 +84,8 @@ $ minato status -w feature-checkout --json \
 ## Access を設定する
 
 この作業は Minato では実行できません。Cloudflare のダッシュボードで
-Zero Trust → Access → Applications を開き、共有するホスト名——
-`web-feature-checkout-myapp.example.com`——に対する self-hosted application と
+Zero Trust → Access → Applications を開き、共有するホスト名
+`web-feature-checkout-myapp.example.com` に対する self-hosted application と
 ポリシーを作成してください。メールドメインによる制限や、社外の相手にはワンタイム
 PIN が利用できます。
 

@@ -41,8 +41,8 @@ $ minato tunnel enable --domain example.com --public
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
-Behind that: a named tunnel created, a wildcard DNS record routed for the
-project, `cloudflared` started. All idempotent, so running it again is fine.
+Behind that: a named tunnel created, one wildcard DNS record routed for the
+zone, `cloudflared` started. All idempotent, so running it again is fine.
 
 ## The link
 
