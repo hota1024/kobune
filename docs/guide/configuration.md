@@ -47,9 +47,10 @@ volumes = ["pgdata:/var/lib/postgresql/data"]
 env = { POSTGRES_PASSWORD = "postgres" }
 ```
 
-`depends_on` sets the start order. It does not wait for the dependency to be
-*healthy* before starting the next one, but it does start them in order, and
-each is given time to come up.
+`depends_on` sets the start order, and a service waits for what it depends on
+to be *ready* — not merely started — before it begins. The wait gives up after
+15 seconds and carries on, so a dependency slower than that stops being a
+guarantee. What makes `ready` mean anything is the health check below.
 
 ## Scope: one per worktree, or one shared
 
@@ -62,8 +63,8 @@ scope = "project"     # one instance, shared by every worktree
 
 A database per worktree means seeding each one and paying for all of them. A
 shared one means every branch sees the same data, which is usually what you
-want while developing — and occasionally exactly what you don't, when two
-branches carry different migrations.
+want while developing, and occasionally the opposite, when two branches carry
+different migrations.
 
 Minato does not solve the migration problem. If two branches migrate the same
 shared database in incompatible ways, they will fight. Use
@@ -133,9 +134,10 @@ daemon does.
 
 ```toml
 volumes = [
-  "pgdata:/var/lib/postgresql/data",   # named, managed by the runtime
-  "./seed:/seed",                      # a host path, relative to the worktree
-  "/etc/ssl/certs:/certs:ro",          # absolute, read-only
+  "pgdata:/var/lib/postgresql/data",                 # named, one per project
+  "node-modules@workspace:/workspace/node_modules",  # named, one per worktree
+  "./seed:/seed",                                    # a host path, relative to the worktree
+  "/etc/ssl/certs:/certs:ro",                        # absolute, read-only
 ]
 ```
 
@@ -143,8 +145,10 @@ A name without a slash is storage the runtime manages, scoped to the project so
 it is shared between worktrees. Anything starting with `/`, `./` or `~/` is a
 host path.
 
-Node's `node_modules` is the usual reason to reach for a named volume: put one
-at `/workspace/node_modules` per workspace and the install happens once.
+**`@workspace` on the name gives each worktree its own instead**, and
+`node_modules` is what it is for. Shared across worktrees it fights itself, one
+branch's lockfile installing over another's. Per worktree it costs an install
+per branch and is correct.
 
 ## Environment variables
 
