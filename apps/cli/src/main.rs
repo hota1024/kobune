@@ -576,12 +576,27 @@ fn warn_if_unprivileged(cli: &Cli, start: DaemonStart) {
         return;
     }
 
+    // **The two states this covers take opposite steps**, and until now both
+    // were told to run `kickstart`. Where launchd has the job, that is the
+    // heavy way to say `minato daemon restart`, which needs no root. Where
+    // it does not — a plist copied in, or one whose `bootstrap` was
+    // declined — `kickstart` has no service to name and comes back
+    // `Could not find service`, and what is missing is the installation.
+    let (what, command) = if minato_core::launchd::is_loaded() {
+        (
+            "bring socket activation back with",
+            minato_core::launchd::RESTART_COMMAND.to_string(),
+        )
+    } else {
+        (
+            "the plist is on disk but launchd does not have the job. Register it with",
+            "minato setup".to_string(),
+        )
+    };
+
     ui::notice(vec![
         ui::note("started a daemon outside launchd, so 80 and 443 are out and no URL will answer"),
-        ui::hint(
-            "bring socket activation back with",
-            &minato_core::launchd::kickstart_command(),
-        ),
+        ui::hint(what, &command),
     ]);
 }
 
@@ -2177,7 +2192,25 @@ fn present_setup(
         };
 
         if Some(index) == launchd_step && outcome == ui::SetupOutcome::Ran {
-            launchd_landed = true;
+            // **Running the command is not the same as launchd taking the
+            // ports.** The wake step is `minato daemon restart`, which exits
+            // 0 whether the job came up or a daemon started directly in its
+            // place — throttled after the stop, disabled, its program moved.
+            // Believing it there writes `/etc/resolver/localhost` for :53
+            // while DNS is still on the fallback port, which is the failure
+            // the resolver step's own note exists to prevent.
+            //
+            // The installation is not asked the same question: its commands
+            // are `bootstrap` and their exit status does say. A job it has
+            // just registered is idle by design until a request arrives.
+            launchd_landed = !wakes_launchd || minato_core::launchd::is_running();
+
+            if !launchd_landed {
+                ui::error(
+                    "the job did not come up, so launchd is not holding 80/443/53 yet",
+                    Some(&minato_core::launchd::kickstart_command()),
+                );
+            }
         }
 
         outcomes.push(outcome);

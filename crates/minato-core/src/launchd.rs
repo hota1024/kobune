@@ -104,6 +104,51 @@ pub fn is_loaded() -> bool {
     false
 }
 
+/// Whether launchd's job is running, rather than only registered.
+///
+/// **Three states, not two.** [`is_installed`] is the plist on disk,
+/// [`is_loaded`] is launchd knowing the job, and this is something actually
+/// behind the sockets. After `minato daemon stop` the middle one still
+/// holds while nothing answers, which is the state [`RESTART_COMMAND`]
+/// exists to leave.
+///
+/// It is what tells a wake that worked from one that did not.
+/// `minato daemon restart` exits 0 either way — a daemon started directly,
+/// outside launchd, is still a daemon — so its exit status cannot answer
+/// this and asking launchd is the only thing that can.
+///
+/// `launchctl print` names a `pid` only while the job has one. Asking needs
+/// no privileges; being told the state should never cost a password.
+#[cfg(target_os = "macos")]
+pub fn is_running() -> bool {
+    if !is_installed() {
+        return false;
+    }
+
+    let Ok(output) = std::process::Command::new("launchctl")
+        .arg("print")
+        .arg(format!("system/{LABEL}"))
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim_start().starts_with("pid = "))
+}
+
+/// Always false where there is no launchd.
+#[cfg(not(target_os = "macos"))]
+pub fn is_running() -> bool {
+    false
+}
+
 /// The command that starts the job again, for a `fix` or a hint.
 ///
 /// `kickstart` needs root because the job is in the system domain. It is

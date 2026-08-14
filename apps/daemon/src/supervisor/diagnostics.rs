@@ -458,9 +458,10 @@ fn bind_fix(failure: Option<BindFailure>, port_env: &str, launchd_installed: boo
     if failure == Some(BindFailure::InUse) && launchd_installed {
         return format!(
             "launchd may be holding this port for a job it is not running. \
-             `minato daemon start` wakes it; failing that, run `{}`. If \
-             something unrelated has the port, name another with {port_env}",
-            minato_core::launchd::kickstart_command()
+             `{}` hands the socket back and starts the job, and needs no \
+             root. If something unrelated has the port, name another with \
+             {port_env}",
+            minato_core::launchd::RESTART_COMMAND
         );
     }
 
@@ -581,10 +582,18 @@ mod tests {
         let fix = bind_fix(Some(BindFailure::InUse), "MINATO_HTTP_PORT", true);
 
         assert!(fix.contains("launchd"), "name the cause: {fix}");
-        assert!(fix.contains("minato daemon start"), "{fix}");
+        assert!(fix.contains(minato_core::launchd::RESTART_COMMAND), "{fix}");
         assert!(
             !fix.contains("minato setup"),
             "setup is already done in this state: {fix}"
+        );
+        // One state, one answer. `doctor`'s launchd check names
+        // `RESTART_COMMAND` for this, `setup` offers it as the wake step,
+        // and docs/guide/troubleshooting.md tells the reader all three
+        // agree — which they did not while this one asked for root.
+        assert!(
+            !fix.contains("kickstart"),
+            "kickstart needs a password nobody here has: {fix}"
         );
     }
     #[test]
