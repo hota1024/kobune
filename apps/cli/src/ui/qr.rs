@@ -5,13 +5,17 @@
 //! would come out twice as tall as it is wide, and a scanner reads that as
 //! a different code or as none at all.
 //!
-//! **Polarity is carried twice, by the glyph and by the colour.** A
-//! terminal that takes the styling gets black modules on a white ground
-//! however the window is themed — a QR drawn in the terminal's own
-//! foreground is inverted on a dark theme, which iOS' camera will not
-//! read. Where styling has been turned off, the glyphs are still there and
-//! still the right way round, which is what every other terminal QR code
-//! is made of.
+//! **Black on white, explicitly, rather than the terminal's own colours.**
+//! A code drawn in the foreground colour is a light code on a dark ground
+//! wherever the theme is dark, and an inverted code is one iOS' camera
+//! will not read.
+//!
+//! That holds only as far as the styling reaches. The glyphs say which
+//! modules are set and the colours say which way round that is, so with
+//! `NO_COLOR` — or into a pipe — this is the same drawing every other
+//! terminal QR code is, correct on a light background and inverted on a
+//! dark one. There is no fixing that from here: nothing on this side knows
+//! what the window is themed as. [`super::views::url`] says so instead.
 
 use qrcode::QrCode;
 use qrcode::types::Color as Module;

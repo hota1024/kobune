@@ -127,7 +127,7 @@ pub fn urls(info: &WorkspaceInfo, qr: bool, decor: Decor) -> Panel {
     }
 
     for service in &info.services {
-        panel = panel.lines(qr_lines(service));
+        panel = with_code(panel, service, decor);
     }
 
     panel
@@ -135,43 +135,57 @@ pub fn urls(info: &WorkspaceInfo, qr: bool, decor: Decor) -> Panel {
 
 /// `minato url <service> --qr`: one URL, drawn to be photographed.
 pub fn url(service: &ServiceInfo, decor: Decor) -> Panel {
-    Panel::new(decor, "url").lines(qr_lines(service))
+    with_code(Panel::new(decor, "url"), service, decor)
 }
 
-/// A service's URL, and the QR code for it.
+/// Adds a service's URL and the QR code for it.
 ///
 /// **The tunnel URL wins when there is one.** A `.localhost` name resolves
 /// through this machine's own resolver and nowhere else, so the phone that
 /// just photographed it would get nothing — which is worth saying rather
 /// than leaving somebody to find out with a camera in their hand.
 ///
-/// Empty for a service with no address at all, which is what lets the
-/// listing offer a code for each without asking first.
-fn qr_lines(service: &ServiceInfo) -> Vec<Line<'static>> {
+/// Adds nothing for a service with no address at all, which is what lets
+/// the listing offer a code for each without asking first.
+fn with_code(panel: Panel, service: &ServiceInfo, decor: Decor) -> Panel {
     let Some(url) = service.tunnel_url.clone().or_else(|| service.access()) else {
-        return Vec::new();
+        return panel;
     };
 
-    let mut lines = vec![Line::from(vec![
+    let mut heading = vec![Line::from(vec![
         Span::styled(format!("{}  ", service.name), theme::subject()),
         Span::styled(url.clone(), theme::link()),
     ])];
 
-    let Some(code) = super::qr::lines(&url) else {
-        // Past 2,953 bytes, which no URL reaches. Said rather than
-        // silently skipped: a missing code with no reason reads as a bug.
-        lines.push(note("too long to draw as a QR code"));
-        return lines;
-    };
-
     if service.tunnel_url.is_none() {
-        lines.push(note(
+        heading.push(note(
             "only this machine resolves this name, so a phone will not",
         ));
     }
 
-    lines.extend(code);
-    lines
+    // The glyphs describe the modules, but which of them is the *dark* one
+    // is the terminal's own foreground once the styling is gone — and on a
+    // dark theme that is an inverted code, which iOS' camera refuses.
+    // Nothing to be done about it from here except say so.
+    if !decor.styled {
+        heading.push(note("drawn without colour, so a dark terminal inverts it"));
+    }
+
+    let Some(code) = super::qr::lines(&url) else {
+        // Past 2,953 bytes, which no URL reaches. Said rather than
+        // silently skipped: a missing code with no reason reads as a bug.
+        heading.push(note("too long to draw as a QR code"));
+        return panel.lines(heading);
+    };
+
+    // **Rigid, so a narrow window says so instead of shearing it.** The
+    // rows are the same width all the way down; broken across two lines
+    // each they still look like a QR code and scan as nothing at all.
+    panel.rigid(
+        heading,
+        code,
+        note("the window is too narrow to draw the QR code"),
+    )
 }
 
 /// Every workspace: `minato ls`.
@@ -1285,6 +1299,62 @@ mod tests {
         ));
 
         assert!(!text.contains('█'), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_narrow_window_says_so_rather_than_shearing_the_code() {
+        // Wrapped at the column, the rows still look like a QR code and
+        // scan as nothing — which is the one failure that costs somebody a
+        // minute of pointing a camera at it. The URL survives: it is the
+        // half still worth reading in a window with no room for the rest.
+        let view = url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::PLAIN,
+        );
+
+        let text = crate::ui::test_support::render_at(&view, 24);
+
+        // The message itself wraps like any other line at this width, so
+        // the assertion is about it reaching the screen, not where it
+        // broke.
+        let unwrapped = text.replace('\n', "");
+        assert!(unwrapped.contains("too narrow to draw"), "got:\n{text}");
+        assert!(unwrapped.contains("https://web.localhost"), "got:\n{text}");
+        assert!(!text.contains('█'), "no half-drawn code:\n{text}");
+    }
+
+    #[test]
+    fn a_window_with_the_room_draws_it_whole() {
+        let view = url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::PLAIN,
+        );
+
+        let text = render(&view);
+
+        assert!(!text.contains("too narrow"), "got:\n{text}");
+        assert!(text.contains("█▀▀▀▀▀█"), "the finder pattern:\n{text}");
+    }
+
+    #[test]
+    fn a_code_with_no_colour_behind_it_says_what_that_costs() {
+        // The glyphs say which modules are set; the colours say which way
+        // round. Without them a dark terminal draws an inverted code, and
+        // somebody photographing it deserves to know why nothing happens.
+        let unstyled = render(&url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::PLAIN,
+        ));
+        assert!(unstyled.contains("dark terminal inverts it"), "{unstyled}");
+
+        let styled = render(&url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::FRAMED,
+        ));
+        assert!(
+            !styled.contains("dark terminal inverts it"),
+            "nothing to warn about when the colour reaches:\n{styled}"
+        );
     }
 
     #[test]
