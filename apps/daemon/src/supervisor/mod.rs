@@ -1891,10 +1891,17 @@ pub(super) mod tests {
         let records = vec![record("feat-1", false)];
         let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
 
-        for (host, _) in entries
+        let tunnel_hosts: Vec<&str> = entries
             .iter()
-            .filter(|(host, _)| host.ends_with(".example.com"))
-        {
+            .map(|(host, _)| host.as_str())
+            .filter(|host| host.ends_with(".example.com"))
+            .collect();
+
+        // Without this the loop below passes on an empty list, which is
+        // the regression it exists to catch.
+        assert!(!tunnel_hosts.is_empty(), "got: {entries:?}");
+
+        for host in tunnel_hosts {
             let label = host.strip_suffix(".example.com").expect("under the zone");
             assert!(!label.contains('.'), "got: {host}");
         }

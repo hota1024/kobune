@@ -45,10 +45,21 @@ $ minato tunnel enable --domain example.com --public
 It creates the named tunnel, routes one wildcard DNS record for the zone, and
 starts `cloudflared`. All of it is idempotent, so running it again is fine.
 
+`--domain` is the zone itself — `example.com`, not `dev.example.com`. A hostname
+one level below the zone is covered by its Universal SSL certificate, and one
+below that is not.
+
 The record covers the whole zone, so it is worth knowing what that does and
 does not claim. An explicit record wins over a wildcard, so anything already
 published under the domain keeps answering as before. A name Minato does not
-know reaches the local proxy and gets a 404.
+know reaches the local proxy and gets a 404. The first `enable` for a domain
+says so on screen.
+
+If a `*` record was already in the zone, `enable` says that instead. Cloudflare
+reports only that the name is taken, not what it points at, so Minato cannot
+tell whether the record reaches this tunnel — and if it does not, every hostname
+goes elsewhere while everything here still reports `running`. Check that record
+in the dashboard before trusting the URLs.
 
 ## The URLs
 

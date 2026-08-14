@@ -6,11 +6,15 @@
 //! Everything after `cloudflared tunnel login` is non-interactive and the
 //! daemon does it — `tunnel create` and `tunnel route dns` run on every
 //! enable and every start, with "it already exists" read as success,
-//! because a flag in the state file can disagree with what Cloudflare has.
+//! because skipping them on a stored flag would trust that flag over
+//! Cloudflare. What the state file does hold is whether Minato has routed
+//! this zone before — not to skip the call, but to tell its own record
+//! apart from one that was already there.
 
 use minato_api::{ApiError, ErrorCode, Response, Target};
 use minato_core::TunnelRecord;
 use minato_runtime::EventSink;
+use minato_tunnel::DnsOutcome;
 
 use crate::tunnel;
 
@@ -61,6 +65,13 @@ impl Supervisor {
             ));
         }
 
+        // Whether this zone's record is one Minato has put in place before.
+        // A domain that has just changed starts over: the old zone's record
+        // says nothing about the new one's.
+        let zone_routed = existing
+            .as_ref()
+            .is_some_and(|record| record.zone_routed && record.domain == domain);
+
         let record = TunnelRecord {
             name: existing
                 .as_ref()
@@ -68,6 +79,7 @@ impl Supervisor {
                 .unwrap_or_else(|| minato_tunnel::DEFAULT_TUNNEL_NAME.to_string()),
             domain,
             enabled: true,
+            zone_routed,
         };
 
         let settings = self.tunnel_settings(&record)?;
@@ -83,14 +95,21 @@ impl Supervisor {
         }
 
         events.step_started("tunnel", "starting the tunnel");
-        match self.tunnel.start(settings.clone()).await {
-            Ok(()) => events.step_done("tunnel", "starting the tunnel"),
+        let dns = match self.tunnel.start(settings.clone()).await {
+            Ok(dns) => {
+                events.step_done("tunnel", "starting the tunnel");
+                dns
+            }
             Err(err) => {
                 events.step_failed("tunnel", "starting the tunnel", err.to_string());
                 return Err(tunnel_error(err));
             }
-        }
+        };
 
+        let notes = zone_notes(&record, dns);
+
+        let mut record = record;
+        record.zone_routed = true;
         self.save_tunnel_record(Some(record.clone())).await?;
 
         // The routing table is rebuilt so the tunnel hostnames resolve.
@@ -99,7 +118,7 @@ impl Supervisor {
         self.refresh(&context.project, &context.config).await?;
 
         Ok(Response::Tunnel(
-            tunnel::info(Some(&record), &self.tunnel, Some(&settings)).await,
+            tunnel::info_with_notes(Some(&record), &self.tunnel, Some(&settings), notes).await,
         ))
     }
     /// Stops the tunnel, keeping the record.
@@ -218,7 +237,7 @@ impl Supervisor {
         }
 
         match self.tunnel.start(settings).await {
-            Ok(()) => tracing::info!("tunnel restored for *.{}", record.domain),
+            Ok(_) => tracing::info!("tunnel restored for *.{}", record.domain),
             Err(err) => tracing::warn!("cannot start the tunnel: {err}"),
         }
     }
@@ -252,13 +271,58 @@ impl Supervisor {
             });
         }
 
+        // The DNS record is named as well as the tunnel. It covers the
+        // whole zone, and left behind pointing at a tunnel that no longer
+        // exists it answers every unrecorded name in the zone with
+        // Cloudflare's error 1033 — worse than the NXDOMAIN it replaced,
+        // and it does not expire.
         Some(minato_api::TunnelLeftover {
             domain: Some(record.domain.clone()),
-            commands: vec![format!(
-                "cloudflared tunnel delete --force {}",
-                minato_tunnel::DEFAULT_TUNNEL_NAME
-            )],
+            commands: vec![
+                format!(
+                    "cloudflared tunnel delete --force {}",
+                    minato_tunnel::DEFAULT_TUNNEL_NAME
+                ),
+                format!(
+                    "# and remove the DNS record *.{} in the Cloudflare dashboard",
+                    record.domain
+                ),
+            ],
         })
+    }
+}
+
+/// What `enable` should say about the zone, given what routing did.
+///
+/// Only about the transition. Once Minato has routed a zone, repeating
+/// either of these on every run turns them into noise, and a warning that
+/// is always there is a warning nobody reads.
+fn zone_notes(record: &TunnelRecord, dns: DnsOutcome) -> Vec<String> {
+    let wildcard = format!("*.{}", record.domain);
+
+    match (record.zone_routed, dns) {
+        // Minato routed it before and Cloudflare agrees it is there.
+        (true, _) => Vec::new(),
+
+        // Minato created it. Worth saying once what that now covers: the
+        // record answers for every name in the zone that has none of its
+        // own, so a name that used to be NXDOMAIN now reaches this machine
+        // — including the ones an ACME HTTP-01 challenge would use.
+        (false, DnsOutcome::Created) => vec![format!(
+            "{wildcard} now points here. Names in the zone with a record of \
+             their own are unaffected; any other name reaches this machine \
+             and gets a 404"
+        )],
+
+        // Someone else's record, or one from an earlier install Minato has
+        // no memory of. cloudflared only says the name is taken, not what
+        // it points at, and if it is not this tunnel then nothing arrives
+        // and everything above still reports `running`.
+        (false, DnsOutcome::AlreadyExisted) => vec![format!(
+            "a DNS record for {wildcard} was already there, and Minato did \
+             not create it. If it does not point at this tunnel, no hostname \
+             will arrive — check it in the Cloudflare dashboard"
+        )],
     }
 }
 
@@ -274,5 +338,53 @@ fn tunnel_error(err: minato_tunnel::TunnelError) -> ApiError {
             .with_hint("run `cloudflared tunnel login`"),
         TunnelError::Write { .. } => ApiError::internal(message),
         TunnelError::Failed { .. } => ApiError::new(ErrorCode::RuntimeFailed, message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(zone_routed: bool) -> TunnelRecord {
+        TunnelRecord {
+            name: "minato".into(),
+            domain: "example.com".into(),
+            enabled: true,
+            zone_routed,
+        }
+    }
+
+    #[test]
+    fn a_record_someone_else_owns_is_called_out() {
+        // The failure this prevents is total and silent: the tunnel runs,
+        // `status` says running, and every hostname resolves to whatever
+        // the pre-existing record points at instead.
+        let notes = zone_notes(&record(false), DnsOutcome::AlreadyExisted);
+
+        assert_eq!(notes.len(), 1, "got: {notes:?}");
+        assert!(notes[0].contains("*.example.com"), "got: {notes:?}");
+        assert!(notes[0].contains("did not create it"), "got: {notes:?}");
+    }
+
+    #[test]
+    fn creating_the_record_says_what_it_now_covers() {
+        let notes = zone_notes(&record(false), DnsOutcome::Created);
+
+        assert_eq!(notes.len(), 1, "got: {notes:?}");
+        assert!(notes[0].contains("*.example.com"), "got: {notes:?}");
+    }
+
+    #[test]
+    fn a_zone_already_routed_by_minato_says_nothing() {
+        // Both steps run on every enable and on every daemon start. A
+        // warning that appears every time is a warning nobody reads.
+        assert!(
+            zone_notes(&record(true), DnsOutcome::AlreadyExisted).is_empty(),
+            "the usual case is silent"
+        );
+        assert!(
+            zone_notes(&record(true), DnsOutcome::Created).is_empty(),
+            "re-created after being deleted by hand is still not news"
+        );
     }
 }

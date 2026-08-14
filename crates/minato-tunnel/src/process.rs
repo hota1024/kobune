@@ -47,9 +47,13 @@ impl TunnelProcess {
     ///
     /// Creating the tunnel and routing DNS are both idempotent, so this is
     /// safe to call on every daemon start rather than only the first.
-    pub async fn start(settings: TunnelSettings) -> Result<Self> {
+    ///
+    /// The DNS outcome comes back with the process because the caller is
+    /// the only one that knows whether Minato has routed this zone before,
+    /// and so whether "already existed" is its own record or a stranger's.
+    pub async fn start(settings: TunnelSettings) -> Result<(Self, DnsOutcome)> {
         ensure_tunnel(&settings).await?;
-        ensure_dns(&settings).await?;
+        let dns = ensure_dns(&settings).await?;
 
         let path = config::write_config(&settings)?;
 
@@ -71,7 +75,7 @@ impl TunnelProcess {
             settings.domain
         );
 
-        Ok(Self { child, settings })
+        Ok((Self { child, settings }, dns))
     }
 
     pub fn settings(&self) -> &TunnelSettings {
@@ -103,10 +107,17 @@ pub async fn ensure_tunnel(settings: &TunnelSettings) -> Result<()> {
         "creating the tunnel",
     )
     .await
+    .map(|_| ())
 }
 
 /// Points the zone's wildcard hostname at the tunnel.
-pub async fn ensure_dns(settings: &TunnelSettings) -> Result<()> {
+///
+/// The outcome is returned rather than swallowed. `*.{zone}` is a record a
+/// zone may well already have for its own reasons, and cloudflared's
+/// "already exists" says nothing about what it points at — an existing
+/// record that is not this tunnel means every Minato hostname silently
+/// goes nowhere, which is worth saying out loud.
+pub async fn ensure_dns(settings: &TunnelSettings) -> Result<DnsOutcome> {
     let record = settings.dns_record();
 
     run(
@@ -129,9 +140,27 @@ pub async fn delete_tunnel(settings: &TunnelSettings) -> Result<()> {
         "deleting the tunnel",
     )
     .await
+    .map(|_| ())
 }
 
-async fn run(settings: &TunnelSettings, args: &[&str], operation: impl Into<String>) -> Result<()> {
+/// What a setup step actually did.
+///
+/// Both steps run every time, so "already exists" is success — but for the
+/// DNS record it is also the one case Minato cannot see past, so the two
+/// are told apart rather than collapsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsOutcome {
+    /// cloudflared created the record.
+    Created,
+    /// A record with that name was already there, owner unknown.
+    AlreadyExisted,
+}
+
+async fn run(
+    settings: &TunnelSettings,
+    args: &[&str],
+    operation: impl Into<String>,
+) -> Result<DnsOutcome> {
     let operation = operation.into();
 
     let output = tokio::time::timeout(
@@ -151,7 +180,7 @@ async fn run(settings: &TunnelSettings, args: &[&str], operation: impl Into<Stri
     .map_err(|err| spawn_error(&settings.program, err))?;
 
     if output.status.success() {
-        return Ok(());
+        return Ok(DnsOutcome::Created);
     }
 
     let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -163,7 +192,7 @@ async fn run(settings: &TunnelSettings, args: &[&str], operation: impl Into<Stri
 
     if is_already_done(&message) {
         tracing::debug!("{operation}: already in place");
-        return Ok(());
+        return Ok(DnsOutcome::AlreadyExisted);
     }
 
     if message.contains("cert.pem") || message.contains("origincert") {
@@ -333,7 +362,7 @@ if [ "$2" = "run" ] || [ "$4" = "run" ]; then sleep 30; fi"#,
             ),
         );
 
-        let tunnel = TunnelProcess::start(settings).await.expect("starts");
+        let (tunnel, _) = TunnelProcess::start(settings).await.expect("starts");
         tunnel.stop().await;
 
         let calls = std::fs::read_to_string(&log).expect("reads");
@@ -345,7 +374,7 @@ if [ "$2" = "run" ] || [ "$4" = "run" ]; then sleep 30; fi"#,
         let dir = tempfile::tempdir().expect("tempdir");
         let settings = settings(dir.path(), "exit 0");
 
-        let mut tunnel = TunnelProcess::start(settings).await.expect("starts");
+        let (mut tunnel, _) = TunnelProcess::start(settings).await.expect("starts");
 
         // The stub exits immediately; give it a moment to be reaped.
         tokio::time::sleep(Duration::from_millis(200)).await;

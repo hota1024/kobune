@@ -17,7 +17,7 @@ pub mod process;
 use std::path::{Path, PathBuf};
 
 pub use config::{IngressConfig, render_config};
-pub use process::TunnelProcess;
+pub use process::{DnsOutcome, TunnelProcess};
 
 /// The default named tunnel.
 ///

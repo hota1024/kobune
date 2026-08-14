@@ -66,6 +66,20 @@ pub struct TunnelRecord {
     /// mean naming the domain again.
     #[serde(default)]
     pub enabled: bool,
+
+    /// Whether Minato has routed this zone's wildcard record itself.
+    ///
+    /// The one thing `cloudflared tunnel route dns` cannot tell us is who
+    /// owns a record that already exists, and `*.{zone}` is a name a zone
+    /// may well already use. Knowing whether we created it is the
+    /// difference between "already done" and "something else is holding
+    /// the name and no hostname will arrive".
+    ///
+    /// Deliberately not the old `routed` field, which held a set of
+    /// project names: reusing that name with a new type would fail to
+    /// deserialize an existing state file rather than fall back.
+    #[serde(default)]
+    pub zone_routed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

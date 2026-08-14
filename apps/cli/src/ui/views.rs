@@ -577,6 +577,17 @@ pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
         ]));
     }
 
+    // What just changed about the zone. Above the standing warning below,
+    // because this one is about the run that just happened.
+    if !info.notes.is_empty() {
+        panel = panel.lines(
+            info.notes
+                .iter()
+                .map(|note| Line::styled(note.clone(), theme::warn()))
+                .collect(),
+        );
+    }
+
     // Being on the internet unauthenticated is the kind of thing that has
     // to be said out loud every time, not buried in the setup output.
     if info.state.is_running() && info.public {
@@ -1458,6 +1469,7 @@ mod tests {
                 domain: Some("example.com".into()),
                 record: None,
                 setup: vec![],
+                notes: vec![],
                 public: true,
             },
             Decor::PLAIN,
@@ -1482,6 +1494,7 @@ mod tests {
                 domain: None,
                 record: None,
                 setup: vec!["cloudflared tunnel login".into()],
+                notes: vec![],
                 public: false,
             },
             Decor::PLAIN,

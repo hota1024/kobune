@@ -7,14 +7,18 @@
 //!
 //! Enabling is idempotent. `cloudflared tunnel create` and `route dns` are
 //! both run on every enable and on every daemon start, and "it already
-//! exists" reads as success — the alternative is a flag in the state file
-//! that can disagree with what Cloudflare actually has.
+//! exists" reads as success — skipping the call on a stored flag instead
+//! would mean trusting the flag over Cloudflare, which can disagree.
+//!
+//! `TunnelRecord.zone_routed` is a stored flag, but it gates nothing: the
+//! calls still run, and it only says whether an "already exists" is
+//! Minato's own record or a stranger's.
 
 use std::sync::Arc;
 
 use minato_api::{TunnelInfo, TunnelState};
 use minato_core::TunnelRecord;
-use minato_tunnel::{Readiness, TunnelProcess, TunnelSettings};
+use minato_tunnel::{DnsOutcome, Readiness, TunnelProcess, TunnelSettings};
 use tokio::sync::Mutex;
 
 /// The tunnel, as the daemon holds it.
@@ -75,7 +79,10 @@ impl TunnelHandle {
     ///
     /// Replacing rather than refusing means `tunnel enable --domain` with
     /// a new domain does the obvious thing.
-    pub async fn start(&self, settings: TunnelSettings) -> Result<(), minato_tunnel::TunnelError> {
+    pub async fn start(
+        &self,
+        settings: TunnelSettings,
+    ) -> Result<DnsOutcome, minato_tunnel::TunnelError> {
         let mut guard = self.running.lock().await;
 
         if let Some(existing) = guard.take() {
@@ -83,10 +90,11 @@ impl TunnelHandle {
         }
 
         let domain = settings.domain.clone();
-        *guard = Some(TunnelProcess::start(settings).await?);
+        let (process, dns) = TunnelProcess::start(settings).await?;
+        *guard = Some(process);
         self.set_domain(Some(domain));
 
-        Ok(())
+        Ok(dns)
     }
 
     /// Stops the tunnel. Doing nothing when it is already down.
@@ -117,6 +125,16 @@ pub async fn info(
     record: Option<&TunnelRecord>,
     handle: &TunnelHandle,
     settings: Option<&TunnelSettings>,
+) -> TunnelInfo {
+    info_with_notes(record, handle, settings, Vec::new()).await
+}
+
+/// [`info`], plus what the call that produced it changed about the zone.
+pub async fn info_with_notes(
+    record: Option<&TunnelRecord>,
+    handle: &TunnelHandle,
+    settings: Option<&TunnelSettings>,
+    notes: Vec<String>,
 ) -> TunnelInfo {
     let Some(record) = record else {
         return TunnelInfo::disabled();
@@ -149,6 +167,7 @@ pub async fn info(
         domain: Some(record.domain.clone()),
         record: settings.map(|settings| settings.dns_record()),
         setup,
+        notes,
         // Minato cannot apply an Access policy through the CLI, so it
         // cannot claim one is in place. Anything it did enable was
         // acknowledged with `--public`.
@@ -165,6 +184,7 @@ mod tests {
             name: "minato".into(),
             domain: "example.com".into(),
             enabled,
+            zone_routed: true,
         }
     }
 

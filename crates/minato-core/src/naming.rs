@@ -175,10 +175,18 @@ pub fn service_host_in(service: &str, workspace: Option<&str>, domain: &str) -> 
 /// [`sanitize_label`] only for the length: three names concatenated can
 /// pass [`MAX_LABEL_LEN`], and an over-long label is not a hostname at all.
 ///
-/// Two different sets of names can join into the same label — project
-/// `a-b` and workspace `a` of project `b` both give `web-a-b`. That was
-/// already true of service and workspace, and the alternative is escaping
-/// that shows in every URL.
+/// **Two projects can join into the same label.** Service `web` of
+/// project `myapp-x`'s main worktree and service `web` of workspace
+/// `myapp` in project `x` both give `web-myapp-x`. The two-level form
+/// could not do this — `web.myapp-x` and `web-myapp.x` are different
+/// names — so flattening is what introduces it, and the loser is not
+/// obvious from the outside: the routing table is keyed by hostname, so
+/// whichever project refreshed last serves both URLs.
+///
+/// Left as it is, with the proxy logging the clash when it registers the
+/// route (`Routes::replace_project`), because the alternative is an escape
+/// that shows up in every URL for a collision that needs one project to be
+/// named the tail of another's label.
 pub fn tunnel_host(service: &str, workspace: Option<&str>, project: &str, domain: &str) -> String {
     let label = match workspace {
         Some(ws) => format!("{service}-{ws}-{project}"),

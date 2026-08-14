@@ -215,6 +215,15 @@ pub struct TunnelInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
 
+    /// What just changed about the zone, said once.
+    ///
+    /// `enable` is the moment a wildcard record starts covering a domain
+    /// the user owns, and the moment an existing record might quietly be
+    /// swallowing every hostname. Neither is visible in `running`, and
+    /// neither is worth repeating on every later run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+
     /// Whether the tunnel is unauthenticated.
     ///
     /// True means the environment is on the public internet with no
@@ -230,6 +239,7 @@ impl TunnelInfo {
             domain: None,
             record: None,
             setup: Vec::new(),
+            notes: Vec::new(),
             public: false,
         }
     }
