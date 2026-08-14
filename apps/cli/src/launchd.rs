@@ -85,20 +85,22 @@ pub fn prepare(
     })
 }
 
-/// The steps that hand a job launchd already has its sockets back, for
+/// The step that hands a job launchd already has its sockets back, for
 /// when [`minato_core::launchd::is_loaded`] says installing is not what is
 /// wanted.
 ///
-/// Stopping the daemon comes first because it is usually the reason the job
-/// is not running: a daemon started any other way owns the socket, launchd's
-/// job finds it taken and stands down, and a clean exit is not restarted
-/// (`KeepAlive { SuccessfulExit: false }`). Kickstarting around it would
-/// only repeat that.
+/// The daemon in the way is usually the reason the job is not running: one
+/// started any other way owns the socket, launchd's job finds it taken and
+/// stands down, and a clean exit is not restarted
+/// (`KeepAlive { SuccessfulExit: false }`).
+///
+/// **One command, not a stop and a kickstart.** The two ran here with
+/// `all(...)`, so declining the kickstart's password prompt left the
+/// machine with no daemon at all — having done the harmful half of a fix.
+/// Restarting stops the daemon and then reaches for :80, which is what
+/// launchd is holding, so the job starts with no root involved.
 pub fn wake_commands() -> Vec<String> {
-    vec![
-        "minato daemon stop".to_string(),
-        minato_core::launchd::kickstart_command(),
-    ]
+    vec![minato_core::launchd::RESTART_COMMAND.to_string()]
 }
 
 /// The steps that undo the installation.
@@ -460,20 +462,15 @@ mod tests {
     }
 
     #[test]
-    fn waking_does_not_bootstrap_again() {
-        let commands = wake_commands();
-
-        assert!(
-            !commands.iter().any(|c| c.contains("bootstrap")),
-            "launchd fails a second bootstrap with EIO: {commands:?}"
-        );
-        let stop = commands.iter().position(|c| c.contains("daemon stop"));
-        let kickstart = commands.iter().position(|c| c.contains("kickstart"));
-
-        assert!(
-            matches!((stop, kickstart), (Some(stop), Some(kickstart)) if stop < kickstart),
-            "the daemon holding the socket has to go first: {commands:?}"
-        );
+    fn waking_is_one_command_that_needs_no_root() {
+        // It used to be a stop and a `sudo launchctl kickstart`, run with
+        // `all(...)`. Declining the password prompt ran only the stop, so
+        // saying no to a step left the machine with no daemon — the harm
+        // the step was offered to avoid. It also must not bootstrap:
+        // launchd answers a second one for a label it has with EIO.
+        //
+        // The equality carries all of that, so it is the only assertion.
+        assert_eq!(wake_commands(), vec![minato_core::launchd::RESTART_COMMAND]);
     }
 
     #[test]

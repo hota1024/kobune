@@ -111,11 +111,26 @@ it taken and stands down — and a clean exit is not restarted. It is that first
 daemon still holding the fallback ports, not a setup that failed.
 
 ```console
-$ minato daemon stop
+$ minato daemon restart
 ```
 
-The next request reaches :80, launchd starts its job there, and that one comes
-up holding 80, 443 and 53. `minato setup` offers the same thing as a step.
+Stopping hands the socket back, and starting reaches for :80 — which is
+launchd's to answer — so what comes up is launchd's job, holding 80, 443 and 53.
+No root is needed for that; a `launchctl kickstart` would want it. `minato
+doctor` and `minato setup` both name this same command.
+
+Stopping alone would work eventually, since the next request to arrive wakes the
+job, but it leaves the machine with no daemon in the meantime and `minato daemon
+status` reporting it stopped.
+
+If `minato doctor` still says the same thing afterwards, reaching :80 did not
+find launchd there — something else holds the port, or the job's socket never
+bound — and the start fell through to a daemon of its own. That is the case for
+forcing it:
+
+```console
+$ sudo launchctl kickstart -k system/dev.minato.daemon
+```
 
 **Installing it again is not the fix**, and `minato setup` no longer offers to:
 launchd answers a second `bootstrap` of a label it already has with `Bootstrap
