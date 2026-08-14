@@ -92,6 +92,102 @@ pub fn workspace(info: &WorkspaceInfo, decor: Decor) -> Panel {
     )
 }
 
+/// `minato url` with nothing named: every service, and the way in.
+///
+/// The whole list rather than the first reachable one. "Which URL" is the
+/// question being asked, and answering it with one of several is how
+/// somebody ends up curling the wrong service. Naming a service still
+/// prints one bare line — see [`crate::present_url`].
+pub fn urls(info: &WorkspaceInfo, qr: bool, decor: Decor) -> Panel {
+    let mut grid = Grid::new();
+    for service in &info.services {
+        grid.push(vec![service_name(service), access(service)]);
+    }
+
+    let mut panel = Panel::new(decor, "urls").grid(grid);
+
+    // The same second table `status` draws, for the same reason: a tunnel
+    // URL is a different address to a different audience, and folding it
+    // into the column above would leave two rows that differ by a domain.
+    let mut shared = Grid::new().caption(Span::styled("shared over the tunnel:", theme::heading()));
+    for service in &info.services {
+        let Some(url) = &service.tunnel_url else {
+            continue;
+        };
+
+        shared.push(vec![
+            Line::styled(service.name.clone(), theme::subject()),
+            Line::styled(url.clone(), theme::link()),
+        ]);
+    }
+    panel = panel.grid(shared);
+
+    if !qr {
+        return panel;
+    }
+
+    for service in &info.services {
+        panel = with_code(panel, service, decor);
+    }
+
+    panel
+}
+
+/// `minato url <service> --qr`: one URL, drawn to be photographed.
+pub fn url(service: &ServiceInfo, decor: Decor) -> Panel {
+    with_code(Panel::new(decor, "url"), service, decor)
+}
+
+/// Adds a service's URL and the QR code for it.
+///
+/// **The tunnel URL wins when there is one.** A `.localhost` name resolves
+/// through this machine's own resolver and nowhere else, so the phone that
+/// just photographed it would get nothing — which is worth saying rather
+/// than leaving somebody to find out with a camera in their hand.
+///
+/// Adds nothing for a service with no address at all, which is what lets
+/// the listing offer a code for each without asking first.
+fn with_code(panel: Panel, service: &ServiceInfo, decor: Decor) -> Panel {
+    let Some(url) = service.tunnel_url.clone().or_else(|| service.access()) else {
+        return panel;
+    };
+
+    let mut heading = vec![Line::from(vec![
+        Span::styled(format!("{}  ", service.name), theme::subject()),
+        Span::styled(url.clone(), theme::link()),
+    ])];
+
+    if service.tunnel_url.is_none() {
+        heading.push(note(
+            "only this machine resolves this name, so a phone will not",
+        ));
+    }
+
+    // The glyphs describe the modules, but which of them is the *dark* one
+    // is the terminal's own foreground once the styling is gone — and on a
+    // dark theme that is an inverted code, which iOS' camera refuses.
+    // Nothing to be done about it from here except say so.
+    if !decor.styled {
+        heading.push(note("drawn without colour, so a dark terminal inverts it"));
+    }
+
+    let Some(code) = super::qr::lines(&url) else {
+        // Past 2,953 bytes, which no URL reaches. Said rather than
+        // silently skipped: a missing code with no reason reads as a bug.
+        heading.push(note("too long to draw as a QR code"));
+        return panel.lines(heading);
+    };
+
+    // **Rigid, so a narrow window says so instead of shearing it.** The
+    // rows are the same width all the way down; broken across two lines
+    // each they still look like a QR code and scan as nothing at all.
+    panel.rigid(
+        heading,
+        code,
+        note("the window is too narrow to draw the QR code"),
+    )
+}
+
 /// Every workspace: `minato ls`.
 ///
 /// The project column appears only when more than one is listed. With a
@@ -577,14 +673,24 @@ pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
         ]));
     }
 
+    // What just changed about the zone. Above the standing warning below,
+    // because this one is about the run that just happened.
+    //
+    // Through `warning`, so it carries `!` as well as the colour — the
+    // shape is what a `NO_COLOR` terminal has left.
+    if !info.notes.is_empty() {
+        panel = panel.lines(info.notes.iter().map(|note| warning(note)).collect());
+    }
+
     // Being on the internet unauthenticated is the kind of thing that has
     // to be said out loud every time, not buried in the setup output.
+    //
+    // **Yellow, not red.** `tunnel enable --public` prints this on the way
+    // out of a command that worked, and red against a ✓ has been read as
+    // the command having failed. Red is reserved for something that did.
     if info.state.is_running() && info.public {
         panel = panel.lines(vec![
-            Line::styled(
-                "this environment is reachable from the internet.",
-                theme::bad(),
-            ),
+            warning("this environment is reachable from the internet."),
             Line::styled(
                 "Minato cannot see whether a Cloudflare Access policy is in front of it.",
                 theme::muted(),
@@ -736,10 +842,7 @@ pub fn uninstall_plan(
     // containers out looks like a machine that has none.
     if let Err(reason) = daemon {
         panel = panel.lines(vec![
-            Line::styled(
-                "the daemon's containers and storage are not in this list:",
-                theme::warn(),
-            ),
+            warning("the daemon's containers and storage are not in this list:"),
             Line::styled(format!("  {reason}"), theme::muted()),
         ]);
     }
@@ -783,6 +886,14 @@ pub fn uninstall_plan(
                 .commands
                 .iter()
                 .map(|command| Line::styled(format!("  {command}"), theme::command())),
+        );
+        // Not styled as commands: these are things to go and do, and a
+        // line that looks runnable but is not wastes the reader's attempt.
+        lines.extend(
+            tunnel
+                .notes
+                .iter()
+                .map(|note| Line::styled(format!("  {note}"), theme::muted())),
         );
         panel = panel.lines(lines);
     }
@@ -892,6 +1003,20 @@ pub fn note(text: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled("› ", theme::muted()),
         Span::styled(text.to_string(), theme::muted()),
+    ])
+}
+
+/// Something that worked and is worth being careful about.
+///
+/// **The symbol carries it as much as the colour does**, the same bargain
+/// the service states make: a monochrome terminal, `NO_COLOR`, and a
+/// reader who cannot tell red from yellow all still get the emphasis. And
+/// a shape of its own is what keeps a warning from being read as an error
+/// — see [`super::error`], which is the one that gets `✗` and red.
+pub fn warning(text: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("! ", theme::warn()),
+        Span::styled(text.to_string(), theme::warn()),
     ])
 }
 
@@ -1067,6 +1192,186 @@ mod tests {
     fn a_workspace_with_no_services_says_so_rather_than_showing_nothing() {
         let text = render(&workspace(&info(vec![]), Decor::PLAIN));
         assert!(text.contains("no services are defined"), "got:\n{text}");
+    }
+
+    #[test]
+    fn the_listing_names_every_service_and_its_url() {
+        let text = render(&urls(
+            &info(vec![
+                service("web", ServiceState::Ready, Some("https://web.localhost")),
+                service("api", ServiceState::Ready, Some("https://api.localhost")),
+            ]),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("web"), "got:\n{text}");
+        assert!(text.contains("https://web.localhost"), "got:\n{text}");
+        assert!(text.contains("api"), "got:\n{text}");
+        assert!(text.contains("https://api.localhost"), "got:\n{text}");
+    }
+
+    #[test]
+    fn the_listing_keeps_a_service_with_nowhere_to_go() {
+        // Left out, this reads as a workspace that does not define it —
+        // and "where is my database" is a question the listing should not
+        // answer with silence.
+        let text = render(&urls(
+            &info(vec![
+                service("web", ServiceState::Ready, Some("https://web.localhost")),
+                service("db", ServiceState::Ready, None),
+            ]),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("db"), "got:\n{text}");
+        assert!(text.contains("internal only"), "got:\n{text}");
+    }
+
+    #[test]
+    fn the_listing_shows_the_tunnel_url_beside_the_local_one() {
+        let mut web = service("web", ServiceState::Ready, Some("https://web.localhost"));
+        web.tunnel_url = Some("https://web.myapp.example.com".into());
+
+        let text = render(&urls(&info(vec![web]), false, Decor::PLAIN));
+
+        assert!(text.contains("shared over the tunnel"), "got:\n{text}");
+        assert!(
+            text.contains("https://web.myapp.example.com"),
+            "got:\n{text}"
+        );
+        assert!(text.contains("https://web.localhost"), "got:\n{text}");
+    }
+
+    #[test]
+    fn no_code_is_drawn_unless_it_was_asked_for() {
+        let text = render(&urls(
+            &info(vec![service(
+                "web",
+                ServiceState::Ready,
+                Some("https://web.localhost"),
+            )]),
+            false,
+            Decor::PLAIN,
+        ));
+
+        assert!(!text.contains('█'), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_code_is_drawn_for_each_service_that_has_a_url() {
+        let text = render(&urls(
+            &info(vec![
+                service("web", ServiceState::Ready, Some("https://web.localhost")),
+                service("api", ServiceState::Ready, Some("https://api.localhost")),
+                service("db", ServiceState::Ready, None),
+            ]),
+            true,
+            Decor::PLAIN,
+        ));
+
+        // Three finder patterns to a code — top left, top right, bottom
+        // left — and the top of each pairs to this. Two codes, and none
+        // for the service with no address.
+        let finders = text.matches("█▀▀▀▀▀█").count();
+        assert_eq!(finders, 6, "three finders per code, two codes:\n{text}");
+    }
+
+    #[test]
+    fn the_code_carries_the_tunnel_url_when_there_is_one() {
+        // A `.localhost` name is not one a phone can resolve, and the
+        // camera is the whole reason the code is being drawn.
+        let mut web = service("web", ServiceState::Ready, Some("https://web.localhost"));
+        web.tunnel_url = Some("https://web.myapp.example.com".into());
+
+        let text = render(&url(&web, Decor::PLAIN));
+
+        assert!(
+            text.contains("https://web.myapp.example.com"),
+            "got:\n{text}"
+        );
+        assert!(
+            !text.contains("only this machine resolves"),
+            "the tunnel URL resolves anywhere:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_local_url_says_a_phone_will_not_reach_it() {
+        // Otherwise this is found out with a camera already in hand.
+        let text = render(&url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("only this machine resolves"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_service_with_no_address_has_no_code() {
+        let text = render(&url(
+            &service("db", ServiceState::Ready, None),
+            Decor::PLAIN,
+        ));
+
+        assert!(!text.contains('█'), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_narrow_window_says_so_rather_than_shearing_the_code() {
+        // Wrapped at the column, the rows still look like a QR code and
+        // scan as nothing — which is the one failure that costs somebody a
+        // minute of pointing a camera at it. The URL survives: it is the
+        // half still worth reading in a window with no room for the rest.
+        let view = url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::PLAIN,
+        );
+
+        let text = crate::ui::test_support::render_at(&view, 24);
+
+        // The message itself wraps like any other line at this width, so
+        // the assertion is about it reaching the screen, not where it
+        // broke.
+        let unwrapped = text.replace('\n', "");
+        assert!(unwrapped.contains("too narrow to draw"), "got:\n{text}");
+        assert!(unwrapped.contains("https://web.localhost"), "got:\n{text}");
+        assert!(!text.contains('█'), "no half-drawn code:\n{text}");
+    }
+
+    #[test]
+    fn a_window_with_the_room_draws_it_whole() {
+        let view = url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::PLAIN,
+        );
+
+        let text = render(&view);
+
+        assert!(!text.contains("too narrow"), "got:\n{text}");
+        assert!(text.contains("█▀▀▀▀▀█"), "the finder pattern:\n{text}");
+    }
+
+    #[test]
+    fn a_code_with_no_colour_behind_it_says_what_that_costs() {
+        // The glyphs say which modules are set; the colours say which way
+        // round. Without them a dark terminal draws an inverted code, and
+        // somebody photographing it deserves to know why nothing happens.
+        let unstyled = render(&url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::PLAIN,
+        ));
+        assert!(unstyled.contains("dark terminal inverts it"), "{unstyled}");
+
+        let styled = render(&url(
+            &service("web", ServiceState::Ready, Some("https://web.localhost")),
+            Decor::FRAMED,
+        ));
+        assert!(
+            !styled.contains("dark terminal inverts it"),
+            "nothing to warn about when the colour reaches:\n{styled}"
+        );
     }
 
     #[test]
@@ -1458,6 +1763,7 @@ mod tests {
                 domain: Some("example.com".into()),
                 record: None,
                 setup: vec![],
+                notes: vec![],
                 public: true,
             },
             Decor::PLAIN,
@@ -1465,6 +1771,44 @@ mod tests {
 
         assert!(text.contains("reachable from the internet"), "got:\n{text}");
         assert!(text.contains("*.example.com"), "got:\n{text}");
+        // The mark that survives `NO_COLOR` and a monochrome terminal.
+        assert!(text.contains("! this environment"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_zone_note_is_marked_like_any_other_warning() {
+        // It arrives from the daemon as prose, and reaches the reader the
+        // same way the standing warning does — `!` first, so a monochrome
+        // terminal keeps the emphasis.
+        let text = render(&tunnel(
+            &TunnelInfo {
+                state: TunnelState::Running,
+                domain: Some("example.com".into()),
+                record: Some("*.example.com".into()),
+                setup: vec![],
+                notes: vec!["*.example.com now points here.".into()],
+                public: true,
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(
+            text.contains("! *.example.com now points here."),
+            "got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_warning_is_not_dressed_as_a_failure() {
+        // `tunnel enable --public` prints its warning on the way out of a
+        // command that worked, and this one was read as the command
+        // having failed. Red belongs to the things that did fail.
+        let line = warning("this environment is reachable from the internet.");
+
+        for span in &line.spans {
+            assert_eq!(span.style, theme::warn(), "got: {span:?}");
+            assert_ne!(span.style, theme::bad(), "got: {span:?}");
+        }
     }
 
     #[test]
@@ -1482,6 +1826,7 @@ mod tests {
                 domain: None,
                 record: None,
                 setup: vec!["cloudflared tunnel login".into()],
+                notes: vec![],
                 public: false,
             },
             Decor::PLAIN,

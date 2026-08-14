@@ -23,7 +23,7 @@
 | `--json` | 出力先にかかわらず、常に装飾しません |
 | `NO_COLOR` | 何かしら設定されていれば、レイアウトはそのままに色だけを落とします |
 | `TERM=dumb` | 全面的にパイプと同じ扱いにします |
-| `minato url` / `minato env get` | 常に 1 行だけ。他のコマンドへ埋め込むためのものです |
+| `minato url <service>` / `minato env get` | 常に 1 行だけ。他のコマンドへ埋め込むためのものです |
 | `minato logs` / `minato exec` | そのまま素通しし、stdout と stderr を分けたまま渡します |
 | `minato logs -f <service>` | `tty` があれば端末はサービスのものになります。[サービスに入力する](#サービスに入力する)を参照 |
 
@@ -212,13 +212,31 @@ $ minato down --all    # プロジェクト内の全 workspace
 共有サービスは、名前を明示的に指定した場合のみ停止します。他の worktree が
 使用している可能性があるためです。
 
-### `minato url [service]`
+### `minato url [service] [--qr]`
 
-1 行のみを出力します。サービス名を省略した場合は、最初にアクセス可能な
-サービスが対象です。
+サービス名を指定した場合は 1 行のみを出力します。他のコマンドへ埋め込むため
+のものです。
 
 ```console
 $ curl -sS --fail-with-body "$(minato url web)/api/health"
+```
+
+サービス名を省略した場合は、全サービスとアクセス先を一覧表示します。外から
+入れないサービスや、トンネルが有効なときはトンネル URL も含みます。
+
+```console
+$ minato url
+web   https://web.feat-1.myapp.localhost
+api   https://api.feat-1.myapp.localhost
+db    internal only
+```
+
+`--qr` は URL を QR コードとして描画します。スマートフォンで開くためのもの
+です。トンネル URL があればそちらを使います。`.localhost` の名前はこのマシン
+でしか解決できないため、それしかない場合はその旨を添えます。
+
+```console
+$ minato url web --qr
 ```
 
 停止中でも URL は有効です。リクエストによって起動します。
@@ -376,6 +394,10 @@ $ minato tunnel status
 
 `--public` は必須です。Minato が検証できない状態でインターネットに公開する
 ことへの同意を意味します。ドメインは初回実行時に保存されます。
+
+`--domain` にはゾーン自体を指定します（`dev.example.com` ではなく
+`example.com`）。ゾーンの Universal SSL 証明書が覆うのは 1 階層下までで、
+トンネルのホスト名はちょうどそこに位置するためです。
 
 ## エージェント
 
