@@ -839,7 +839,7 @@ MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
 MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
 MINATO_CA_FILE       = /etc/minato/ca.crt                      # while HTTPS is served
 NODE_EXTRA_CA_CERTS  = /etc/minato/ca.crt                      # the same file, wired in
-MINATO_TUNNEL_URL_WEB = https://web-feat-1.myapp.example.com   # with the tunnel on (M4)
+MINATO_TUNNEL_URL_WEB = https://web-feat-1-myapp.example.com   # with the tunnel on (M4)
 ```
 
 A `-` in a service name becomes `_` (`api-server` →
@@ -964,9 +964,9 @@ env_file = ".minato/env.api"
 **One named tunnel per machine.** The ingress rule sends everything to the
 local proxy and leaves routing on Host to it.
 
-On the DNS side that is one wildcard CNAME per project,
-`*.{project}.example.com`, so workspaces come and go without touching any
-records. It is the simplest arrangement and costs nothing at startup.
+On the DNS side that is one wildcard CNAME for the zone, `*.example.com`, so
+projects and workspaces come and go without touching any records. It is the
+simplest arrangement and costs nothing at startup.
 
 ```yaml
 # the generated cloudflared configuration
@@ -978,8 +978,31 @@ ingress:
   - service: http_status:404
 ```
 
-Tunnel hostnames sometimes allow only one level of subdomain, so the form is
-`{service}-{workspace}.{project}.example.com`.
+#### The hostname is one label (settled after M4)
+
+The form is `{service}-{workspace}-{project}.example.com`, with the workspace
+left out for the main worktree. Everything that identifies the environment is
+crammed into a single label, which reads worse than the `.localhost` URLs it
+mirrors, and **the certificate is the reason**.
+
+Cloudflare's Universal SSL covers the apex and first-level subdomains only.
+The original `{service}-{workspace}.{project}.example.com` is two levels down,
+so the edge has no certificate matching the SNI and aborts the handshake. The
+symptom is as far from the cause as it gets: nothing local is wrong, the tunnel
+is up, plain HTTP through it answers 200, and https fails with
+`sslv3 alert handshake failure`.
+
+Nothing free covers the second level. Total TLS explicitly refuses hostnames
+used with Cloudflare Tunnel; subdomain zones are Enterprise-only; an advanced
+certificate needs Advanced Certificate Manager, a paid add-on. Requiring a
+subscription to open a URL Minato itself printed is not a reasonable default,
+so the hostname moved to where the free certificate already reaches.
+
+That also settles the DNS record. With one label there is no per-project prefix
+to cut a narrower record at, so it is one wildcard for the zone — the same shape
+the ingress rule always had. Explicit records win over a wildcard, so anything
+else already published in the zone keeps working, and a name Minato does not
+know reaches the proxy and gets its 404.
 
 #### The proxy resolves the tunnel hostname (settled in M4)
 
@@ -1112,7 +1135,7 @@ pinned by a test rather than left to be discovered.
       "name": "web",
       "state": "ready",
       "url": "https://web.feat-1.myapp.localhost",
-      "tunnel_url": "https://web-feat-1.myapp.example.com",
+      "tunnel_url": "https://web-feat-1-myapp.example.com",
       "endpoint": "127.0.0.1:49312",
       "last_access": "2026-08-07T09:12:44Z"
     },
@@ -1325,7 +1348,7 @@ published.
 | **M1** ✅ | DNS, the proxy, TLS, `doctor` / `setup`, launchd socket activation | `https://web.feat-1.myapp.localhost` answers curl |
 | **M2** ✅ | Scale-to-zero, health checks, idle stop, on-demand start | Ten worktrees, and the only running containers are the ones in use |
 | **M3** ✅ | Environment variables: three layers, secret references, injection | The frontend can read `MINATO_URL_API` |
-| **M4** ✅ | Cloudflare Tunnel | `https://web-feat-1.myapp.example.com` works from a phone |
+| **M4** ✅ | Cloudflare Tunnel | `https://web-feat-1-myapp.example.com` works from a phone |
 | **M5** ✅ | Skills, `logs` / `exec` | An agent finishes the work without touching `docker` |
 | **M6** ✅ | The GUI: GPUI plus a tray | The menu bar shows the running workspaces and their URLs, and logs are readable |
 | **M7** ✅ | Apple Container made to work on real hardware; `doctor` and `ping` follow `[runtime] default`. Firecracker deferred — it needs a Linux host | Switching `[runtime] default` is all it takes |

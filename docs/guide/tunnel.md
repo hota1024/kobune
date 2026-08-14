@@ -35,15 +35,20 @@ $ minato tunnel enable --domain example.com --public
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
 │                                                                         │
-│ DNS  *.myapp.example.com                                                │
+│ DNS  *.example.com                                                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
-It creates the named tunnel, routes a wildcard DNS record for the project, and
+It creates the named tunnel, routes one wildcard DNS record for the zone, and
 starts `cloudflared`. All of it is idempotent, so running it again is fine.
+
+The record covers the whole zone, so it is worth knowing what that does and
+does not claim. An explicit record wins over a wildcard, so anything already
+published under the domain keeps answering as before. A name Minato does not
+know reaches the local proxy and gets a 404.
 
 ## The URLs
 
@@ -55,12 +60,16 @@ $ minato status
 │ ● web  ready  https://web.feature-auth.myapp.localhost │
 │                                                        │
 │ shared over the tunnel:                                │
-│ web  https://web-feature-auth.myapp.example.com        │
+│ web  https://web-feature-auth-myapp.example.com        │
 ╰────────────────────────────────────────────────────────╯
 ```
 
-The tunnel hostname joins service and workspace with a `-`, because tunnel
-hostnames only reliably support one level of subdomain.
+The tunnel hostname joins service, workspace and project with `-` into a single
+label, where the local URL uses a subdomain per part. That is for the
+certificate: Cloudflare's Universal SSL covers first-level subdomains only, so
+a deeper hostname is refused at the TLS handshake — with the tunnel up and
+plain HTTP through it working, which makes it look like anything but a
+certificate problem. One label stays inside what the free certificate covers.
 
 Services with `expose = false` get no tunnel hostname. A database cannot be
 reached from outside even by guessing.
@@ -118,8 +127,8 @@ gave someone keeps working.
 
 One named tunnel per machine carries every project, with a single ingress rule
 sending the whole zone to the local proxy and letting the proxy route on Host.
-One wildcard DNS record per project — `*.myapp.example.com` — means worktrees
-come and go without touching DNS or reloading `cloudflared`.
+One wildcard DNS record — `*.example.com` — means projects and worktrees come
+and go without touching DNS or reloading `cloudflared`.
 
 The hop from `cloudflared` to the proxy is plain HTTP over loopback. TLS is
 terminated at Cloudflare's edge, and `cloudflared` has no reason to trust your

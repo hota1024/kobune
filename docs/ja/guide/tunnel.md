@@ -36,16 +36,20 @@ $ minato tunnel enable --domain example.com --public
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
 │                                                                         │
-│ DNS  *.myapp.example.com                                                │
+│ DNS  *.example.com                                                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
-named tunnel の作成、プロジェクト用ワイルドカード DNS レコードの登録、
+named tunnel の作成、ゾーン全体のワイルドカード DNS レコードの登録、
 `cloudflared` の起動を行います。いずれも冪等なため、繰り返し実行しても問題
 ありません。
+
+レコードはゾーン全体を覆いますが、明示的なレコードはワイルドカードより優先
+されるため、そのドメインで既に公開しているものはそのまま応答します。Minato が
+知らないホスト名はローカルのプロキシに到達し、404 が返ります。
 
 ## URL
 
@@ -57,12 +61,16 @@ $ minato status
 │ ● web  ready  https://web.feature-auth.myapp.localhost │
 │                                                        │
 │ shared over the tunnel:                                │
-│ web  https://web-feature-auth.myapp.example.com        │
+│ web  https://web-feature-auth-myapp.example.com        │
 ╰────────────────────────────────────────────────────────╯
 ```
 
-トンネル側のホスト名は、サービス名と workspace 名を `-` で連結します。トンネル
-のホスト名では、サブドメインを 1 階層しか確実に扱えないためです。
+トンネル側のホスト名は、サービス名・workspace 名・プロジェクト名を `-` で連結
+した 1 ラベルになります。ローカルの URL がパートごとにサブドメインを分けるのとは
+異なる形ですが、これは証明書の都合です。Cloudflare の Universal SSL は 1 階層目の
+サブドメインまでしか覆わないため、それより深いホスト名は TLS のハンドシェイクで
+拒否されます。トンネルは起動していて平文 HTTP なら応答するので、証明書の問題には
+まず見えません。1 ラベルであれば無料の証明書の範囲に収まります。
 
 `expose = false` のサービスにはトンネル側のホスト名が割り当てられません。
 データベースは、ホスト名を推測されても外部から到達できません。
@@ -120,9 +128,9 @@ daemon は再起動時に、有効化されていたトンネルを復元しま�
 
 1 台のマシンにつき 1 本の named tunnel が、すべてのプロジェクトを中継します。
 ingress ルールは 1 つのみで、ゾーン全体をローカルのプロキシへ転送し、Host に
-よる振り分けはプロキシが担当します。DNS レコードはプロジェクトごとに
-ワイルドカード 1 件（`*.myapp.example.com`）のみのため、worktree が増減しても
-DNS の更新も `cloudflared` の再読み込みも発生しません。
+よる振り分けはプロキシが担当します。DNS レコードもワイルドカード 1 件
+（`*.example.com`）のみのため、プロジェクトや worktree が増減しても DNS の更新も
+`cloudflared` の再読み込みも発生しません。
 
 `cloudflared` からプロキシまでの区間は、ループバック上の平文 HTTP です。TLS は
 Cloudflare のエッジで終端されており、また `cloudflared` にローカル CA を信頼

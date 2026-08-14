@@ -34,7 +34,7 @@ $ minato tunnel enable --domain example.com --public
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
 │                                                                         │
-│ DNS  *.myapp.example.com                                                │
+│ DNS  *.example.com                                                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
@@ -55,13 +55,14 @@ $ minato status -w feature-checkout
 │ ● web  ready  https://web.feature-checkout.myapp.localhost │
 │                                                            │
 │ shared over the tunnel:                                    │
-│ web  https://web-feature-checkout.myapp.example.com        │
+│ web  https://web-feature-checkout-myapp.example.com        │
 ╰────────────────────────────────────────────────────────────╯
 ```
 
-共有するのは後者の URL です。サービス名と workspace 名が `-` で連結されて
-いるのは、トンネル側のホスト名ではサブドメインを 1 階層しか確実に扱えない
-ためです。
+共有するのは後者の URL です。サービス名・workspace 名・プロジェクト名が `-` で
+1 ラベルに連結されているのは、Cloudflare の Universal SSL が 1 階層目の
+サブドメインまでしか覆わず、それより深いホスト名は TLS のハンドシェイクで
+拒否されるためです。
 
 ```console
 $ minato status -w feature-checkout --json \
@@ -83,7 +84,7 @@ $ minato status -w feature-checkout --json \
 ## Access を設定する
 
 この作業は Minato では実行できません。Cloudflare のダッシュボードで
-Zero Trust → Access → Applications を開き、`*.myapp.example.com` に対する
+Zero Trust → Access → Applications を開き、`*.example.com` に対する
 self-hosted application とポリシーを作成してください。メールドメインによる
 制限や、社外の相手にはワンタイム PIN が利用できます。
 

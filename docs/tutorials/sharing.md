@@ -34,7 +34,7 @@ $ minato tunnel enable --domain example.com --public
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
 │                                                                         │
-│ DNS  *.myapp.example.com                                                │
+│ DNS  *.example.com                                                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
@@ -54,12 +54,13 @@ $ minato status -w feature-checkout
 │ ● web  ready  https://web.feature-checkout.myapp.localhost │
 │                                                            │
 │ shared over the tunnel:                                    │
-│ web  https://web-feature-checkout.myapp.example.com        │
+│ web  https://web-feature-checkout-myapp.example.com        │
 ╰────────────────────────────────────────────────────────────╯
 ```
 
-Send the second one. Service and workspace are joined with `-` because tunnel
-hostnames only reliably support one level of subdomain.
+Send the second one. Service, workspace and project are joined with `-` into a
+single label, because Cloudflare's Universal SSL covers first-level subdomains
+only — a deeper hostname would be refused at the TLS handshake.
 
 ```console
 $ minato status -w feature-checkout --json \
@@ -80,7 +81,7 @@ $ minato status -w feature-checkout --json \
 
 Minato cannot do this part. In the Cloudflare dashboard, under Zero Trust →
 Access → Applications, add a self-hosted application for
-`*.myapp.example.com` and a policy — an email domain, or a one-time PIN for
+`*.example.com` and a policy — an email domain, or a one-time PIN for
 someone outside your organisation.
 
 Do it before sharing anything you would not put on a public web server.

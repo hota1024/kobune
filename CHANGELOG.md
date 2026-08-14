@@ -167,6 +167,17 @@ less accurately.
 
 ### Changed
 
+- **A tunnel hostname is one label**: `web-feat-1-myapp.example.com`, where it
+  was `web-feat-1.myapp.example.com`. Cloudflare's Universal SSL covers the
+  apex and first-level subdomains only, so the old two-level hostname had no
+  certificate at the edge and every tunnel URL failed the TLS handshake —
+  while plain HTTP through the same tunnel answered 200, which pointed away
+  from the certificate. Nothing free covers the second level: Total TLS
+  refuses hostnames used with Cloudflare Tunnel and subdomain zones are
+  Enterprise-only, so the hostname moved instead. A link shared before this
+  has to be shared again. The DNS record follows: one wildcard for the zone
+  (`*.example.com`) rather than one per project
+
 - **`state` in `--json` is a plain string**, and `reason` sits beside it
   rather than inside it, so `.state == "ready"` is true where it used to be
   compared against `{"state":"ready"}`. On the first command the Skill tells
