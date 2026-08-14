@@ -396,8 +396,10 @@ $ minato daemon status
 
 Any command starts the daemon if it is down, so these are rarely needed. On a
 machine with the LaunchDaemon installed, starting one goes through launchd —
-which is how ports 80 and 443 stay held — so `stop` leaves the job idle until
-something arrives on a port, rather than leaving the machine without a daemon.
+which is how ports 80 and 443 stay held. `stop` leaves the job idle rather than
+unloaded: launchd keeps the ports, and the next request through one of them
+starts the daemon again. `restart` is what brings it straight back without
+waiting for that request.
 
 `restart` is for the one case that does not fix itself: a daemon left running
 from an older build. It answers every command happily and speaks a protocol the
