@@ -182,11 +182,11 @@ fish は追加設定なしで読み込みます。zsh はディレクトリを `
 ```console
 $ minato update
 › installing 9f3c1a2…
-╭ update ─────────────────────────────────────────────────────────────╮
-│ installed  9f3c1a2                                                  │
-│                                                                     │
-│ › the daemon is still the previous build, so run minato daemon stop │
-╰─────────────────────────────────────────────────────────────────────╯
+╭ update ────────────────────────────────────────────────────────────────╮
+│ installed  9f3c1a2                                                     │
+│                                                                        │
+│ › the daemon is still the previous build, so run minato daemon restart │
+╰────────────────────────────────────────────────────────────────────────╯
 ```
 
 `update` は、実行した `minato` が置かれているディレクトリを対象に、現在の
@@ -197,9 +197,10 @@ $ minato update
 新しいファイルは既存のファイルの隣に書き出してから rename で置き換えます。
 実行中のバイナリは書き込めませんが、置き換えることはできます。そのため daemon
 が動いている状態で更新しても、再起動するまでは古いビルドが動き続けます。最後の
-1 行はそのことを指しています。停止すれば launchd が新しいものを起動します。
-LaunchDaemon を入れていない場合は `minato daemon restart` と表示します。
-止めるだけでは何も起動し直さないからです。
+1 行はそのことを指しています。どのマシンでも同じ 1 つのコマンドです。daemon の
+起動は、launchd がジョブを持っているならまず launchd に頼むため、そこでの再起動
+は launchd が起動した daemon — 80 と 443 を保持したまま、いま入ったビルドで動く
+もの — で終わります。
 
 この 1 行は **状態から導いたもので、常に出るわけではありません**。daemon が
 動いていなければ入れ替えるものはなく、パネルは入れたビルドだけを伝えます。
@@ -227,7 +228,7 @@ $ minato update --check
 $ minato url web
 https://web.myapp.localhost
 › minato changed to 9f3c1a2 since the last run
-› the daemon is not this build, so run minato daemon stop
+› the daemon is not this build, so run minato daemon restart
 › this repository's Skill is not this build's, so run minato skill install --force
 ```
 
@@ -265,7 +266,7 @@ CLI 自身の発言と同じく stderr へ出し、`--json` では出しませ�
   "commit": "9f3c1a2…",
   "next": [
     {
-      "command": "minato daemon stop",
+      "command": "minato daemon restart",
       "reason": "the daemon is still the previous build"
     }
   ]
@@ -421,7 +422,7 @@ run this? [y/N] n
 実行後は次のようにします。
 
 ```console
-$ minato daemon stop   # launchd が起動し直し、標準ポートを確保します
+$ minato daemon restart   # launchd のジョブとして戻り、標準ポートを確保します
 $ minato doctor
 ```
 

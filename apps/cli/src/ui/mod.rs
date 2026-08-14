@@ -336,12 +336,12 @@ mod tests {
         // their daemon should be able to stop reading at the comma.
         let text = render(&Loose(vec![step(
             "the daemon is still the previous build",
-            "minato daemon stop",
+            "minato daemon restart",
         )]));
 
         assert_eq!(
             text.trim_end(),
-            "› the daemon is still the previous build, so run minato daemon stop"
+            "› the daemon is still the previous build, so run minato daemon restart"
         );
     }
 }

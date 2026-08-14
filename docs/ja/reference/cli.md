@@ -397,9 +397,11 @@ $ minato daemon status
 ```
 
 いずれのコマンドも daemon が停止していれば自動的に起動するため、これらの操作
-はほとんど必要ありません。LaunchDaemon を配置したマシンでは、`stop` の直後に
-launchd が再起動します。80/443 番ポートを保持したまま設定を再読み込みする
-手段です。
+はほとんど必要ありません。LaunchDaemon を配置したマシンでは daemon の起動が
+launchd 経由になります。これが 80/443 番ポートを保持したままにする仕組みです。
+`stop` はジョブを取り外すのではなく待機状態にするもので、ポートは launchd が
+保持し続け、次のリクエストで daemon が起動し直します。そのリクエストを待たずに
+戻すのが `restart` です。
 
 `restart` は自動では解消しない唯一のケース——古いビルドのまま動き続けている
 daemon——のためにあります。コマンドには普通に応答しますが、新しい CLI が話す
@@ -438,7 +440,7 @@ $ minato update --check
   "status": "installed",
   "commit": "…",
   "next": [
-    { "command": "minato daemon stop", "reason": "the daemon is still the previous build" }
+    { "command": "minato daemon restart", "reason": "the daemon is still the previous build" }
   ]
 }
 ```

@@ -129,10 +129,7 @@ pub fn steps(daemon: Daemon, repository: Option<&Path>) -> Vec<Step> {
         // Not "the previous build": all that was established is that it
         // is not this one, and a daemon someone started by hand from a
         // newer binary would make the stronger claim a false one.
-        steps.push(daemon_step(
-            "the daemon is not this build",
-            minato_core::launchd::is_installed(),
-        ));
+        steps.push(daemon_step("the daemon is not this build"));
     }
 
     steps.extend(setup_step(installed_plist().as_deref()));
@@ -156,27 +153,27 @@ pub fn steps_after_replacing(daemon: Daemon) -> Vec<Step> {
 
     // Here the stronger wording is a fact: the binaries were replaced a
     // moment ago, so a process still on the socket predates them.
-    vec![daemon_step(
-        "the daemon is still the previous build",
-        minato_core::launchd::is_installed(),
-    )]
+    vec![daemon_step("the daemon is still the previous build")]
 }
 
 /// Replacing a daemon left over from another build.
 ///
-/// With launchd holding the job, stopping is the whole of it: a clean exit
-/// is what makes launchd start the job again, and it starts it from the
-/// binary that is there now. Without launchd nothing would bring it back,
-/// so it is stopped and started here.
-fn daemon_step(reason: &str, launchd: bool) -> Step {
-    Step::new(
-        reason,
-        if launchd {
-            "minato daemon stop"
-        } else {
-            "minato daemon restart"
-        },
-    )
+/// **The same command wherever it runs.** `restart` starts the daemon back
+/// up the way every other command does, and that path asks launchd first
+/// where launchd has the job ([`minato_client::Client::connect_or_spawn`]),
+/// so the process it ends with is one launchd started — holding 80 and 443,
+/// running the binary that is there now.
+///
+/// `stop` alone would do on a launchd machine, and used to be what this
+/// said. It is worse in two ways: a clean exit is not restarted
+/// (`KeepAlive { SuccessfulExit: false }`), so the daemon stays down until
+/// something arrives on a port to demand-launch it and `minato daemon
+/// status` reports it stopped in the meantime — and it made the advice
+/// depend on a plist, so `--json` carried one of two commands for one
+/// state. `restart` is also what the CLI already says when it meets an old
+/// daemon head-on ([`minato_client::ClientError::VersionMismatch`]).
+fn daemon_step(reason: &str) -> Step {
+    Step::new(reason, "minato daemon restart")
 }
 
 /// `minato setup`, when the installed plist predates the shape this build
@@ -309,12 +306,20 @@ mod tests {
     }
 
     #[test]
-    fn launchd_is_told_to_stop_rather_than_restart() {
-        // Restarting by hand where launchd owns the job starts a daemon
-        // outside it, which is exactly the state that leaves 80 and 443
-        // unheld.
-        assert_eq!(daemon_step("", true).command, "minato daemon stop");
-        assert_eq!(daemon_step("", false).command, "minato daemon restart");
+    fn both_paths_answer_an_older_daemon_with_a_restart() {
+        // Through the entry points rather than `daemon_step`, which now
+        // returns a constant: what is worth pinning is the command that
+        // reaches a notice and a `--json` document, and that it is the
+        // same one on a machine with a LaunchDaemon and a machine
+        // without.
+        assert_eq!(
+            steps_after_replacing(Daemon::Other)[0].command,
+            "minato daemon restart"
+        );
+        assert_eq!(
+            steps(Daemon::Other, None)[0].command,
+            "minato daemon restart"
+        );
     }
 
     #[test]

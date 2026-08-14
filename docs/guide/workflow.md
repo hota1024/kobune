@@ -194,9 +194,11 @@ You rarely touch these. Any command starts the daemon if it is down. Stopping
 it stops the proxy and DNS, so URLs stop resolving until it comes back — but
 containers keep running.
 
-If launchd is installed, `daemon stop` is followed immediately by launchd
-starting it again. That is deliberate: it is how the daemon picks up new
-settings while keeping ports 80 and 443.
+If launchd is installed, launchd goes on holding ports 80, 443 and 53 while the
+job is idle, and the next request starts it again. That is how the daemon picks
+up new settings without the ports ever changing hands. To have it back without
+waiting for a request — after an update, say — `minato daemon restart` starts it
+through launchd too.
 
 ## When something is wrong
 
