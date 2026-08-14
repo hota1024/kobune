@@ -73,7 +73,9 @@ function inventory(args) {
  */
 function parse(text) {
   const lines = text.split('\n')
-  const marks = lines.map(() => ({ code: false, front: false, table: false, info: null }))
+  const marks = lines.map(() => ({
+    code: false, front: false, table: false, quote: false, info: null,
+  }))
   let fence = null
   let front = false
   for (let i = 0; i < lines.length; i++) {
@@ -100,6 +102,7 @@ function parse(text) {
       continue
     }
     marks[i].table = line.trimStart().startsWith('|')
+    marks[i].quote = line.trimStart().startsWith('>')
   }
   return { lines, marks }
 }
@@ -194,31 +197,38 @@ function checkFile(path, add) {
       add(rel, n, 'layout/width', `${width(line)} columns, over ${MAX_WIDTH}`)
     }
 
+    // A blockquote is someone else's words — an agent's report in AGENT-RUN.md,
+    // a message the program printed. Rewriting one to suit the house style
+    // would make it a misquotation, so the rules about voice stop at its edge.
+    // Layout still applies: rewrapping a quote does not change what it says.
+    const quoted = mark.quote
     const read = unmark(line)
     if (japanese) {
       const linked = unlink(line)
       if (JA_LATIN.test(linked)) add(rel, n, 'ja/space', 'no space before half-width text')
       if (LATIN_JA.test(linked)) add(rel, n, 'ja/space', 'no space after half-width text')
-      if (loneDash(read, mark.table)) {
+      if (!quoted && loneDash(read, mark.table)) {
         add(rel, n, 'ja/dash', 'a lone — in a sentence; recast it, see japanese.md')
       }
       if (JA_PAREN.test(read)) add(rel, n, 'ja/paren', 'half-width ( ) in Japanese text; use （ ）')
       if (/[Ａ-Ｚａ-ｚ０-９　]/.test(line)) add(rel, n, 'ja/fullwidth', 'full-width alphanumeric or space')
       if (/[｡-ﾟ]/.test(line)) add(rel, n, 'ja/kana', 'half-width katakana')
       if (/[，．！？]/.test(read)) add(rel, n, 'ja/punctuation', 'use 、。 and no ！？')
-      if (!mark.table && !line.startsWith('#') && PLAIN_FORM.test(read)) {
+      if (!quoted && !mark.table && !line.startsWith('#') && PLAIN_FORM.test(read)) {
         add(rel, n, 'ja/style', 'plain form in a ですます page')
       }
     } else {
-      const found = read.match(CONTRACTIONS)
+      const found = quoted ? null : read.match(CONTRACTIONS)
       if (found) add(rel, n, 'en/contraction', `${found[0]}: write it out`)
-      if (FIRST_PERSON.test(read)) add(rel, n, 'en/person', 'we/our/us: name the thing instead')
-      const spelling = read.match(AMERICAN)
+      if (!quoted && FIRST_PERSON.test(read)) {
+        add(rel, n, 'en/person', 'we/our/us: name the thing instead')
+      }
+      const spelling = quoted ? null : read.match(AMERICAN)
       if (spelling && !NOT_AMERICAN.test(spelling[0])) {
         add(rel, n, 'en/spelling', `${spelling[0]}: the docs are in British English`)
       }
-      if (/\s--\s|–/.test(read)) add(rel, n, 'en/dash', 'use — with a space either side')
-      if (/\S—|—\S/.test(read)) add(rel, n, 'en/dash', '— needs a space either side')
+      if (!quoted && /\s--\s|–/.test(read)) add(rel, n, 'en/dash', 'use — with a space either side')
+      if (!quoted && /\S—|—\S/.test(read)) add(rel, n, 'en/dash', '— needs a space either side')
       if (!mark.table && /\S {2,}\S/.test(read)) add(rel, n, 'en/space', 'double space')
     }
   }
