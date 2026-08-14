@@ -164,13 +164,36 @@ pub fn service_host_in(service: &str, workspace: Option<&str>, domain: &str) -> 
 
 /// The hostname used for Cloudflare Tunnel.
 ///
-/// Extra subdomain levels defeat the wildcard certificate on the tunnel
-/// side, so service and workspace are joined with `-` into one label.
+/// **One label under the zone**, so the project joins service and workspace
+/// with `-` rather than sitting in a label of its own. Cloudflare's
+/// Universal SSL covers the apex and first-level subdomains only, and
+/// anything deeper needs a certificate nobody has by default — a two-level
+/// hostname reaches the edge and is refused there, with no local symptom
+/// (see `docs/DESIGN.md` §9).
+///
+/// The joined parts are already sanitised labels, so this is
+/// [`sanitize_label`] only for the length: three names concatenated can
+/// pass [`MAX_LABEL_LEN`], and an over-long label is not a hostname at all.
+///
+/// **Two projects can join into the same label.** Service `web` of
+/// project `myapp-x`'s main worktree and service `web` of workspace
+/// `myapp` in project `x` both give `web-myapp-x`. The two-level form
+/// could not do this — `web.myapp-x` and `web-myapp.x` are different
+/// names — so flattening is what introduces it, and the loser is not
+/// obvious from the outside: the routing table is keyed by hostname, so
+/// whichever project refreshed last serves both URLs.
+///
+/// Left as it is, with the proxy logging the clash when it registers the
+/// route (`Routes::replace_project`), because the alternative is an escape
+/// that shows up in every URL for a collision that needs one project to be
+/// named the tail of another's label.
 pub fn tunnel_host(service: &str, workspace: Option<&str>, project: &str, domain: &str) -> String {
-    match workspace {
-        Some(ws) => format!("{service}-{ws}.{project}.{domain}"),
-        None => format!("{service}.{project}.{domain}"),
-    }
+    let label = match workspace {
+        Some(ws) => format!("{service}-{ws}-{project}"),
+        None => format!("{service}-{project}"),
+    };
+
+    format!("{}.{domain}", sanitize_label(&label))
 }
 
 fn short_hash(input: &str) -> String {
@@ -295,7 +318,38 @@ mod tests {
         );
         assert_eq!(
             tunnel_host("web", Some("feat-1"), "myapp", "example.com"),
-            "web-feat-1.myapp.example.com"
+            "web-feat-1-myapp.example.com"
         );
+    }
+
+    #[test]
+    fn a_tunnel_hostname_is_one_label_under_the_zone() {
+        // Universal SSL stops at the first level. A second label reaches
+        // Cloudflare and is refused at the TLS handshake, which looks
+        // nothing like a Minato problem from the outside.
+        let host = tunnel_host("web", Some("feat-1"), "myapp", "example.com");
+        let label = host.strip_suffix(".example.com").expect("under the zone");
+
+        assert!(!label.contains('.'), "got: {host}");
+        assert!(is_valid_label(label), "got: {label}");
+    }
+
+    #[test]
+    fn the_main_worktree_leaves_out_the_workspace() {
+        assert_eq!(
+            tunnel_host("web", None, "myapp", "example.com"),
+            "web-myapp.example.com"
+        );
+    }
+
+    #[test]
+    fn a_long_tunnel_hostname_stays_a_hostname() {
+        // Three names that each fit can still join into something past
+        // the label limit, and an over-long label is not resolvable.
+        let workspace = "a".repeat(MAX_LABEL_LEN);
+        let host = tunnel_host("web", Some(&workspace), "myapp", "example.com");
+        let label = host.strip_suffix(".example.com").expect("under the zone");
+
+        assert!(is_valid_label(label), "got: {label}");
     }
 }

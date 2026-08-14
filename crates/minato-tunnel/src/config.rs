@@ -30,8 +30,10 @@ impl IngressConfig {
         Self {
             tunnel: settings.name.clone(),
             // The whole zone, so the file never changes as projects are
-            // added. Only hostnames with a DNS record actually reach the
-            // tunnel, so this claims nothing it has not been routed.
+            // added — the same shape as the DNS record
+            // ([`TunnelSettings::dns_record`]). What actually answers is
+            // decided further in: the proxy 404s a hostname it has no
+            // route for, so an unclaimed name in the zone reaches nothing.
             hostname: format!("*.{}", settings.domain),
             service: format!("http://127.0.0.1:{}", settings.local_port),
         }
