@@ -1502,9 +1502,11 @@ and the docs site follows it — `main` carrying the nightly while also meaning
   CLI, which means an API token to obtain, scope and store. Until then
   `--public` is an acknowledgement rather than an alternative to a policy
 - **Verifying the tunnel end to end**: everything up to and including the
-  hostname routing is exercised, the last against a stub `cloudflared`. What
-  has not run is a real named tunnel against a real zone, which needs a
-  Cloudflare account and a domain
+  hostname routing is exercised, the last against a stub `cloudflared`. A real
+  named tunnel against a real zone has been run since — `enable` on a free-plan
+  zone, https answering on the zone's Universal SSL certificate — but only by
+  hand, on a machine with a Cloudflare account and a domain. Nothing in CI
+  covers it
 - **Migration conflicts on a shared database**: several worktrees applying
   different migrations to a `scope = "project"` database will break it. A
   database per worktree — separate database names inside one instance — is the

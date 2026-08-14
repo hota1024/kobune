@@ -134,9 +134,10 @@ The hop from `cloudflared` to the proxy is plain HTTP over loopback. TLS is
 terminated at Cloudflare's edge, and `cloudflared` has no reason to trust your
 local CA.
 
-::: tip Verified against a stub
+::: tip Verified against a real zone
 The hostname routing, the generated configuration, the CLI arguments and
-scale-to-zero through the tunnel are all tested. What has not been run is a
-real named tunnel against a real zone. If something behaves unexpectedly, check
-whether your Cloudflare plan allows a wildcard DNS record.
+scale-to-zero through the tunnel are all tested against a stub. Beyond that,
+`enable` has been run against a real Cloudflare zone on a free plan: the
+wildcard record is created, and the tunnel URL answers over https on the zone's
+Universal SSL certificate with nothing bought and nothing configured by hand.
 :::
