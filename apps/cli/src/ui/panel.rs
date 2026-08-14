@@ -144,17 +144,37 @@ impl Grid {
 pub enum Section {
     Lines(Vec<Line<'static>>),
     Grid(Grid),
+    /// A block that means nothing once it is broken, under lines that
+    /// introduce it.
+    ///
+    /// A QR code is the case: [`wrap`] would shear it into rows that still
+    /// look like a code and scan as nothing, which is worse than the
+    /// window being too narrow and saying so. `above` is what the block is
+    /// about and wraps like anything else — the URL stays readable in a
+    /// window with no room to draw it.
+    Rigid {
+        above: Vec<Line<'static>>,
+        block: Vec<Line<'static>>,
+        /// Drawn in the block's place when it will not fit.
+        instead: Line<'static>,
+    },
+}
+
+/// The widest of a set of lines.
+fn widest(lines: &[Line<'static>]) -> u16 {
+    lines
+        .iter()
+        .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+        .max()
+        .unwrap_or(0)
 }
 
 impl Section {
     fn width(&self) -> u16 {
         match self {
-            Self::Lines(lines) => lines
-                .iter()
-                .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
-                .max()
-                .unwrap_or(0),
+            Self::Lines(lines) => widest(lines),
             Self::Grid(grid) => grid.width(),
+            Self::Rigid { above, block, .. } => widest(above).max(widest(block)),
         }
     }
 
@@ -168,24 +188,46 @@ impl Section {
         match self {
             Self::Lines(lines) => u16::try_from(wrap(lines, width).len()).unwrap_or(u16::MAX),
             Self::Grid(grid) => grid.height(),
+            Self::Rigid { above, .. } => {
+                let heading = u16::try_from(wrap(above, width).len()).unwrap_or(u16::MAX);
+                heading.saturating_add(u16::try_from(self.block_lines(width).len()).unwrap_or(0))
+            }
+        }
+    }
+
+    /// The block as it will be drawn at `width`: itself, or the one line
+    /// that says why it is not there.
+    fn block_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let Self::Rigid { block, instead, .. } = self else {
+            return Vec::new();
+        };
+
+        if widest(block) <= width {
+            block.clone()
+        } else {
+            wrap(std::slice::from_ref(instead), width)
         }
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        match self {
-            Self::Lines(lines) => {
-                for (index, line) in wrap(lines, area.width).into_iter().enumerate() {
-                    let Some(y) = area.y.checked_add(u16::try_from(index).unwrap_or(u16::MAX))
-                    else {
-                        return;
-                    };
-                    if y >= area.bottom() {
-                        return;
-                    }
-                    line.render(Rect::new(area.x, y, area.width, 1), buf);
-                }
+        let lines = match self {
+            Self::Lines(lines) => wrap(lines, area.width),
+            Self::Grid(grid) => return grid.render(area, buf),
+            Self::Rigid { above, .. } => {
+                let mut lines = wrap(above, area.width);
+                lines.extend(self.block_lines(area.width));
+                lines
             }
-            Self::Grid(grid) => grid.render(area, buf),
+        };
+
+        for (index, line) in lines.into_iter().enumerate() {
+            let Some(y) = area.y.checked_add(u16::try_from(index).unwrap_or(u16::MAX)) else {
+                return;
+            };
+            if y >= area.bottom() {
+                return;
+            }
+            line.render(Rect::new(area.x, y, area.width, 1), buf);
         }
     }
 }
@@ -276,6 +318,29 @@ impl Panel {
 
     pub fn line(self, line: impl Into<Line<'static>>) -> Self {
         self.lines(vec![line.into()])
+    }
+
+    /// Adds a block that must be drawn whole or not at all, under the
+    /// lines that introduce it, with the line to draw in its place when
+    /// the window has no room for it.
+    ///
+    /// One section rather than two, so that no blank row comes between the
+    /// block and what it is about — the same reason [`Grid::caption`]
+    /// exists.
+    pub fn rigid(
+        mut self,
+        above: Vec<Line<'static>>,
+        block: Vec<Line<'static>>,
+        instead: Line<'static>,
+    ) -> Self {
+        if !above.is_empty() || !block.is_empty() {
+            self.sections.push(Section::Rigid {
+                above,
+                block,
+                instead,
+            });
+        }
+        self
     }
 
     pub fn grid(mut self, grid: Grid) -> Self {

@@ -8,7 +8,7 @@
 //! Labels are persisted so that changing the rules in [`crate::naming`]
 //! later does not change the URL of an existing workspace.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -37,8 +37,8 @@ pub struct State {
     /// The Cloudflare Tunnel, if one has been set up.
     ///
     /// Machine-wide rather than per-project: one named tunnel carries every
-    /// project, and the project name is a label in the hostname
-    /// (`docs/DESIGN.md` §9).
+    /// project, and the project name is part of the hostname's single
+    /// label (`docs/DESIGN.md` §9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<TunnelRecord>,
 }
@@ -66,12 +66,20 @@ pub struct TunnelRecord {
     /// mean naming the domain again.
     #[serde(default)]
     pub enabled: bool,
-    /// Projects a DNS route has been created for.
+
+    /// Whether Minato has routed this zone's wildcard record itself.
     ///
-    /// One wildcard record per project (`*.{project}.{domain}`), so
-    /// workspaces come and go without touching DNS.
+    /// The one thing `cloudflared tunnel route dns` cannot tell us is who
+    /// owns a record that already exists, and `*.{zone}` is a name a zone
+    /// may well already use. Knowing whether we created it is the
+    /// difference between "already done" and "something else is holding
+    /// the name and no hostname will arrive".
+    ///
+    /// Deliberately not the old `routed` field, which held a set of
+    /// project names: reusing that name with a new type would fail to
+    /// deserialize an existing state file rather than fall back.
     #[serde(default)]
-    pub routed: BTreeSet<String>,
+    pub zone_routed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

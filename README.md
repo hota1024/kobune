@@ -106,7 +106,7 @@ $ minato status
 │ ● web  ready  https://web.feature-demo.myapp.localhost │
 │                                                        │
 │ shared over the tunnel:                                │
-│ web  https://web-feature-demo.myapp.example.com        │
+│ web  https://web-feature-demo-myapp.example.com        │
 ╰────────────────────────────────────────────────────────╯
 ```
 

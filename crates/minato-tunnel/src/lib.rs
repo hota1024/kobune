@@ -17,7 +17,7 @@ pub mod process;
 use std::path::{Path, PathBuf};
 
 pub use config::{IngressConfig, render_config};
-pub use process::TunnelProcess;
+pub use process::{StepOutcome, TunnelProcess};
 
 /// The default named tunnel.
 ///
@@ -148,12 +148,15 @@ impl TunnelSettings {
         self.dir.join("config.yml")
     }
 
-    /// The wildcard record that routes a project's hostnames here.
+    /// The wildcard record that routes the zone's hostnames here.
     ///
-    /// One per project rather than one per workspace, which is what keeps
-    /// DNS still while worktrees come and go.
-    pub fn dns_record(&self, project: &str) -> String {
-        format!("*.{project}.{}", self.domain)
+    /// One for the whole zone. A tunnel hostname is a single label
+    /// ([`minato_core::naming::tunnel_host`]), so there is no per-project
+    /// prefix left to cut a record at — and the ingress rule already
+    /// claims the zone, so this is the DNS side saying the same thing.
+    /// Projects and worktrees come and go without a DNS write.
+    pub fn dns_record(&self) -> String {
+        format!("*.{}", self.domain)
     }
 
     /// The steps the user has to take before the daemon can continue.
@@ -187,10 +190,11 @@ mod tests {
     }
 
     #[test]
-    fn dns_record_is_one_wildcard_per_project() {
-        // Per workspace it would mean a DNS write every time a worktree
-        // appeared, which is what the wildcard exists to avoid.
-        assert_eq!(settings().dns_record("myapp"), "*.myapp.example.com");
+    fn dns_record_is_one_wildcard_for_the_zone() {
+        // Per project or per workspace would mean a DNS write every time
+        // one appeared, which is what the wildcard exists to avoid — and
+        // a flat hostname has no label to cut a narrower record at.
+        assert_eq!(settings().dns_record(), "*.example.com");
     }
 
     #[test]

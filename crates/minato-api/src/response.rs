@@ -122,6 +122,14 @@ pub struct TunnelLeftover {
     pub domain: Option<String>,
     /// What to run to remove it, if that is wanted.
     pub commands: Vec<String>,
+    /// What is left that no command here removes.
+    ///
+    /// The DNS record has no `cloudflared` command — `route dns` creates
+    /// and never deletes — so it can only be described. Kept apart from
+    /// [`Self::commands`] so that list stays runnable: a prose line with a
+    /// `#` in front of it is not a command, and reads as one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// A project that survived the purge, and what stopped it.
@@ -202,7 +210,7 @@ pub struct TunnelInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
 
-    /// The wildcard record routed for this project.
+    /// The wildcard record routed for the zone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
 
@@ -214,6 +222,15 @@ pub struct TunnelInfo {
     /// answer at.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
+
+    /// What just changed about the zone, said once.
+    ///
+    /// `enable` is the moment a wildcard record starts covering a domain
+    /// the user owns, and the moment an existing record might quietly be
+    /// swallowing every hostname. Neither is visible in `running`, and
+    /// neither is worth repeating on every later run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 
     /// Whether the tunnel is unauthenticated.
     ///
@@ -230,6 +247,7 @@ impl TunnelInfo {
             domain: None,
             record: None,
             setup: Vec::new(),
+            notes: Vec::new(),
             public: false,
         }
     }

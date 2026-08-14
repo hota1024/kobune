@@ -47,12 +47,13 @@ impl TunnelProcess {
     ///
     /// Creating the tunnel and routing DNS are both idempotent, so this is
     /// safe to call on every daemon start rather than only the first.
-    pub async fn start(settings: TunnelSettings, projects: &[String]) -> Result<Self> {
+    ///
+    /// The DNS outcome comes back with the process because the caller is
+    /// the only one that knows whether Minato has routed this zone before,
+    /// and so whether "already existed" is its own record or a stranger's.
+    pub async fn start(settings: TunnelSettings) -> Result<(Self, StepOutcome)> {
         ensure_tunnel(&settings).await?;
-
-        for project in projects {
-            ensure_dns(&settings, project).await?;
-        }
+        let dns = ensure_dns(&settings).await?;
 
         let path = config::write_config(&settings)?;
 
@@ -74,7 +75,7 @@ impl TunnelProcess {
             settings.domain
         );
 
-        Ok(Self { child, settings })
+        Ok((Self { child, settings }, dns))
     }
 
     pub fn settings(&self) -> &TunnelSettings {
@@ -106,11 +107,18 @@ pub async fn ensure_tunnel(settings: &TunnelSettings) -> Result<()> {
         "creating the tunnel",
     )
     .await
+    .map(|_| ())
 }
 
-/// Points a project's wildcard hostname at the tunnel.
-pub async fn ensure_dns(settings: &TunnelSettings, project: &str) -> Result<()> {
-    let record = settings.dns_record(project);
+/// Points the zone's wildcard hostname at the tunnel.
+///
+/// The outcome is returned rather than swallowed. `*.{zone}` is a record a
+/// zone may well already have for its own reasons, and cloudflared refuses
+/// with "already exists" without saying what holds the name — a record
+/// that is not this tunnel means every Minato hostname silently goes
+/// nowhere, which is worth saying out loud.
+pub async fn ensure_dns(settings: &TunnelSettings) -> Result<StepOutcome> {
+    let record = settings.dns_record();
 
     run(
         settings,
@@ -118,6 +126,35 @@ pub async fn ensure_dns(settings: &TunnelSettings, project: &str) -> Result<()> 
         format!("routing {record}"),
     )
     .await
+}
+
+/// Whether anything under the domain actually resolves.
+///
+/// **`route dns` exiting 0 does not mean the name exists.** The
+/// certificate `cloudflared tunnel login` leaves behind is scoped to one
+/// zone, and a hostname outside it is taken as a name *relative to* that
+/// zone: `--domain 1024.works` against a login for `example.com` creates
+/// `*.1024.works.example.com`, reports success, and leaves `*.1024.works`
+/// never having existed. Every layer above then says `running` about a
+/// tunnel no URL reaches.
+///
+/// Asking the resolver is the cheapest thing that can tell the difference,
+/// and it needs no API token. A name nothing else would answer is used, so
+/// what comes back is the wildcard or nothing.
+///
+/// `false` is "it did not answer", which a moment after the write can also
+/// mean a cached NXDOMAIN — so the caller reports it as something to look
+/// at rather than as a failure.
+pub async fn wildcard_resolves(settings: &TunnelSettings) -> bool {
+    let probe = format!("minato-probe.{}:443", settings.domain);
+
+    match tokio::net::lookup_host(&probe).await {
+        Ok(mut addresses) => addresses.next().is_some(),
+        Err(err) => {
+            tracing::debug!("{probe} does not resolve: {err}");
+            false
+        }
+    }
 }
 
 /// Deletes the named tunnel.
@@ -132,9 +169,34 @@ pub async fn delete_tunnel(settings: &TunnelSettings) -> Result<()> {
         "deleting the tunnel",
     )
     .await
+    .map(|_| ())
 }
 
-async fn run(settings: &TunnelSettings, args: &[&str], operation: impl Into<String>) -> Result<()> {
+/// What a setup step actually did.
+///
+/// Every step runs every time, so "already exists" is success — but for
+/// the DNS record it is also the one case Minato cannot see past, so the
+/// two are told apart rather than collapsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutcome {
+    /// cloudflared did it, or confirmed it was already so.
+    ///
+    /// Not the same as "created it": `route dns` accepts a record that
+    /// already points at this tunnel too, and exit 0 does not say which
+    /// happened. It does not need to — either way the name arrives here.
+    Done,
+    /// cloudflared refused because the name is taken.
+    ///
+    /// By what, it does not say. For the DNS record that is the case
+    /// Minato cannot see past.
+    AlreadyThere,
+}
+
+async fn run(
+    settings: &TunnelSettings,
+    args: &[&str],
+    operation: impl Into<String>,
+) -> Result<StepOutcome> {
     let operation = operation.into();
 
     let output = tokio::time::timeout(
@@ -154,7 +216,7 @@ async fn run(settings: &TunnelSettings, args: &[&str], operation: impl Into<Stri
     .map_err(|err| spawn_error(&settings.program, err))?;
 
     if output.status.success() {
-        return Ok(());
+        return Ok(StepOutcome::Done);
     }
 
     let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -166,7 +228,7 @@ async fn run(settings: &TunnelSettings, args: &[&str], operation: impl Into<Stri
 
     if is_already_done(&message) {
         tracing::debug!("{operation}: already in place");
-        return Ok(());
+        return Ok(StepOutcome::AlreadyThere);
     }
 
     if message.contains("cert.pem") || message.contains("origincert") {
@@ -282,9 +344,7 @@ mod tests {
             r#"echo 'Failed to add route: code: 1003, reason: An A, AAAA, or CNAME record with that host already exists' >&2; exit 1"#,
         );
 
-        ensure_dns(&settings, "myapp")
-            .await
-            .expect("treated as success");
+        ensure_dns(&settings).await.expect("treated as success");
     }
 
     #[tokio::test]
@@ -306,10 +366,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let settings = settings(dir.path(), r#"echo 'zone not found' >&2; exit 1"#);
 
-        let err = ensure_dns(&settings, "myapp").await.unwrap_err();
+        let err = ensure_dns(&settings).await.unwrap_err();
         assert!(err.to_string().contains("zone not found"), "got: {err}");
         assert!(
-            err.to_string().contains("*.myapp.example.com"),
+            err.to_string().contains("*.example.com"),
             "the operation says which record: {err}"
         );
     }
@@ -324,9 +384,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routes_every_project_before_running() {
-        // A project with no DNS record is unreachable, and nothing about
-        // the running tunnel would say why.
+    async fn routes_the_zone_before_running() {
+        // Without the DNS record nothing reaches the tunnel, and nothing
+        // about the running tunnel would say why.
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("calls.log");
         let settings = settings(
@@ -338,14 +398,11 @@ if [ "$2" = "run" ] || [ "$4" = "run" ]; then sleep 30; fi"#,
             ),
         );
 
-        let tunnel = TunnelProcess::start(settings, &["myapp".into(), "other".into()])
-            .await
-            .expect("starts");
+        let (tunnel, _) = TunnelProcess::start(settings).await.expect("starts");
         tunnel.stop().await;
 
         let calls = std::fs::read_to_string(&log).expect("reads");
-        assert!(calls.contains("*.myapp.example.com"), "got:\n{calls}");
-        assert!(calls.contains("*.other.example.com"), "got:\n{calls}");
+        assert!(calls.contains("*.example.com"), "got:\n{calls}");
     }
 
     #[tokio::test]
@@ -353,7 +410,7 @@ if [ "$2" = "run" ] || [ "$4" = "run" ]; then sleep 30; fi"#,
         let dir = tempfile::tempdir().expect("tempdir");
         let settings = settings(dir.path(), "exit 0");
 
-        let mut tunnel = TunnelProcess::start(settings, &[]).await.expect("starts");
+        let (mut tunnel, _) = TunnelProcess::start(settings).await.expect("starts");
 
         // The stub exits immediately; give it a moment to be reaped.
         tokio::time::sleep(Duration::from_millis(200)).await;
