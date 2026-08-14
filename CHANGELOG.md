@@ -108,6 +108,32 @@ less accurately.
 
 ### Fixed
 
+- **`minato setup` no longer reports a wake that did not happen.** Its wake
+  step is `minato daemon restart`, which exits 0 whether launchd's job came up
+  or a daemon started directly in its place — throttled after the stop,
+  disabled, its program moved — so setup asks launchd rather than reading that
+  exit code. Where the job is still not running it says so, marks the step
+  failed, leaves the `sudo launchctl kickstart` that forces it as what is left
+  to run, and exits non-zero. It also stops writing `/etc/resolver/localhost`
+  for :53 on a machine whose DNS is still on the fallback port, which is the
+  failure the step exists to prevent (#101)
+
+- A daemon that started outside launchd names the step that has not been taken
+  yet. Starting one already reaches for :80 to wake launchd's job, so
+  `minato daemon restart` was being offered as the way back from a machine
+  where that had just failed. Where launchd has the job it now names the
+  kickstart that forces it, and where it has only the plist — copied in, or
+  with its `bootstrap` declined — it names `minato setup`, since `kickstart`
+  there has no service to name (#101)
+
+- `minato doctor` walks a port launchd is holding down one ladder rather than
+  two: `minato daemon restart` first, and the `sudo launchctl kickstart` that
+  needs root only after it, which is what its launchd check and
+  `docs/guide/troubleshooting.md` already said. It reads whether launchd has
+  the job rather than whether the plist is on disk, so a machine that was
+  never bootstrapped no longer has launchd blamed for a port some other
+  process holds (#101)
+
 - **`doctor` and `setup` give the same answer as everything else** for a
   daemon holding the socket launchd's job wants: `minato daemon restart`.
   Both still said `minato daemon stop` and then a `sudo launchctl kickstart`,

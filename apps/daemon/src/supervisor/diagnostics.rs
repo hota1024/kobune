@@ -57,7 +57,14 @@ impl Supervisor {
 
         // Read once: it decides both what the proxy checks advise and what
         // the launchd check says, and those two have to agree.
-        let launchd_installed = minato_core::launchd::is_installed();
+        //
+        // **`is_loaded`, not `is_installed`**, which is what the launchd
+        // check below has always asked. A plist copied in without a
+        // `bootstrap` behind it leaves launchd holding nothing, so a port
+        // in use is somebody else's — and the two checks in one `doctor`
+        // used to answer that machine with "launchd may be holding this
+        // port" and "launchd does not have the job" at once.
+        let launchd_has_the_job = minato_core::launchd::is_loaded();
 
         // **Resolved once.** This walks git, finds the configuration and
         // registers the project in the state store — a write, under the
@@ -87,7 +94,7 @@ impl Supervisor {
                 Check::fail("proxy-http", "HTTP proxy", detail_for(failure)).with_fix(bind_fix(
                     failure,
                     crate::gateway::HTTP_PORT_ENV,
-                    launchd_installed,
+                    launchd_has_the_job,
                 ))
             }
         });
@@ -139,7 +146,7 @@ impl Supervisor {
                 .with_fix(bind_fix(
                     failure,
                     crate::gateway::HTTPS_PORT_ENV,
-                    launchd_installed,
+                    launchd_has_the_job,
                 ))
             }
         });
@@ -183,7 +190,7 @@ impl Supervisor {
                 .with_fix(bind_fix(
                     failure,
                     crate::gateway::DNS_PORT_ENV,
-                    launchd_installed,
+                    launchd_has_the_job,
                 ))
             }
         });
@@ -207,7 +214,7 @@ impl Supervisor {
                 "launchd socket activation",
                 "active (privileged ports are available)".to_string(),
             )
-        } else if minato_core::launchd::is_loaded() {
+        } else if launchd_has_the_job {
             Check::warn(
                 "launchd",
                 "launchd socket activation",
@@ -452,16 +459,17 @@ fn detail_for(failure: Option<BindFailure>) -> String {
 /// use — and the old advice, "a port below 1024 needs privileges, follow
 /// `minato setup`", names neither the cause nor a step that helps.
 ///
-/// `launchd_installed` is passed in rather than read here, so the advice can
-/// be checked without a plist on the machine running the tests.
-fn bind_fix(failure: Option<BindFailure>, port_env: &str, launchd_installed: bool) -> String {
-    if failure == Some(BindFailure::InUse) && launchd_installed {
+/// `launchd_has_the_job` is passed in rather than read here, so the advice
+/// can be checked without a LaunchDaemon on the machine running the tests.
+fn bind_fix(failure: Option<BindFailure>, port_env: &str, launchd_has_the_job: bool) -> String {
+    if failure == Some(BindFailure::InUse) && launchd_has_the_job {
         return format!(
             "launchd may be holding this port for a job it is not running. \
              `{}` hands the socket back and starts the job, and needs no \
-             root. If something unrelated has the port, name another with \
-             {port_env}",
-            minato_core::launchd::RESTART_COMMAND
+             root; if it stays in use, `{}` forces the job up. If something \
+             unrelated has the port, name another with {port_env}",
+            minato_core::launchd::RESTART_COMMAND,
+            minato_core::launchd::kickstart_command()
         );
     }
 
@@ -587,13 +595,16 @@ mod tests {
             !fix.contains("minato setup"),
             "setup is already done in this state: {fix}"
         );
-        // One state, one answer. `doctor`'s launchd check names
-        // `RESTART_COMMAND` for this, `setup` offers it as the wake step,
-        // and docs/guide/troubleshooting.md tells the reader all three
-        // agree — which they did not while this one asked for root.
+        // **The order is the whole point.** The launchd check says the same
+        // two commands in the same order, `setup` offers the restart as its
+        // wake step with the kickstart as the note under it, and
+        // docs/guide/troubleshooting.md walks the reader down the same
+        // ladder — one that asks for a password only where the step that
+        // does not has already failed.
         assert!(
-            !fix.contains("kickstart"),
-            "kickstart needs a password nobody here has: {fix}"
+            fix.find(minato_core::launchd::RESTART_COMMAND).unwrap()
+                < fix.find("kickstart").unwrap(),
+            "the answer that needs no root comes first: {fix}"
         );
     }
     #[test]

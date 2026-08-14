@@ -576,16 +576,21 @@ fn warn_if_unprivileged(cli: &Cli, start: DaemonStart) {
         return;
     }
 
-    // **The two states this covers take opposite steps**, and until now both
-    // were told to run `kickstart`. Where launchd has the job, that is the
-    // heavy way to say `minato daemon restart`, which needs no root. Where
-    // it does not — a plist copied in, or one whose `bootstrap` was
-    // declined — `kickstart` has no service to name and comes back
-    // `Could not find service`, and what is missing is the installation.
+    // **The two states this covers take opposite steps**, and until now
+    // both were told to run `kickstart`. Where launchd does not have the
+    // job — a plist copied in, or one whose `bootstrap` was declined — it
+    // has no service to name and comes back `Could not find service`, and
+    // what is missing is the installation.
+    //
+    // Where launchd does have it, forcing the job is what is left. This is
+    // reached only after the client reached for :80 and found launchd not
+    // answering there (`minato-client`, `wake_launchd`), which is the same
+    // thing `minato daemon restart` does — so naming the restart here would
+    // hand back the step that has just been taken.
     let (what, command) = if minato_core::launchd::is_loaded() {
         (
-            "bring socket activation back with",
-            minato_core::launchd::RESTART_COMMAND.to_string(),
+            "reaching :80 did not wake launchd's job, so forcing it is what is left",
+            minato_core::launchd::kickstart_command(),
         )
     } else {
         (
@@ -2185,7 +2190,7 @@ fn present_setup(
             .iter()
             .all(|command| run_shell(command, cli.json));
 
-        let outcome = if ran {
+        let mut outcome = if ran {
             ui::SetupOutcome::Ran
         } else {
             ui::SetupOutcome::Failed
@@ -2206,9 +2211,27 @@ fn present_setup(
             launchd_landed = !wakes_launchd || minato_core::launchd::is_running();
 
             if !launchd_landed {
+                // **A step that did not do what it is for is a failed
+                // step**, whatever its commands exited with — the machine
+                // is not set up, and an agent reading the exit code of
+                // `minato setup --yes` would otherwise be told it is by
+                // the very run that printed this.
+                outcome = ui::SetupOutcome::Failed;
+
+                // What is left to run is the escalation, not the command
+                // that has just been run to no effect. The summary prints
+                // a step's commands under "still to run", so this is what
+                // it has to be carrying by then.
+                step.commands = vec![minato_core::launchd::kickstart_command()];
+
+                // launchd is still holding 80, 443 and 53 — it does that
+                // whether or not the job runs, which is why nothing else
+                // can have them. What is missing is something behind them.
                 ui::error(
-                    "the job did not come up, so launchd is not holding 80/443/53 yet",
-                    Some(&minato_core::launchd::kickstart_command()),
+                    "the job did not come up, so nothing is answering on 80/443/53. \
+                     The resolver step names the port DNS is on now, so run \
+                     `minato setup` again once the job is up",
+                    None,
                 );
             }
         }
