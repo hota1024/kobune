@@ -21,7 +21,7 @@ hero:
 
 features:
   - title: One worktree, one environment
-    details: An environment appears with its worktree and goes with it. That correspondence is the whole model, and it is the only thing you have to keep in your head.
+    details: An environment appears with its worktree and goes with it. That correspondence is the whole model, and the only thing to keep in your head.
   - title: No ports to remember
     details: Every service gets a stable URL — web.feature-auth.myapp.localhost — that survives restarts. Ports change underneath; the URL does not.
   - title: Scale to zero

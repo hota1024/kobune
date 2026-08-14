@@ -122,12 +122,13 @@ $ minato daemon restart
 `minato setup` も同じコマンドを提示します。
 
 停止するだけでも、次に届いたリクエストがジョブを起こすため最終的には復旧します
-が、それまでのあいだ daemon は不在で、`minato daemon status` も停止と報告します。
+が、それまでのあいだ daemon は不在で、`minato daemon status` も停止と報告
+します。
 
 実行後も `minato doctor` の表示が変わらない場合、:80 に到達しても launchd が
-そこにいなかった——別のプロセスがポートを保持している、あるいはジョブのソケットが
-bind できていない——ということで、起動は独自の daemon にフォールバックしています。
-その場合は強制的に起動します。
+そこにいなかった——別のプロセスがポートを保持している、あるいはジョブの
+ソケットが bind できていない——ということで、起動は独自の daemon にフォール
+バックしています。その場合は強制的に起動します。
 
 ```console
 $ sudo launchctl kickstart -k system/dev.minato.daemon

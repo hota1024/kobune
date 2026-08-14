@@ -4,7 +4,7 @@ From an empty repository to a working URL. Ten minutes, most of it waiting for
 an image to pull.
 
 This assumes you have followed [Installation](./installation) and that
-`minato doctor` is happy.
+`minato doctor` has nothing to say.
 
 ## 1. Describe the project
 
@@ -39,7 +39,7 @@ command = "npm run dev"
 Three things matter here:
 
 - **`port`** is the port your app listens on *inside* the container. Minato
-  never asks you for a host port; there isn't one you need to know.
+  never asks for a host port; there is none to know.
 - **`command`** replaces the image's own command. Leave it out to use the
   image's default.
 - Your worktree is mounted at **`/workspace`**, which is also the working
@@ -66,9 +66,9 @@ $ minato up
 The main worktree leaves the workspace label out of its URL, so it is
 `web.myapp.localhost` rather than `web.main.myapp.localhost`.
 
-That last step — `waiting for web` — is Minato waiting for your app to actually
-answer, not just for the container to exist. The two are not the same, and a
-`curl` immediately after a container starts usually fails.
+That last step — `waiting for web` — is Minato waiting for your app to answer,
+not just for the container to exist. The two are not the same, and a `curl`
+immediately after a container starts usually fails.
 
 ## 3. Reach it
 
