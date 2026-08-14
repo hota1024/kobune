@@ -232,6 +232,17 @@ less accurately.
 
 ### Changed
 
+- **The project is called Kobune**, where it was Minato. Every name it answers
+  to moved with it: the `minato` and `minatod` binaries, `minato.toml`,
+  `~/.minato` and the `MINATO_*` environment variables, the launchd label
+  `dev.minato.daemon`, the `dev.minato.*` container labels, the local CA's
+  common name, and the Skill and its install path. Nothing reads the old names
+  and nothing migrates. An existing installation has to be removed with the old
+  `minato uninstall` before the new binary is installed — after this the
+  launchd job, the trusted certificate, `~/.minato` and every running container
+  carry names nothing can find, and the old daemon goes on holding ports 80,
+  443 and 53. The documentation is still served from `minato.1024.works`; that
+  moves separately
 - **A tunnel hostname is one label**: `web-feat-1-myapp.example.com`, where it
   was `web-feat-1.myapp.example.com`. Cloudflare's Universal SSL covers the
   apex and first-level subdomains only, so the old two-level hostname had no

@@ -6,7 +6,10 @@ in this repository had ever checked whether an agent can get through a task
 with it.
 
 This is the record of doing that on 2026-08-12, against `0bd57cf`. It is kept
-so it can be repeated rather than remembered.
+so it can be repeated rather than remembered. The run itself happened while the
+project was still called `minato` — the commands below have been rewritten to
+the name it answers to now, so they can still be followed, but `0bd57cf` itself
+will not answer to them.
 
 ## The rules
 
