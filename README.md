@@ -30,21 +30,29 @@ $ minato new feature/user-auth
 
 ## What it does
 
-- **A worktree is an environment** — one appears with the worktree and goes with it
-- **No ports to remember** — every service gets `{service}.{workspace}.{project}.localhost`
-- **Scale-to-zero** — an untouched environment stops itself and wakes on the next request, so create as many worktrees as you like
-- **Reachable remotely** — share with a phone or an outside reviewer over Cloudflare Tunnel
-- **Usable by agents** — every command speaks `--json`, and `minato skill install` drops in the Skill
-- **Interactive where it matters** — `tty = true` gives a service a terminal, and `minato logs -f` lends it yours: turborepo's task switcher, colour and all
+- **A worktree is an environment** — one appears with the worktree and goes
+  with it
+- **No ports to remember** — every service gets
+  `{service}.{workspace}.{project}.localhost`
+- **Scale-to-zero** — an untouched environment stops itself and wakes on the
+  next request, so create as many worktrees as you like
+- **Reachable remotely** — share with a phone or an outside reviewer over
+  Cloudflare Tunnel
+- **Usable by agents** — every command speaks `--json`, and
+  `minato skill install` drops in the Skill
+- **Interactive where it matters** — `tty = true` gives a service a terminal,
+  and `minato logs -f` lends it yours: Turborepo's task switcher, colour and
+  all
 - **Prebuilt or built** — pull an image, or point `build` at a Dockerfile
-- **Your choice of virtualisation** — Docker and Apple Container behind one Runtime abstraction, switched with `[runtime] default`
+- **Your choice of virtualisation** — Docker and Apple Container behind one
+  Runtime abstraction, switched with `[runtime] default`
 
 ## Status
 
-**Every milestone is done except Firecracker, which needs a Linux host.** Creating a worktree starts its containers and
-they answer on `*.localhost`. An untouched environment stops itself and comes
-back on the next request. Every service receives the others' URLs as
-`MINATO_URL_<SERVICE>`.
+**Every milestone is done except Firecracker, which needs a Linux host.**
+Creating a worktree starts its containers and they answer on `*.localhost`. An
+untouched environment stops itself and comes back on the next request. Every
+service receives the others' URLs as `MINATO_URL_<SERVICE>`.
 
 ```console
 $ minato init

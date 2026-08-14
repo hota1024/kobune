@@ -48,6 +48,12 @@ independent thoughts that wanted a full stop:
 
 **Straight quotes**, `'` and `"`. Typographic quotes are not used.
 
+**None of this reaches inside a blockquote.** A `>` block is someone else's
+words — an agent's report in `docs/AGENT-RUN.md`, a message the program printed
+— and editing one to suit the house style turns it into a misquotation. Leave
+the contractions, the first person and the spelling exactly as they were said.
+Rewrapping is fine; it changes nothing.
+
 **Serial comma** is not used: "a framed panel, columns that line up, and colour
 on the parts that carry meaning" takes the comma because the list needs it, not
 by rule.
