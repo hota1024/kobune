@@ -395,6 +395,10 @@ $ minato tunnel status
 `--public` は必須です。Minato が検証できない状態でインターネットに公開する
 ことへの同意を意味します。ドメインは初回実行時に保存されます。
 
+`--domain` にはゾーン自体を指定します（`dev.example.com` ではなく
+`example.com`）。ゾーンの Universal SSL 証明書が覆うのは 1 階層下までで、
+トンネルのホスト名はちょうどそこに位置するためです。
+
 ## エージェント
 
 ```console

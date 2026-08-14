@@ -673,6 +673,15 @@ pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
         ]));
     }
 
+    // What just changed about the zone. Above the standing warning below,
+    // because this one is about the run that just happened.
+    //
+    // Through `warning`, so it carries `!` as well as the colour — the
+    // shape is what a `NO_COLOR` terminal has left.
+    if !info.notes.is_empty() {
+        panel = panel.lines(info.notes.iter().map(|note| warning(note)).collect());
+    }
+
     // Being on the internet unauthenticated is the kind of thing that has
     // to be said out loud every time, not buried in the setup output.
     //
@@ -877,6 +886,14 @@ pub fn uninstall_plan(
                 .commands
                 .iter()
                 .map(|command| Line::styled(format!("  {command}"), theme::command())),
+        );
+        // Not styled as commands: these are things to go and do, and a
+        // line that looks runnable but is not wastes the reader's attempt.
+        lines.extend(
+            tunnel
+                .notes
+                .iter()
+                .map(|note| Line::styled(format!("  {note}"), theme::muted())),
         );
         panel = panel.lines(lines);
     }
@@ -1746,6 +1763,7 @@ mod tests {
                 domain: Some("example.com".into()),
                 record: None,
                 setup: vec![],
+                notes: vec![],
                 public: true,
             },
             Decor::PLAIN,
@@ -1755,6 +1773,29 @@ mod tests {
         assert!(text.contains("*.example.com"), "got:\n{text}");
         // The mark that survives `NO_COLOR` and a monochrome terminal.
         assert!(text.contains("! this environment"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_zone_note_is_marked_like_any_other_warning() {
+        // It arrives from the daemon as prose, and reaches the reader the
+        // same way the standing warning does — `!` first, so a monochrome
+        // terminal keeps the emphasis.
+        let text = render(&tunnel(
+            &TunnelInfo {
+                state: TunnelState::Running,
+                domain: Some("example.com".into()),
+                record: Some("*.example.com".into()),
+                setup: vec![],
+                notes: vec!["*.example.com now points here.".into()],
+                public: true,
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(
+            text.contains("! *.example.com now points here."),
+            "got:\n{text}"
+        );
     }
 
     #[test]
@@ -1785,6 +1826,7 @@ mod tests {
                 domain: None,
                 record: None,
                 setup: vec!["cloudflared tunnel login".into()],
+                notes: vec![],
                 public: false,
             },
             Decor::PLAIN,

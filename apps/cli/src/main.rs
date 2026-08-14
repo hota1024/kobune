@@ -295,6 +295,11 @@ enum TunnelCommand {
     /// Set the tunnel up and start it
     Enable {
         /// The Cloudflare zone the hostnames live under
+        ///
+        /// The zone itself — `example.com`, not `dev.example.com`. A
+        /// hostname one level below the zone is covered by the zone's
+        /// Universal SSL certificate; one below that is not, and fails at
+        /// the TLS handshake with the tunnel up and working.
         #[arg(long)]
         domain: Option<String>,
 

@@ -174,6 +174,24 @@ less accurately.
 
 ### Changed
 
+- **A tunnel hostname is one label**: `web-feat-1-myapp.example.com`, where it
+  was `web-feat-1.myapp.example.com`. Cloudflare's Universal SSL covers the
+  apex and first-level subdomains only, so the old two-level hostname had no
+  certificate at the edge and every tunnel URL failed the TLS handshake —
+  while plain HTTP through the same tunnel answered 200, which pointed away
+  from the certificate. Nothing free covers the second level: Total TLS
+  refuses hostnames used with Cloudflare Tunnel and subdomain zones are
+  Enterprise-only, so the hostname moved instead. A link shared before this
+  has to be shared again. The DNS record follows: one wildcard for the zone
+  (`*.example.com`) rather than one per project
+
+- **`tunnel enable` checks the wildcard resolves** before saying it points
+  here, and reports it when it does not. `cloudflared tunnel route dns` takes
+  a hostname outside the zone your login covers as a name relative to that
+  zone — `--domain other.com` on a login for `example.com` creates
+  `*.other.com.example.com` and exits 0 — so a tunnel can report `running`,
+  print a DNS record, and be unreachable at every URL. Found by running it
+
 - **`minato url` with no service named lists every service**, where it used to
   print the first reachable one's URL on a bare line. Answering "which URL"
   with one of several is how a request ends up at the wrong service. Naming a

@@ -34,7 +34,7 @@ $ minato tunnel enable --domain example.com --public
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
 │                                                                         │
-│ DNS  *.myapp.example.com                                                │
+│ DNS  *.example.com                                                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
 │ Minato cannot see whether a Cloudflare Access policy is in front of it. │
@@ -55,13 +55,14 @@ $ minato status -w feature-checkout
 │ ● web  ready  https://web.feature-checkout.myapp.localhost │
 │                                                            │
 │ shared over the tunnel:                                    │
-│ web  https://web-feature-checkout.myapp.example.com        │
+│ web  https://web-feature-checkout-myapp.example.com        │
 ╰────────────────────────────────────────────────────────────╯
 ```
 
-共有するのは後者の URL です。サービス名と workspace 名が `-` で連結されて
-いるのは、トンネル側のホスト名ではサブドメインを 1 階層しか確実に扱えない
-ためです。
+共有するのは後者の URL です。サービス名・workspace 名・プロジェクト名が `-` で
+1 ラベルに連結されているのは、Cloudflare の Universal SSL が 1 階層目の
+サブドメインまでしか覆わず、それより深いホスト名は TLS のハンドシェイクで
+拒否されるためです。
 
 ```console
 $ minato status -w feature-checkout --json \
@@ -83,11 +84,20 @@ $ minato status -w feature-checkout --json \
 ## Access を設定する
 
 この作業は Minato では実行できません。Cloudflare のダッシュボードで
-Zero Trust → Access → Applications を開き、`*.myapp.example.com` に対する
-self-hosted application とポリシーを作成してください。メールドメインによる
-制限や、社外の相手にはワンタイム PIN が利用できます。
+Zero Trust → Access → Applications を開き、共有するホスト名——
+`web-feature-checkout-myapp.example.com`——に対する self-hosted application と
+ポリシーを作成してください。メールドメインによる制限や、社外の相手にはワンタイム
+PIN が利用できます。
 
 公開 Web サーバに置けないものを共有する前に、必ず設定してください。
+
+**`*.example.com` ではなくホスト名ごとに設定してください。** トンネルの
+ホスト名は 1 ラベルなので、`*.myapp.example.com` のようにプロジェクト単位で
+スコープを切ることはできません。ゾーン全体のパターンを指定すると、そのドメインが
+配信している他のもの——Minato とは無関係な本番のホスト名を含む——すべての前に
+Access が挟まります。そのゾーンをこの用途にしか使っていないのであれば
+`*.example.com` が全 worktree をまとめて覆う近道になりますが、他のものも
+配信しているゾーンでは自分の訪問者を締め出すことになります。
 
 ## 停止する
 

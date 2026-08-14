@@ -394,6 +394,10 @@ $ minato tunnel status
 internet with no Access policy Minato can verify. The domain is remembered
 after the first time.
 
+`--domain` takes the zone itself — `example.com`, not `dev.example.com`. One
+level below the zone is what its Universal SSL certificate covers, and a tunnel
+hostname sits exactly there.
+
 ## Agents
 
 ```console
