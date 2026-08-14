@@ -54,6 +54,11 @@ words — an agent's report in `docs/AGENT-RUN.md`, a message the program printe
 the contractions, the first person and the spelling exactly as they were said.
 Rewrapping is fine; it changes nothing.
 
+**Nor inside quotation marks.** `Report "it's up" without checking`, in
+`skills/minato/SKILL.md`, names the thing an agent should not say, and it has to
+sound like the thing it would have said. `"it is up"` is nobody's sentence. The
+same principle as the blockquote, one scale down.
+
 **Serial comma** is not used: "a framed panel, columns that line up, and colour
 on the parts that carry meaning" takes the comma because the list needs it, not
 by rule.
@@ -108,13 +113,17 @@ sentence ends; the corpus does not one-sentence-per-line.
 
 | Not | But |
 | --- | --- |
-| `simply`, `just`, `easy`, `obviously` | nothing. If it were obvious the sentence would not be there |
+| `simply`, `easy`, `obviously`, and `just` meaning "it's only" | nothing. If it were obvious the sentence would not be there |
 | `please` | the imperative on its own |
 | `utilise` | `use` |
 | `in order to` | `to` |
 | `allows you to` | the verb: "`--fresh` runs it in a throwaway container" |
 | `should` for behaviour | `does`, or say what it does instead |
 | `we recommend` | say it: "Use `-sS --fail-with-body`" |
+
+`just` and `not just` meaning *merely* are fine and the corpus uses them:
+"`depends_on` waits for the dependency to be ready, not just to start". The
+banned sense is the one that tells the reader a thing is small when it is not.
 
 **`worktree`** is one word, lowercase, and is the git term. **`workspace`** is
 Minato's name for the environment a worktree has. They are not interchangeable;

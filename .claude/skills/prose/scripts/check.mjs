@@ -102,9 +102,49 @@ function parse(text) {
       continue
     }
     marks[i].table = line.trimStart().startsWith('|')
-    marks[i].quote = line.trimStart().startsWith('>')
+    // A blockquote runs to the blank line, marker or no marker: Markdown's
+    // lazy continuation lets the second line of a wrapped quotation drop the
+    // `>`, and half an exempt quotation is worse than none.
+    marks[i].quote = line.trimStart().startsWith('>') ||
+      (i > 0 && marks[i - 1].quote && line.trim() !== '' && !marks[i].table)
   }
+  quoted(lines, marks)
   return { lines, marks }
+}
+
+/**
+ * Marks the characters each line has inside quotation marks.
+ *
+ * Done over the whole paragraph rather than the line, because a quotation long
+ * enough to be worth quoting is longer than 80 columns and wraps. Quotes are
+ * paired in the order they appear and a leftover odd one opens nothing, so an
+ * apostrophe-as-quote or a stray `"` cannot blank the rest of the file.
+ */
+function quoted(lines, marks) {
+  let start = 0
+  const paragraph = (end) => {
+    const marker = []
+    for (let i = start; i < end; i++) {
+      for (let c = 0; c < lines[i].length; c++) {
+        if (lines[i][c] === '"') marker.push([i, c])
+      }
+    }
+    for (let p = 0; p + 1 < marker.length; p += 2) {
+      const [from, fromCol] = marker[p]
+      const [to, toCol] = marker[p + 1]
+      for (let i = from; i <= to; i++) {
+        marks[i].said ??= new Set()
+        const a = i === from ? fromCol : 0
+        const b = i === to ? toCol : lines[i].length - 1
+        for (let c = a; c <= b; c++) marks[i].said.add(c)
+      }
+    }
+    start = end + 1
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (marks[i].code || marks[i].front || lines[i].trim() === '') paragraph(i)
+  }
+  paragraph(lines.length)
 }
 
 /** Prose lines only: no frontmatter, no code, nothing blank. */
@@ -146,6 +186,19 @@ function unlink(line) {
 /** Also drops code spans, so a flag is never mistaken for a word. */
 function unmark(line) {
   return unlink(line).replace(CODE_SPAN, 'x')
+}
+
+/**
+ * Also drops what the paragraph put in quotation marks — `parse` worked out
+ * which characters those are, across however many lines the quotation wrapped
+ * over. `Report "it's up" without checking` is telling an agent what not to
+ * say, and the phrase has to sound like the thing it would have said. Same
+ * reason a `>` block is left alone, one scale down.
+ */
+function unquoted(line, said) {
+  if (!said) return unmark(line)
+  const kept = [...line].map((ch, c) => (said.has(c) ? ' ' : ch)).join('')
+  return unmark(kept)
 }
 
 // ── the rules ────────────────────────────────────────────────────────────────
@@ -218,12 +271,13 @@ function checkFile(path, add) {
         add(rel, n, 'ja/style', 'plain form in a ですます page')
       }
     } else {
-      const found = quoted ? null : read.match(CONTRACTIONS)
+      const said = quoted ? 'x' : unquoted(line, mark.said)
+      const found = said.match(CONTRACTIONS)
       if (found) add(rel, n, 'en/contraction', `${found[0]}: write it out`)
-      if (!quoted && FIRST_PERSON.test(read)) {
+      if (FIRST_PERSON.test(said)) {
         add(rel, n, 'en/person', 'we/our/us: name the thing instead')
       }
-      const spelling = quoted ? null : read.match(AMERICAN)
+      const spelling = said.match(AMERICAN)
       if (spelling && !NOT_AMERICAN.test(spelling[0])) {
         add(rel, n, 'en/spelling', `${spelling[0]}: the docs are in British English`)
       }
@@ -391,18 +445,44 @@ function anchor(text, vitepress) {
   return slug.normalize('NFC')
 }
 
+/**
+ * Every anchor a page offers, in order.
+ *
+ * A repeated heading does not get a repeated id: both renderers keep a count
+ * and append `-1`, `-2`. Without that, a correct link to the second of two
+ * identical headings reads as broken, and — worse — renaming one of a pair
+ * leaves `#foo-1` pointing somewhere new with nothing to say so.
+ */
+function anchorsOf(page, vitepress) {
+  const seen = new Map()
+  return headings(page).map((h) => {
+    const base = anchor(h.text, vitepress)
+    const n = seen.get(base) ?? 0
+    seen.set(base, n + 1)
+    return n === 0 ? base : `${base}-${n}`
+  })
+}
+
 function checkLinks(rel, doc, add, docs) {
   const { lines, marks } = doc
   for (let i = 0; i < lines.length; i++) {
     if (marks[i].code || marks[i].front) continue
-    for (const [, target] of lines[i].matchAll(/\]\(([^)\s]+)\)/g)) {
+    // Code spans out first: `[text](./x)` shown as an example of Markdown is
+    // not a link, the same way `--json` is not a word.
+    const written = lines[i].replace(CODE_SPAN, 'x')
+    for (const [, target] of written.matchAll(/\]\(([^)\s]+)\)/g)) {
       if (/^(https?:|mailto:)/.test(target)) continue
       const [path, fragment] = target.split('#')
 
       let landed = rel
       if (path) {
         const from = dirname(join(ROOT, rel))
-        const base = path.startsWith('/') ? join(ROOT, 'docs', path) : resolve(from, path)
+        // A root-absolute link means the site root on a page VitePress serves
+        // and the repository root in a file read on GitHub.
+        const root = path.startsWith('/')
+          ? join(ROOT, servedByVitePress(rel) ? 'docs' : '.', path)
+          : null
+        const base = root ?? resolve(from, path)
         const found = [base, `${base}.md`, join(base, 'index.md')].find((c) => existsSync(c))
         if (!found) {
           add(rel, i + 1, 'link/missing', `${target} resolves to nothing`)
@@ -417,7 +497,7 @@ function checkLinks(rel, doc, add, docs) {
       // Only for a page this run read, so a narrow run stays narrow.
       const page = docs.get(landed)
       if (!fragment || !page) continue
-      const ids = headings(page).map((h) => anchor(h.text, servedByVitePress(landed)))
+      const ids = anchorsOf(page, servedByVitePress(landed))
       if (!ids.includes(fragment.normalize('NFC'))) {
         add(rel, i + 1, 'link/anchor', `#${fragment} is not a heading in ${landed}`)
       }
