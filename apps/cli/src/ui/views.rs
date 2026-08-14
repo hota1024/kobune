@@ -381,7 +381,7 @@ pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: 
 /// changed.
 fn restart_hint() -> Vec<Line<'static>> {
     vec![
-        hint("afterwards run", "minato daemon restart"),
+        hint("afterwards run", minato_core::launchd::RESTART_COMMAND),
         Line::styled(
             "  it comes back as launchd's job, with the new settings",
             theme::muted(),

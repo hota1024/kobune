@@ -108,6 +108,20 @@ less accurately.
 
 ### Fixed
 
+- **`doctor` and `setup` give the same answer as everything else** for a
+  daemon holding the socket launchd's job wants: `minato daemon restart`.
+  Both still said `minato daemon stop` and then a `sudo launchctl kickstart`,
+  and `setup` ran the pair with `all(...)` — so declining the password prompt
+  ran only the stop and left the machine with no daemon, which is the harm
+  the step exists to prevent. Restarting does both halves and needs no root
+
+- `minato daemon restart` survives a slow shutdown. It skips the handshake on
+  the way out, deliberately, because the usual reason to restart is a daemon
+  too old to talk to — but starting again does shake hands, so an old daemon
+  still answering after the five-second wait came back as the protocol
+  mismatch error, telling the user to run the command that had just failed.
+  The wait is given a second run instead
+
 - The step after an update reads `minato daemon restart` on every machine,
   rather than `minato daemon stop` where launchd holds the job. Stopping was
   once the only safe way back — restarting by hand started a daemon outside

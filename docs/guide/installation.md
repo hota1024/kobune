@@ -198,10 +198,12 @@ would not agree on the protocol between them.
 The new files are written beside the old ones and renamed into place. A running
 executable cannot be written to, but it can be replaced, so an update while the
 daemon is up leaves it running the old build until it is restarted. Which is
-what the last line is about. It says the same thing on every machine: starting
-the daemon asks launchd first where launchd has the job, so a restart there ends
-with a daemon launchd started, holding 80 and 443 and running the build that has
-just landed.
+what the last line is about, and it is the same line on every machine — what
+differs is what the restart produces. Starting a daemon asks launchd first, so
+where launchd has the job the restart ends with launchd's daemon, holding 80 and
+443 and running the build that just landed. Where there is no LaunchDaemon there
+is nothing to ask, and it ends with a daemon started directly, on the fallback
+ports it was already using.
 
 That line is **worked out, not printed regardless**: with no daemon running
 there is nothing to replace, and the panel says only what it installed.

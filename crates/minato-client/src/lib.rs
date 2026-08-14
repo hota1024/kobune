@@ -84,7 +84,8 @@ pub enum ClientError {
 
     #[error(
         "the daemon speaks protocol {server}, which this minato (protocol \
-         {client}) cannot talk to. Restart it with `minato daemon restart`"
+         {client}) cannot talk to. Restart it with `{}`",
+        minato_core::launchd::RESTART_COMMAND
     )]
     VersionMismatch { client: u32, server: u32 },
 }
