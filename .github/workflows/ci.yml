@@ -108,6 +108,31 @@ jobs:
             exit 1
           fi
 
+  # The written half. `.claude/skills/prose/` says what the house style is
+  # and this is what holds the repository to it — column width, the
+  # Japanese typographic rules, the English ones, English against Japanese
+  # page for page, and every `#anchor` that names a heading.
+  #
+  # Here rather than in `docs.yml`, which is filtered to the paths that
+  # build the site. The corpus is wider than the site: `README.md`,
+  # `SECURITY.md` and `skills/minato/SKILL.md` are all in it, and none of
+  # them should trigger a deploy.
+  #
+  # Node with nothing installed — the checker has no dependencies, which is
+  # most of why it can run here for a couple of seconds.
+  prose:
+    name: Prose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Style
+        run: node .claude/skills/prose/scripts/check.mjs
+
   # The GUI, on its own because of the GPUI dependency. Slow on a cold
   # cache — the Zed checkout alone is large.
   desktop:

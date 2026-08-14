@@ -119,6 +119,10 @@ both the ones resolving to no file and the `#anchors` naming no heading.
 the site and a page read on GitHub slug their headings differently, so it can be
 trusted on `docs/DESIGN.md` as well as on the guide.
 
+CI runs it on every pull request, as the `Prose` job in `ci.yml`. Run it
+yourself first — finding out from a red tick is slower than finding out from
+the terminal you are already in.
+
 **A silent checker does not mean the page is good.** Nothing here detects
 translationese, a wrong claim, or a paragraph that explains the mechanism before
 saying what it is for. Those are read for.
