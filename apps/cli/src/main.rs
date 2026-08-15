@@ -2553,6 +2553,12 @@ async fn restart_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError
         // being replaced can still be asked anything.
         let outgoing = outgoing_daemon(client).await;
 
+        // Started the instant the reading was taken, and never before it:
+        // the comparison afterwards holds the round's own seconds against
+        // the daemon's, and a clock running from earlier would credit the
+        // outgoing daemon with time it had not had yet.
+        let since = std::time::Instant::now();
+
         let _ = stop_daemon(client).await;
 
         // **Waited for.** The next start binds the same socket, and a
@@ -2562,7 +2568,9 @@ async fn restart_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError
         match start_or_meet_daemon(client).await {
             // The daemon the stop was for, still there. Nothing was
             // restarted, so nothing is printed and nothing is reported.
-            Ok((DaemonStart::Existing, pong)) if outgoing.outlasted(&pong) => met = Some(pong),
+            Ok((DaemonStart::Existing, pong)) if outgoing.outlasted(&pong, since.elapsed()) => {
+                met = Some(pong);
+            }
             Ok((_, pong)) => {
                 report_daemon(cli, client, &pong);
                 return Ok(ExitCode::SUCCESS);
@@ -2596,7 +2604,7 @@ async fn restart_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError
 /// else on the socket separates them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outgoing {
-    /// Nothing answered, so anything met afterwards started in the gap.
+    /// Nothing answered.
     Absent,
     /// How long it said it had been up, in whole seconds.
     Up(u64),
@@ -2606,20 +2614,31 @@ enum Outgoing {
 
 impl Outgoing {
     /// Whether the daemon that answered a start is this one, still there.
-    fn outlasted(self, met: &Pong) -> bool {
+    ///
+    /// **`waited` is the round's own clock**, running from the reading
+    /// above to this handshake. Without it the two uptimes are held
+    /// against each other across seconds nobody counted, and a daemon
+    /// three seconds old is judged to have outlasted one that was two
+    /// seconds old when the round began — which is any restart of a
+    /// daemon that has just come up.
+    fn outlasted(self, met: &Pong, waited: Duration) -> bool {
         match self {
-            // Nothing was asked to stop, so nothing can have failed to.
-            // A restart with no daemon to replace is a start, and what
-            // answers here started during it — launchd's job, woken by a
-            // request reaching :80, is what does that.
-            Self::Absent => false,
+            // Nothing answered, so anything that started during the round
+            // is a daemon this restart produced. Anything older was there
+            // the whole time and was never asked to stop — the reading
+            // above and the stop both failed to connect, which is rare,
+            // and is exactly the state that must not report a restart.
+            Self::Absent => met.uptime_secs > waited.as_secs(),
 
-            // A daemon started in its place reports next to nothing.
-            // Whole seconds are enough in the direction that matters: a
-            // daemon still answering has had the whole five-second wait
-            // added to it, and a tie at the boundary costs a wasted round
-            // rather than a restart reported wrongly.
-            Self::Up(uptime) => met.uptime_secs >= uptime,
+            // Still there means still counting: whatever it had on the
+            // way in, it has the round on top of it by now. A daemon
+            // started in its place cannot have more than the round.
+            //
+            // Whole seconds never fail the daemon that stayed —
+            // `floor(a + b)` is never below `floor(a) + floor(b)` — and
+            // where they do tie, the tie costs a round rather than a
+            // restart reported wrongly.
+            Self::Up(uptime) => met.uptime_secs >= uptime.saturating_add(waited.as_secs()),
 
             // Nothing to compare against, so having met anything at all
             // is the whole of the evidence. Another round costs a stop
@@ -2807,14 +2826,17 @@ mod tests {
         }
     }
 
+    /// The five seconds a round spends waiting for the socket to go quiet.
+    const ROUND: Duration = Duration::from_secs(5);
+
     #[test]
     fn a_daemon_that_outlasted_the_wait_is_the_one_that_was_already_there() {
         // The failure the rounds are against, and the quiet one: a daemon
         // of *this* build shakes hands perfectly well, so meeting it
         // after a stop was reported as a restart that had happened. Its
-        // uptime is what gives it away — it carries the five-second wait
-        // on top of what it had on the way in.
-        assert!(Outgoing::Up(3_600).outlasted(&up_for(3_605)));
+        // uptime is what gives it away — it carries the round on top of
+        // what it had on the way in.
+        assert!(Outgoing::Up(3_600).outlasted(&up_for(3_605), ROUND));
     }
 
     #[test]
@@ -2823,16 +2845,35 @@ mod tests {
         // reaching :80 in the gap wakes launchd's job, so the connect at
         // the top of `connect_or_spawn` succeeds and never gets as far as
         // waking anything itself. That machine is where the restart
-        // wanted it, and what answers has been up no time at all.
-        assert!(!Outgoing::Up(3_600).outlasted(&up_for(0)));
+        // wanted it, and what answers cannot have been up longer than the
+        // round it appeared in.
+        assert!(!Outgoing::Up(3_600).outlasted(&up_for(4), ROUND));
+    }
+
+    #[test]
+    fn a_daemon_replaced_moments_after_it_started_is_still_a_restart() {
+        // Held against each other alone, four seconds looks like more
+        // than two and the restart calls itself a failure — on a machine
+        // where it worked. The round's own five seconds are what the
+        // comparison is missing, and restarting a daemon that has just
+        // come up is not a rare thing to do.
+        assert!(!Outgoing::Up(2).outlasted(&up_for(4), ROUND));
     }
 
     #[test]
     fn a_daemon_that_was_never_there_cannot_have_failed_to_stop() {
-        // With nothing on the socket, a restart is a start — and one that
-        // produced a daemon did what it was asked, however long that
-        // daemon then reports having been up.
-        assert!(!Outgoing::Absent.outlasted(&up_for(0)));
+        // Nothing answered, so a restart is a start, and one that
+        // produced a daemon did what it was asked.
+        assert!(!Outgoing::Absent.outlasted(&up_for(4), ROUND));
+    }
+
+    #[test]
+    fn a_daemon_older_than_the_round_was_never_asked_to_stop() {
+        // The reading and the stop both connect, and both can fail to.
+        // A daemon that answers afterwards having been up an hour was
+        // there through all of it, and calling that a restart is the bug
+        // by another route.
+        assert!(Outgoing::Absent.outlasted(&up_for(3_600), ROUND));
     }
 
     #[test]
@@ -2841,16 +2882,26 @@ mod tests {
         // the whole of the evidence. Erring the other way is the bug: one
         // wasted round costs a stop and a wait, and believing it reports
         // a restart that did not happen.
-        assert!(Outgoing::Mute.outlasted(&up_for(0)));
+        assert!(Outgoing::Mute.outlasted(&up_for(0), ROUND));
     }
 
     #[test]
-    fn two_daemons_of_the_same_age_are_taken_for_one() {
-        // Uptime arrives in whole seconds, so a daemon started moments
-        // before the restart began ties with one started during it. The
-        // tie goes to another round, which is the direction that cannot
-        // report a restart that did not happen.
-        assert!(Outgoing::Up(0).outlasted(&up_for(0)));
+    fn a_daemon_that_stayed_is_caught_however_long_the_round_took() {
+        // Uptime arrives in whole seconds and the round's clock is read
+        // in whole seconds too, but the daemon that stayed can never fall
+        // through the gap between them: it gains every second the round
+        // spends, and a floor never loses more than the two floors
+        // beneath it.
+        for waited in 0..30 {
+            for uptime in [0, 1, 7, 3_600] {
+                let stayed = up_for(uptime + waited);
+
+                assert!(
+                    Outgoing::Up(uptime).outlasted(&stayed, Duration::from_secs(waited)),
+                    "up {uptime}s, waited {waited}s"
+                );
+            }
+        }
     }
 
     #[test]
