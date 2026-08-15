@@ -1,6 +1,6 @@
 ---
 name: prose
-description: Write or revise prose in this repository — the docs site in English and Japanese, README.md, SECURITY.md, docs/DESIGN.md, docs/AGENT-RUN.md, skills/minato/SKILL.md. Carries the house style for both languages, the English–Japanese glossary and a checker. Read it before editing any Markdown written for a reader rather than for a machine.
+description: Write or revise prose in this repository — the docs site in English and Japanese, README.md, SECURITY.md, docs/DESIGN.md, docs/AGENT-RUN.md, skills/kobune/SKILL.md. Carries the house style for both languages, the English–Japanese glossary and a checker. Read it before editing any Markdown written for a reader rather than for a machine.
 ---
 
 # Prose
@@ -24,7 +24,7 @@ Everything written for a person to read:
   `docs/ja/` beneath them, page for page
 - `README.md`, `SECURITY.md`, `assets/README.md`
 - `docs/README.md`, `docs/DESIGN.md`, `docs/AGENT-RUN.md`
-- `skills/minato/SKILL.md`, which ships to users and is read by agents
+- `skills/kobune/SKILL.md`, which ships to users and is read by agents
 
 Leave alone:
 
@@ -88,8 +88,8 @@ The checker enforces the first four, because a mismatch is always a mistake:
 speaking, not the program:
 
 ```console
-$ minato logs web -f          # follow this branch's logs
-$ minato logs web -f          # このブランチのログを追跡する
+$ kobune logs web -f          # follow this branch's logs
+$ kobune logs web -f          # このブランチのログを追跡する
 ```
 
 ## What they do not share

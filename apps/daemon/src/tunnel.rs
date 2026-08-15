@@ -12,13 +12,13 @@
 //!
 //! `TunnelRecord.zone_routed` is a stored flag, but it gates nothing: the
 //! calls still run, and it only says whether an "already exists" is
-//! Minato's own record or a stranger's.
+//! Kobune's own record or a stranger's.
 
 use std::sync::Arc;
 
-use minato_api::{TunnelInfo, TunnelState};
-use minato_core::TunnelRecord;
-use minato_tunnel::{Readiness, StepOutcome, TunnelProcess, TunnelSettings};
+use kobune_api::{TunnelInfo, TunnelState};
+use kobune_core::TunnelRecord;
+use kobune_tunnel::{Readiness, StepOutcome, TunnelProcess, TunnelSettings};
 use tokio::sync::Mutex;
 
 /// The tunnel, as the daemon holds it.
@@ -82,7 +82,7 @@ impl TunnelHandle {
     pub async fn start(
         &self,
         settings: TunnelSettings,
-    ) -> Result<StepOutcome, minato_tunnel::TunnelError> {
+    ) -> Result<StepOutcome, kobune_tunnel::TunnelError> {
         let mut guard = self.running.lock().await;
 
         if let Some(existing) = guard.take() {
@@ -146,7 +146,7 @@ pub async fn info_with_notes(
     let state = if !record.enabled {
         TunnelState::Disabled
     } else {
-        match settings.map(minato_tunnel::readiness) {
+        match settings.map(kobune_tunnel::readiness) {
             Some(Readiness::NotInstalled) => TunnelState::NotInstalled,
             Some(Readiness::NeedsLogin) => TunnelState::NeedsLogin,
             _ if handle.is_running().await => TunnelState::Running,
@@ -168,7 +168,7 @@ pub async fn info_with_notes(
         record: settings.map(|settings| settings.dns_record()),
         setup,
         notes,
-        // Minato cannot apply an Access policy through the CLI, so it
+        // Kobune cannot apply an Access policy through the CLI, so it
         // cannot claim one is in place. Anything it did enable was
         // acknowledged with `--public`.
         public: record.enabled,
@@ -181,7 +181,7 @@ mod tests {
 
     fn record(enabled: bool) -> TunnelRecord {
         TunnelRecord {
-            name: "minato".into(),
+            name: "kobune".into(),
             domain: "example.com".into(),
             enabled,
             zone_routed: true,
@@ -203,7 +203,7 @@ mod tests {
         // "stopped" would send someone looking for the wrong problem.
         let handle = TunnelHandle::default();
         let settings = TunnelSettings::new("example.com", "/tmp", 80)
-            .with_program("minato-definitely-not-a-real-program");
+            .with_program("kobune-definitely-not-a-real-program");
 
         let info = info(Some(&record(true)), &handle, Some(&settings)).await;
 

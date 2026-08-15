@@ -5,7 +5,7 @@ $ curl -fsSL https://minato.1024.works/install.sh | sh
 ```
 
 That picks the archive for your machine, checks it against its published
-`.sha256`, installs `minato` and `minatod` into `~/.local/bin`, and writes shell
+`.sha256`, installs `kobune` and `kobuned` into `~/.local/bin`, and writes shell
 completions for whichever of bash, zsh and fish you have.
 
 Nothing it does needs root, and it prints the one PATH line you may need at the
@@ -30,11 +30,11 @@ is about 250 lines of POSIX shell and does nothing surprising. Two settings:
 
 | | |
 | --- | --- |
-| `MINATO_INSTALL_DIR` | where the binaries go, `~/.local/bin` by default |
-| `MINATO_NO_COMPLETIONS` | set to anything to skip the completion scripts |
+| `KOBUNE_INSTALL_DIR` | where the binaries go, `~/.local/bin` by default |
+| `KOBUNE_NO_COMPLETIONS` | set to anything to skip the completion scripts |
 
 ```console
-$ curl -fsSL https://minato.1024.works/install.sh | MINATO_INSTALL_DIR=/usr/local/bin sh
+$ curl -fsSL https://minato.1024.works/install.sh | KOBUNE_INSTALL_DIR=/usr/local/bin sh
 ```
 
 ### The PATH line
@@ -94,7 +94,7 @@ That is the latest build rather than a release: nothing in it carries a version,
 and what it contains changes without notice.
 
 Rerunning it upgrades in place. So does
-[`minato update`](#keeping-it-up-to-date), without needing the network twice or
+[`kobune update`](#keeping-it-up-to-date), without needing the network twice or
 a shell pipeline.
 
 ## A prebuilt binary, by hand
@@ -103,21 +103,21 @@ The same archives the script downloads:
 
 | | |
 | --- | --- |
-| Apple Silicon | `minato-aarch64-apple-darwin.tar.gz` |
-| Intel Mac | `minato-x86_64-apple-darwin.tar.gz` |
-| Linux x86_64 | `minato-x86_64-unknown-linux-gnu.tar.gz` |
+| Apple Silicon | `kobune-aarch64-apple-darwin.tar.gz` |
+| Intel Mac | `kobune-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `kobune-x86_64-unknown-linux-gnu.tar.gz` |
 
 ```console
-$ gh release download nightly --repo hota1024/minato \
-    --pattern 'minato-aarch64-apple-darwin.tar.gz*'
-$ shasum -a 256 -c minato-aarch64-apple-darwin.tar.gz.sha256
-$ tar xzf minato-aarch64-apple-darwin.tar.gz
-$ cd minato-aarch64-apple-darwin
+$ gh release download nightly --repo hota1024/kobune \
+    --pattern 'kobune-aarch64-apple-darwin.tar.gz*'
+$ shasum -a 256 -c kobune-aarch64-apple-darwin.tar.gz.sha256
+$ tar xzf kobune-aarch64-apple-darwin.tar.gz
+$ cd kobune-aarch64-apple-darwin
 ```
 
 ::: warning macOS quarantines unsigned binaries
 ```console
-$ xattr -d com.apple.quarantine minato minatod
+$ xattr -d com.apple.quarantine kobune kobuned
 ```
 The install script does this for you. Signing is unresolved, so the other
 option is to build from source. The desktop app is not shipped at all for the
@@ -127,23 +127,23 @@ about it.
 
 ## Build it
 
-Minato is not on crates.io yet, so building means cloning it.
+Kobune is not on crates.io yet, so building means cloning it.
 
 ```console
-$ git clone https://github.com/hota1024/minato
-$ cd minato
+$ git clone https://github.com/hota1024/kobune
+$ cd kobune
 $ cargo build --release --workspace
 ```
 
 That produces two binaries in `target/release`:
 
-- `minato` — the CLI you use
-- `minatod` — the daemon it talks to
+- `kobune` — the CLI you use
+- `kobuned` — the daemon it talks to
 
 Put them somewhere on your `PATH`:
 
 ```console
-$ cp target/release/minato target/release/minatod ~/.local/bin/
+$ cp target/release/kobune target/release/kobuned ~/.local/bin/
 ```
 
 They ship together and expect to sit side by side: the CLI starts the daemon by
@@ -156,18 +156,18 @@ did not find:
 
 ::: code-group
 ```console [fish]
-$ minato completions fish > ~/.config/fish/completions/minato.fish
+$ kobune completions fish > ~/.config/fish/completions/kobune.fish
 ```
 
 ```console [zsh]
 $ mkdir -p ~/.local/share/zsh/site-functions
-$ minato completions zsh > ~/.local/share/zsh/site-functions/_minato
+$ kobune completions zsh > ~/.local/share/zsh/site-functions/_kobune
 $ echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
 ```
 
 ```console [bash]
 $ mkdir -p ~/.local/share/bash-completion/completions
-$ minato completions bash > ~/.local/share/bash-completion/completions/minato
+$ kobune completions bash > ~/.local/share/bash-completion/completions/kobune
 ```
 :::
 
@@ -181,17 +181,17 @@ generator, but nothing is tested against them.
 ## Keeping it up to date
 
 ```console
-$ minato update
+$ kobune update
 › installing 9f3c1a2…
 ╭ update ────────────────────────────────────────────────────────────────╮
 │ installed  9f3c1a2                                                     │
 │                                                                        │
-│ › the daemon is still the previous build, so run minato daemon restart │
+│ › the daemon is still the previous build, so run kobune daemon restart │
 ╰────────────────────────────────────────────────────────────────────────╯
 ```
 
 `update` replaces the installation it is run from — the directory holding the
-`minato` that you invoked, not a configured one — with the current `nightly`.
+`kobune` that you invoked, not a configured one — with the current `nightly`.
 Both binaries go together, because a CLI and a daemon from different builds
 would not agree on the protocol between them.
 
@@ -211,12 +211,12 @@ there is nothing to replace, and the panel says only what it installed.
 To look without installing:
 
 ```console
-$ minato update --check
+$ kobune update --check
 ╭ update ─────────────────────────╮
 │ available  9f3c1a2              │
 │ running    c7282b8              │
 │                                 │
-│ › install it with minato update │
+│ › install it with kobune update │
 ╰─────────────────────────────────╯
 ```
 
@@ -228,15 +228,15 @@ the new one writes, are questions only the build that has landed can answer —
 so it answers them itself, the first time you run it:
 
 ```console
-$ minato url web
+$ kobune url web
 https://web.myapp.localhost
-› minato changed to 9f3c1a2 since the last run
-› the daemon is not this build, so run minato daemon restart
-› this repository's Skill is not this build's, so run minato skill install --force
+› kobune changed to 9f3c1a2 since the last run
+› the daemon is not this build, so run kobune daemon restart
+› this repository's Skill is not this build's, so run kobune skill install --force
 ```
 
 Each line is there because something on this machine says so: a daemon answered
-and the version it gave was not this build's, `.claude/skills/minato/SKILL.md`
+and the version it gave was not this build's, `.claude/skills/kobune/SKILL.md`
 differs from the one this binary carries, the installed plist was written to an
 older shape. Nothing is guessed — a repository that never had the Skill is not
 offered one, and a plist from before this was recorded is left alone rather than
@@ -251,19 +251,19 @@ takes, so a `SKILL.md` you have edited by hand is replaced along with an
 outdated one; the difference is visible in `git diff` either way.
 
 It appears **once per build**, on the first run that is not `--json`, and this
-is also what covers the updates `minato update` knows nothing about: rerunning
-`install.sh`, a package manager, a build of your own. `~/.minato/build.json`
+is also what covers the updates `kobune update` knows nothing about: rerunning
+`install.sh`, a package manager, a build of your own. `~/.kobune/build.json`
 holds the commit that last ran, and is the whole of the state involved. The
 build is written down only once the lines above have been printed, so a run
 interrupted before that finds them again.
 
-`minato daemon` carries no notice of its own: `stop` returns as soon as the
+`kobune daemon` carries no notice of its own: `stop` returns as soon as the
 daemon has been asked, so a check made straight after would report the process
 you have this second stopped as still running. Nothing is recorded either, and
 the next command says the lot.
 
 It is stderr, like every other remark of the CLI's own, and never appears under
-`--json` — an agent's stream stays one document. `minato update --json` carries
+`--json` — an agent's stream stays one document. `kobune update --json` carries
 the same steps as data instead:
 
 ```json
@@ -272,7 +272,7 @@ the same steps as data instead:
   "commit": "9f3c1a2…",
   "next": [
     {
-      "command": "minato daemon restart",
+      "command": "kobune daemon restart",
       "reason": "the daemon is still the previous build"
     }
   ]
@@ -281,11 +281,11 @@ the same steps as data instead:
 
 ### The automatic check
 
-Once a day, after a command has finished, Minato asks GitHub what `nightly`
+Once a day, after a command has finished, Kobune asks GitHub what `nightly`
 points at and says one line on **stderr** if it is not what you are running:
 
 ```
-a newer build is available (9f3c1a2). Run `minato update`
+a newer build is available (9f3c1a2). Run `kobune update`
 ```
 
 It runs after the command, never before, so a slow network cannot delay output
@@ -296,14 +296,14 @@ GitHub has nothing to say.
 Turn it off with an environment variable:
 
 ```console
-$ export MINATO_NO_UPDATE_CHECK=1
+$ export KOBUNE_NO_UPDATE_CHECK=1
 ```
 
-The answer is cached in `~/.minato/update-check.json` for 24 hours, and the
+The answer is cached in `~/.kobune/update-check.json` for 24 hours, and the
 notice is repeated from that cache in between — a warning shown once a day and
 never again would just be missed.
 
-### `minato --version`
+### `kobune --version`
 
 The flag carries the same check, and unlike the automatic one it asks every
 time: `--version` is a question about the build in front of you, and answering
@@ -312,14 +312,14 @@ line is printed first and the check made after, so nothing you asked for waits
 on the network:
 
 ```console
-$ minato --version
-minato 0.1.0 (c7282b8)
-› a newer build is available (9f3c1a2). Install it with minato update
+$ kobune --version
+kobune 0.1.0 (c7282b8)
+› a newer build is available (9f3c1a2). Install it with kobune update
 ```
 
 Nothing is added when you are already on the published build — the version line
 said which build this is, and that is the whole of what was asked. `--json` and
-`MINATO_NO_UPDATE_CHECK` skip it exactly as they skip the automatic one, and so
+`KOBUNE_NO_UPDATE_CHECK` skip it exactly as they skip the automatic one, and so
 does a network that cannot be reached.
 
 A build made from source reports nothing either way. It records the commit it
@@ -328,20 +328,20 @@ date" would be a guess, and "out of date" would push you off a build you made
 on purpose.
 
 ```console
-$ minato --version
-minato 0.1.0 (9f3c1a2)
+$ kobune --version
+kobune 0.1.0 (9f3c1a2)
 ```
 
 ## Pick a container runtime
 
 ### Docker
 
-Nothing to configure. Minato talks to the Docker API directly and never shells
+Nothing to configure. Kobune talks to the Docker API directly and never shells
 out to the `docker` CLI, so the CLI does not have to be installed — only the
 API has to be reachable. Docker Desktop, OrbStack and colima all work.
 
 ```console
-$ minato doctor
+$ kobune doctor
 │ …
 │ ✓  container runtime  docker 29.4.0
 │ …
@@ -355,7 +355,7 @@ Needs macOS 26 or later and the service running:
 $ container system start
 ```
 
-Then set it in `minato.toml`:
+Then set it in `kobune.toml`:
 
 ```toml
 [runtime]
@@ -368,15 +368,15 @@ There are three differences worth knowing before you choose it — see
 ## Start the daemon
 
 ```console
-$ minato daemon start
-╭ minatod ───────────────────────────────╮
+$ kobune daemon start
+╭ kobuned ───────────────────────────────╮
 │ running                                │
 │                                        │
 │ version   0.1.0                        │
 │ protocol  1                            │
 │ runtime   docker 29.4.0                │
 │ uptime    0s                           │
-│ socket    ~/.minato/minatod.sock       │
+│ socket    ~/.kobune/kobuned.sock       │
 ╰────────────────────────────────────────╯
 ```
 
@@ -390,24 +390,24 @@ To reach `https://web.myapp.localhost` with no port number, three things need
 root, once:
 
 ```console
-$ minato setup
+$ kobune setup
 ╭ setup ─────────────────────────────────────────────────────────────────╮
 │ the URLs need 3 steps, and they need root.                             │
 │ each one is shown before it is run, and nothing runs until you say so. │
 │                                                                        │
 │ 1. let launchd hold 80/443/53 (the daemon itself stays non-root)       │
-│ 2. point *.localhost at Minato's DNS                                   │
+│ 2. point *.localhost at Kobune's DNS                                   │
 │ 3. trust the local CA, so HTTPS stops warning                          │
 ╰────────────────────────────────────────────────────────────────────────╯
 
 1/3 let launchd hold 80/443/53 (the daemon itself stays non-root)
-  generated plist: ~/.minato/dev.minato.daemon.plist
-  sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…
+  generated plist: ~/.kobune/dev.kobune.daemon.plist
+  sudo cp ~/.kobune/dev.kobune.daemon.plist /Library/LaunchDaemons/…
   …
 run this? [y/N] y
   ✓ done
 
-2/3 point *.localhost at Minato's DNS
+2/3 point *.localhost at Kobune's DNS
   sudo mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\n' | sudo tee …
 run this? [y/N] n
   – skipped
@@ -418,8 +418,8 @@ run this? [y/N] n
 about it is, so what you agree to is what you have just read, and anything you
 decline is printed again at the end to run by hand.
 
-Say yes to all of it with `minato setup --yes`, or read the commands without
-being asked about any of them with `minato setup --dry-run`.
+Say yes to all of it with `kobune setup --yes`, or read the commands without
+being asked about any of them with `kobune setup --dry-run`.
 
 **With no terminal to answer at — an agent, a pipe, `--json` — the commands are
 printed and none of them are run.** An unattended `sudo` hangs at the password
@@ -428,8 +428,8 @@ prompt, and from your side it would look like a silent privilege escalation.
 Afterwards:
 
 ```console
-$ minato daemon restart   # it comes back as launchd's job, holding the real ports
-$ minato doctor
+$ kobune daemon restart   # it comes back as launchd's job, holding the real ports
+$ kobune doctor
 ```
 
 ### Skipping it
@@ -439,35 +439,35 @@ You do not have to, and nothing has to be configured to skip it. When 80 and
 into the URL:
 
 ```console
-$ minato url web
+$ kobune url web
 https://web.feat-1.myapp.localhost:18443
 ```
 
-`minato doctor` says so rather than leaving you to notice.
+`kobune doctor` says so rather than leaving you to notice.
 
 To choose the ports yourself, name them — a port you name is used as given and
 never fallen back from:
 
 ```console
-$ export MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353
-$ minato daemon start
+$ export KOBUNE_HTTP_PORT=8080 KOBUNE_HTTPS_PORT=8443 KOBUNE_DNS_PORT=15353
+$ kobune daemon start
 ```
 
 **DNS has no fallback**, because moving it achieves nothing on its own: the
 `/etc/resolver` entry names the port, and writing that needs root either way.
-That part is macOS, not Minato. `minato doctor` prints the exact command,
+That part is macOS, not Kobune. `kobune doctor` prints the exact command,
 including the right port.
 
-::: tip Already run `minato setup`?
+::: tip Already run `kobune setup`?
 Then the proxy does *not* fall back. launchd holds 80 whether or not its job
 is running, so a refusal there means the job needs starting — and listening
-somewhere else would hide that. `minato doctor` says which it is.
+somewhere else would hide that. `kobune doctor` says which it is.
 :::
 
 ## Check the result
 
 ```console
-$ minato doctor
+$ kobune doctor
 ```
 
 Every line comes with a fix when it is not `✓`. If something here is red, sort
@@ -475,17 +475,17 @@ it out before going further — most confusing behaviour later traces back to it
 
 ## Where things live
 
-`MINATO_HOME`, `~/.minato` by default, holds the daemon socket, its state file,
+`KOBUNE_HOME`, `~/.kobune` by default, holds the daemon socket, its state file,
 logs, the local CA, and any generated tunnel configuration.
 
-A Unix socket path is limited to about 100 bytes, so `MINATO_HOME` cannot be
-somewhere deep. Minato checks this at startup and tells you rather than failing
+A Unix socket path is limited to about 100 bytes, so `KOBUNE_HOME` cannot be
+somewhere deep. Kobune checks this at startup and tells you rather than failing
 with an opaque error.
 
 ## Taking it off again
 
 ```console
-$ minato uninstall
+$ kobune uninstall
 ```
 
 It shows what it found — containers, the daemon's state, the binaries, the
@@ -494,7 +494,7 @@ it. `--dry-run` prints the list and stops; `--yes` skips the question, and is
 required where there is no terminal to ask at.
 
 **Your worktrees are left where they are.** They are listed, so you can see
-what is being kept, and `minato rm` is how one goes.
+what is being kept, and `kobune rm` is how one goes.
 
 The full list of what it removes, and how the privileged steps are handled, is
 in the [CLI reference](../reference/cli#taking-it-off-again).

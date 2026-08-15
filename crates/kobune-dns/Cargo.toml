@@ -1,0 +1,18 @@
+[package]
+name = "kobune-dns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "net", "sync", "time", "macros"] }
+hickory-server.workspace = true
+hickory-proto.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -2,13 +2,13 @@
 //!
 //! ```text
 //! apps/cli ────┐
-//! apps/desktop ┴──> minato-client ──> minato-api ──> minato-core
-//! apps/daemon ─────────────────────>  minato-api ──> minato-core
-//!        └──> minato-runtime / minato-proxy / minato-dns / minato-tunnel
+//! apps/desktop ┴──> kobune-client ──> kobune-api ──> kobune-core
+//! apps/daemon ─────────────────────>  kobune-api ──> kobune-core
+//!        └──> kobune-runtime / kobune-proxy / kobune-dns / kobune-tunnel
 //! ```
 //!
 //! **The rule is that no client-side crate may reach the daemon's.** Not
-//! for tidiness: `minato-runtime` is where Docker lives, and a GUI that
+//! for tidiness: `kobune-runtime` is where Docker lives, and a GUI that
 //! could reach it would eventually talk to Docker directly rather than
 //! through the daemon — which is the one architectural rule the whole
 //! design rests on (§3, "the daemon's API is the product").
@@ -25,17 +25,17 @@ use std::process::Command;
 
 /// Crates that must never reach the daemon's own.
 ///
-/// `minato` is `apps/cli`. It belongs here more than either of the others
+/// `kobune` is `apps/cli`. It belongs here more than either of the others
 /// do — it is the client almost everyone runs — and the diagram above has
 /// listed it since this module was written.
-const CLIENTS: &[&str] = &["minato", "minato-client", "minato-desktop"];
+const CLIENTS: &[&str] = &["kobune", "kobune-client", "kobune-desktop"];
 
 /// The daemon's own. Docker, the proxy, DNS and the tunnel process.
 const DAEMON_ONLY: &[&str] = &[
-    "minato-runtime",
-    "minato-proxy",
-    "minato-dns",
-    "minato-tunnel",
+    "kobune-runtime",
+    "kobune-proxy",
+    "kobune-dns",
+    "kobune-tunnel",
 ];
 
 pub fn check(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -55,7 +55,7 @@ pub fn check(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!(
             "the direction of dependencies is broken (docs/DESIGN.md §13):\n  {}\n\n\
              A client-side crate may not reach the daemon's. Everything goes\n\
-             through minato-api and the daemon behind it.",
+             through kobune-api and the daemon behind it.",
             violations.join("\n  ")
         )
         .into());
@@ -84,7 +84,7 @@ pub fn check(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// No `--no-dedupe`: dedupe collapses *repeated* subtrees to `name v1.2.3
 /// (*)` and always prints the first occurrence in full, so every package
-/// still appears. Measured on `minato-desktop`, both give the same 430
+/// still appears. Measured on `kobune-desktop`, both give the same 430
 /// names — from 1,160 lines rather than 43,598.
 fn dependencies_of(root: &Path, package: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO"))

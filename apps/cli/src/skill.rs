@@ -1,4 +1,4 @@
-//! `minato skill install` — installs the Skill for agents.
+//! `kobune skill install` — installs the Skill for agents.
 //!
 //! What it contains is **judgement**, not a CLI reference. `--help` covers
 //! what the commands do; promises like "never reach for `docker`" and
@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 
 /// The Skill itself, baked into the binary.
 ///
-/// Embedded so no file has to ship alongside. A self-contained `minato`
+/// Embedded so no file has to ship alongside. A self-contained `kobune`
 /// works however it was installed.
-const SKILL: &str = include_str!("../../../skills/minato/SKILL.md");
+const SKILL: &str = include_str!("../../../skills/kobune/SKILL.md");
 
 /// Where Claude Code looks for Skills.
-const SKILL_DIR: &str = ".claude/skills/minato";
+const SKILL_DIR: &str = ".claude/skills/kobune";
 
 const SKILL_FILE: &str = "SKILL.md";
 
@@ -36,7 +36,7 @@ pub fn path_in(root: &Path) -> PathBuf {
 /// the point of there being one function: a check that looked somewhere
 /// else than the installer writes would be checking nothing.
 pub fn root_for(cwd: &Path) -> PathBuf {
-    minato_core::Repository::discover(cwd)
+    kobune_core::Repository::discover(cwd)
         .map(|repo| repo.main_root)
         .unwrap_or_else(|_| cwd.to_path_buf())
 }
@@ -90,7 +90,7 @@ mod tests {
             SKILL.starts_with("---\n"),
             "it has to open with frontmatter"
         );
-        assert!(SKILL.contains("\nname: minato\n"));
+        assert!(SKILL.contains("\nname: kobune\n"));
         assert!(SKILL.contains("\ndescription: "));
 
         let end = SKILL[4..].find("\n---\n").expect("the frontmatter closes");
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn states_the_rules_that_matter() {
         // Leave these out and an agent falls back to docker.
-        for rule in ["docker", "minato url", "minato logs", "minato doctor"] {
+        for rule in ["docker", "kobune url", "kobune logs", "kobune doctor"] {
             assert!(SKILL.contains(rule), "`{rule}` goes unmentioned");
         }
     }
@@ -139,7 +139,7 @@ mod tests {
 
         assert_eq!(
             installed.path,
-            dir.path().join(".claude/skills/minato/SKILL.md")
+            dir.path().join(".claude/skills/kobune/SKILL.md")
         );
         assert!(!installed.overwritten);
         assert_eq!(
@@ -164,7 +164,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         install(dir.path(), false).expect("installs");
 
-        let path = dir.path().join(".claude/skills/minato/SKILL.md");
+        let path = dir.path().join(".claude/skills/kobune/SKILL.md");
         std::fs::write(&path, "edited by hand").expect("writes");
 
         let err = install(dir.path(), false).unwrap_err();

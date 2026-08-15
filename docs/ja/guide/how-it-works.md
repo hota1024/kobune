@@ -5,11 +5,11 @@
 ## 構成要素
 
 ```
-  minato (CLI) ──────┐
-  minato-desktop ────┼── Unix socket / JSON-RPC ──┐
+  kobune (CLI) ──────┐
+  kobune-desktop ────┼── Unix socket / JSON-RPC ──┐
   SKILL.md (agent) ──┘                            │
                                             ┌───────────┐
-                                            │  minatod  │
+                                            │  kobuned  │
                                             └─────┬─────┘
             ┌──────────────┬──────────────────┼──────────────┬─────────────┐
             ▼              ▼                  ▼              ▼             ▼
@@ -42,7 +42,7 @@
    すれば、稼働中の workspace を示す 404 が返るためです。
 
 2. **TLS。** プロキシは SNI で要求された名前に対する証明書を、
-   `~/.minato/ca/` のローカル CA からその場で発行します。ワイルドカード証明書
+   `~/.kobune/ca/` のローカル CA からその場で発行します。ワイルドカード証明書
    では対応できません。`*.localhost` では `web.feature-auth.myapp.localhost` を
    カバーできず、worktree が増えるたびに階層の深さが異なる名前が生成される
    ためです。利用者は CA を 1 つ信頼するだけで済みます。
@@ -68,10 +68,10 @@
 
 daemon は**実行時の状態をファイルに保存しません。** コンテナが稼働している
 かどうか、どのアドレスが割り当てられたかは、コンテナ自身のラベル
-（`dev.minato.*`）から取得します。daemon を再起動しても、一覧を 1 回取得
+（`dev.kobune.*`）から取得します。daemon を再起動しても、一覧を 1 回取得
 するだけで状態を復元できます。
 
-状態ファイルが保持するのは 2 つだけです。Minato が管理している worktree の
+状態ファイルが保持するのは 2 つだけです。Kobune が管理している worktree の
 一覧と、それぞれに発行した URL ラベルです。ラベルを永続化しているのは、後から
 命名規則を変更しても既存の workspace の URL が変わらないようにするためです。
 
@@ -116,12 +116,12 @@ Docker ではフォワードされた `127.0.0.1:49312`、Apple Container では
 
 この仕組みが無い場合、プロキシは 18080/18443 を使用し、URL にポート番号が
 付きます。中途半端なポートで動くほうが、プロキシが無いよりましだからです。
-プロキシが無いと URL が一切発行されず、`MINATO_URL_<SERVICE>` もコンテナに
+プロキシが無いと URL が一切発行されず、`KOBUNE_URL_<SERVICE>` もコンテナに
 渡りません。
 
 plist が導入済みの場合はフォールバックしません。launchd が 80 を保持して
 いるため、バインド失敗は「別のポートが必要」ではなく「ジョブを起こす必要が
-ある」という意味になるからです。`MINATO_HTTP_PORT` などで明示したポートも
+ある」という意味になるからです。`KOBUNE_HTTP_PORT` などで明示したポートも
 同様に、指定した値がそのまま使われます。
 
 macOS は systemd の `LISTEN_FDS` 規約を使用しないため、
@@ -137,5 +137,5 @@ macOS は systemd の `LISTEN_FDS` 規約を使用しないため、
 ## さらに詳しく
 
 覆した設計判断とその理由を含む記録は
-[`docs/DESIGN.md`](https://github.com/hota1024/minato/blob/main/docs/DESIGN.md)
+[`docs/DESIGN.md`](https://github.com/hota1024/kobune/blob/main/docs/DESIGN.md)
 にあります。

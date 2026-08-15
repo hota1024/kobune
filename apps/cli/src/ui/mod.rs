@@ -8,7 +8,7 @@
 //!
 //! Nothing here reaches for the screen directly, and nothing knows whether
 //! it is being printed once or repainted sixty times a second. That is the
-//! part worth keeping: when `minato` grows a full-screen mode, the views
+//! part worth keeping: when `kobune` grows a full-screen mode, the views
 //! go into a [`ratatui::Frame`] unchanged.
 //!
 //! Machine-facing output — `--json`, and the container output `logs` and
@@ -23,7 +23,7 @@ mod views;
 
 use std::path::Path;
 
-use minato_api::{Diagnostics, EnvInfo, Pong, TunnelInfo, WorkspaceInfo};
+use kobune_api::{Diagnostics, EnvInfo, Pong, TunnelInfo, WorkspaceInfo};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -77,7 +77,7 @@ pub fn urls(info: &WorkspaceInfo, qr: bool) {
 }
 
 /// `url <service> --qr`: the one URL, as a code to photograph.
-pub fn url(service: &minato_api::ServiceInfo) {
+pub fn url(service: &kobune_api::ServiceInfo) {
     Surface::stdout().print(|decor| views::url(service, decor));
 }
 
@@ -149,7 +149,7 @@ pub fn daemon_stopped() {
 /// What `uninstall` is about to do, before it does any of it.
 pub fn uninstall_plan(
     plan: &crate::uninstall::Plan,
-    daemon: Result<&minato_api::PurgeReport, &String>,
+    daemon: Result<&kobune_api::PurgeReport, &String>,
     dry_run: bool,
 ) {
     Surface::stdout().print(|decor| views::uninstall_plan(plan, daemon, dry_run, decor));
@@ -221,7 +221,7 @@ pub fn confirm(text: &str) {
 
 /// One undecorated line.
 ///
-/// `url` and `env get` exist to be piped — `curl "$(minato url web)"` —
+/// `url` and `env get` exist to be piped — `curl "$(kobune url web)"` —
 /// so what they print is the value and nothing else.
 pub fn value(text: &str) {
     Surface::stdout().line(text);
@@ -229,7 +229,7 @@ pub fn value(text: &str) {
 
 /// An error, always with its hint when there is one.
 ///
-/// On stderr, so `$(minato url web)` never picks it up.
+/// On stderr, so `$(kobune url web)` never picks it up.
 pub fn error(message: &str, hint: Option<&str>) {
     let mut lines = vec![Line::from(vec![
         Span::styled("✗ ", theme::bad()),
@@ -324,12 +324,12 @@ mod tests {
     fn an_error_carries_its_hint() {
         let view = Loose(vec![
             Line::raw("cannot reach the daemon"),
-            Line::raw("  hint: minato daemon start"),
+            Line::raw("  hint: kobune daemon start"),
         ]);
 
         let text = render(&view);
         assert!(text.contains("cannot reach the daemon"), "got:\n{text}");
-        assert!(text.contains("minato daemon start"), "got:\n{text}");
+        assert!(text.contains("kobune daemon start"), "got:\n{text}");
     }
 
     #[test]
@@ -347,12 +347,12 @@ mod tests {
         // their daemon should be able to stop reading at the comma.
         let text = render(&Loose(vec![step(
             "the daemon is still the previous build",
-            "minato daemon restart",
+            "kobune daemon restart",
         )]));
 
         assert_eq!(
             text.trim_end(),
-            "› the daemon is still the previous build, so run minato daemon restart"
+            "› the daemon is still the previous build, so run kobune daemon restart"
         );
     }
 }

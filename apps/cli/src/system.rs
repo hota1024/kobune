@@ -9,7 +9,7 @@
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 
-use minato_api::Check;
+use kobune_api::Check;
 
 /// Where macOS looks for resolver configuration.
 pub const RESOLVER_DIR: &str = "/etc/resolver";
@@ -32,7 +32,7 @@ pub fn check_system(suffix: &str, dns_port: Option<u16>, ca_path: Option<&Path>)
     checks
 }
 
-/// Whether `/etc/resolver/{suffix}` points at Minato's DNS.
+/// Whether `/etc/resolver/{suffix}` points at Kobune's DNS.
 fn check_resolver(suffix: &str, dns_port: Option<u16>) -> Check {
     let path = resolver_path(suffix);
     let title = format!("DNS resolver ({})", path.display());
@@ -113,21 +113,21 @@ fn check_ca_trust(ca_path: &Path) -> Check {
 /// does not connect. Accepting "it resolved" would let the check pass on
 /// a setup that cannot actually reach anything.
 fn check_resolution(suffix: &str) -> Check {
-    let probe = format!("minato-doctor-probe.{suffix}");
+    let probe = format!("kobune-doctor-probe.{suffix}");
     let title = format!("resolving {probe}");
 
     let addresses: Vec<std::net::IpAddr> = match (probe.as_str(), 80u16).to_socket_addrs() {
         Ok(addrs) => addrs.map(|addr| addr.ip()).collect(),
         Err(err) => {
             return Check::fail("resolution", title, err.to_string()).with_fix(format!(
-                "follow `minato setup` to install /etc/resolver/{suffix}"
+                "follow `kobune setup` to install /etc/resolver/{suffix}"
             ));
         }
     };
 
     if addresses.is_empty() {
         return Check::fail("resolution", title, "resolved to nothing".to_string()).with_fix(
-            format!("follow `minato setup` to install /etc/resolver/{suffix}"),
+            format!("follow `kobune setup` to install /etc/resolver/{suffix}"),
         );
     }
 
@@ -146,7 +146,7 @@ fn check_resolution(suffix: &str) -> Check {
         ),
     )
     .with_fix(format!(
-        "follow `minato setup` to install /etc/resolver/{suffix}"
+        "follow `kobune setup` to install /etc/resolver/{suffix}"
     ))
 }
 
@@ -196,7 +196,7 @@ pub fn trust_command(ca_path: &Path) -> String {
 /// The command that stops trusting the CA.
 ///
 /// Left behind, the certificate stays trusted for anything signed by it —
-/// including a future Minato with a *different* private key, since the two
+/// including a future Kobune with a *different* private key, since the two
 /// are only ever matched by the subject name.
 ///
 /// `ca_path` is used on macOS, where `remove-trusted-cert` names the file
@@ -210,7 +210,7 @@ pub fn untrust_command(ca_path: &Path) -> String {
         // that happens to share it.
         format!("sudo security remove-trusted-cert -d {}", ca_path.display())
     } else {
-        "sudo rm -f /usr/local/share/ca-certificates/minato-ca.crt \
+        "sudo rm -f /usr/local/share/ca-certificates/kobune-ca.crt \
          && sudo update-ca-certificates --fresh"
             .to_string()
     }
@@ -225,7 +225,7 @@ fn trust_fix(ca_path: &Path) -> String {
         )
     } else {
         format!(
-            "sudo cp {} /usr/local/share/ca-certificates/minato-ca.crt \
+            "sudo cp {} /usr/local/share/ca-certificates/kobune-ca.crt \
              && sudo update-ca-certificates",
             ca_path.display()
         )
@@ -235,7 +235,7 @@ fn trust_fix(ca_path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minato_api::CheckStatus;
+    use kobune_api::CheckStatus;
 
     #[test]
     fn resolver_contents_include_port_when_non_standard() {
@@ -303,11 +303,11 @@ mod tests {
 
     #[test]
     fn trust_command_targets_the_system_keychain_on_macos() {
-        let fix = trust_fix(Path::new("/tmp/minato-ca.crt"));
+        let fix = trust_fix(Path::new("/tmp/kobune-ca.crt"));
 
         if cfg!(target_os = "macos") {
             assert!(fix.contains("add-trusted-cert"), "got: {fix}");
-            assert!(fix.contains("/tmp/minato-ca.crt"), "got: {fix}");
+            assert!(fix.contains("/tmp/kobune-ca.crt"), "got: {fix}");
         } else {
             assert!(fix.contains("update-ca-certificates"), "got: {fix}");
         }

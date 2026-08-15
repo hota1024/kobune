@@ -8,14 +8,14 @@
 use std::path::Path;
 
 use chrono::Utc;
-use minato_api::Target;
-use minato_core::git::{Repository, Worktree};
-use minato_core::{Error, MinatoConfig, Result, State, WorkspaceRecord};
+use kobune_api::Target;
+use kobune_core::git::{Repository, Worktree};
+use kobune_core::{Error, KobuneConfig, Result, State, WorkspaceRecord};
 
 /// What a [`Target`] resolved to.
 pub struct Resolved {
     pub repo: Repository,
-    pub config: MinatoConfig,
+    pub config: KobuneConfig,
     pub project: String,
     /// The workspace being acted on.
     pub workspace: WorkspaceRecord,
@@ -29,12 +29,12 @@ pub struct Resolved {
 pub fn resolve_project(target: &Target, state: &mut State) -> Result<ProjectContext> {
     let repo = Repository::discover(&target.cwd)?;
 
-    // A worktree carries the same minato.toml, so searching from there is
+    // A worktree carries the same kobune.toml, so searching from there is
     // enough. Failing that, look in the main worktree too — right after a
     // worktree is created, for instance.
-    let (_config_path, config) = match MinatoConfig::find(&repo.root) {
+    let (_config_path, config) = match KobuneConfig::find(&repo.root) {
         Ok(found) => found,
-        Err(Error::ConfigNotFound(_)) => MinatoConfig::find(&repo.main_root)?,
+        Err(Error::ConfigNotFound(_)) => KobuneConfig::find(&repo.main_root)?,
         Err(err) => return Err(err),
     };
 
@@ -50,7 +50,7 @@ pub fn resolve_project(target: &Target, state: &mut State) -> Result<ProjectCont
 
 pub struct ProjectContext {
     pub repo: Repository,
-    pub config: MinatoConfig,
+    pub config: KobuneConfig,
     pub project: String,
 }
 
@@ -60,7 +60,7 @@ impl ProjectContext {
     /// 1. Use `target.workspace`'s label when one was given
     /// 2. Otherwise use the worktree `cwd` sits in
     ///
-    /// A worktree created by `git worktree add` outside Minato gets
+    /// A worktree created by `git worktree add` outside Kobune gets
     /// registered here too, so nobody is left feeling they created their
     /// worktree the wrong way.
     pub fn resolve_workspace(self, target: &Target, state: &mut State) -> Result<Resolved> {
@@ -126,7 +126,7 @@ impl ProjectContext {
         self.register(worktree, state)
     }
 
-    /// Registers a worktree Minato does not know about yet.
+    /// Registers a worktree Kobune does not know about yet.
     pub fn register(&self, worktree: &Worktree, state: &mut State) -> Result<WorkspaceRecord> {
         let branch = worktree
             .branch

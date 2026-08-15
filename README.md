@@ -1,10 +1,10 @@
 <!-- The mark alone, which reads on GitHub's light theme and its dark one
      alike. It lives in `assets/logo/`; see `assets/README.md`. -->
-<img src="assets/logo/minato-mark.svg" alt="" width="96" height="96">
+<img src="assets/logo/kobune-mark.svg" alt="" width="96" height="96">
 
-# Minato
+# Kobune
 
-[![CI](https://github.com/hota1024/minato/actions/workflows/ci.yml/badge.svg)](https://github.com/hota1024/minato/actions/workflows/ci.yml)
+[![CI](https://github.com/hota1024/kobune/actions/workflows/ci.yml/badge.svg)](https://github.com/hota1024/kobune/actions/workflows/ci.yml)
 
 A development environment manager built around git worktrees. Agent-friendly
 by design.
@@ -16,7 +16,7 @@ $ curl -fsSL https://minato.1024.works/install.sh | sh
 ```
 
 ```console
-$ minato new feature/user-auth
+$ kobune new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ starting web
   ✓ starting api
@@ -39,9 +39,9 @@ $ minato new feature/user-auth
 - **Reachable remotely** — share with a phone or an outside reviewer over
   Cloudflare Tunnel
 - **Usable by agents** — every command speaks `--json`, and
-  `minato skill install` drops in the Skill
+  `kobune skill install` drops in the Skill
 - **Interactive where it matters** — `tty = true` gives a service a terminal,
-  and `minato logs -f` lends it yours: Turborepo's task switcher, colour and
+  and `kobune logs -f` lends it yours: Turborepo's task switcher, colour and
   all
 - **Prebuilt or built** — pull an image, or point `build` at a Dockerfile
 - **Your choice of virtualisation** — Docker and Apple Container behind one
@@ -52,11 +52,11 @@ $ minato new feature/user-auth
 **Every milestone is done except Firecracker, which needs a Linux host.**
 Creating a worktree starts its containers and they answer on `*.localhost`. An
 untouched environment stops itself and comes back on the next request. Every
-service receives the others' URLs as `MINATO_URL_<SERVICE>`.
+service receives the others' URLs as `KOBUNE_URL_<SERVICE>`.
 
 ```console
-$ minato init
-$ minato new feature/user-auth
+$ kobune init
+$ kobune new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ preparing the network
   ✓ pulling image busybox:latest
@@ -69,18 +69,18 @@ $ minato new feature/user-auth
 ╰─────────────────────────────────────────────────────────────╯
 ```
 
-The standard ports (80 and 443) need a one-off privileged setup. `minato doctor`
-says where things stand and `minato setup` walks through it, one step at a time
+The standard ports (80 and 443) need a one-off privileged setup. `kobune doctor`
+says where things stand and `kobune setup` walks through it, one step at a time
 (**nothing runs unasked** — each command is printed, then offered).
 
 ```console
-$ minato setup
+$ kobune setup
 1. let launchd hold 80/443/53 (the daemon itself stays non-root)
-2. point *.localhost at Minato's DNS
+2. point *.localhost at Kobune's DNS
 3. trust the local CA, so HTTPS stops warning
 
 1/3 let launchd hold 80/443/53 (the daemon itself stays non-root)
-  sudo cp ~/.minato/dev.minato.daemon.plist /Library/LaunchDaemons/…
+  sudo cp ~/.kobune/dev.kobune.daemon.plist /Library/LaunchDaemons/…
 run this? [y/N]
 ```
 
@@ -90,16 +90,16 @@ commands and runs none of them.
 To skip all of that, name unprivileged ports and no permissions are needed:
 
 ```console
-$ MINATO_HTTP_PORT=8080 MINATO_HTTPS_PORT=8443 MINATO_DNS_PORT=15353 minato daemon start
+$ KOBUNE_HTTP_PORT=8080 KOBUNE_HTTPS_PORT=8443 KOBUNE_DNS_PORT=15353 kobune daemon start
 ```
 
 To share an environment with a phone or an outside reviewer, put it behind a
 Cloudflare Tunnel:
 
 ```console
-$ cloudflared tunnel login              # opens a browser; Minato will not run it for you
-$ minato tunnel enable --domain example.com --public
-$ minato status
+$ cloudflared tunnel login              # opens a browser; Kobune will not run it for you
+$ kobune tunnel enable --domain example.com --public
+$ kobune status
 ╭ myapp / feature-demo ──────────────────────────────────╮
 │ feature/demo  /path/to/myapp.wt/feature-demo           │
 │                                                        │
@@ -110,7 +110,7 @@ $ minato status
 ╰────────────────────────────────────────────────────────╯
 ```
 
-`--public` is required and means what it says. Minato cannot apply a Cloudflare
+`--public` is required and means what it says. Kobune cannot apply a Cloudflare
 Access policy — that needs the API rather than the `cloudflared` CLI — so it
 will not put an environment on the internet without being asked. Put an Access
 policy in front of the hostname yourself.
@@ -120,7 +120,7 @@ stopped environment, same as a local one.
 
 ## Runtimes
 
-`[runtime] default` in `minato.toml` picks the backend; `minato doctor` reports
+`[runtime] default` in `kobune.toml` picks the backend; `kobune doctor` reports
 the one your project uses and any others that are reachable.
 
 ```toml
@@ -130,7 +130,7 @@ default = "apple"   # or "docker"
 
 Apple Container needs macOS 26 or later and `container system start`. Two
 differences to know about, both forced by the platform: services reach each
-other through `MINATO_HOST_<SERVICE>`, which carries the peer's IP because
+other through `KOBUNE_HOST_<SERVICE>`, which carries the peer's IP because
 Apple Container has no container-to-container DNS, so a service must declare
 `depends_on` to be sure its peer is up first; and every container shares the
 default network, since a container can only join one and a per-workspace
@@ -142,7 +142,7 @@ Firecracker is not implemented. It needs KVM and cannot run on macOS.
 
 <https://minato.1024.works> — in English and Japanese, covering installation,
 configuration, everyday use, the runtimes, tunnels, tutorials, and a CLI and
-`minato.toml` reference. The source is in [`docs/`](docs/).
+`kobune.toml` reference. The source is in [`docs/`](docs/).
 
 ```console
 $ cd docs && pnpm install && pnpm dev
@@ -166,7 +166,7 @@ $ cd docs && pnpm install && pnpm dev
 ## GUI
 
 ```console
-$ minato-desktop
+$ kobune-desktop
 ```
 
 Lives in the menu bar and shows each workspace's state, URLs and logs. Click a
@@ -178,7 +178,7 @@ A Cargo workspace monorepo.
 
 ```
 crates/    libraries   core / api / client / runtime / proxy / dns / tunnel
-apps/      binaries    daemon (minatod) / cli (minato) / desktop (GUI)
+apps/      binaries    daemon (kobuned) / cli (kobune) / desktop (GUI)
 skills/    the Skill for agents
 xtask/     build tasks
 ```
@@ -206,42 +206,42 @@ $ curl -fsSL https://minato.1024.works/install.sh | sh
 ```
 
 Picks the archive for the machine, checks it against its `.sha256`, installs
-both binaries into `~/.local/bin` (`MINATO_INSTALL_DIR` to change that) and
+both binaries into `~/.local/bin` (`KOBUNE_INSTALL_DIR` to change that) and
 writes completions for bash, zsh and fish. If the directory is not on `PATH`
 it says how to add it, in the syntax of the shell you are in — worked out
 from the process tree rather than `$SHELL`, so fish gets `fish_add_path` and
 not an `export` line it would reject.
 
-`minato update` does the same thing later, and a check runs once a day on its
-own — as does `minato --version`, every time it is asked.
-`MINATO_NO_UPDATE_CHECK=1` stops both, and `--json` never carries either.
-`minato uninstall` is the way back out: it shows what it found — containers,
+`kobune update` does the same thing later, and a check runs once a day on its
+own — as does `kobune --version`, every time it is asked.
+`KOBUNE_NO_UPDATE_CHECK=1` stops both, and `--json` never carries either.
+`kobune uninstall` is the way back out: it shows what it found — containers,
 state, binaries, completions, and the steps that need root — and asks before
 removing any of it. **Your worktrees are left where they are.**
 
-Every merge to `main` replaces the [`nightly`](https://github.com/hota1024/minato/releases/tag/nightly)
+Every merge to `main` replaces the [`nightly`](https://github.com/hota1024/kobune/releases/tag/nightly)
 pre-release, for macOS (Apple Silicon and Intel) and Linux x86_64. By hand:
 
 ```console
-$ gh release download nightly --repo hota1024/minato \
-    --pattern 'minato-aarch64-apple-darwin.tar.gz*'
-$ shasum -a 256 -c minato-aarch64-apple-darwin.tar.gz.sha256
-$ tar xzf minato-aarch64-apple-darwin.tar.gz
+$ gh release download nightly --repo hota1024/kobune \
+    --pattern 'kobune-aarch64-apple-darwin.tar.gz*'
+$ shasum -a 256 -c kobune-aarch64-apple-darwin.tar.gz.sha256
+$ tar xzf kobune-aarch64-apple-darwin.tar.gz
 ```
 
 | | |
 | --- | --- |
-| Apple Silicon | `minato-aarch64-apple-darwin.tar.gz` |
-| Intel Mac | `minato-x86_64-apple-darwin.tar.gz` |
-| Linux x86_64 | `minato-x86_64-unknown-linux-gnu.tar.gz` |
+| Apple Silicon | `kobune-aarch64-apple-darwin.tar.gz` |
+| Intel Mac | `kobune-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `kobune-x86_64-unknown-linux-gnu.tar.gz` |
 
 The CLI and the daemon are not signed, so macOS quarantines them on first
 run — the install script clears the flag, and by hand it is
-`xattr -d com.apple.quarantine minato minatod`. The desktop app is not
+`xattr -d com.apple.quarantine kobune kobuned`. The desktop app is not
 shipped at all for the same reason: Gatekeeper stops an unsigned `.app`
 outright.
 
-`minato` and `minatod` have to stay in the same directory: the CLI starts the
+`kobune` and `kobuned` have to stay in the same directory: the CLI starts the
 daemon by looking next to itself.
 
 Running it needs a container runtime. Reaching the Docker API is enough — the
@@ -250,15 +250,15 @@ all work.
 
 ```console
 $ export PATH="$PWD/target/debug:$PATH"
-$ minato daemon status
-$ minato doctor
+$ kobune daemon status
+$ kobune doctor
 ```
 
-`MINATO_HOME` (default `~/.minato`) holds the daemon's socket, state, logs and
+`KOBUNE_HOME` (default `~/.kobune`) holds the daemon's socket, state, logs and
 CA. A Unix socket path has a length limit, so it cannot live somewhere deep.
 
-The listening ports come from `MINATO_HTTP_PORT`, `MINATO_HTTPS_PORT` and
-`MINATO_DNS_PORT`.
+The listening ports come from `KOBUNE_HTTP_PORT`, `KOBUNE_HTTPS_PORT` and
+`KOBUNE_DNS_PORT`.
 
 ## Contributing
 
@@ -280,9 +280,9 @@ predates the rule and is not worth matching.
 
 ## Security
 
-A vulnerability goes [here](https://github.com/hota1024/minato/security/advisories/new),
+A vulnerability goes [here](https://github.com/hota1024/kobune/security/advisories/new),
 privately, rather than into an issue. [SECURITY.md](SECURITY.md) says what to
-put in a report — and, worth reading before `curl … | sh`, what Minato asks of
+put in a report — and, worth reading before `curl … | sh`, what Kobune asks of
 a machine: a CA in the system trust store, a daemon that runs commands in your
 containers, and a flag that publishes an environment to the internet.
 

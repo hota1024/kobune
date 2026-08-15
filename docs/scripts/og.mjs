@@ -1,7 +1,7 @@
 // Draws the social card, `public/og.png`.
 //
 // Composed here rather than kept as an image, so that replacing the logo
-// replaces the card: `assets/logo/minato-mark.svg` is embedded as a nested
+// replaces the card: `assets/logo/kobune-mark.svg` is embedded as a nested
 // <svg>, exactly as exported.
 //
 // Run by `pnpm sync`, before dev and before build. The result is
@@ -62,7 +62,7 @@ async function font() {
  * nothing here has to know how the drawing sits inside it.
  */
 function mark(x, y, size) {
-  const svg = readFileSync(resolve(root, 'assets/logo/minato-mark.svg'), 'utf8')
+  const svg = readFileSync(resolve(root, 'assets/logo/kobune-mark.svg'), 'utf8')
 
   return svg
     .replace(/^<svg /, `<svg x="${x}" y="${y}" `)
@@ -100,7 +100,7 @@ const card = `<svg width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${H
     ${mark(53, 174, 300)}
 
     <g font-family="Inter">
-      ${heading(400, 272, 96, 'Minato')}
+      ${heading(400, 272, 96, 'Kobune')}
       <text x="400" y="336" font-size="34" fill="${MUTED}">A development environment</text>
       <text x="400" y="382" font-size="34" fill="${MUTED}">manager for git worktrees</text>
       <text x="400" y="462" font-size="26" fill="${BRAND}">minato.1024.works</text>

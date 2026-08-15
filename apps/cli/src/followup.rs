@@ -1,6 +1,6 @@
 //! What is worth running once the binaries have changed underneath.
 //!
-//! An update swaps `minato` and `minatod` and leaves the machine halfway:
+//! An update swaps `kobune` and `kobuned` and leaves the machine halfway:
 //! the daemon on the socket is the build that has just been replaced, the
 //! Skill sitting in a repository is a copy of the one another build
 //! carried, and a plist written by an older build may no longer be the
@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use minato_client::Client;
+use kobune_client::Client;
 use serde::{Deserialize, Serialize};
 
 /// One command worth running, and why.
@@ -70,7 +70,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Asks the socket which build is on the other end.
 ///
 /// `version` is what this build reports for itself. The daemon answers a
-/// `Ping` with the same string built the same way ([`minatod::version`]),
+/// `Ping` with the same string built the same way ([`kobuned::version`]),
 /// and the two binaries carry one crate version between them and are only
 /// ever installed as a pair — so they differ exactly when their commits
 /// do.
@@ -160,23 +160,23 @@ pub fn steps_after_replacing(daemon: Daemon) -> Vec<Step> {
 ///
 /// **The same command wherever it runs.** `restart` starts the daemon back
 /// up the way every other command does, and that path asks launchd first
-/// where launchd has the job ([`minato_client::Client::connect_or_spawn`]),
+/// where launchd has the job ([`kobune_client::Client::connect_or_spawn`]),
 /// so the process it ends with is one launchd started — holding 80 and 443,
 /// running the binary that is there now.
 ///
 /// `stop` alone would do on a launchd machine, and used to be what this
 /// said. It is worse in two ways: a clean exit is not restarted
 /// (`KeepAlive { SuccessfulExit: false }`), so the daemon stays down until
-/// something arrives on a port to demand-launch it and `minato daemon
+/// something arrives on a port to demand-launch it and `kobune daemon
 /// status` reports it stopped in the meantime — and it made the advice
 /// depend on a plist, so `--json` carried one of two commands for one
 /// state. `restart` is also what the CLI already says when it meets an old
-/// daemon head-on ([`minato_client::ClientError::VersionMismatch`]).
+/// daemon head-on ([`kobune_client::ClientError::VersionMismatch`]).
 fn daemon_step(reason: &str) -> Step {
-    Step::new(reason, minato_core::launchd::RESTART_COMMAND)
+    Step::new(reason, kobune_core::launchd::RESTART_COMMAND)
 }
 
-/// `minato setup`, when the installed plist predates the shape this build
+/// `kobune setup`, when the installed plist predates the shape this build
 /// writes.
 ///
 /// A plist with no revision in it says nothing: it was written before the
@@ -186,7 +186,7 @@ fn setup_step(installed: Option<&str>) -> Option<Step> {
     let revision = installed.and_then(crate::launchd::revision_of)?;
 
     (revision < crate::launchd::PLIST_REVISION)
-        .then(|| Step::new("the LaunchDaemon is an older build's", "minato setup"))
+        .then(|| Step::new("the LaunchDaemon is an older build's", "kobune setup"))
 }
 
 /// The plist launchd has, when there is one to read.
@@ -194,10 +194,10 @@ fn setup_step(installed: Option<&str>) -> Option<Step> {
 /// No `is_installed` first: it is that same file being there, and reading
 /// a file that is not answers the question in one call.
 fn installed_plist() -> Option<String> {
-    std::fs::read_to_string(minato_core::launchd::plist_path()).ok()
+    std::fs::read_to_string(kobune_core::launchd::plist_path()).ok()
 }
 
-/// `minato skill install --force`, when the copy in this repository is not
+/// `kobune skill install --force`, when the copy in this repository is not
 /// the one this build carries.
 ///
 /// **Only where there is one already.** The Skill is opt-in, and a
@@ -213,7 +213,7 @@ fn skill_step(repository: &Path) -> Option<Step> {
     (installed != crate::skill::contents()).then(|| {
         Step::new(
             "this repository's Skill is not this build's",
-            "minato skill install --force",
+            "kobune skill install --force",
         )
     })
 }
@@ -228,38 +228,38 @@ struct Record {
     commit: String,
 }
 
-fn record_path(paths: &minato_core::Paths) -> PathBuf {
+fn record_path(paths: &kobune_core::Paths) -> PathBuf {
     paths.root().join("build.json")
 }
 
 /// Whether this build is one the machine has not run before.
 ///
-/// This is what covers every way of updating that is not `minato update` —
+/// This is what covers every way of updating that is not `kobune update` —
 /// `install.sh` again, a package manager, a `cargo install` — none of which
-/// can print anything about Minato's own state.
+/// can print anything about Kobune's own state.
 ///
 /// **`false` when nothing has been recorded yet.** A machine with no record
-/// has just installed Minato, and a first installation is not an update:
-/// there is no previous daemon and no older plist, only a `minato setup`
+/// has just installed Kobune, and a first installation is not an update:
+/// there is no previous daemon and no older plist, only a `kobune setup`
 /// that has yet to be run and says so itself.
 ///
 /// It does not record anything. [`remember`] does, and the caller runs it
 /// *after* the steps are printed — a probe that was interrupted in between
 /// would otherwise have marked the build as seen without anyone seeing it.
-pub fn is_new_build(paths: &minato_core::Paths) -> bool {
-    changed(&record_path(paths), minato_core::BUILD_COMMIT)
+pub fn is_new_build(paths: &kobune_core::Paths) -> bool {
+    changed(&record_path(paths), kobune_core::BUILD_COMMIT)
 }
 
 /// Writes down that this build has now run here.
 ///
 /// Best effort: a record that cannot be written costs a repeated notice,
 /// which is worth less than a message about a file nobody asked for.
-pub fn remember(paths: &minato_core::Paths) {
-    if minato_core::BUILD_COMMIT == crate::update::NO_COMMIT {
+pub fn remember(paths: &kobune_core::Paths) {
+    if kobune_core::BUILD_COMMIT == crate::update::NO_COMMIT {
         return;
     }
 
-    write_record(&record_path(paths), minato_core::BUILD_COMMIT);
+    write_record(&record_path(paths), kobune_core::BUILD_COMMIT);
 }
 
 /// The whole of the rule, with the build to compare against passed in.
@@ -317,11 +317,11 @@ mod tests {
         // on, so it is not claimed.
         assert_eq!(
             steps_after_replacing(Daemon::Other)[0].command,
-            minato_core::launchd::RESTART_COMMAND
+            kobune_core::launchd::RESTART_COMMAND
         );
         assert_eq!(
             steps(Daemon::Other, None)[0].command,
-            minato_core::launchd::RESTART_COMMAND
+            kobune_core::launchd::RESTART_COMMAND
         );
     }
 
@@ -330,7 +330,7 @@ mod tests {
         // These reach a person as a notice and an agent as `--json`
         // `next`, and an agent runs what it is given. A command that has
         // been renamed out from under one of them fails at the prompt,
-        // which is how `minato daemon restart` was once advised before it
+        // which is how `kobune daemon restart` was once advised before it
         // existed.
         //
         // **Each step is built from an input that produces it**, not from
@@ -344,7 +344,7 @@ mod tests {
         std::fs::create_dir_all(stale_skill.parent().expect("has a parent")).expect("creates");
         std::fs::write(&stale_skill, "not this build's Skill").expect("writes");
 
-        let older_plist = format!("<!-- minato plist revision {} -->", 0);
+        let older_plist = format!("<!-- kobune plist revision {} -->", 0);
 
         let steps = [
             Some(daemon_step("the daemon is not this build")),
@@ -385,21 +385,21 @@ mod tests {
         let steps = steps_after_replacing(Daemon::Other);
 
         assert_eq!(steps.len(), 1, "got: {steps:?}");
-        assert!(steps[0].command.starts_with("minato daemon"));
+        assert!(steps[0].command.starts_with("kobune daemon"));
     }
 
     #[test]
     fn an_older_plist_asks_for_setup() {
-        let older = format!("<!-- minato plist revision {} -->", 0);
+        let older = format!("<!-- kobune plist revision {} -->", 0);
         let step = setup_step(Some(&older)).expect("a step");
 
-        assert_eq!(step.command, "minato setup");
+        assert_eq!(step.command, "kobune setup");
     }
 
     #[test]
     fn a_current_plist_says_nothing() {
         let current = format!(
-            "<!-- minato plist revision {} -->",
+            "<!-- kobune plist revision {} -->",
             crate::launchd::PLIST_REVISION
         );
 
@@ -433,7 +433,7 @@ mod tests {
 
         // Without --force it refuses, so anything else would be advice
         // that cannot be followed.
-        assert_eq!(step.command, "minato skill install --force");
+        assert_eq!(step.command, "kobune skill install --force");
     }
 
     #[test]

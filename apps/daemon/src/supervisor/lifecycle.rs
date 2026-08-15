@@ -8,10 +8,10 @@
 
 use std::time::Duration;
 
-use minato_api::{ApiError, ErrorCode, Response, Target};
-use minato_core::config::MinatoConfig;
-use minato_core::{HealthCheck, ServiceScope, ServiceState};
-use minato_runtime::{EventSink, Runtime, ServiceStatus, WorkspaceKey};
+use kobune_api::{ApiError, ErrorCode, Response, Target};
+use kobune_core::config::KobuneConfig;
+use kobune_core::{HealthCheck, ServiceScope, ServiceState};
+use kobune_runtime::{EventSink, Runtime, ServiceStatus, WorkspaceKey};
 
 use crate::env;
 use crate::resolve::Resolved;
@@ -70,13 +70,13 @@ impl Supervisor {
         }
 
         // **Said out loud, before anything starts.** With no proxy there is
-        // no URL to hand out, so `MINATO_URL_<SERVICE>` is left unset — and
+        // no URL to hand out, so `KOBUNE_URL_<SERVICE>` is left unset — and
         // inside the container that surfaces as `parameter not set` from a
         // start-up script, which names nothing that leads back to here.
         if !self.gateway.is_serving() {
             events.warn(
-                "the proxy is not listening, so no MINATO_URL_<SERVICE> is \
-                 injected and the URLs will not answer. `minato doctor` says \
+                "the proxy is not listening, so no KOBUNE_URL_<SERVICE> is \
+                 injected and the URLs will not answer. `kobune doctor` says \
                  what to do about it"
                     .to_string(),
             );
@@ -121,11 +121,11 @@ impl Supervisor {
         // **Before anything is prepared**, so a file that cannot be
         // written stops the start rather than being discovered by a
         // container that read the old one. Only the selected services:
-        // `minato up web` has no business failing over what `api` asks
+        // `kobune up web` has no business failing over what `api` asks
         // for, or writing into a path `api` alone was pointed at.
         write_env_files(&resolved.config, &resolved.workspace, &envs, &selected)?;
 
-        let prepare_spec = minato_runtime::WorkspaceSpec {
+        let prepare_spec = kobune_runtime::WorkspaceSpec {
             key: workspace_spec.key.clone(),
             worktree_path: workspace_spec.worktree_path.clone(),
             services: filtered.clone(),
@@ -159,7 +159,7 @@ impl Supervisor {
     async fn setup_and_start(
         &self,
         resolved: &Resolved,
-        service: &minato_runtime::ServiceSpec,
+        service: &kobune_runtime::ServiceSpec,
         runtime: &dyn Runtime,
         events: &EventSink,
     ) -> Result<(), ApiError> {
@@ -181,7 +181,7 @@ impl Supervisor {
     async fn run_setup(
         &self,
         resolved: &Resolved,
-        spec: &minato_runtime::ServiceSpec,
+        spec: &kobune_runtime::ServiceSpec,
         runtime: &dyn Runtime,
         events: &EventSink,
     ) -> Result<(), ApiError> {
@@ -256,7 +256,7 @@ impl Supervisor {
                 ErrorCode::RuntimeFailed,
                 format!("service `{name}`: setup exited with {}", outcome.exit_code),
             )
-            .with_hint("the output above says what happened. Fix it and run `minato up` again"));
+            .with_hint("the output above says what happened. Fix it and run `kobune up` again"));
         }
 
         events.step_done(&step, &label);
@@ -293,7 +293,7 @@ impl Supervisor {
         let runtime = self.runtime(&resolved.config.runtime.default).await?;
 
         if all {
-            // Stop every Minato-managed service in the project.
+            // Stop every Kobune-managed service in the project.
             let statuses = runtime.list_project(&resolved.project).await?;
             for status in statuses {
                 if status.state.is_running() {
@@ -353,11 +353,11 @@ impl Supervisor {
 
 /// How long a single readiness glance may take.
 ///
-/// Not [`minato_runtime::DEFAULT_READINESS_TIMEOUT`], which is how long
+/// Not [`kobune_runtime::DEFAULT_READINESS_TIMEOUT`], which is how long
 /// *starting* waits for an app to come up. This is a question asked while
 /// someone waits for the answer, and a check that has not replied over
 /// loopback by now is not serving. Reporting `starting` after a second
-/// beats making `minato status` sit there.
+/// beats making `kobune status` sit there.
 const READINESS_GLANCE: Duration = Duration::from_secs(1);
 
 /// Narrows `ready` to `starting` for a container whose app is not answering.
@@ -377,7 +377,7 @@ const READINESS_GLANCE: Duration = Duration::from_secs(1);
 ///
 /// Only ever downgrades, so this makes the state more accurate and never
 /// less.
-pub(super) async fn settle_readiness(config: &MinatoConfig, statuses: &mut [ServiceStatus]) {
+pub(super) async fn settle_readiness(config: &KobuneConfig, statuses: &mut [ServiceStatus]) {
     let pending: Vec<_> = statuses
         .iter()
         .enumerate()
@@ -395,7 +395,7 @@ pub(super) async fn settle_readiness(config: &MinatoConfig, statuses: &mut [Serv
             Some(async move {
                 let answered = tokio::time::timeout(
                     READINESS_GLANCE,
-                    minato_runtime::probe(endpoint, Some(&health), None),
+                    kobune_runtime::probe(endpoint, Some(&health), None),
                 )
                 .await;
 
@@ -475,7 +475,7 @@ pub(super) async fn run_wave<T, E: std::fmt::Display>(
 /// reads a peer's address off whatever is running when a container is
 /// created, and `peers` is every other service in the workspace rather
 /// than only `depends_on`, so a service reordered past a neighbour is
-/// handed a different set of `MINATO_HOST_<PEER>` variables. Sequential
+/// handed a different set of `KOBUNE_HOST_<PEER>` variables. Sequential
 /// backends therefore keep the order they have always had.
 ///
 /// **Depth is read off the whole configuration, not the selection.** That
@@ -484,15 +484,15 @@ pub(super) async fn run_wave<T, E: std::fmt::Display>(
 /// a selected service has is selected too, and sits in the wave the full
 /// graph puts it in.
 pub(super) fn waves<'a>(
-    config: &MinatoConfig,
-    specs: &'a [minato_runtime::ServiceSpec],
+    config: &KobuneConfig,
+    specs: &'a [kobune_runtime::ServiceSpec],
     concurrently: bool,
-) -> Result<Vec<Vec<&'a minato_runtime::ServiceSpec>>, ApiError> {
+) -> Result<Vec<Vec<&'a kobune_runtime::ServiceSpec>>, ApiError> {
     if !concurrently {
         return Ok(specs.iter().map(|spec| vec![spec]).collect());
     }
 
-    let grouped: Vec<Vec<&minato_runtime::ServiceSpec>> = config
+    let grouped: Vec<Vec<&kobune_runtime::ServiceSpec>> = config
         .startup_waves()
         .into_iter()
         .map(|wave| {
@@ -526,7 +526,7 @@ pub(super) fn waves<'a>(
 }
 /// The named services, plus everything they depend on.
 pub(super) fn select_with_dependencies(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     only: &[String],
 ) -> Result<Vec<String>, ApiError> {
     if only.is_empty() {
@@ -557,7 +557,7 @@ pub(super) fn select_with_dependencies(
     Ok(selected)
 }
 pub(super) fn validate_service_names(
-    config: &MinatoConfig,
+    config: &KobuneConfig,
     names: &[String],
 ) -> Result<(), ApiError> {
     for name in names {
@@ -574,7 +574,7 @@ pub(super) fn validate_service_names(
 mod tests {
     use super::*;
     use crate::supervisor::tests::{FORK, SAMPLE, config, ready};
-    use minato_core::{ServiceScope, ServiceState};
+    use kobune_core::{ServiceScope, ServiceState};
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -582,7 +582,7 @@ mod tests {
     ///
     /// `health` is what makes readiness answerable from outside the
     /// container, so it is the shape worth testing against.
-    fn web_with_http_health() -> MinatoConfig {
+    fn web_with_http_health() -> KobuneConfig {
         config(
             r#"
             [project]
@@ -595,7 +595,7 @@ mod tests {
         )
     }
     /// The same, with nothing declaring how readiness is decided.
-    fn web_only() -> MinatoConfig {
+    fn web_only() -> KobuneConfig {
         config(
             r#"
             [project]
@@ -620,7 +620,7 @@ mod tests {
     async fn a_health_check_that_does_not_answer_means_starting() {
         // Docker says `running` as soon as the process exists. A dev server
         // compiling for a minute looked exactly like one serving requests,
-        // which is the question `minato status` is for.
+        // which is the question `kobune status` is for.
         let key = WorkspaceKey::new("myapp", "feat-1").service("web");
         let mut statuses = vec![ready(key, closed_port().await, ServiceScope::Workspace)];
 
@@ -773,7 +773,7 @@ mod tests {
     /// Built the way `start_services` builds them — ordered, then narrowed
     /// to the selection — so what the wave tests are handed is what the
     /// real path hands `waves`.
-    fn specs_for(config: &MinatoConfig, only: &[&str]) -> Vec<minato_runtime::ServiceSpec> {
+    fn specs_for(config: &KobuneConfig, only: &[&str]) -> Vec<kobune_runtime::ServiceSpec> {
         let names: Vec<String> = only.iter().map(|name| (*name).to_string()).collect();
         let selected = select_with_dependencies(config, &names).expect("resolves");
 
@@ -797,7 +797,7 @@ mod tests {
         .filter(|spec| selected.iter().any(|name| name == spec.name()))
         .collect()
     }
-    fn wave_names<'a>(waves: &[Vec<&'a minato_runtime::ServiceSpec>]) -> Vec<Vec<&'a str>> {
+    fn wave_names<'a>(waves: &[Vec<&'a kobune_runtime::ServiceSpec>]) -> Vec<Vec<&'a str>> {
         waves
             .iter()
             .map(|wave| wave.iter().map(|spec| spec.name()).collect())

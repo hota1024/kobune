@@ -1,6 +1,6 @@
 # The desktop app
 
-`minato-desktop` is a small GPUI app that lives in the menu bar. It shows which
+`kobune-desktop` is a small GPUI app that lives in the menu bar. It shows which
 environments are running, their URLs, and their logs.
 
 It is not meant to be kept open. It is for glancing at the state of things and
@@ -9,8 +9,8 @@ opening one.
 ## Running it
 
 ```console
-$ cargo build --release -p minato-desktop
-$ ./target/release/minato-desktop
+$ cargo build --release -p kobune-desktop
+$ ./target/release/kobune-desktop
 ```
 
 ## Building it
@@ -27,7 +27,7 @@ A WASI SDK is the usual culprit:
 $ export PATH=$(echo $PATH | tr ':' '\n' | grep -v wasi-sdk | paste -sd: -)
 $ unset WASI_SDK_PATH
 $ export LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib
-$ cargo build -p minato-desktop
+$ cargo build -p kobune-desktop
 ```
 
 The symptom is a missing CoreMedia or similar; the cause is a clang that does

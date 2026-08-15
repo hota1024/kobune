@@ -16,38 +16,38 @@ URL・実行を促されているコマンドです。時間のかかるコマ�
 
 パイプ・リダイレクト・キャプチャの先では、同じ内容が素のテキストになります。
 枠も色もカーソル移動もなく、URL がどれだけ長くても折り返しも切り詰めも
-起きません。`minato status | grep web` はこれまでどおりに読めます。
+起きません。`kobune status | grep web` はこれまでどおりに読めます。
 
 | | |
 | --- | --- |
 | `--json` | 出力先にかかわらず、常に装飾しません |
 | `NO_COLOR` | 何かしら設定されていれば、レイアウトはそのままに色だけを落とします |
 | `TERM=dumb` | 全面的にパイプと同じ扱いにします |
-| `minato url <service>` / `minato env get` | 常に 1 行だけ。他のコマンドへ埋め込むためのものです |
-| `minato logs` / `minato exec` | そのまま素通しし、stdout と stderr を分けたまま渡します |
-| `minato logs -f <service>` | `tty` があれば端末はサービスのものになります。[サービスに入力する](#サービスに入力する)を参照 |
+| `kobune url <service>` / `kobune env get` | 常に 1 行だけ。他のコマンドへ埋め込むためのものです |
+| `kobune logs` / `kobune exec` | そのまま素通しし、stdout と stderr を分けたまま渡します |
+| `kobune logs -f <service>` | `tty` があれば端末はサービスのものになります。[サービスに入力する](#サービスに入力する)を参照 |
 
 ## 初期設定
 
-### `minato init`
+### `kobune init`
 
-リポジトリルートに `minato.toml` のひな形を生成し、ディレクトリ名から
+リポジトリルートに `kobune.toml` のひな形を生成し、ディレクトリ名から
 プロジェクト名を推測します。worktree 内で実行した場合も、main worktree に
 生成します。
 
 ```console
-$ minato init
-$ minato init --force    # 既存のファイルを上書きする
+$ kobune init
+$ kobune init --force    # 既存のファイルを上書きする
 ```
 
 #### compose ファイルから変換する
 
 ```console
-$ minato init --from-compose              # compose.yaml、docker-compose.yml などを探す
-$ minato init --from-compose infra.yml    # ファイルを指定する
+$ kobune init --from-compose              # compose.yaml、docker-compose.yml などを探す
+$ kobune init --from-compose infra.yml    # ファイルを指定する
 ```
 
-**意図的に完全な変換ではありません。** compose は巨大で、その半分は Minato では
+**意図的に完全な変換ではありません。** compose は巨大で、その半分は Kobune では
 意味を持ちません。そのためすべてのキーは 3 つのいずれかに振り分けられ、黙って
 消えるものはありません。
 
@@ -58,28 +58,28 @@ $ minato init --from-compose infra.yml    # ファイルを指定する
 - **レポートに列挙される** — `restart`、`deploy`、`networks`、`logging` など。
   サービスごとに
 
-最初の `minato up` の前に TODO を読んでください。完成しているように見えて
+最初の `kobune up` の前に TODO を読んでください。完成しているように見えて
 そうではないファイルは、変換しないことより高くつきます。
 
 特に知っておく価値のある変換が 2 つあります。
 
 - **`env_file` は `carry` になります。** このキーは 2 つの形式で意味が正反対
-  です。compose はファイルを*読み*、Minato は書き出します。そのまま対応付ける
+  です。compose はファイルを*読み*、Kobune は書き出します。そのまま対応付ける
   と、最初の `up` であなたの `.env` を上書きしてしまいます。`carry` が実際に
   意味するもの、つまり新しい worktree に必要で git が持ってこないファイル、に
   相当します
-- **`ports: ["3000:8000"]` はコンテナ側の `8000` を採ります。** Minato は自身が
+- **`ports: ["3000:8000"]` はコンテナ側の `8000` を採ります。** Kobune は自身が
   選んだポートで公開するため、必要なのはアプリがコンテナ内で待ち受けている
   ポートです
 
-### `minato doctor`
+### `kobune doctor`
 
 環境を診断し、`✓` 以外のすべての項目に対処方法を表示します。診断対象は、
 プロジェクトが使用するランタイム、プロキシと DNS の待ち受け状態、launchd
 socket activation、ローカル CA とその信頼状態、`/etc/resolver` の設定、
 および名前が実際に 127.0.0.1 へ解決されるかどうかです。
 
-### `minato setup`
+### `kobune setup`
 
 管理者権限が必要な設定を、1 手順ずつ確認しながら進めます。対象は LaunchDaemon
 の配置、resolver の設定、CA の信頼登録です。各手順は実行するコマンドを表示した
@@ -88,9 +88,9 @@ socket activation、ローカル CA とその信頼状態、`/etc/resolver` の�
 だけで何も実行しません。
 
 ```console
-$ minato setup
-$ minato setup --yes       # 確認せずすべて実行する
-$ minato setup --dry-run   # コマンドを表示するだけで実行しない
+$ kobune setup
+$ kobune setup --yes       # 確認せずすべて実行する
+$ kobune setup --dry-run   # コマンドを表示するだけで実行しない
 ```
 
 | フラグ | 説明 |
@@ -116,15 +116,15 @@ launchd の手順を実行しなかった場合、resolver の手順は現在 DN
 
 ## workspace の操作
 
-### `minato new <branch>`
+### `kobune new <branch>`
 
 worktree を作成し、環境を起動して URL を表示します。
 
 ```console
-$ minato new feature/user-auth
-$ minato new hotfix/x --base v1.2.0
-$ minato new feature/x --path ../elsewhere
-$ minato new feature/x --no-start
+$ kobune new feature/user-auth
+$ kobune new hotfix/x --base v1.2.0
+$ kobune new feature/x --path ../elsewhere
+$ kobune new feature/x --no-start
 ```
 
 | フラグ | 説明 |
@@ -136,13 +136,13 @@ $ minato new feature/x --no-start
 
 既存のブランチは、新規作成せずチェックアウトします。
 
-### `minato ls`
+### `kobune ls`
 
 すべての workspace と、稼働中のサービス数を表示します。
 
 ```console
-$ minato ls
-$ minato ls --all-projects   # この daemon が把握している全プロジェクト
+$ kobune ls
+$ kobune ls --all-projects   # この daemon が把握している全プロジェクト
 ```
 
 `--all-projects` を指定すると `PROJECT` 列が追加されます。他プロジェクトに
@@ -150,7 +150,7 @@ $ minato ls --all-projects   # この daemon が把握している全プロジ�
 リポジトリを開く必要があるためで、そのプロジェクト内で一度もコマンドを実行
 していない場合は、内側から見たときより行数が少なくなります。
 
-### `minato status`
+### `kobune status`
 
 対象 workspace の詳細を表示します。各サービスの状態、URL、プロキシの転送先
 アドレスが含まれます。
@@ -172,29 +172,29 @@ $ minato ls --all-projects   # この daemon が把握している全プロジ�
 外から分かるのはそこまでです。接続可否を見ても意味はありません。Docker は
 ポートを公開する際に前段へフォワーダを置き、**コンテナ内で何も listen して
 いなくてもフォワーダは接続を受け付ける**ためです。`ready` に「応答している」
-という意味を持たせたい場合は [`health`](./minato-toml#起動完了の判定) を
+という意味を持たせたい場合は [`health`](./kobune-toml#起動完了の判定) を
 設定してください。
 :::
 
-### `minato rm`
+### `kobune rm`
 
 worktree とコンテナを削除します。ブランチは残ります。共有サービス
 （`scope = "project"`）も、他の worktree が使用しているため残ります。
 
 ```console
-$ minato rm -w feature-auth
-$ minato rm -w feature-auth -f   # 未コミットの変更があっても削除する
+$ kobune rm -w feature-auth
+$ kobune rm -w feature-auth -f   # 未コミットの変更があっても削除する
 ```
 
 ## サービスの操作
 
-### `minato up [services…]`
+### `kobune up [services…]`
 
 サービスとその依存先を起動します。サービス名を省略した場合はすべてが対象です。
 
 | フラグ | 説明 |
 | --- | --- |
-| `--build` | Minato が検知できる変更がなくてもイメージを再ビルドする |
+| `--build` | Kobune が検知できる変更がなくてもイメージを再ビルドする |
 
 稼働中のコンテナには、イメージが変わっていない限り変更を加えません。停止中の
 コンテナは、設定変更を反映するため再作成します。
@@ -202,31 +202,31 @@ $ minato rm -w feature-auth -f   # 未コミットの変更があっても削除
 `--build` は fingerprint では検知できない変更、たとえば Dockerfile が COPY
 するファイルの変更に対応するためのものです。
 
-### `minato down [services…]`
+### `kobune down [services…]`
 
 ```console
-$ minato down
-$ minato down web
-$ minato down --all    # プロジェクト内の全 workspace
+$ kobune down
+$ kobune down web
+$ kobune down --all    # プロジェクト内の全 workspace
 ```
 
 共有サービスは、名前を明示的に指定した場合のみ停止します。他の worktree が
 使用している可能性があるためです。
 
-### `minato url [service] [--qr]`
+### `kobune url [service] [--qr]`
 
 サービス名を指定した場合は 1 行のみを出力します。他のコマンドへ埋め込むため
 のものです。
 
 ```console
-$ curl -sS --fail-with-body "$(minato url web)/api/health"
+$ curl -sS --fail-with-body "$(kobune url web)/api/health"
 ```
 
 サービス名を省略した場合は、全サービスとアクセス先を一覧表示します。外から
 入れないサービスや、トンネルが有効なときはトンネル URL も含みます。
 
 ```console
-$ minato url
+$ kobune url
 web   https://web.feat-1.myapp.localhost
 api   https://api.feat-1.myapp.localhost
 db    internal only
@@ -237,18 +237,18 @@ db    internal only
 でしか解決できないため、それしかない場合はその旨を添えます。
 
 ```console
-$ minato url web --qr
+$ kobune url web --qr
 ```
 
 停止中でも URL は有効です。リクエストによって起動します。
 
-### `minato logs [services…]`
+### `kobune logs [services…]`
 
 ```console
-$ minato logs
-$ minato logs web -n 100
-$ minato logs web -f
-$ minato logs -f dev          # `tty` を持つサービス: そのまま入力できます
+$ kobune logs
+$ kobune logs web -n 100
+$ kobune logs web -f
+$ kobune logs -f dev          # `tty` を持つサービス: そのまま入力できます
 ```
 
 | フラグ | 説明 |
@@ -261,14 +261,14 @@ $ minato logs -f dev          # `tty` を持つサービス: そのまま入力�
 
 #### サービスに入力する
 
-[`tty`](./minato-toml#tty) を設定したサービスは端末を持ちます。
-`minato logs -f` はそこに手元の端末を貸し出します。色がそのまま通り、全画面
+[`tty`](./kobune-toml#tty) を設定したサービスは端末を持ちます。
+`kobune logs -f` はそこに手元の端末を貸し出します。色がそのまま通り、全画面
 インターフェイスが描画され、キー入力がプログラムに届きます。Turborepo のタスク
-切り替えや、監視モードのテストランナーが Minato 上で動くのはこの仕組みです。
+切り替えや、監視モードのテストランナーが Kobune 上で動くのはこの仕組みです。
 
 「そう解釈するほかない」場合にだけ自動で有効になります。すなわち、端末上で、
 `--json` なしに、**サービスを 1 つだけ指定して** `-f` で追いかけたときです。
-パイプ、エージェント、サービス名を省いた `minato logs -f` は、従来どおりの
+パイプ、エージェント、サービス名を省いた `kobune logs -f` は、従来どおりの
 素のストリームのままです。`--no-input` は、誤って入力してしまわないように
 見るだけにしたいときに使います。
 
@@ -290,7 +290,7 @@ Ctrl-C はプログラムのものです。タスクランナーではたいて�
 結果としてサービスが止まります。何も止めずに抜けるには Ctrl-P Ctrl-Q を使って
 ください（`docker attach` と同じ並びです）。
 
-端末を持たないサービスを指定してもエラーにはなりません。Minato はその旨を
+端末を持たないサービスを指定してもエラーにはなりません。Kobune はその旨を
 1 行で伝え、通常どおりログを流します。
 
 ::: warning Apple Container は起動時にサイズを固定します
@@ -299,27 +299,27 @@ Ctrl-C はプログラムのものです。タスクランナーではたいて�
 その旨を表示します。Docker はウィンドウに追従します。
 :::
 
-### `minato exec <service> -- <command>`
+### `kobune exec <service> -- <command>`
 
 ```console
-$ minato exec web -- npm test
-$ minato exec web -- sh
-$ minato exec -C /workspace/apps/api api -- pnpm test   # 別のディレクトリで
+$ kobune exec web -- npm test
+$ kobune exec web -- sh
+$ kobune exec -C /workspace/apps/api api -- pnpm test   # 別のディレクトリで
 ```
 
 **終了コードは実行したコマンドのものです。** TTY は要求しないため、入力待ちに
 なるコマンドはプロンプトを表示せず停止します。
 
 `-C` は作業ディレクトリを指定します。省略時はサービスの
-[`workdir`](./minato-toml#イメージとコマンド) です。`-w` ではなく `-C` なのは、
+[`workdir`](./kobune-toml#イメージとコマンド) です。`-w` ではなく `-C` なのは、
 `-w` が workspace の指定に使われているためです。
 
 #### `--fresh`
 
 ```console
-$ minato exec --fresh api -- env
-$ minato exec --fresh api -- cat /workspace/.env
-$ minato exec --fresh api -- sh -c 'pnpm install --frozen-lockfile'
+$ kobune exec --fresh api -- env
+$ kobune exec --fresh api -- cat /workspace/.env
+$ kobune exec --fresh api -- sh -c 'pnpm install --frozen-lockfile'
 ```
 
 標準入力は接続しないため、`-- sh` だけを渡すと即座に EOF を読んで終了します。
@@ -332,8 +332,8 @@ $ minato exec --fresh api -- sh -c 'pnpm install --frozen-lockfile'
 **サービスが起動している必要はありません。** これが要点です。起動スクリプトが
 失敗した状態では exec する先が存在せず、しかもそのときこそ中を見たいためです。
 
-ポートは公開せず、Minato のラベルも付けません。そのため実際のコンテナから
-ポートを奪うことも、`minato status` に現れることも、ネットワーク上でサービス名に
+ポートは公開せず、Kobune のラベルも付けません。そのため実際のコンテナから
+ポートを奪うことも、`kobune status` に現れることも、ネットワーク上でサービス名に
 応答することもありません。イメージが未取得の場合は先に取得・ビルドするため、
 一度も正常に起動していないサービスに対しても使えます。
 
@@ -343,20 +343,20 @@ Ctrl-C は CLI をその場で終了させるのではなく、daemon に停止�
 待ちます。終了コードは 130 です。
 
 すでに完了した処理は取り消されません。中断された `up` はコンテナを起動した
-ままにする場合があり、その状態は `minato status` で確認でき、`minato down` で
+ままにする場合があり、その状態は `kobune status` で確認でき、`kobune down` で
 片付けられます。
 
-`minato logs -f` は例外です。Ctrl-C はこれを終了させる通常の手段です。
+`kobune logs -f` は例外です。Ctrl-C はこれを終了させる通常の手段です。
 [端末を渡している](#サービスに入力する)場合、Ctrl-C はプログラムのものになり、
 抜けるには Ctrl-P Ctrl-Q を使います。
 
 ## 環境変数
 
 ```console
-$ minato env ls [--reveal] [--service <name>]
-$ minato env get <KEY>
-$ minato env set <KEY=VALUE> [--scope global|project|workspace]
-$ minato env unset <KEY> [--scope …]
+$ kobune env ls [--reveal] [--service <name>]
+$ kobune env get <KEY>
+$ kobune env set <KEY=VALUE> [--scope global|project|workspace]
+$ kobune env unset <KEY> [--scope …]
 ```
 
 `ls` は定義元の層を表示し、シークレットはマスクします。`--reveal` を指定すると
@@ -364,11 +364,11 @@ $ minato env unset <KEY> [--scope …]
 `get` はパイプで利用できるよう、値を 1 行だけ出力します。
 
 `--service` は、そのコンテナに実際に渡される内容を表示します。サービス固有の
-[`env`](./minato-toml#環境変数) も含まれるため、`minato env ls --service api`
-で「`MINATO_URL_WEB` は本当に `api` に届いているか」を、何も起動せずに確認
+[`env`](./kobune-toml#環境変数) も含まれるため、`kobune env ls --service api`
+で「`KOBUNE_URL_WEB` は本当に `api` に届いているか」を、何も起動せずに確認
 できます。指定しない場合は全サービスに共通する内容だけです。サービス固有の
 `env` はそのサービスのものであり、対象となるサービスが無いため
-`MINATO_SERVICE` も含まれません。`get` にも同じ指定ができます。
+`KOBUNE_SERVICE` も含まれません。`get` にも同じ指定ができます。
 
 解決できない `${...}` がある場合、`ls` は失敗せず、**その値だけ**を書かれた
 まま表示して理由を下に添えます。原因の値は値を眺めてしか見つけられず、解決
@@ -379,21 +379,21 @@ $ minato env unset <KEY> [--scope …]
 そのまま使われる前提だからです。
 
 層は内側が優先で 5 つあります。`injected`、`global`、`project`、`service`、
-`workspace` です。`service` は `minato.toml` のサービス固有 `env` を指します。
+`workspace` です。`service` は `kobune.toml` のサービス固有 `env` を指します。
 これを `project` と表示すると、サービス側が上書きしている値のために
-`.minato/env` を編集させてしまうため、独立した名前にしています。
+`.kobune/env` を編集させてしまうため、独立した名前にしています。
 
 `--scope` の既定値は `workspace` です。
 
 ## トンネル
 
 ```console
-$ minato tunnel enable --domain example.com --public
-$ minato tunnel disable
-$ minato tunnel status
+$ kobune tunnel enable --domain example.com --public
+$ kobune tunnel disable
+$ kobune tunnel status
 ```
 
-`--public` は必須です。Minato が検証できない状態でインターネットに公開する
+`--public` は必須です。Kobune が検証できない状態でインターネットに公開する
 ことへの同意を意味します。ドメインは初回実行時に保存されます。
 
 `--domain` にはゾーン自体を指定します（`dev.example.com` ではなく
@@ -403,20 +403,20 @@ $ minato tunnel status
 ## エージェント
 
 ```console
-$ minato skill install [--force]
-$ minato skill show
+$ kobune skill install [--force]
+$ kobune skill show
 ```
 
-`.claude/skills/minato/SKILL.md` を生成します。内容に変更がなければ書き込みを
+`.claude/skills/kobune/SKILL.md` を生成します。内容に変更がなければ書き込みを
 行いません。
 
 ## daemon
 
 ```console
-$ minato daemon start
-$ minato daemon stop
-$ minato daemon restart
-$ minato daemon status
+$ kobune daemon start
+$ kobune daemon stop
+$ kobune daemon restart
+$ kobune daemon status
 ```
 
 いずれのコマンドも daemon が停止していれば自動的に起動するため、これらの操作
@@ -431,8 +431,8 @@ launchd 経由になります。これが 80/443 番ポートを保持したま�
 新しい CLI が話すプロトコルとは食い違い、次のように表示されます。
 
 ```
-error: the daemon speaks protocol 3, which this minato (protocol 5) cannot
-talk to. Restart it with `minato daemon restart`
+error: the daemon speaks protocol 3, which this kobune (protocol 5) cannot
+talk to. Restart it with `kobune daemon restart`
 ```
 
 バイナリを更新しても、すでに起動しているプロセスは置き換わりません。
@@ -441,17 +441,17 @@ talk to. Restart it with `minato daemon restart`
 します。daemon 自体は動いていても、80・443・53 を保持しているのは起動しな
 かったジョブのほうで、どの URL も応答しません。終了コードは 1 になり、どの
 状態にあるのかは hint が示します。これで終了コードが変わるのはこの 2 つだけ
-です。`minato up` などは依頼された処理自体は完了しているため、同じ内容を
+です。`kobune up` などは依頼された処理自体は完了しているため、同じ内容を
 notice として表示します。
 
 ## 更新
 
 ```console
-$ minato update
-$ minato update --check
+$ kobune update
+$ kobune update --check
 ```
 
-実行した `minato` が置かれているディレクトリの 2 つのバイナリを、現在の
+実行した `kobune` が置かれているディレクトリの 2 つのバイナリを、現在の
 `nightly` に差し替えます。`--check` は結果を表示するだけで何もインストール
 しません。`--json` の出力は次の形です。
 
@@ -470,39 +470,39 @@ $ minato update --check
   "status": "installed",
   "commit": "…",
   "next": [
-    { "command": "minato daemon restart", "reason": "the daemon is still the previous build" }
+    { "command": "kobune daemon restart", "reason": "the daemon is still the previous build" }
   ]
 }
 ```
 
 やることがなければ空です（daemon が動いていなかった場合など）。ここに入るのは、
 置き換えられる側のビルドが確実に言えることだけです。残りは入った側のビルドが
-最初の実行時に表示します。`minato changed to 9f3c1a2 since the last run` の下に
+最初の実行時に表示します。`kobune changed to 9f3c1a2 since the last run` の下に
 1 行ずつ、**stderr** へ、ビルドごとに 1 回、`--json` では表示しません。Skill の
 行が見るのは実行したリポジトリです。最後に動いたコミットは
-`~/.minato/build.json` に、上の行を表示したあとで書きます。`minato daemon` には
+`~/.kobune/build.json` に、上の行を表示したあとで書きます。`kobune daemon` には
 通知を付けません。`stop` はソケットが閉じる前に戻るため、いま退場を頼んだ
 daemon について答えることになるからです。
 
 チェックはコマンドの実行後に 1 日 1 回自動で走り、stderr に 1 行表示します。
-`MINATO_NO_UPDATE_CHECK` で停止でき、`--json` のときは表示しません。
+`KOBUNE_NO_UPDATE_CHECK` で停止でき、`--json` のときは表示しません。
 
-`minato --version` でもチェックします。こちらは 1 日 1 回ではなく毎回、
+`kobune --version` でもチェックします。こちらは 1 日 1 回ではなく毎回、
 そしてバージョンの行より前ではなく、あとに表示します。
 
 ```console
-$ minato --version
-minato 0.1.0 (c7282b8)
-› a newer build is available (9f3c1a2). Install it with minato update
+$ kobune --version
+kobune 0.1.0 (c7282b8)
+› a newer build is available (9f3c1a2). Install it with kobune update
 ```
 
 この行も stderr です。公開されているビルドと同じなら何も表示しません。
-`--json` と `MINATO_NO_UPDATE_CHECK` は 1 日 1 回のチェックと同じく省略します。
+`--json` と `KOBUNE_NO_UPDATE_CHECK` は 1 日 1 回のチェックと同じく省略します。
 
 ## アンインストール
 
 ```console
-$ minato uninstall
+$ kobune uninstall
 ╭ uninstall ─────────────────────────────────────────────────────────────────╮
 │ containers:                                                                │
 │ myapp / main               web                                             │
@@ -510,21 +510,21 @@ $ minato uninstall
 │ myapp / feature-user-auth  web                                             │
 │                                                                            │
 │ storage — the data in it goes too:                                         │
-│ myapp  minato-myapp-pgdata                                                 │
-│ myapp  minato-myapp-feature-user-auth.node-modules                         │
+│ myapp  kobune-myapp-pgdata                                                 │
+│ myapp  kobune-myapp-feature-user-auth.node-modules                         │
 │                                                                            │
 │ files:                                                                     │
-│ state, logs and the local CA  /home/u/.minato                              │
-│ shell completions             /home/u/.config/fish/completions/minato.fish │
-│ the binary                    /home/u/.local/bin/minato                    │
-│ the binary                    /home/u/.local/bin/minatod                   │
+│ state, logs and the local CA  /home/u/.kobune                              │
+│ shell completions             /home/u/.config/fish/completions/kobune.fish │
+│ the binary                    /home/u/.local/bin/kobune                    │
+│ the binary                    /home/u/.local/bin/kobuned                   │
 │                                                                            │
 │ needs root:                                                                │
 │   stop the LaunchDaemon holding 80/443/53                                  │
-│     sudo launchctl bootout system/dev.minato.daemon                        │
-│     sudo rm /Library/LaunchDaemons/dev.minato.daemon.plist                 │
+│     sudo launchctl bootout system/dev.kobune.daemon                        │
+│     sudo rm /Library/LaunchDaemons/dev.kobune.daemon.plist                 │
 │   stop trusting the local CA                                               │
-│     sudo security remove-trusted-cert -d ~/.minato/ca/minato-ca.crt        │
+│     sudo security remove-trusted-cert -d ~/.kobune/ca/kobune-ca.crt        │
 │                                                                            │
 │ left alone — 2 worktrees:                                                  │
 │   /path/to/myapp                                                           │
@@ -539,13 +539,13 @@ Remove all of this? [y/N]
 | `--dry-run` | 一覧を表示するだけで、何も削除しません |
 
 **worktree には一切触れません。** あなたのチェックアウトであり、コミットして
-いない変更が入っているためです。削除は `minato rm` が 1 つずつ行い、git が
+いない変更が入っているためです。削除は `kobune rm` が 1 つずつ行い、git が
 拒否する場合は `--force` を求めます。何が残るかが分かるよう、一覧には表示
 します。
 
 **名前付きボリュームも削除しますが、その前に必ず名前を挙げます。** プロジェクト
 スコープのボリュームは worktree 間で共有され、そのすべてより長く残ります。
-つまり `minato rm` の経路では決して消えず、アンインストールが唯一の削除機会
+つまり `kobune rm` の経路では決して消えず、アンインストールが唯一の削除機会
 です。表示されるのはランタイムが知っている名前、つまり `docker volume ls` が
 出力するものなので、取っておきたいデータベースは答える前に退避できます。探すのは
 daemon の記録ではなくラベルなので、リポジトリを何か月も前に削除したプロジェ
@@ -556,34 +556,34 @@ daemon の記録ではなくラベルなので、リポジトリを何か月も�
 も同様です。
 どちらも「何かを残したアンインストール」であり、終了コードも 0 以外になります。
 
-存在しないものは一覧に出しません。つまりこの一覧は「Minato が置いた可能性の
+存在しないものは一覧に出しません。つまりこの一覧は「Kobune が置いた可能性の
 ある場所」ではなく、実際にこのマシンにあるものです。`cargo build` の出力に
 ついてはバイナリを削除しません。チェックアウトから `uninstall` を実行しても、
 消えるのはインストール済みのものだけで、ビルド成果物は残ります。
 
 root が必要な手順は `sudo` で実行し、パスワードを尋ねます。入力できる端末が
-ないとき、つまりエージェント・パイプ・CI では、`minato setup` と同じく
+ないとき、つまりエージェント・パイプ・CI では、`kobune setup` と同じく
 コマンドを表示するにとどめ、それ以外の削除は続行します。
 
 ## 補完
 
 ```console
-$ minato completions <bash|zsh|fish|elvish|powershell>
+$ kobune completions <bash|zsh|fish|elvish|powershell>
 ```
 
 スクリプトを標準出力に書き出します。各シェルの配置先は
 [インストール](../guide/installation#シェル補完) を参照してください。
 インストールスクリプトを使った場合は設定済みです。
 
-## Minato 自体の設定に使う環境変数
+## Kobune 自体の設定に使う環境変数
 
 | 変数 | 説明 |
 | --- | --- |
-| `MINATO_HOME` | 状態、ログ、ソケット、CA の保存先。既定値 `~/.minato` |
-| `MINATO_HTTP_PORT` | プロキシの HTTP ポート。既定値 80、確保できない場合は 18080。明示した場合はその値がそのまま使われます |
-| `MINATO_HTTPS_PORT` | プロキシの HTTPS ポート。既定値 443、確保できない場合は 18443。明示した場合はその値がそのまま使われます |
-| `MINATO_DNS_PORT` | DNS のポート。既定値 53 |
-| `MINATO_CLOUDFLARED` | `PATH` にも主要なインストール先にも無い `cloudflared` のパス |
-| `MINATO_CONTAINER` | Apple Container の `container` について同じもの |
-| `MINATO_LOG` | daemon のログフィルタ。例: `debug` |
-| `MINATO_NO_UPDATE_CHECK` | 何か値を設定すると更新チェックをしません（1 日 1 回のものと `--version` のもの、どちらも） |
+| `KOBUNE_HOME` | 状態、ログ、ソケット、CA の保存先。既定値 `~/.kobune` |
+| `KOBUNE_HTTP_PORT` | プロキシの HTTP ポート。既定値 80、確保できない場合は 18080。明示した場合はその値がそのまま使われます |
+| `KOBUNE_HTTPS_PORT` | プロキシの HTTPS ポート。既定値 443、確保できない場合は 18443。明示した場合はその値がそのまま使われます |
+| `KOBUNE_DNS_PORT` | DNS のポート。既定値 53 |
+| `KOBUNE_CLOUDFLARED` | `PATH` にも主要なインストール先にも無い `cloudflared` のパス |
+| `KOBUNE_CONTAINER` | Apple Container の `container` について同じもの |
+| `KOBUNE_LOG` | daemon のログフィルタ。例: `debug` |
+| `KOBUNE_NO_UPDATE_CHECK` | 何か値を設定すると更新チェックをしません（1 日 1 回のものと `--version` のもの、どちらも） |

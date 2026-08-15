@@ -18,16 +18,16 @@
 //! Every test here is `#[ignore]`d, so `cargo test` is untouched:
 //!
 //! ```console
-//! $ cargo test -p minatod -- --ignored --test-threads=1
+//! $ cargo test -p kobuned -- --ignored --test-threads=1
 //! ```
 //!
 //! **One at a time.** They share a Docker daemon and name their
-//! containers from the project in `minato.toml`, so two running at once
+//! containers from the project in `kobune.toml`, so two running at once
 //! would tread on each other. CI passes `--test-threads=1`; so should you.
 //!
 //! What is deliberately *not* here is the proxy and DNS. The gateway is
 //! inert and the wake is asked for directly, which is the same call the
-//! proxy makes ([`minatod::activator`]) — `minato-proxy`'s own end-to-end
+//! proxy makes ([`kobuned::activator`]) — `kobune-proxy`'s own end-to-end
 //! tests already cover the HTTP half against a stub. What could not be
 //! covered any other way is the runtime underneath.
 
@@ -40,7 +40,7 @@ use common::{Harness, START_WAIT};
 
 /// `web` is reachable and depends on `db`, which is not.
 ///
-/// The shape `minato init` writes and the documentation recommends, and
+/// The shape `kobune init` writes and the documentation recommends, and
 /// the one both bugs needed.
 fn web_and_db(project: &str) -> String {
     format!(
@@ -94,7 +94,7 @@ async fn waking_a_service_brings_up_what_it_depends_on() {
         .await;
 
     assert!(
-        matches!(activation, minato_proxy::Activation::Ready(_)),
+        matches!(activation, kobune_proxy::Activation::Ready(_)),
         "the request should have been answered: {activation:?}"
     );
     // A service with no URL has no request of its own to arrive, so it
@@ -196,7 +196,7 @@ async fn a_swept_service_comes_back_on_the_next_request() {
         .await;
 
     assert!(
-        matches!(activation, minato_proxy::Activation::Ready(_)),
+        matches!(activation, kobune_proxy::Activation::Ready(_)),
         "{activation:?}"
     );
     harness.wait_until_running(&["db", "web"]).await;
@@ -255,16 +255,16 @@ command = "sh -c 'sleep 4; echo ok > /tmp/index.html; httpd -f -p 8080 -h /tmp'"
 
 /// Where the first event saying `step` reached a matching status sits.
 fn step_at(
-    events: &[minato_api::Event],
+    events: &[kobune_api::Event],
     step: &str,
-    matching: impl Fn(&minato_api::StepStatus) -> bool,
+    matching: impl Fn(&kobune_api::StepStatus) -> bool,
 ) -> usize {
     events
         .iter()
         .position(|event| {
             matches!(
                 event,
-                minato_api::Event::Step { id, status, .. } if id == step && matching(status)
+                kobune_api::Event::Step { id, status, .. } if id == step && matching(status)
             )
         })
         .unwrap_or_else(|| panic!("no matching `{step}` in {events:#?}"))
@@ -283,7 +283,7 @@ async fn independent_services_do_not_wait_for_each_other() {
 
     let events = harness.up_watching().await;
 
-    use minato_api::StepStatus;
+    use kobune_api::StepStatus;
     let started = |service: &str| {
         step_at(&events, &format!("await-{service}"), |status| {
             matches!(status, StepStatus::Started)

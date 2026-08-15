@@ -5,11 +5,11 @@ Useful when something behaves in a way the other pages do not explain.
 ## The pieces
 
 ```
-  minato (CLI) ──────┐
-  minato-desktop ────┼── Unix socket / JSON-RPC ──┐
+  kobune (CLI) ──────┐
+  kobune-desktop ────┼── Unix socket / JSON-RPC ──┐
   SKILL.md (agent) ──┘                            │
                                             ┌───────────┐
-                                            │  minatod  │
+                                            │  kobuned  │
                                             └─────┬─────┘
             ┌──────────────┬──────────────────┼──────────────┬─────────────┐
             ▼              ▼                  ▼              ▼             ▼
@@ -40,7 +40,7 @@ You open `https://web.feature-auth.myapp.localhost`.
    reaches the proxy gets you a 404 that says which workspaces exist.
 
 2. **TLS.** The proxy issues a certificate for whatever name SNI asks for, on
-   the spot, from a local CA in `~/.minato/ca/`. A wildcard cannot help here:
+   the spot, from a local CA in `~/.kobune/ca/`. A wildcard cannot help here:
    `*.localhost` does not cover `web.feature-auth.myapp.localhost`, and each
    new worktree invents a name at a new depth. You trust one CA and never think
    about it again.
@@ -65,9 +65,9 @@ allowlist, so the app sees the same URL you opened.
 
 The daemon keeps **no runtime state in a file**. Whether a container is alive
 and what address it got are read from the container's own labels
-(`dev.minato.*`). Restart the daemon and one listing rebuilds everything.
+(`dev.kobune.*`). Restart the daemon and one listing rebuilds everything.
 
-The state file holds two things: which worktrees Minato manages, and the URL
+The state file holds two things: which worktrees Kobune manages, and the URL
 label issued to each. Labels are persisted so that changing the naming rules
 later never changes an existing workspace's URL.
 
@@ -113,11 +113,11 @@ the right account.
 
 Without that, the proxy takes 18080 and 18443 and the URLs carry the port. A
 proxy on an awkward port beats no proxy: with none at all no URL is issued,
-which also means no `MINATO_URL_<SERVICE>` reaches a container.
+which also means no `KOBUNE_URL_<SERVICE>` reaches a container.
 
 It does not move when the plist *is* installed — launchd holds 80 either way
 then, so a refusal means its job needs starting rather than a different port —
-nor from a port named with `MINATO_HTTP_PORT`, which is used as given.
+nor from a port named with `KOBUNE_HTTP_PORT`, which is used as given.
 
 macOS does not use systemd's `LISTEN_FDS` convention, so this goes through
 `launch_activate_socket()`, looking descriptors up by the names in the plist.
@@ -130,4 +130,4 @@ happened to be on `[::1]`.
 ## Further
 
 The full record, including the decisions that were reversed and why, is in
-[`docs/DESIGN.md`](https://github.com/hota1024/minato/blob/main/docs/DESIGN.md).
+[`docs/DESIGN.md`](https://github.com/hota1024/kobune/blob/main/docs/DESIGN.md).

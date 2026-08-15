@@ -7,7 +7,7 @@
 //! unit tests passed (`docs/DESIGN.md` §6).
 //!
 //! **Nothing here runs a purge for real, and nothing should.** The sweep
-//! is deliberately machine-wide: it finds every volume carrying Minato's
+//! is deliberately machine-wide: it finds every volume carrying Kobune's
 //! label, whatever project it belongs to and whether or not the daemon
 //! remembers that project. That is what makes it able to reclaim the
 //! storage of a repository somebody has already deleted — and what would
@@ -18,13 +18,13 @@
 //! `#[ignore]`d like every other suite that needs a runtime:
 //!
 //! ```console
-//! $ cargo test -p minatod -- --ignored --test-threads=1
+//! $ cargo test -p kobuned -- --ignored --test-threads=1
 //! ```
 
 use std::process::Command;
 
-use minato_api::{Request, Response};
-use minato_runtime::{ManagedVolume, Runtime};
+use kobune_api::{Request, Response};
+use kobune_runtime::{ManagedVolume, Runtime};
 
 #[macro_use]
 mod common;
@@ -35,7 +35,7 @@ use common::Harness;
 ///
 /// `pgdata` without a `@workspace` suffix is the default scope and the
 /// case that matters here: it is shared between worktrees and outlives all
-/// of them, so nothing on the `minato rm` path ever removes it.
+/// of them, so nothing on the `kobune rm` path ever removes it.
 fn web_with_storage(project: &str) -> String {
     format!(
         r#"
@@ -56,8 +56,8 @@ idle_timeout = "1s"
 }
 
 /// The Docker backend, connected fresh.
-fn runtime() -> minato_runtime::DockerRuntime {
-    minato_runtime::docker::DockerRuntime::connect().expect("Docker answers")
+fn runtime() -> kobune_runtime::DockerRuntime {
+    kobune_runtime::docker::DockerRuntime::connect().expect("Docker answers")
 }
 
 /// This project's volumes, as the runtime reports them.
@@ -86,7 +86,7 @@ async fn volumes_of(project: &str) -> Vec<ManagedVolume> {
 /// without it the removal below would fail for a reason that has nothing
 /// to do with what is being tested.
 fn remove_containers(project: &str) {
-    let filter = format!("label={}={}", minato_runtime::labels::PROJECT, project);
+    let filter = format!("label={}={}", kobune_runtime::labels::PROJECT, project);
 
     let ids = Command::new("docker")
         .args(["ps", "-aq", "--filter", &filter])
@@ -128,7 +128,7 @@ async fn the_plan_names_the_storage_before_anything_is_asked() {
 
     harness.up().await;
 
-    let volume = format!("minato-{project}-pgdata");
+    let volume = format!("kobune-{project}-pgdata");
 
     let Response::Purge(report) = harness.request(Request::Purge { dry_run: true }).await else {
         panic!("a purge should answer with a report");
@@ -156,7 +156,7 @@ async fn storage_no_worktree_is_left_to_claim_is_still_found_and_removed() {
     // The gap this suite exists for. `destroy_workspace` takes the
     // workspace-scoped volumes and leaves the project's — correctly, since
     // another worktree may still want it — so after the last worktree has
-    // gone the storage is still there, under a name Minato invented and
+    // gone the storage is still there, under a name Kobune invented and
     // nothing else knows to look for.
     let project = "mnte2evolgone";
     let harness = Harness::new(project, &web_with_storage(project));
@@ -164,7 +164,7 @@ async fn storage_no_worktree_is_left_to_claim_is_still_found_and_removed() {
     harness.up().await;
     remove_containers(project);
 
-    let volume = format!("minato-{project}-pgdata");
+    let volume = format!("kobune-{project}-pgdata");
 
     let found = volumes_of(project).await;
     assert!(

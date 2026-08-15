@@ -13,9 +13,9 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 // The daemon and the client have to agree on where the plist lives and what
-// the job is called, so those live in `minato-core`. Generating the plist is
+// the job is called, so those live in `kobune-core`. Generating the plist is
 // this side's job alone.
-pub use minato_core::launchd::{INSTALL_DIR, LABEL};
+pub use kobune_core::launchd::{INSTALL_DIR, LABEL};
 
 /// The shape of the plist this build writes.
 ///
@@ -23,14 +23,14 @@ pub use minato_core::launchd::{INSTALL_DIR, LABEL};
 /// would not have** — a socket, a key launchd reads, a different program
 /// to run. It goes into the file as a comment, and comparing it with what
 /// is installed is how a build that has just landed works out that
-/// `minato setup` has something new to do (see [`crate::followup`]).
+/// `kobune setup` has something new to do (see [`crate::followup`]).
 ///
 /// Leaving it alone when the shape does move costs nothing but the notice:
 /// the plist already there keeps working exactly as well as it did.
 pub const PLIST_REVISION: u32 = 1;
 
 /// How the revision appears in the file.
-const REVISION_MARKER: &str = "minato plist revision";
+const REVISION_MARKER: &str = "kobune plist revision";
 
 /// The revision an installed plist was written by.
 ///
@@ -55,20 +55,20 @@ pub struct LaunchdPlan {
     pub commands: Vec<String>,
 }
 
-/// Writes the plist into `minato_home` and returns the install steps.
+/// Writes the plist into `kobune_home` and returns the install steps.
 pub fn prepare(
     program: &Path,
-    minato_home: &Path,
+    kobune_home: &Path,
     user: &str,
     ports: Ports,
 ) -> anyhow::Result<LaunchdPlan> {
-    let source = minato_home.join(format!("{LABEL}.plist"));
+    let source = kobune_home.join(format!("{LABEL}.plist"));
     let destination = Path::new(INSTALL_DIR).join(format!("{LABEL}.plist"));
 
-    std::fs::create_dir_all(minato_home)?;
+    std::fs::create_dir_all(kobune_home)?;
     std::fs::write(
         &source,
-        plist(program, minato_home, user, ports, container_gateway()),
+        plist(program, kobune_home, user, ports, container_gateway()),
     )?;
 
     let commands = vec![
@@ -86,7 +86,7 @@ pub fn prepare(
 }
 
 /// The step that hands a job launchd already has its sockets back, for
-/// when [`minato_core::launchd::is_loaded`] says installing is not what is
+/// when [`kobune_core::launchd::is_loaded`] says installing is not what is
 /// wanted.
 ///
 /// The daemon in the way is usually the reason the job is not running: one
@@ -100,7 +100,7 @@ pub fn prepare(
 /// Restarting stops the daemon and then reaches for :80, which is what
 /// launchd is holding, so the job starts with no root involved.
 pub fn wake_commands() -> Vec<String> {
-    vec![minato_core::launchd::RESTART_COMMAND.to_string()]
+    vec![kobune_core::launchd::RESTART_COMMAND.to_string()]
 }
 
 /// The steps that undo the installation.
@@ -118,15 +118,15 @@ pub fn uninstall_commands() -> Vec<String> {
 /// **The proxy has to be listening there, and only launchd can put it
 /// there.** A container on that network cannot reach the host's loopback,
 /// and :443 is privileged, so the socket has to be in the plist — which is
-/// written here, once, by `minato setup`.
+/// written here, once, by `kobune setup`.
 ///
 /// `None` when Apple Container is not installed or not running. Running the
-/// CLI is duplicated from the daemon rather than shared: `minato-core` is
+/// CLI is duplicated from the daemon rather than shared: `kobune-core` is
 /// where the two agree on the shape of the answer, and it stays clear of
 /// running container tooling itself.
 fn container_gateway() -> Option<Ipv4Addr> {
-    let output = std::process::Command::new(minato_core::apple::program())
-        .args(minato_core::apple::LIST_ARGS)
+    let output = std::process::Command::new(kobune_core::apple::program())
+        .args(kobune_core::apple::LIST_ARGS)
         .output()
         .ok()?;
 
@@ -134,9 +134,9 @@ fn container_gateway() -> Option<Ipv4Addr> {
         return None;
     }
 
-    minato_core::apple::parse_gateway(
+    kobune_core::apple::parse_gateway(
         &String::from_utf8_lossy(&output.stdout),
-        minato_core::apple::DEFAULT_NETWORK,
+        kobune_core::apple::DEFAULT_NETWORK,
     )
 }
 
@@ -159,7 +159,7 @@ impl Default for Ports {
 
 fn plist(
     program: &Path,
-    minato_home: &Path,
+    kobune_home: &Path,
     user: &str,
     ports: Ports,
     container_gateway: Option<Ipv4Addr>,
@@ -190,14 +190,14 @@ fn plist(
 
   <key>EnvironmentVariables</key>
   <dict>
-    <key>MINATO_HOME</key>
+    <key>KOBUNE_HOME</key>
     <string>{home}</string>
   </dict>
 
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- A clean exit via `minato daemon stop` is not restarted. -->
+  <!-- A clean exit via `kobune daemon stop` is not restarted. -->
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key>
@@ -237,7 +237,7 @@ fn plist(
 "#,
         program = escape_xml(&program.to_string_lossy()),
         user = escape_xml(user),
-        home = escape_xml(&minato_home.to_string_lossy()),
+        home = escape_xml(&kobune_home.to_string_lossy()),
         http_sockets = stream_sockets("http", &nodes, ports.http),
         https_sockets = stream_sockets("https", &nodes, ports.https),
         dns = ports.dns,
@@ -292,8 +292,8 @@ mod tests {
 
     fn sample() -> String {
         plist(
-            Path::new("/usr/local/bin/minatod"),
-            Path::new("/Users/someone/.minato"),
+            Path::new("/usr/local/bin/kobuned"),
+            Path::new("/Users/someone/.kobune"),
             "someone",
             Ports::default(),
             None,
@@ -343,8 +343,8 @@ mod tests {
         // and :443 is privileged — so if this socket is not in the plist,
         // nothing can put the proxy where those containers look for it.
         let xml = plist(
-            Path::new("/usr/local/bin/minatod"),
-            Path::new("/Users/someone/.minato"),
+            Path::new("/usr/local/bin/kobuned"),
+            Path::new("/Users/someone/.kobune"),
             "someone",
             Ports::default(),
             Some(Ipv4Addr::new(192, 168, 64, 1)),
@@ -369,7 +369,7 @@ mod tests {
     fn does_not_restart_after_a_clean_stop() {
         let xml = sample();
 
-        // An unconditional KeepAlive would make `minato daemon stop`
+        // An unconditional KeepAlive would make `kobune daemon stop`
         // useless.
         assert!(xml.contains("<key>SuccessfulExit</key>"));
         assert!(xml.contains("<false/>"));
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn says_which_revision_wrote_it() {
         // A build that lands on a machine reads this to work out whether
-        // `minato setup` has anything new to do. Without it in the file,
+        // `kobune setup` has anything new to do. Without it in the file,
         // it never has anything to compare against.
         assert_eq!(revision_of(&sample()), Some(PLIST_REVISION));
     }
@@ -387,57 +387,57 @@ mod tests {
     fn a_plist_from_before_the_marker_has_no_revision() {
         // Every plist installed until now. `None` rather than 0, which
         // would read as "older than revision 1" and send those machines
-        // to `minato setup` over a comment.
+        // to `kobune setup` over a comment.
         assert_eq!(revision_of("<plist version=\"1.0\"><dict/></plist>"), None);
-        assert_eq!(revision_of("<!-- minato plist revision -->"), None);
-        assert_eq!(revision_of("<!-- minato plist revision x -->"), None);
+        assert_eq!(revision_of("<!-- kobune plist revision -->"), None);
+        assert_eq!(revision_of("<!-- kobune plist revision x -->"), None);
     }
 
     #[test]
-    fn passes_minato_home_through() {
+    fn passes_kobune_home_through() {
         let xml = sample();
-        assert!(xml.contains("<key>MINATO_HOME</key>"));
-        assert!(xml.contains("<string>/Users/someone/.minato</string>"));
+        assert!(xml.contains("<key>KOBUNE_HOME</key>"));
+        assert!(xml.contains("<string>/Users/someone/.kobune</string>"));
     }
 
     #[test]
     fn the_home_it_writes_is_the_one_read_back_out() {
         // **Two sides of one file.** This writes the home; the daemon and
-        // `minato setup` read it back through
-        // `minato_core::launchd::job` to tell a job that serves them from
+        // `kobune setup` read it back through
+        // `kobune_core::launchd::job` to tell a job that serves them from
         // one installed for somewhere else. A change to the shape of this
         // block that the reader does not follow makes every machine look
         // like the second kind.
         assert_eq!(
-            minato_core::launchd::job_home(&sample()),
-            Some(PathBuf::from("/Users/someone/.minato"))
+            kobune_core::launchd::job_home(&sample()),
+            Some(PathBuf::from("/Users/someone/.kobune"))
         );
 
         let escaped = plist(
-            Path::new("/usr/local/bin/minatod"),
-            Path::new("/Users/a&b/.minato"),
+            Path::new("/usr/local/bin/kobuned"),
+            Path::new("/Users/a&b/.kobune"),
             "someone",
             Ports::default(),
             None,
         );
 
         assert_eq!(
-            minato_core::launchd::job_home(&escaped),
-            Some(PathBuf::from("/Users/a&b/.minato"))
+            kobune_core::launchd::job_home(&escaped),
+            Some(PathBuf::from("/Users/a&b/.kobune"))
         );
     }
 
     #[test]
     fn escapes_paths_that_would_break_the_xml() {
         let xml = plist(
-            Path::new("/tmp/a&b/minatod"),
+            Path::new("/tmp/a&b/kobuned"),
             Path::new("/tmp/<home>"),
             "some&one",
             Ports::default(),
             None,
         );
 
-        assert!(xml.contains("/tmp/a&amp;b/minatod"));
+        assert!(xml.contains("/tmp/a&amp;b/kobuned"));
         assert!(xml.contains("/tmp/&lt;home&gt;"));
         assert!(xml.contains("some&amp;one"));
         assert!(!xml.contains("a&b"), "a bare & breaks the plist");
@@ -446,8 +446,8 @@ mod tests {
     #[test]
     fn honours_custom_ports() {
         let xml = plist(
-            Path::new("/bin/minatod"),
-            Path::new("/tmp/minato"),
+            Path::new("/bin/kobuned"),
+            Path::new("/tmp/kobune"),
             "someone",
             Ports {
                 http: 8080,
@@ -466,7 +466,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
 
         let plan = prepare(
-            Path::new("/usr/local/bin/minatod"),
+            Path::new("/usr/local/bin/kobuned"),
             dir.path(),
             "someone",
             Ports::default(),
@@ -497,7 +497,7 @@ mod tests {
         // launchd answers a second one for a label it has with EIO.
         //
         // The equality carries all of that, so it is the only assertion.
-        assert_eq!(wake_commands(), vec![minato_core::launchd::RESTART_COMMAND]);
+        assert_eq!(wake_commands(), vec![kobune_core::launchd::RESTART_COMMAND]);
     }
 
     #[test]

@@ -5,11 +5,11 @@ can reach it.
 
 ::: danger Read this first
 A tunnel makes your development environment reachable by anyone with the URL.
-Minato **cannot** apply a Cloudflare Access policy — that needs Cloudflare's
+Kobune **cannot** apply a Cloudflare Access policy — that needs Cloudflare's
 API, and everything here goes through the `cloudflared` CLI — so it cannot
 promise anything is guarding it.
 
-Put an Access policy in front of the hostname yourself. Minato will not expose
+Put an Access policy in front of the hostname yourself. Kobune will not expose
 anything without `--public`, and it repeats the warning every time.
 :::
 
@@ -22,14 +22,14 @@ $ brew install cloudflared
 $ cloudflared tunnel login
 ```
 
-That opens a browser. Minato does not run it for you: an interactive prompt in
+That opens a browser. Kobune does not run it for you: an interactive prompt in
 a daemon hangs an agent at a step it cannot answer, the same reason
-`minato setup` runs nothing where there is no terminal to answer at.
+`kobune setup` runs nothing where there is no terminal to answer at.
 
 ## Turn it on
 
 ```console
-$ minato tunnel enable --domain example.com --public
+$ kobune tunnel enable --domain example.com --public
   ✓ starting the tunnel
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
@@ -37,7 +37,7 @@ $ minato tunnel enable --domain example.com --public
 │ DNS  *.example.com                                                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
-│ Minato cannot see whether a Cloudflare Access policy is in front of it. │
+│ Kobune cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -47,7 +47,7 @@ zone, `cloudflared` started. All idempotent, so running it again is fine.
 ## The link
 
 ```console
-$ minato status -w feature-checkout
+$ kobune status -w feature-checkout
 ╭ myapp / feature-checkout ──────────────────────────────────╮
 │ feature/checkout  /path/to/myapp.wt/feature-checkout       │
 │                                                            │
@@ -63,7 +63,7 @@ single label, because Cloudflare's Universal SSL covers first-level subdomains
 only — a deeper hostname would be refused at the TLS handshake.
 
 ```console
-$ minato status -w feature-checkout --json \
+$ kobune status -w feature-checkout --json \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspace"]["services"][0]["tunnel_url"])'
 ```
 
@@ -79,7 +79,7 @@ $ minato status -w feature-checkout --json \
 
 ## Add Access
 
-Minato cannot do this part. In the Cloudflare dashboard, under Zero Trust →
+Kobune cannot do this part. In the Cloudflare dashboard, under Zero Trust →
 Access → Applications, add a self-hosted application for the hostname you are
 sharing — `web-feature-checkout-myapp.example.com` — and a policy: an email
 domain, or a one-time PIN for someone outside your organisation.
@@ -89,7 +89,7 @@ Do it before sharing anything you would not put on a public web server.
 **Per hostname, not `*.example.com`.** A tunnel hostname is one label, so
 there is no `*.myapp.example.com` to scope an application to any more, and the
 zone-wide pattern would put Access in front of everything else the domain
-serves — including production hostnames that have nothing to do with Minato.
+serves — including production hostnames that have nothing to do with Kobune.
 If the zone is only ever used for this, `*.example.com` is the shorter way to
 cover every worktree at once; on a zone that serves anything else it locks out
 your own visitors.
@@ -97,7 +97,7 @@ your own visitors.
 ## Turn it off
 
 ```console
-$ minato tunnel disable
+$ kobune tunnel disable
 ╭ tunnel ─────────────────╮
 │ disabled  *.example.com │
 ╰─────────────────────────╯
@@ -107,7 +107,7 @@ The tunnel hostnames stop routing immediately; local URLs are untouched. The
 named tunnel and DNS records stay in Cloudflare, so re-enabling needs no login:
 
 ```console
-$ minato tunnel enable --public
+$ kobune tunnel enable --public
 ```
 
 ## Across a restart
@@ -119,9 +119,9 @@ reboot.
 ## When it does not work
 
 ```console
-$ minato tunnel status
-$ minato doctor | grep -i tunnel
-$ tail -f ~/.minato/logs/minatod.log   # cloudflared logs here too
+$ kobune tunnel status
+$ kobune doctor | grep -i tunnel
+$ tail -f ~/.kobune/logs/kobuned.log   # cloudflared logs here too
 ```
 
 | Symptom | Likely cause |

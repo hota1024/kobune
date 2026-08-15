@@ -7,14 +7,14 @@
 //! daemon does it — `tunnel create` and `tunnel route dns` run on every
 //! enable and every start, with "it already exists" read as success,
 //! because skipping them on a stored flag would trust that flag over
-//! Cloudflare. What the state file does hold is whether Minato has routed
+//! Cloudflare. What the state file does hold is whether Kobune has routed
 //! this zone before — not to skip the call, but to tell its own record
 //! apart from one that was already there.
 
-use minato_api::{ApiError, ErrorCode, Response, Target};
-use minato_core::TunnelRecord;
-use minato_runtime::EventSink;
-use minato_tunnel::StepOutcome;
+use kobune_api::{ApiError, ErrorCode, Response, Target};
+use kobune_core::TunnelRecord;
+use kobune_runtime::EventSink;
+use kobune_tunnel::StepOutcome;
 
 use crate::tunnel;
 
@@ -56,7 +56,7 @@ impl Supervisor {
                 .with_hint("name the Cloudflare zone with --domain example.com")
             })?;
 
-        // Minato cannot apply a Cloudflare Access policy: that needs the
+        // Kobune cannot apply a Cloudflare Access policy: that needs the
         // API, and everything here goes through the CLI so there is no
         // token to obtain or store. Since it cannot promise the policy is
         // there, it will not put an environment on the public internet
@@ -68,12 +68,12 @@ impl Supervisor {
             )
             .with_hint(
                 "put a Cloudflare Access policy in front of the hostname, then \
-                 re-run with --public to confirm. Minato cannot apply the policy \
+                 re-run with --public to confirm. Kobune cannot apply the policy \
                  itself — that needs the Cloudflare API, not cloudflared",
             ));
         }
 
-        // Whether this zone's record is one Minato has put in place before.
+        // Whether this zone's record is one Kobune has put in place before.
         // A domain that has just changed starts over: the old zone's record
         // says nothing about the new one's.
         let zone_routed = existing
@@ -84,7 +84,7 @@ impl Supervisor {
             name: existing
                 .as_ref()
                 .map(|record| record.name.clone())
-                .unwrap_or_else(|| minato_tunnel::DEFAULT_TUNNEL_NAME.to_string()),
+                .unwrap_or_else(|| kobune_tunnel::DEFAULT_TUNNEL_NAME.to_string()),
             domain,
             enabled: true,
             zone_routed,
@@ -95,7 +95,7 @@ impl Supervisor {
         // Nothing to run before cloudflared is installed and logged in,
         // and login opens a browser. Report the step instead of failing:
         // the state is legitimate and the answer is a command to run.
-        let readiness = minato_tunnel::readiness(&settings);
+        let readiness = kobune_tunnel::readiness(&settings);
         if !readiness.is_ready() {
             return Ok(Response::Tunnel(
                 tunnel::info(Some(&record), &self.tunnel, Some(&settings)).await,
@@ -120,7 +120,7 @@ impl Supervisor {
         let resolves = if record.zone_routed {
             true
         } else {
-            minato_tunnel::process::wildcard_resolves(&settings).await
+            kobune_tunnel::process::wildcard_resolves(&settings).await
         };
 
         let notes = zone_notes(&record, dns, resolves);
@@ -129,7 +129,7 @@ impl Supervisor {
         // **Only when the route took effect**, which means both that
         // cloudflared accepted it and that the name answers. Either half
         // alone silences the warning for a zone that is still broken:
-        // `AlreadyThere` would claim a record Minato did not put there,
+        // `AlreadyThere` would claim a record Kobune did not put there,
         // and `Done` on its own is what a domain outside the login's zone
         // returns while resolving nowhere. The warning has to outlast one
         // run, because so does the problem.
@@ -179,7 +179,7 @@ impl Supervisor {
     pub(super) async fn tunnel_status(&self, target: Target) -> Result<Response, ApiError> {
         // Nothing in the answer is per-project any more, but the target is
         // still resolved: `tunnel status` run somewhere that is not a
-        // Minato project should say so rather than report on a tunnel the
+        // Kobune project should say so rather than report on a tunnel the
         // caller has nothing to do with.
         self.resolve_project_only(&target).await?;
         let record = self.tunnel_record().await?;
@@ -216,7 +216,7 @@ impl Supervisor {
     pub fn tunnel_settings(
         &self,
         record: &TunnelRecord,
-    ) -> Result<minato_tunnel::TunnelSettings, ApiError> {
+    ) -> Result<kobune_tunnel::TunnelSettings, ApiError> {
         let port = self.gateway.http_port().ok_or_else(|| {
             ApiError::new(
                 ErrorCode::RuntimeUnavailable,
@@ -224,7 +224,7 @@ impl Supervisor {
                  forward to"
                     .to_string(),
             )
-            .with_hint("check `minato doctor`")
+            .with_hint("check `kobune doctor`")
         })?;
 
         Ok(tunnel::settings_for(record, self.paths.tunnel_dir(), port))
@@ -252,10 +252,10 @@ impl Supervisor {
             }
         };
 
-        if !minato_tunnel::readiness(&settings).is_ready() {
+        if !kobune_tunnel::readiness(&settings).is_ready() {
             tracing::warn!(
                 "the tunnel is enabled but cloudflared is not ready. \
-                 Run `minato tunnel status` for the remaining steps"
+                 Run `kobune tunnel status` for the remaining steps"
             );
             return;
         }
@@ -268,7 +268,7 @@ impl Supervisor {
     /// Stops the tunnel and says what is left in the Cloudflare account.
     ///
     /// The local half — the `cloudflared` process and the record in the
-    /// state file — is Minato's to clean up and it does. The named tunnel
+    /// state file — is Kobune's to clean up and it does. The named tunnel
     /// and its DNS records are in the user's account, and an uninstaller
     /// that reached in there uninvited would be doing something no other
     /// command in this project does. So they are reported instead, with
@@ -277,7 +277,7 @@ impl Supervisor {
         &self,
         dry_run: bool,
         events: &EventSink,
-    ) -> Option<minato_api::TunnelLeftover> {
+    ) -> Option<kobune_api::TunnelLeftover> {
         let record = {
             let _guard = self.state_lock.lock().await;
             self.store.load().ok()?.tunnel.clone()?
@@ -301,7 +301,7 @@ impl Supervisor {
         // replaced, and it does not expire.
         //
         // `*.{domain}` is this build's. The per-project records are from
-        // before the hostname was flattened; Minato created them, never
+        // before the hostname was flattened; Kobune created them, never
         // deletes them, and stopped writing them, so the only place they
         // are still named is here.
         let mut notes = vec![format!(
@@ -325,11 +325,11 @@ impl Supervisor {
             ));
         }
 
-        Some(minato_api::TunnelLeftover {
+        Some(kobune_api::TunnelLeftover {
             domain: Some(record.domain.clone()),
             commands: vec![format!(
                 "cloudflared tunnel delete --force {}",
-                minato_tunnel::DEFAULT_TUNNEL_NAME
+                kobune_tunnel::DEFAULT_TUNNEL_NAME
             )],
             notes,
         })
@@ -338,7 +338,7 @@ impl Supervisor {
 
 /// What `enable` should say about the zone, given what routing did.
 ///
-/// Only about the transition. Once Minato has routed a zone, repeating
+/// Only about the transition. Once Kobune has routed a zone, repeating
 /// any of this on every run turns it into noise, and a warning that is
 /// always there is a warning nobody reads.
 ///
@@ -347,7 +347,7 @@ impl Supervisor {
 /// than at a space — deliberately, since what usually overflows a panel is
 /// a path or a command. Prose has to arrive pre-broken.
 fn zone_notes(record: &TunnelRecord, dns: StepOutcome, resolves: bool) -> Vec<String> {
-    // Nothing to report about a zone Minato has already routed.
+    // Nothing to report about a zone Kobune has already routed.
     if record.zone_routed {
         return Vec::new();
     }
@@ -382,13 +382,13 @@ fn zone_notes(record: &TunnelRecord, dns: StepOutcome, resolves: bool) -> Vec<St
             "any other name in the zone reaches this machine.".to_string(),
         ],
 
-        // Someone else's record, or one from an earlier install Minato has
+        // Someone else's record, or one from an earlier install Kobune has
         // no memory of. It resolves, but cloudflared only says the name is
         // taken, not what it points at, and if it is not this tunnel then
         // nothing arrives and everything above still reports `running`.
         StepOutcome::AlreadyThere => vec![
             format!("a DNS record for {wildcard} was already there,"),
-            "and Minato did not create it. If it does not point".to_string(),
+            "and Kobune did not create it. If it does not point".to_string(),
             "at this tunnel, no hostname will arrive.".to_string(),
         ],
     };
@@ -397,7 +397,7 @@ fn zone_notes(record: &TunnelRecord, dns: StepOutcome, resolves: bool) -> Vec<St
     // certificate reaches. Universal SSL covers one level below the zone,
     // so a domain that is itself a subdomain puts every hostname out of
     // range — a TLS handshake failure with everything here still saying
-    // `running`. Minato cannot tell a zone from a subdomain of one without
+    // `running`. Kobune cannot tell a zone from a subdomain of one without
     // the public suffix list, so this asks rather than refuses: getting
     // `example.co.uk` wrong would be worse than the question.
     if record.domain.split('.').count() > 2 {
@@ -412,8 +412,8 @@ fn zone_notes(record: &TunnelRecord, dns: StepOutcome, resolves: bool) -> Vec<St
 }
 
 /// Maps a tunnel failure onto the API's vocabulary.
-fn tunnel_error(err: minato_tunnel::TunnelError) -> ApiError {
-    use minato_tunnel::TunnelError;
+fn tunnel_error(err: kobune_tunnel::TunnelError) -> ApiError {
+    use kobune_tunnel::TunnelError;
 
     let message = err.to_string();
     match err {
@@ -436,7 +436,7 @@ mod tests {
 
     fn record_for(domain: &str, zone_routed: bool) -> TunnelRecord {
         TunnelRecord {
-            name: "minato".into(),
+            name: "kobune".into(),
             domain: domain.into(),
             enabled: true,
             zone_routed,
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zone_already_routed_by_minato_says_nothing() {
+    fn a_zone_already_routed_by_kobune_says_nothing() {
         // Both steps run on every enable and on every daemon start. A
         // warning that appears every time is a warning nobody reads.
         assert!(

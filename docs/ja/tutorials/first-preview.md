@@ -3,7 +3,7 @@
 小さな Node アプリケーションにプレビュー環境を用意し、2 つのブランチがそれぞれ
 別の URL で同時に動作する状態まで構築します。
 
-所要時間は 15 分程度です。Minato がインストール済みで、`minato doctor` が
+所要時間は 15 分程度です。Kobune がインストール済みで、`kobune doctor` が
 問題なく通ることを前提とします。
 
 ## 対象のアプリケーション
@@ -24,7 +24,7 @@ const banner = process.env.BANNER ?? 'hello'
 
 createServer((_, res) => {
   res.writeHead(200, { 'content-type': 'text/plain' })
-  res.end(`${banner} from ${process.env.MINATO_WORKSPACE ?? 'somewhere'}\n`)
+  res.end(`${banner} from ${process.env.KOBUNE_WORKSPACE ?? 'somewhere'}\n`)
 }).listen(3000, '0.0.0.0')
 ```
 
@@ -42,10 +42,10 @@ $ git add -A && git commit -m "a server"
 ## 設定を作成する
 
 ```console
-$ minato init
+$ kobune init
 ```
 
-`minato.toml` を次のように編集します。
+`kobune.toml` を次のように編集します。
 
 ```toml
 [project]
@@ -66,13 +66,13 @@ health = "http://localhost:3000/"
 しまいます。
 
 ```console
-$ git add minato.toml && git commit -m "minato"
+$ git add kobune.toml && git commit -m "kobune"
 ```
 
 ## 起動する
 
 ```console
-$ minato up
+$ kobune up
   ✓ pulling image node:22
   ✓ starting web
   ✓ waiting for web
@@ -88,13 +88,13 @@ $ curl -sS --fail-with-body https://web.myapp.localhost
 hello from main
 ```
 
-`MINATO_WORKSPACE` が注入されているため、アプリケーションは自身がどのブランチ
+`KOBUNE_WORKSPACE` が注入されているため、アプリケーションは自身がどのブランチ
 で動作しているかを把握できます。
 
 ## ブランチを作成する
 
 ```console
-$ minato new feature/loud-banner
+$ kobune new feature/loud-banner
   ✓ creating worktree feature/loud-banner
   ✓ starting web
 ╭ myapp / feature-loud-banner ──────────────────────────────────╮
@@ -111,8 +111,8 @@ $ minato new feature/loud-banner
 
 ```console
 $ cd ../myapp.wt/feature-loud-banner
-$ minato env set BANNER=HELLO
-$ minato down && minato up
+$ kobune env set BANNER=HELLO
+$ kobune down && kobune up
 ```
 
 ```console
@@ -126,7 +126,7 @@ hello from main
 設定した値は workspace 層に保存されるため、この worktree にのみ適用されます。
 
 ```console
-$ minato env ls
+$ kobune env ls
 ╭ environment ─────────────╮
 │ KEY     SCOPE      VALUE │
 │ BANNER  workspace  HELLO │
@@ -139,8 +139,8 @@ $ minato env ls
 ## 自動停止と自動起動を確認する
 
 ```console
-$ minato down
-$ minato status
+$ kobune down
+$ kobune status
 ╭ myapp / feature-loud-banner ────────────────────────────────────╮
 │ feature/loud-banner  /path/to/myapp.wt/feature-loud-banner      │
 │                                                                 │
@@ -156,17 +156,17 @@ HELLO from feature-loud-banner
 curl …  0.01s user … 2.104s total
 ```
 
-2 秒で起動しました。作業中のブランチに対して `minato up` を再実行する必要は
+2 秒で起動しました。作業中のブランチに対して `kobune up` を再実行する必要は
 ありません。放置した worktree がリソースを消費しないため、必要なだけ作成でき
 ます。
 
 ## コンテナ内を確認する
 
 ```console
-$ minato logs web -n 20
-$ minato exec web -- node --version
+$ kobune logs web -n 20
+$ kobune exec web -- node --version
 v22.14.0
-$ minato exec web -- npm test; echo $?
+$ kobune exec web -- npm test; echo $?
 ```
 
 終了コードは実行したコマンドのものが返るため、`npm test` の結果でスクリプトを
@@ -176,8 +176,8 @@ $ minato exec web -- npm test; echo $?
 
 ```console
 $ cd ../../myapp
-$ minato rm -w feature-loud-banner
-$ minato ls
+$ kobune rm -w feature-loud-banner
+$ kobune ls
 ╭ workspaces ─────────────────╮
 │ WORKSPACE  SERVICES  BRANCH │
 │ (main)     1/1       main   │

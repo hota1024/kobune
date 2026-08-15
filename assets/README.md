@@ -5,9 +5,9 @@ has to be tracked down.
 
 ```
 assets/logo/
-  minato-mark.svg         the mark alone, transparent
-  minato-icon.svg         the mark on a rounded dark square
-  minato-icon-square.svg  the same on an unrounded square
+  kobune-mark.svg         the mark alone, transparent
+  kobune-icon.svg         the mark on a rounded dark square
+  kobune-icon-square.svg  the same on an unrounded square
 ```
 
 All three are 512×512 and hold the same drawing; they differ only in what
@@ -18,12 +18,12 @@ dark one.
 
 ## Which one to use
 
-- **`minato-mark.svg`** — anywhere the page already has a background of its
+- **`kobune-mark.svg`** — anywhere the page already has a background of its
   own: the README, the docs nav, the home page hero. It reads on light and
   dark alike, so it does not need a variant per theme.
-- **`minato-icon.svg`** — anywhere the logo is the whole tile and something
+- **`kobune-icon.svg`** — anywhere the logo is the whole tile and something
   else draws the frame: the favicon, an app icon, a social profile.
-- **`minato-icon-square.svg`** — the same, for the platforms that round the
+- **`kobune-icon-square.svg`** — the same, for the platforms that round the
   corners themselves (iOS, Android) and would otherwise round an already
   rounded icon.
 
@@ -40,13 +40,13 @@ The docs do not keep a copy. `pnpm sync` in `docs/` copies this directory
 into `docs/public/logo/` before dev and before build — the same arrangement
 `install.sh` already has — and the copy is git-ignored. So the files here
 are the only ones in the repository, and a page refers to
-`/logo/minato-mark.svg`.
+`/logo/kobune-mark.svg`.
 
 ## The social card
 
 `docs/scripts/og.mjs` composes `og.png` — the mark, the name and the
 tagline on the dark background — and `pnpm sync` runs it, so the card is
-redrawn on every build from whatever `minato-mark.svg` currently is. There
+redrawn on every build from whatever `kobune-mark.svg` currently is. There
 is no card image in the repository to redo by hand, and none to forget.
 
 It is a PNG because no crawler renders SVG, and 1200×630 because that is
@@ -61,7 +61,7 @@ here, and the social card is drawn from it on the next build. The one
 thing outside this directory that follows the logo is the brand blue,
 spelled out in `docs/.vitepress/config.ts` and `docs/scripts/og.mjs`.
 
-`minato-icon.svg` is the export, and the other two are it with the tile
+`kobune-icon.svg` is the export, and the other two are it with the tile
 changed: the square drops the corner radius, and the mark drops the tile
 altogether and recolours the anchor. Redo them the same way rather than
 tidying any of the three by hand — a straightened path would have to be

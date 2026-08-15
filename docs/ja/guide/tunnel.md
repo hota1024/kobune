@@ -4,8 +4,8 @@ Cloudflare Tunnel を使うと、開発マシンの外部から環境にアク�
 なります。スマートフォン、レビュアー、到達が必要な webhook などが対象です。
 
 ::: danger 環境をインターネットに公開する操作です
-Minato は Cloudflare Access のポリシーを適用できません。適用には Cloudflare の
-API が必要ですが、Minato の操作はすべて `cloudflared` CLI を経由するためです。
+Kobune は Cloudflare Access のポリシーを適用できません。適用には Cloudflare の
+API が必要ですが、Kobune の操作はすべて `cloudflared` CLI を経由するためです。
 ポリシーの存在を保証できないため、`--public` を指定しない限り公開せず、
 実行のたびに警告を表示します。
 
@@ -23,15 +23,15 @@ API が必要ですが、Minato の操作はすべて `cloudflared` CLI を経�
 $ cloudflared tunnel login
 ```
 
-このコマンドはブラウザを開いて入力を待ちます。Minato が代行しないのは、
+このコマンドはブラウザを開いて入力を待ちます。Kobune が代行しないのは、
 daemon 内で対話的なプロンプトが表示されるとエージェントが応答できず停止する
-ためです。`minato setup` が、応答できる端末がない場合には何も実行しないのと
+ためです。`kobune setup` が、応答できる端末がない場合には何も実行しないのと
 同じ理由になります。
 
-ログイン後の処理は Minato が実行します。
+ログイン後の処理は Kobune が実行します。
 
 ```console
-$ minato tunnel enable --domain example.com --public
+$ kobune tunnel enable --domain example.com --public
   ✓ starting the tunnel
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
@@ -43,7 +43,7 @@ $ minato tunnel enable --domain example.com --public
 │ ! any other name in the zone reaches this machine.                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
-│ Minato cannot see whether a Cloudflare Access policy is in front of it. │
+│ Kobune cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -60,18 +60,18 @@ login が書き出す証明書は 1 つのゾーンに紐づいており、`clou
 dns` はその外側のホスト名を*そのゾーンからの相対名*として扱います。
 `example.com` に対する login のまま `other.com` を指定すると、作られるのは
 `*.other.com.example.com` で、コマンドは成功し、`*.other.com` は存在しないまま
-になります。Minato はレコードを登録したあとに名前が解決するか確認し、解決しない
+になります。Kobune はレコードを登録したあとに名前が解決するか確認し、解決しない
 場合はその旨を表示します。この状態は、他のどこを見ても異常に見えないためです。
 トンネルは起動し、`status` は `running` を返し、URL にはいつまでも何も届き
 ません。ゾーンを切り替えるには login をやり直してください。
 
 レコードはゾーン全体を覆いますが、明示的なレコードはワイルドカードより優先
-されるため、そのドメインで既に公開しているものはそのまま応答します。Minato が
+されるため、そのドメインで既に公開しているものはそのまま応答します。Kobune が
 知らないホスト名はローカルのプロキシに到達し、404 が返ります。上の出力にある
 注記がこれで、そのドメインで最初に `enable` を実行したときにだけ表示されます。
 
 `*` レコードが既に存在していた場合は、代わりにその旨が表示されます。Cloudflare
-は「その名前は使用済み」としか返さず、何を指しているかは分からないため、Minato
+は「その名前は使用済み」としか返さず、何を指しているかは分からないため、Kobune
 にはそのレコードがこのトンネルに向いているか判断できません。向いていなければ、
 ここまでの表示が `running` のままで、すべてのホスト名が別の場所へ流れます。
 URL を信用する前に、ダッシュボードでそのレコードを確認してください。
@@ -79,7 +79,7 @@ URL を信用する前に、ダッシュボードでそのレコードを確認�
 ## URL
 
 ```console
-$ minato status
+$ kobune status
 ╭ myapp / feature-auth ──────────────────────────────────╮
 │ feature/auth  /path/to/myapp.wt/feature-auth           │
 │                                                        │
@@ -112,7 +112,7 @@ $ minato status
 ## 停止する
 
 ```console
-$ minato tunnel disable
+$ kobune tunnel disable
 ╭ tunnel ─────────────────╮
 │ disabled  *.example.com │
 ╰─────────────────────────╯
@@ -125,14 +125,14 @@ $ minato tunnel disable
 ドメインは保持されるため、次回以降は次のように実行できます。
 
 ```console
-$ minato tunnel enable --public
+$ kobune tunnel enable --public
 ```
 
 ## 状態を確認する
 
 ```console
-$ minato tunnel status
-$ minato doctor | grep -i tunnel
+$ kobune tunnel status
+$ kobune doctor | grep -i tunnel
 ```
 
 `status` は何も実行しません。設定が完了していない場合は、残りの手順を表示

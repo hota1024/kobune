@@ -17,7 +17,7 @@ const ROOT = resolve(HERE, '..', '..', '..', '..')
 
 /** Prose written for a reader. `references/` in the skill says why each is here. */
 const FILES = ['README.md', 'SECURITY.md', 'assets/README.md', 'docs/index.md',
-  'docs/README.md', 'docs/DESIGN.md', 'docs/AGENT-RUN.md', 'skills/minato/SKILL.md']
+  'docs/README.md', 'docs/DESIGN.md', 'docs/AGENT-RUN.md', 'skills/kobune/SKILL.md']
 const DIRS = ['docs/guide', 'docs/reference', 'docs/tutorials', 'docs/ja']
 
 /** Never ours: generated from history, frozen at release, or vendored. */

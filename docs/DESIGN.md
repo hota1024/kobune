@@ -1,4 +1,4 @@
-# Minato design notes
+# Kobune design notes
 
 A development environment manager built around git worktrees. Agent-friendly
 by design. The goal is that creating a git worktree is all it takes to have a
@@ -23,9 +23,9 @@ https://api.feat-1.myapp.localhost   → feat-1's api container, :8080
 
 What an agent gets comes down to three things.
 
-1. `minato new feat-1` grows a branch and its environment together
-2. `minato url web` hands back the URL to check
-3. `minato logs` and `minato exec` see inside — without ever touching `docker`
+1. `kobune new feat-1` grows a branch and its environment together
+2. `kobune url web` hands back the URL to check
+3. `kobune logs` and `kobune exec` see inside — without ever touching `docker`
 
 ## 2. Vocabulary
 
@@ -45,12 +45,12 @@ The collision to watch for is environment *variables*, which are unrelated.
 ## 3. Architecture
 
 ```
-  minato (CLI) ──────┐
-  minato-desktop ────┼─── Unix socket / JSON-RPC ───┐
+  kobune (CLI) ──────┐
+  kobune-desktop ────┼─── Unix socket / JSON-RPC ───┐
   SKILL.md (agent) ──┘                              │
-        └── all of them through minato-client       ▼
+        └── all of them through kobune-client       ▼
                                             ┌───────────┐
-                                            │  minatod  │
+                                            │  kobuned  │
                                             │ Supervisor│
                                             └─────┬─────┘
               ┌──────────────┬───────────────┼──────────────┬──────────────┐
@@ -82,7 +82,7 @@ guarantees a reckoning when the GUI arrives. Concretely:
 - The daemon never prompts for confirmation. A destructive operation takes a
   `force` flag from the client
 
-Having the event stream from M0 matters most. Bolted on later, `minato up`
+Having the event stream from M0 matters most. Bolted on later, `kobune up`
 would have been designed to block until completion, and the GUI could never
 show a start in progress.
 
@@ -97,7 +97,7 @@ Two things follow from that split, and they are the reason for it.
 - **A pipe is not a terminal.** The same views drop their frame and their
   colour, and are given whatever width they ask for, so nothing that reaches a
   log, a `grep` or an agent is wrapped or truncated. `--json` is untouched
-- **`minato` can grow a TUI without rewriting any of it.** The views never
+- **`kobune` can grow a TUI without rewriting any of it.** The views never
   reach for the screen and do not know whether they are being printed once or
   repainted sixty times a second. A full-screen mode hands them a
   `ratatui::Frame` instead of a one-shot buffer
@@ -115,21 +115,21 @@ handshake. That is the right shape for something a person's own CLI, GUI and
 agent all speak, and it means **the only access control there is, is who can
 reach the socket at all**.
 
-Which matters more than it looks. `minato exec <service> -- env` prints the
+Which matters more than it looks. `kobune exec <service> -- env` prints the
 values [§8's secrets](#secrets) resolved from 1Password and the Keychain, so
 keeping a resolved secret out of every file buys nothing if another account on
 the machine can ask for it.
 
 Two answers, one behind the other.
 
-- **`MINATO_HOME` is `0700` and the socket is `0600`.** The directory is the
+- **`KOBUNE_HOME` is `0700` and the socket is `0600`.** The directory is the
   one that matters: a path nobody else may traverse cannot be reached, which
   also covers the instant between creating the socket and setting its mode.
   Narrowed on every daemon start rather than only at creation — an
   installation made before this rule would otherwise stay open for as long as
   it lives
 - **The uid on the other end is checked on accept**, with `getpeereid` and,
-  on Linux, `SO_PEERCRED`. This is what is left if `MINATO_HOME` names
+  on Linux, `SO_PEERCRED`. This is what is left if `KOBUNE_HOME` names
   somewhere shared
 
 A refused connection is dropped rather than answered. An error would say what
@@ -149,14 +149,14 @@ owns the directory, so the mode on the directory changes nothing there.
 | Port ledger | One source of truth against collisions between workspaces |
 | Tunnel | Something has to own the cloudflared process |
 
-## 4. Defining an environment: `minato.toml`
+## 4. Defining an environment: `kobune.toml`
 
-The schema is Minato's own and comes first. Docker is one backend among
+The schema is Kobune's own and comes first. Docker is one backend among
 several, and compose is an implementation detail generated internally. That way
 Firecracker support does not mean redesigning the format.
 
 It sits at the project root — the main worktree — and is committed.
-Worktree-specific overrides go in `minato.local.toml`, which is gitignored.
+Worktree-specific overrides go in `kobune.local.toml`, which is gitignored.
 
 ```toml
 [project]
@@ -190,11 +190,11 @@ expose = false                  # no URL; internal traffic only
 
 ### Coming from compose
 
-The schema being Minato's own is right for the long run and is the whole of
+The schema being Kobune's own is right for the long run and is the whole of
 the entry cost: trying it means throwing away a working `docker-compose.yml`
 and hand-writing a new format, for URLs. Most people stop there.
 
-`minato init --from-compose` makes that a review rather than a rewrite. It is
+`kobune init --from-compose` makes that a review rather than a rewrite. It is
 deliberately **not** a complete conversion — compose is enormous and half of
 it means nothing here — so every key lands in one of three places and none of
 them is silence:
@@ -212,12 +212,12 @@ from the one that ran yesterday.
 
 **`env_file` means the opposite in the two formats**, and mapping it across
 would have destroyed data. Compose *reads* the file into the environment;
-Minato *writes* the settled environment out to it, so the first `up` would
+Kobune *writes* the settled environment out to it, so the first `up` would
 overwrite the user's `.env`. It converts to `carry`, which is what compose's
 `env_file` actually implies here: a file the worktree needs and git does not
 bring.
 
-`ports: ["3000:8000"]` takes the **container** side. Minato publishes on a
+`ports: ["3000:8000"]` takes the **container** side. Kobune publishes on a
 port it chooses; what it needs to know is where the app listens inside. And
 compose's `expose` — reachable by other services, not by the host — is exactly
 `expose = false`.
@@ -282,7 +282,7 @@ macOS does not resolve `*.localhost` at the system level. Chrome resolves it to
 check connectivity with curl**, so this is fatal.
 
 The answer is a DNS server inside the daemon, plus `nameserver 127.0.0.1` in
-`/etc/resolver/localhost`. `minato setup` walks through it — installing it needs
+`/etc/resolver/localhost`. `kobune setup` walks through it — installing it needs
 sudo, so it is shown and offered rather than run unasked.
 
 ```
@@ -320,7 +320,7 @@ A wildcard certificate covers one label. `*.localhost` cannot cover
 `web.feat-1.myapp.localhost`, and every new worktree invents a name at a new
 depth, so preparing certificates ahead of time never keeps up.
 
-So there is one local CA in `~/.minato/ca/`, and it **issues a certificate for
+So there is one local CA in `~/.kobune/ca/`, and it **issues a certificate for
 whatever name SNI asks for, on the spot, and caches it**. The user only ever
 has to trust that single CA.
 
@@ -332,9 +332,9 @@ the user trusted.
 #### The CA is narrowed to `localhost`
 
 Issuing for whatever SNI asks is the right behaviour for the proxy and the
-wrong power for the key behind it. `minato setup` puts this certificate in the
-system trust store, so without a limit the key in `~/.minato/ca/` signs
-`google.com` as readily as anything of Minato's, and the machine believes it.
+wrong power for the key behind it. `kobune setup` puts this certificate in the
+system trust store, so without a limit the key in `~/.kobune/ca/` signs
+`google.com` as readily as anything of Kobune's, and the machine believes it.
 `mkcert` asks for the same thing, which makes it usual rather than acceptable.
 
 So the CA carries an X.509 `NameConstraints` extension permitting `localhost`
@@ -353,14 +353,14 @@ verifier instead of asking rcgen's own parser — the same mistake in the same
 shape as
 [§6's Apple Container fixtures](#what-running-apple-container-turned-up-m7).
 
-**Only what Minato actually serves.** `.test` was in this list briefly, on the
+**Only what Kobune actually serves.** `.test` was in this list briefly, on the
 strength of this document anticipating it — but nothing resolves it: the DNS
-server serves `localhost` alone and `minato setup` installs only
+server serves `localhost` alone and `kobune setup` installs only
 `/etc/resolver/localhost`. Permitting a suffix that cannot resolve would have
-`minato doctor` report a working setup that is not one. It comes back when the
+`kobune doctor` report a working setup that is not one. It comes back when the
 resolver does.
 
-Two consequences, and both are `minato doctor`'s to report rather than
+Two consequences, and both are `kobune doctor`'s to report rather than
 anything's to fix silently.
 
 - **A CA made before this has no constraint**, and is left alone. Replacing a
@@ -369,7 +369,7 @@ anything's to fix silently.
   it prints stops trusting the old one *first*, while the file naming it is
   still on disk
 - **`[project] domain` can name a suffix outside it**, and the browser error
-  for that names neither Minato nor the constraint. The check says which domain
+  for that names neither Kobune nor the constraint. The check says which domain
   and which suffixes — and does not offer regenerating the CA, because what a
   new one permits is compiled in and a replacement would be identical
 
@@ -405,11 +405,11 @@ With `localhost` in `SockNodeName`, launchd opens sockets on both `::1` and
 IPv6.
 
 `KeepAlive` is set to `SuccessfulExit: false`. An unconditional `true` would
-have launchd start the daemon again the moment `minato daemon stop` finished.
+have launchd start the daemon again the moment `kobune daemon stop` finished.
 
 Started outside launchd — by hand during development, say — everything falls
 back to an ordinary bind, and when 80 and 443 are refused the proxy takes
-18080 and 18443 rather than binding nothing. `MINATO_HTTP_PORT` and friends
+18080 and 18443 rather than binding nothing. `KOBUNE_HTTP_PORT` and friends
 choose the ports instead, and a port named that way is used as given.
 
 With the plist installed the proxy does **not** move: launchd holds 80 whether
@@ -422,7 +422,7 @@ which is not implemented.
 ## 6. The Runtime abstraction
 
 A runtime is defined as "something that starts one service and says where it
-listens". Wiring the network and routing stays on Minato's side, which keeps
+listens". Wiring the network and routing stays on Kobune's side, which keeps
 the abstraction from being dragged towards Docker's notions of compose and
 networks.
 
@@ -473,7 +473,7 @@ Implementing both made concrete what the Runtime abstraction has to absorb.
 | Filtering | Label filters, server-side | No filters. Fetch everything and narrow it here |
 | Networks | Created freely | **macOS 26 and later only.** Before that, everything shares the default |
 | Service names | Network aliases give `db:5432` | **No name resolution at all.** A peer's IP is injected instead |
-| Named volumes | Native | No such concept. Mapped onto bind mounts under `~/.minato/volumes/` |
+| Named volumes | Native | No such concept. Mapped onto bind mounts under `~/.kobune/volumes/` |
 | Network membership | A container joins several | One only, and no `network connect` |
 
 **This is where returning `RunningService::endpoint: SocketAddr` paid off.**
@@ -483,7 +483,7 @@ around port forwarding (`host_port: u16`) would have had to be rebuilt for
 Apple Container.
 
 Only service-name resolution resisted abstraction, hence `ServiceSpec::peers`.
-Apple Container uses it to inject `MINATO_HOST_<SERVICE>` and tell the app how
+Apple Container uses it to inject `KOBUNE_HOST_<SERVICE>` and tell the app how
 to reach its neighbours. Docker ignores it.
 
 ### What running Apple Container turned up (M7)
@@ -504,7 +504,7 @@ by DNS: a container's nameserver is its network gateway, which answers NXDOMAIN
 for every container name, on the default network as much as a custom one. The
 `.test` domain M0 injected is a *host* resolver — it needs
 `sudo container system dns create` and, once created, lets the host reach
-containers rather than containers reach each other. So `MINATO_HOST_<SERVICE>`
+containers rather than containers reach each other. So `KOBUNE_HOST_<SERVICE>`
 carried a name that nothing inside the container could resolve. It now carries
 the peer's IP address, read after the peer has started.
 
@@ -553,7 +553,7 @@ this: a binary crate cannot have integration tests, because `tests/` has
 nothing to import. Tests build a `Supervisor` over an inert
 [`Gateway`](#3-architecture) — waking and sweeping both go through the
 routing table and never through a listener — and ask it for the same things
-the proxy does. That leaves out the HTTP half, which `minato-proxy`'s own
+the proxy does. That leaves out the HTTP half, which `kobune-proxy`'s own
 end-to-end tests already cover against a stub; what it covers is the part
 nothing else could.
 
@@ -570,13 +570,13 @@ never executed a single instruction — which is the mistake M0 made with Apple
 Container, at greater cost. It waits for a Linux host to develop against.
 
 **Note**: Firecracker depends on KVM and does not run on macOS. Since
-development happens on macOS, Firecracker support assumes either Minato running
+development happens on macOS, Firecracker support assumes either Kobune running
 on a Linux server — a remote host — or Apple Container and krunkit standing in
 locally. Absorbing that gap is what the Runtime trait is for.
 
 ## 7. Starting strategy: scale-to-zero and on demand
 
-Ten worktrees do not mean ten running environments. This is what sets Minato
+Ten worktrees do not mean ten running environments. This is what sets Kobune
 apart, and what makes creating a worktree feel cheap.
 
 ### The state machine
@@ -600,9 +600,9 @@ this section.
 uses (see §7, "Making starts faster"). Starting
 the single service the host named would hand the app a dependency that is not
 there, and no request would ever arrive to fix it. `up` had always done this;
-the wake path was the one way in that did not, so it worked under `minato up`
+the wake path was the one way in that did not, so it worked under `kobune up`
 and failed only once scale-to-zero had stopped something. Under Apple Container
-it decides more than ordering: `MINATO_HOST_<SERVICE>` carries a peer's address
+it decides more than ordering: `KOBUNE_HOST_<SERVICE>` carries a peer's address
 read after that peer has started, so a service woken on its own gets no
 variable at all.
 
@@ -637,7 +637,7 @@ to the wrong conclusion — "the server is broken".
 - The only per-worktree difference is the bind-mounted source
 - `node_modules` and the like live in a named volume per workspace, installed
   once
-- `minato new` runs `prepare` ahead of time (`--no-warm` turns it off)
+- `kobune new` runs `prepare` ahead of time (`--no-warm` turns it off)
 
 **Services start a wave at a time, not one at a time.** A start does not
 return until the service answers or gives up waiting on it — up to 15
@@ -660,7 +660,7 @@ interesting part.** Pulling images does, because a pull is a download and
 the registry is somebody else's machine. Building them does not: a build
 already saturates its cores and BuildKit parallelises within one, so two at
 once move the work around rather than remove it. And `setup` does not,
-which costs the first `up` after `minato new` and is deliberate — every
+which costs the first `up` after `kobune new` and is deliberate — every
 service mounts the same project-wide cache volume, so two setups at once
 are two arbitrary commands writing into one directory. A package manager's
 store is built for that; a `setup` is whatever somebody wrote, so the
@@ -686,7 +686,7 @@ flattened      db, cache, api, worker, web
 
 Where a wave starts at once that difference is invisible. Where it does not,
 it decides what a service is told: Apple Container injects
-`MINATO_HOST_<PEER>` for every peer already running, and `peers` is every
+`KOBUNE_HOST_<PEER>` for every peer already running, and `peers` is every
 other service in the workspace rather than only `depends_on`, so a service
 reordered past a neighbour loses the variable naming it. Sequential backends
 therefore keep the order they have always had, and the two orders being
@@ -711,7 +711,7 @@ worktree; `build = "../.."` would otherwise hand the runtime a build context of
 somebody's home directory.
 
 **The tag carries a fingerprint of the inputs**, so an image is
-`minato-{project}-{service}:{hash of Dockerfile + build args}`. This settles
+`kobune-{project}-{service}:{hash of Dockerfile + build args}`. This settles
 two problems with one mechanism. Two worktrees whose Dockerfiles agree land on
 the same tag and share one image, which is the "base images are built at
 project scope" idea from earlier in this section, arrived at without a separate
@@ -725,7 +725,7 @@ an incoming request.
 
 **A file the Dockerfile copies in is not covered.** Finding those means parsing
 the Dockerfile, and a half-correct answer is worse than a stated limitation.
-`minato up --build` forces a rebuild. `docker compose` draws the line in the
+`kobune up --build` forces a rebuild. `docker compose` draws the line in the
 same place.
 
 #### A running container can be stale too (found while building this)
@@ -743,10 +743,10 @@ not. The fingerprint tag is what makes that detectable at all; with a mutable
 ### The runtime's labels are the source of truth (settled in M0)
 
 The daemon **holds no runtime state in a state file**. A container's labels
-(`dev.minato.*`) are the only truth, and after a restart the result of
+(`dev.kobune.*`) are the only truth, and after a restart the result of
 `list_project` alone restores everything.
 
-The state store holds two things: which worktrees Minato manages, and the URL
+The state store holds two things: which worktrees Kobune manages, and the URL
 label issued to each. The label is persisted so that changing the
 [naming rules](#5-naming-and-routing) later never changes an existing
 workspace's URL.
@@ -758,7 +758,7 @@ state to reconcile against.
 ### The proxy asks for a start without knowing the runtime (settled in M2)
 
 "Start it when a request arrives" needs the runtime, but the proxy cannot
-depend on `minato-runtime` (§13, the direction of dependencies). So an
+depend on `kobune-runtime` (§13, the direction of dependencies). So an
 `Activator` trait forms the boundary and the daemon supplies the
 implementation. All the proxy does is ask for a host to be made ready.
 
@@ -785,7 +785,7 @@ Past the cap it carries on and warns. A dev server's first start can take
 longer while it resolves dependencies and compiles, and waiting forever means
 `up` never returns.
 
-M2 replaced this with the `health` check from `minato.toml`. For `http://`,
+M2 replaced this with the `health` check from `kobune.toml`. For `http://`,
 only the path is used and the request goes to the host-side address — what the
 configuration names is the address from inside the container, which is not what
 the host can reach. `cmd:` is unsupported, since it would have to run inside
@@ -808,9 +808,9 @@ visible until M1 pins the URLs.
 Later wins.
 
 ```
-1. global     ~/.minato/env                     every project
-2. project    env in minato.toml + .minato/env  committed
-3. workspace  .minato/env.local                 gitignored, per worktree
+1. global     ~/.kobune/env                     every project
+2. project    env in kobune.toml + .kobune/env  committed
+3. workspace  .kobune/env.local                 gitignored, per worktree
 ```
 
 ### Secrets
@@ -820,12 +820,12 @@ start.
 
 ```
 DATABASE_PASSWORD = "op://Development/myapp/password"   # 1Password CLI
-API_KEY           = "keychain://minato/myapp/api-key"   # macOS Keychain
+API_KEY           = "keychain://kobune/myapp/api-key"   # macOS Keychain
 STRIPE_KEY        = "env://STRIPE_KEY"                  # the daemon's environment
 ```
 
 A resolved value lives in the daemon's memory and never touches disk.
-`minato env ls` masks it.
+`kobune env ls` masks it.
 
 ### What gets injected
 
@@ -834,23 +834,23 @@ the API's URL, a per-worktree environment cannot hold together**, so this is not
 optional.
 
 ```
-MINATO_PROJECT       = myapp
-MINATO_WORKSPACE     = feat-1
-MINATO_SERVICE       = web
-MINATO_URL_WEB       = https://web.feat-1.myapp.localhost
-MINATO_URL_API       = https://api.feat-1.myapp.localhost
-MINATO_HOSTNAME_WEB  = web.feat-1.myapp.localhost
-MINATO_HOSTNAME_API  = api.feat-1.myapp.localhost
-MINATO_CA_FILE       = /etc/minato/ca.crt                      # while HTTPS is served
-NODE_EXTRA_CA_CERTS  = /etc/minato/ca.crt                      # the same file, wired in
-MINATO_TUNNEL_URL_WEB = https://web-feat-1-myapp.example.com   # with the tunnel on (M4)
+KOBUNE_PROJECT       = myapp
+KOBUNE_WORKSPACE     = feat-1
+KOBUNE_SERVICE       = web
+KOBUNE_URL_WEB       = https://web.feat-1.myapp.localhost
+KOBUNE_URL_API       = https://api.feat-1.myapp.localhost
+KOBUNE_HOSTNAME_WEB  = web.feat-1.myapp.localhost
+KOBUNE_HOSTNAME_API  = api.feat-1.myapp.localhost
+KOBUNE_CA_FILE       = /etc/kobune/ca.crt                      # while HTTPS is served
+NODE_EXTRA_CA_CERTS  = /etc/kobune/ca.crt                      # the same file, wired in
+KOBUNE_TUNNEL_URL_WEB = https://web-feat-1-myapp.example.com   # with the tunnel on (M4)
 ```
 
 A `-` in a service name becomes `_` (`api-server` →
-`MINATO_URL_API_SERVER`), since a variable name cannot contain one.
+`KOBUNE_URL_API_SERVER`), since a variable name cannot contain one.
 
 **Injection is the bottom layer**, so the user can override it. The other way
-round, Minato's conveniences would erase the user's settings.
+round, Kobune's conveniences would erase the user's settings.
 
 **The certificate is wired in, not just named.** Naming the file and leaving
 `NODE_EXTRA_CA_CERTS` to the service is what this did at first, and what came
@@ -863,7 +863,7 @@ every start, and an image that points it at a corporate bundle keeps that
 bundle by saying so in `[services.<name>.env]`, since injection is the bottom
 layer. **Only Node's.** `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and
 `REQUESTS_CA_BUNDLE` replace a trust store rather than adding to it, so
-setting them would leave a container trusting Minato and nothing else.
+setting them would leave a container trusting Kobune and nothing else.
 
 **A task runner between the container and the process can drop it.**
 Turborepo's strict environment mode passes through what its configuration
@@ -881,10 +881,10 @@ A value may hold `${ANOTHER_KEY}`, expanded when the layers are resolved.
 
 ```toml
 [services.web.env]
-NEXT_PUBLIC_API_URL = "${MINATO_URL_API}"
+NEXT_PUBLIC_API_URL = "${KOBUNE_URL_API}"
 ```
 
-**Injection alone is not enough**: the URL arrives under Minato's name for it,
+**Injection alone is not enough**: the URL arrives under Kobune's name for it,
 and the application reads its own. Without this, every project writes a
 start-up script whose whole job is to copy one variable onto another.
 
@@ -893,12 +893,12 @@ start-up script whose whole job is to copy one variable onto another.
   being used would be a trap
 - **A bare `$NAME` is left as written.** These values have always been passed
   through verbatim, so expanding them would change what existing
-  configurations mean. `minato up` warns when one names a variable that exists,
+  configurations mean. `kobune up` warns when one names a variable that exists,
   which turns the trap into a message
 - **A name nothing sets is an error**, for the same reason a missing URL is
   left unset rather than emptied
 - **A secret cannot be built into another value.** Expanding one would put it
-  in `minato env ls`; pasting the reference in would hand the container the
+  in `kobune env ls`; pasting the reference in would hand the container the
   string `op://…`
 
 ### Writing it to a file
@@ -909,7 +909,7 @@ settled values into the worktree before the service starts.
 
 ```toml
 [services.api]
-env_file = ".minato/env.api"
+env_file = ".kobune/env.api"
 ```
 
 - **Secrets are left out**, named in a comment instead. A resolved secret
@@ -919,21 +919,21 @@ env_file = ".minato/env.api"
   container is given — a file that disagreed with the process's environment
   would be worse than no file
 - **Only for the services being started.** Settling an environment and writing
-  a file are different jobs, and conflating them made `minato up web` answer
-  for `api`'s `env_file` and left `minato exec` writing files as a side effect
+  a file are different jobs, and conflating them made `kobune up web` answer
+  for `api`'s `env_file` and left `kobune exec` writing files as a side effect
   of running a command
 - **Unchanged is not a write.** A dev server watching the file would otherwise
   restart every time scale-to-zero woke the service
 - **Anywhere in the worktree**, because the tools that need this read paths of
   their own choosing. What makes that safe is refusing a path git tracks and
-  never overwriting a file without Minato's header
+  never overwriting a file without Kobune's header
 
 ### What M3 turned up
 
-- `minato env ls` **says which layer each value came from**. With three layers,
+- `kobune env ls` **says which layer each value came from**. With three layers,
   not seeing that an unintended one is winning makes the cause impossible to
   find
-- Injected values are not masked. They are Minato's own and hold no secrets, and
+- Injected values are not masked. They are Kobune's own and hold no secrets, and
   checking a URL is common
 - A secret stays a reference even under `--reveal`. Showing the value would mean
   resolving it, and that only happens at start
@@ -953,7 +953,7 @@ env_file = ".minato/env.api"
   show thirty settled values as unexpanded too, and nothing would tell them
   apart — which is also what made the client guess at `${` to decide whether a
   value was usable
-- A listing of no particular service is missing `MINATO_SERVICE` and every
+- A listing of no particular service is missing `KOBUNE_SERVICE` and every
   service's own `env` by design, so a value built from one cannot settle there
   even though the service starts. The reason says that, and names the service
   whose listing does have it — only that one settles it. "Nothing sets it"
@@ -974,7 +974,7 @@ simplest arrangement and costs nothing at startup.
 
 ```yaml
 # the generated cloudflared configuration
-tunnel: minato
+tunnel: kobune
 
 ingress:
   - hostname: "*.example.com"
@@ -999,13 +999,13 @@ is up, plain HTTP through it answers 200, and https fails with
 Nothing free covers the second level. Total TLS explicitly refuses hostnames
 used with Cloudflare Tunnel; subdomain zones are Enterprise-only; an advanced
 certificate needs Advanced Certificate Manager, a paid add-on. Requiring a
-subscription to open a URL Minato itself printed is not a reasonable default,
+subscription to open a URL Kobune itself printed is not a reasonable default,
 so the hostname moved to where the free certificate already reaches.
 
 That also settles the DNS record. With one label there is no per-project prefix
 to cut a narrower record at, so it is one wildcard for the zone — the same shape
 the ingress rule always had. Explicit records win over a wildcard, so anything
-else already published in the zone keeps working, and a name Minato does not
+else already published in the zone keeps working, and a name Kobune does not
 know reaches the proxy and gets its 404.
 
 #### The proxy resolves the tunnel hostname (settled in M4)
@@ -1048,7 +1048,7 @@ A development environment open to the internet without authentication is an
 accident, so the design called for a Cloudflare Access policy by default, with
 `--public` to opt out.
 
-**Minato cannot apply that policy.** Access is configured through Cloudflare's
+**Kobune cannot apply that policy.** Access is configured through Cloudflare's
 API, and everything here goes through the `cloudflared` CLI so there is no API
 token to obtain, scope or store. Since it cannot promise the policy is in
 place, it does the next most honest thing: `tunnel enable` refuses without
@@ -1076,32 +1076,32 @@ Every command has `--json`, and the exit code plus structured output is all it
 takes. An agent never has to parse output written for people.
 
 ```
-minato init                       # write minato.toml, set up daemon/DNS/CA
-minato doctor                     # check the DNS resolver, docker, certificates, ports
+kobune init                       # write kobune.toml, set up daemon/DNS/CA
+kobune doctor                     # check the DNS resolver, docker, certificates, ports
 
-minato new <branch> [--from main] # git worktree add, warm the environment, print URLs
-minato rm <workspace> [--force]   # destroy the environment, git worktree remove
-minato ls [--json]                # workspaces and their state
+kobune new <branch> [--from main] # git worktree add, warm the environment, print URLs
+kobune rm <workspace> [--force]   # destroy the environment, git worktree remove
+kobune ls [--json]                # workspaces and their state
 
-minato up [--service web]         # start explicitly
-minato down [--all] [--service web]
-minato status [--json]
+kobune up [--service web]         # start explicitly
+kobune down [--all] [--service web]
+kobune status [--json]
 
-minato url [service] [--qr]       # one line named, the listing otherwise
-minato open [service]             # open it in a browser
-minato logs <service> [-f] [--tail N] [--since 5m]
-minato exec <service> -- <cmd>
+kobune url [service] [--qr]       # one line named, the listing otherwise
+kobune open [service]             # open it in a browser
+kobune logs <service> [-f] [--tail N] [--since 5m]
+kobune exec <service> -- <cmd>
 
-minato env set KEY=VAL [--scope global|project|workspace]
-minato env ls [--json] [--reveal]
-minato env unset KEY
+kobune env set KEY=VAL [--scope global|project|workspace]
+kobune env ls [--json] [--reveal]
+kobune env unset KEY
 
-minato tunnel enable [--domain example.com] [--public]
-minato tunnel disable
-minato tunnel status
+kobune tunnel enable [--domain example.com] [--public]
+kobune tunnel disable
+kobune tunnel status
 ```
 
-`minato doctor` ranks high because the initial setup involves sudo and outside
+`kobune doctor` ranks high because the initial setup involves sudo and outside
 dependencies (Docker, cloudflared). On failure it says what to do about it.
 
 #### `state` is a string, and `reason` sits beside it (settled after M7)
@@ -1128,7 +1128,7 @@ pinned by a test rather than left to be discovered.
 ### An example of the JSON
 
 ```jsonc
-// minato status --json
+// kobune status --json
 {
   "project": "myapp",
   "workspace": "feat-1",
@@ -1151,13 +1151,13 @@ pinned by a test rather than left to be discovered.
 
 ## 11. Skills
 
-`minato skill install` writes `.claude/skills/minato/SKILL.md`. What goes in it
+`kobune skill install` writes `.claude/skills/kobune/SKILL.md`. What goes in it
 is **judgement**, not a CLI reference. `--help` covers what the commands do;
 promises like "never reach for `docker`" and "never guess a port" only land if
 they are written down.
 
 The Skill is baked into the binary with `include_str!`. A self-contained
-`minato` works however it was installed. Identical content is left alone, so
+`kobune` works however it was installed. Identical content is left alone, so
 git stays clean.
 
 ### `logs` and `exec` are what Skills rest on (found in M5)
@@ -1166,23 +1166,23 @@ git stays clean.
 running commands inside a container. **Without them, debugging forces a return
 to `docker`, and nothing written in the Skill survives that.**
 
-`minato exec` passes the command's exit code straight through, because an agent
-has to be able to judge `minato exec web -- pnpm test` by exit status alone. No
+`kobune exec` passes the command's exit code straight through, because an agent
+has to be able to judge `kobune exec web -- pnpm test` by exit status alone. No
 TTY is requested — hanging on a prompt is the worse outcome.
 
 ### Where an agent trips first
 
-Without `minato setup`, `curl` fails with exit code 60: the certificate is not
+Without `kobune setup`, `curl` fails with exit code 60: the certificate is not
 trusted. With plain `curl -s` the error is swallowed and it looks like nothing
 but an empty response. The Skill names this symptom and points at
-`minato doctor`.
+`kobune doctor`.
 
 No MCP server, for now. With `--json` on every command, Bash is enough, and a
 second surface is not worth maintaining.
 
-## 12. The GUI (`minato-desktop`)
+## 12. The GUI (`kobune-desktop`)
 
-Pure Rust, on GPUI with gpui-component. It links `minato-client` directly, so
+Pure Rust, on GPUI with gpui-component. It links `kobune-client` directly, so
 sharing type definitions needs no generation step — the biggest advantage of
 not using TypeScript.
 
@@ -1199,7 +1199,7 @@ not using TypeScript.
 
 ### Living in the menu bar
 
-Minato's GUI is not something to keep open; it is mostly for glancing at which
+Kobune's GUI is not something to keep open; it is mostly for glancing at which
 environments are running and opening one. GPUI cannot do a tray on its own, so
 `tray-icon` handles that part:
 
@@ -1254,25 +1254,25 @@ reaches a binary, so the rule it bends — no Node toolchain — still holds whe
 it was meant to.
 
 ```
-minato/
+kobune/
 ├── Cargo.toml            # [workspace] members + workspace.dependencies
 ├── rust-toolchain.toml
 ├── crates/               # libraries, not shipped
-│   ├── minato-core/      #   spec, config, naming, state store, terminal modes (the bottom of the graph)
-│   ├── minato-api/       #   RPC request/response/event types (one source)
-│   ├── minato-client/    #   the RPC client, shared by the CLI and the GUI
-│   ├── minato-runtime/   #   the Runtime trait plus the Docker implementation
-│   ├── minato-proxy/     #   the hyper reverse proxy, rustls, the local CA
-│   ├── minato-dns/       #   a hickory-server wrapper
-│   └── minato-tunnel/    #   managing the cloudflared process
+│   ├── kobune-core/      #   spec, config, naming, state store, terminal modes (the bottom of the graph)
+│   ├── kobune-api/       #   RPC request/response/event types (one source)
+│   ├── kobune-client/    #   the RPC client, shared by the CLI and the GUI
+│   ├── kobune-runtime/   #   the Runtime trait plus the Docker implementation
+│   ├── kobune-proxy/     #   the hyper reverse proxy, rustls, the local CA
+│   ├── kobune-dns/       #   a hickory-server wrapper
+│   └── kobune-tunnel/    #   managing the cloudflared process
 ├── apps/                 # binaries, shipped
-│   ├── daemon/           #   minatod — the supervisor and the RPC server
-│   ├── cli/              #   minato
-│   └── desktop/          #   minato-desktop — the GPUI GUI
+│   ├── daemon/           #   kobuned — the supervisor and the RPC server
+│   ├── cli/              #   kobune
+│   └── desktop/          #   kobune-desktop — the GPUI GUI
 ├── assets/               # the logo, in one place; see assets/README.md
 │   └── logo/             #   copied into docs/public/logo/ by the docs build
 ├── skills/
-│   └── minato/SKILL.md
+│   └── kobune/SKILL.md
 ├── xtask/                # cargo xtask: docs snapshots, packaging, the launchd plist
 └── docs/                 # the VitePress site, English and Japanese
     ├── guide/  reference/  tutorials/
@@ -1302,17 +1302,17 @@ more than one version to distinguish.
 
 ```
 apps/cli ────┐
-apps/desktop ┴──> minato-client ──> minato-api ──> minato-core
-apps/daemon ─────────────────────>  minato-api ──> minato-core
-       └──> minato-runtime / minato-proxy / minato-dns / minato-tunnel ──> minato-core
+apps/desktop ┴──> kobune-client ──> kobune-api ──> kobune-core
+apps/daemon ─────────────────────>  kobune-api ──> kobune-core
+       └──> kobune-runtime / kobune-proxy / kobune-dns / kobune-tunnel ──> kobune-core
 ```
 
-`minato-api` is the only point of contact between the daemon and its clients.
-**No client-side crate may depend on `minato-runtime` or its neighbours** —
+`kobune-api` is the only point of contact between the daemon and its clients.
+**No client-side crate may depend on `kobune-runtime` or its neighbours** —
 that would leak Docker logic into the GUI and break the rule that everything
 goes through the daemon. `cargo xtask deps check` walks the dependencies of
-all three clients — the CLI, `minato-client` and the desktop app — with
-`cargo tree` and fails if one of them reaches `minato-runtime`, `-proxy`,
+all three clients — the CLI, `kobune-client` and the desktop app — with
+`cargo tree` and fails if one of them reaches `kobune-runtime`, `-proxy`,
 `-dns` or `-tunnel`; CI runs it alongside `fmt` and `clippy`.
 
 It asks for every target rather than the one it happens to run on, and
@@ -1324,7 +1324,7 @@ only looks where it is standing is the kind that reports success for years.
 
 Every crate shares one version, inherited from `workspace.package.version`.
 None of the internal crates is headed for crates.io individually, so
-independent versioning would only add complexity. Only `minato`, the CLI, is
+independent versioning would only add complexity. Only `kobune`, the CLI, is
 published.
 
 ### The main dependencies
@@ -1348,10 +1348,10 @@ published.
 
 | Milestone | Contents | Done when |
 | --- | --- | --- |
-| **M0** ✅ | The workspace skeleton, core (config, naming, state), `minato-api` including the event stream, the Docker and Apple Container runtimes, `init` / `new` / `up` / `down` / `rm` / `ls` / `status` / `url` / `daemon` | Creating a worktree starts its containers, reachable at `localhost:<dynamic port>` |
+| **M0** ✅ | The workspace skeleton, core (config, naming, state), `kobune-api` including the event stream, the Docker and Apple Container runtimes, `init` / `new` / `up` / `down` / `rm` / `ls` / `status` / `url` / `daemon` | Creating a worktree starts its containers, reachable at `localhost:<dynamic port>` |
 | **M1** ✅ | DNS, the proxy, TLS, `doctor` / `setup`, launchd socket activation | `https://web.feat-1.myapp.localhost` answers curl |
 | **M2** ✅ | Scale-to-zero, health checks, idle stop, on-demand start | Ten worktrees, and the only running containers are the ones in use |
-| **M3** ✅ | Environment variables: three layers, secret references, injection | The frontend can read `MINATO_URL_API` |
+| **M3** ✅ | Environment variables: three layers, secret references, injection | The frontend can read `KOBUNE_URL_API` |
 | **M4** ✅ | Cloudflare Tunnel | `https://web-feat-1-myapp.example.com` works from a phone |
 | **M5** ✅ | Skills, `logs` / `exec` | An agent finishes the work without touching `docker` |
 | **M6** ✅ | The GUI: GPUI plus a tray | The menu bar shows the running workspaces and their URLs, and logs are readable |
@@ -1423,7 +1423,7 @@ is what Linux uses.
 
 **sudo is never run unasked.** An agent starting one hangs at the password
 prompt, and from the user's side it looks like a silent privilege escalation.
-So `minato setup` walks through its steps only where there is a terminal to
+So `kobune setup` walks through its steps only where there is a terminal to
 answer at: each step's commands are printed, then it asks, and only what is
 agreed to is run. With no terminal — an agent, a pipe, `--json` — it prints the
 commands and runs none of them, which is what it has always done. `--yes` runs
@@ -1433,13 +1433,13 @@ The question comes *after* the commands, every time. Agreeing to "trust the
 local CA" is not agreeing to whatever that turns out to run as root, and the
 two have to be on the screen together for the answer to mean anything.
 
-Three things need privileges, and `minato setup` covers all of them.
+Three things need privileges, and `kobune setup` covers all of them.
 
 1. Installing the LaunchDaemon, which holds 80, 443 and 53
 2. Installing `/etc/resolver/localhost`
 3. Trusting the local CA
 
-Generating the plist needs no privileges, so it is written to `~/.minato/` and
+Generating the plist needs no privileges, so it is written to `~/.kobune/` and
 only the install commands are printed. They can be read before they are run.
 
 **The steps are generated for the state after setup.** Installing launchd moves
@@ -1455,11 +1455,11 @@ to the first question would quietly break resolution through the second.
 
 | Item | Why | When |
 | --- | --- | --- |
-| `minato.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Undecided |
+| `kobune.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Undecided |
 
 ### What ships, and what does not
 
-`nightly` carries `minato` and `minatod` for macOS — Apple Silicon and Intel —
+`nightly` carries `kobune` and `kobuned` for macOS — Apple Silicon and Intel —
 and Linux x86_64. Both Apple targets are built on one runner: the second is a
 cross-compile that costs a minute, where a second matrix entry pays for a
 whole runner again, and a macOS runner bills at ten times the rate on a
@@ -1516,7 +1516,7 @@ and the docs site follows it — `main` carrying the nightly while also meaning
   database per worktree — separate database names inside one instance — is the
   leading idea, but how to implement it without depending on the runtime is
   undecided
-- **How far `minato init` should infer**: reading compose is done —
+- **How far `kobune init` should infer**: reading compose is done —
   `--from-compose`, and §4's note on it. Inferring from `package.json` and
   Dockerfiles is still open, and a harder question, because neither says
   what a *service* is
@@ -1526,7 +1526,7 @@ and the docs site follows it — `main` carrying the nightly while also meaning
 - **One daemon across projects**: the assumption is that one daemon watches
   every project, but the state store's schema and locking strategy are
   undecided
-- **The length of `MINATO_HOME`**: `sun_path` is 104 bytes on macOS, so a deep
+- **The length of `KOBUNE_HOME`**: `sun_path` is 104 bytes on macOS, so a deep
   path fails to bind. `Paths::check_socket_length()` catches it up front, but
   moving the socket to `$TMPDIR` is another option
 - **How the GUI is distributed**: a signed and notarised `.app` bundle, or just

@@ -1,10 +1,10 @@
-# Minato とは
+# Kobune とは
 
-Minato は、git worktree ごとに独立した実行環境を用意し、それぞれに URL を
+Kobune は、git worktree ごとに独立した実行環境を用意し、それぞれに URL を
 割り当てるツールです。
 
 ```console
-$ minato new feature/user-auth
+$ kobune new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ starting web
   ✓ waiting for web
@@ -27,7 +27,7 @@ $ minato new feature/user-auth
 対処することになります。
 
 ソースコードを並行して扱う部分は、すでに git worktree が解決しています。
-Minato が受け持つのは、それを実際に動かす部分です。
+Kobune が受け持つのは、それを実際に動かす部分です。
 
 - **worktree ごとに URL が割り当てられます。** ブランチ名から生成されるため、
   `feature/user-auth` であれば `web.feature-user-auth.myapp.localhost` となり、
@@ -44,8 +44,8 @@ Minato が受け持つのは、それを実際に動かす部分です。
 つまり `docker` を直接操作し、ポート番号を推測して curl するというやり方は、
 気づきにくい形で失敗します。
 
-そこで Minato では、すべてのコマンドが `--json` に対応し、失敗時には種類の
-分かる終了コードを返します。`minato skill install` は、どのコマンドを使い、
+そこで Kobune では、すべてのコマンドが `--json` に対応し、失敗時には種類の
+分かる終了コードを返します。`kobune skill install` は、どのコマンドを使い、
 どれを避けるべきかを書いた Skill ファイルを書き出します。これに従う
 エージェントは `docker` を直接操作せず、ポート番号も推測せず、問題が
 起きたときに空の応答ではなく具体的なエラーを受け取ります。
@@ -53,14 +53,14 @@ Minato が受け持つのは、それを実際に動かす部分です。
 どれも人が使う分を犠牲にしていません。同じコマンドを人が実行すれば、
 JSON ではなく読むための形で、同じ情報が返ります。
 
-## Minato の対象外
+## Kobune の対象外
 
 - **本番環境向けのデプロイツールではありません。** 開発マシン上で、その
   所有者が操作することを前提としています。
 - **コンテナランタイムではありません。** 実際にコンテナを動かすのは Docker や
-  Apple Container です。Minato はその手配をするだけです。
+  Apple Container です。Kobune はその手配をするだけです。
 - **Docker Compose の代替でもありません。** 1 つのブランチで 1 つの環境を
-  動かせば足りるのであれば、Compose のほうが単純です。Minato が有効なのは、
+  動かせば足りるのであれば、Compose のほうが単純です。Kobune が有効なのは、
   ブランチが増えてからです。
 
 ## 次に読むもの

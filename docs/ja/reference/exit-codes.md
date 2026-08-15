@@ -9,8 +9,8 @@
 | `1` | 分類できないエラー | 不可 |
 | `4` | 見つからない（workspace / サービス / プロジェクト） | 不可 |
 | `5` | すでに存在する | 不可 |
-| `6` | `minato.toml` が見つからない | 不可 |
-| `7` | `minato.toml` が不正 | 不可 |
+| `6` | `kobune.toml` が見つからない | 不可 |
+| `7` | `kobune.toml` が不正 | 不可 |
 | `8` | git リポジトリの外で実行された | 不可 |
 | `9` | コンテナランタイムに接続できない | **可** |
 | `10` | ランタイムの操作が失敗した | 不可 |
@@ -22,11 +22,11 @@
 
 ## `exec` は例外です
 
-`minato exec` は上表のコードではなく、**実行したコマンドの終了コード**を
+`kobune exec` は上表のコードではなく、**実行したコマンドの終了コード**を
 返します。
 
 ```console
-$ minato exec web -- npm test; echo $?
+$ kobune exec web -- npm test; echo $?
 1
 ```
 
@@ -37,7 +37,7 @@ $ minato exec web -- npm test; echo $?
 ## JSON 出力の場合
 
 ```console
-$ minato url nope --json; echo $?
+$ kobune url nope --json; echo $?
 {
   "error": {
     "code": "not_found",

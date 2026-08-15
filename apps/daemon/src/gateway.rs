@@ -11,16 +11,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::activation;
-use minato_core::Paths;
-use minato_dns::DnsConfig;
-use minato_proxy::{Activator, LocalCa, Routes, serve_http, serve_https, server_config};
+use kobune_core::Paths;
+use kobune_dns::DnsConfig;
+use kobune_proxy::{Activator, LocalCa, Routes, serve_http, serve_https, server_config};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
 /// The environment variables that override the listening ports.
-pub const HTTP_PORT_ENV: &str = "MINATO_HTTP_PORT";
-pub const HTTPS_PORT_ENV: &str = "MINATO_HTTPS_PORT";
-pub const DNS_PORT_ENV: &str = "MINATO_DNS_PORT";
+pub const HTTP_PORT_ENV: &str = "KOBUNE_HTTP_PORT";
+pub const HTTPS_PORT_ENV: &str = "KOBUNE_HTTPS_PORT";
+pub const DNS_PORT_ENV: &str = "KOBUNE_DNS_PORT";
 
 /// The default DNS port.
 pub const DEFAULT_DNS_PORT: u16 = 53;
@@ -28,7 +28,7 @@ pub const DEFAULT_DNS_PORT: u16 = 53;
 /// Where the proxy goes when it cannot have 80 and 443.
 ///
 /// **A proxy on an awkward port beats no proxy at all.** Without one no URL
-/// is issued, which also means no `MINATO_URL_<SERVICE>` reaches a
+/// is issued, which also means no `KOBUNE_URL_<SERVICE>` reaches a
 /// container — and inside one that surfaces as `parameter not set`, naming
 /// nothing that leads back to a privilege the daemon never had.
 ///
@@ -50,10 +50,10 @@ const CONTAINER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// Why a listener could not be held.
 ///
 /// **Worth keeping, not just logging.** "Needs privileges" and "something
-/// else has it" want opposite fixes, and after `minato daemon stop` the
+/// else has it" want opposite fixes, and after `kobune daemon stop` the
 /// second one is what happens — launchd keeps the socket while the job is
 /// idle. Reporting that as a privileges problem sends people back to
-/// `minato setup`, which they have already run.
+/// `kobune setup`, which they have already run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindFailure {
     /// A port below 1024, without the privileges to hold it.
@@ -114,13 +114,13 @@ pub struct GatewaySettings {
     /// outright, so there is no ambiguity and IPv4 alone will do.
     ///
     /// No extras: the hostnames a container resolves are written into its
-    /// `/etc/hosts`, so nothing inside one asks Minato's DNS anything.
+    /// `/etc/hosts`, so nothing inside one asks Kobune's DNS anything.
     pub dns_bind: IpAddr,
     /// Whether the proxy ports were asked for by name.
     ///
     /// **A port someone named is not fallen back from.** Silently listening
     /// somewhere else would ignore the instruction, and the whole reason to
-    /// set `MINATO_HTTP_PORT` is to decide this yourself.
+    /// set `KOBUNE_HTTP_PORT` is to decide this yourself.
     pub http_port_named: bool,
     pub https_port_named: bool,
 }
@@ -128,8 +128,8 @@ pub struct GatewaySettings {
 impl Default for GatewaySettings {
     fn default() -> Self {
         Self {
-            http_port: minato_proxy::DEFAULT_HTTP_PORT,
-            https_port: minato_proxy::DEFAULT_HTTPS_PORT,
+            http_port: kobune_proxy::DEFAULT_HTTP_PORT,
+            https_port: kobune_proxy::DEFAULT_HTTPS_PORT,
             dns_port: DEFAULT_DNS_PORT,
             bind: vec![
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -176,19 +176,19 @@ impl GatewaySettings {
     /// **Bounded.** This runs before anything is listening, so a CLI that
     /// takes its time — the service is starting, the VM is waking — would
     /// hold up the whole daemon. Giving up costs the addresses in
-    /// containers and nothing else, and `minato doctor` says so.
+    /// containers and nothing else, and `kobune doctor` says so.
     pub async fn with_container_gateway(mut self) -> Self {
         // Looked up rather than spawned by name: launchd's `PATH` does not
         // reach `/usr/local/bin`, where the installer puts it, so the bare
         // name is a spawn that always fails here.
-        let asked = tokio::process::Command::new(minato_core::apple::program())
-            .args(minato_core::apple::LIST_ARGS)
+        let asked = tokio::process::Command::new(kobune_core::apple::program())
+            .args(kobune_core::apple::LIST_ARGS)
             .output();
 
         let Ok(listed) = tokio::time::timeout(CONTAINER_PROBE_TIMEOUT, asked).await else {
             tracing::debug!(
                 "`{} network list` did not answer in {CONTAINER_PROBE_TIMEOUT:?}",
-                minato_core::apple::PROGRAM
+                kobune_core::apple::PROGRAM
             );
             return self;
         };
@@ -201,9 +201,9 @@ impl GatewaySettings {
             return self;
         }
 
-        let gateway = minato_core::apple::parse_gateway(
+        let gateway = kobune_core::apple::parse_gateway(
             &String::from_utf8_lossy(&output.stdout),
-            minato_core::apple::DEFAULT_NETWORK,
+            kobune_core::apple::DEFAULT_NETWORK,
         );
 
         if let Some(gateway) = gateway {
@@ -284,7 +284,7 @@ pub struct Gateway {
     /// Whether the proxy had to settle for the fallback port.
     ///
     /// Not the same as "the port is not 80": someone who names a port with
-    /// `MINATO_HTTP_PORT` got what they asked for, and telling them that is
+    /// `KOBUNE_HTTP_PORT` got what they asked for, and telling them that is
     /// unexpected would be wrong.
     http_fell_back: bool,
     https_fell_back: bool,
@@ -303,7 +303,7 @@ impl Gateway {
 
         // Read once, and passed down: it decides whether a refused port is
         // worth moving away from, and both listeners have to agree.
-        let launchd_installed = minato_core::launchd::is_installed();
+        let launchd_installed = kobune_core::launchd::is_installed();
 
         let (http_addrs, http_failure, http_fell_back) = Self::start_http(
             &routes,
@@ -545,7 +545,7 @@ impl Gateway {
 
             let config = DnsConfig::default();
             tokio::spawn(async move {
-                if let Err(err) = minato_dns::serve_sockets(udp, tcp, config, shutdown).await {
+                if let Err(err) = kobune_dns::serve_sockets(udp, tcp, config, shutdown).await {
                     tracing::warn!("the DNS server stopped: {err}");
                 }
             });
@@ -569,7 +569,7 @@ impl Gateway {
 
         let config = DnsConfig::default();
         tokio::spawn(async move {
-            if let Err(err) = minato_dns::serve(addr, config, shutdown).await {
+            if let Err(err) = kobune_dns::serve(addr, config, shutdown).await {
                 tracing::warn!("the DNS server stopped: {err}");
             }
         });
@@ -774,7 +774,7 @@ impl Gateway {
     /// never made.
     ///
     /// **Nor "was there one when the daemon started".** The file can be
-    /// removed under a running daemon — `minato setup` undone, the
+    /// removed under a running daemon — `kobune setup` undone, the
     /// directory cleared — and what is mounted is decided from this, so
     /// answering from the start would name a certificate no container
     /// has. Node reads `NODE_EXTRA_CA_CERTS` by name and warns on every
@@ -1071,13 +1071,13 @@ fn report_bind_failure(what: &str, port: u16, failure: Option<BindFailure>) {
     match failure {
         Some(BindFailure::Privileged) => tracing::warn!(
             "{what} cannot hold :{port} (a port below 1024 needs privileges). \
-             `minato doctor` says what to do about it"
+             `kobune doctor` says what to do about it"
         ),
         Some(BindFailure::InUse) => tracing::warn!(
             "{what} cannot hold :{port} (another process has it). \
-             Check `minato doctor`"
+             Check `kobune doctor`"
         ),
-        _ => tracing::warn!("{what} cannot hold :{port}. Check `minato doctor`"),
+        _ => tracing::warn!("{what} cannot hold :{port}. Check `kobune doctor`"),
     }
 }
 
@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn a_privileged_port_falls_back_to_a_high_one() {
         // Without this the proxy binds nothing, no URL is issued, and no
-        // MINATO_URL_<SERVICE> reaches a container.
+        // KOBUNE_URL_<SERVICE> reaches a container.
         let settings = GatewaySettings::default();
 
         assert_eq!(
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn a_named_port_is_never_moved_from() {
-        // Setting MINATO_HTTP_PORT is how you decide this yourself.
+        // Setting KOBUNE_HTTP_PORT is how you decide this yourself.
         let settings = GatewaySettings::default();
 
         assert_eq!(settings.fallback(true, 8080, FALLBACK_HTTP_PORT), None);
@@ -1469,7 +1469,7 @@ mod tests {
     #[test]
     fn a_taken_port_is_not_a_privileges_problem() {
         // launchd holds 80 while its job is idle, so this is what a bind
-        // failure looks like after `minato daemon stop` — and it wants the
+        // failure looks like after `kobune daemon stop` — and it wants the
         // opposite advice from a permissions failure.
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80);
         let in_use = std::io::Error::from(std::io::ErrorKind::AddrInUse);

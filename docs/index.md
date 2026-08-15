@@ -2,22 +2,22 @@
 layout: home
 
 hero:
-  name: Minato
+  name: Kobune
   text: A preview environment per git worktree
   tagline: Create a branch, and the environment is already running. Made to be driven by an agent as readily as by you.
   image:
-    src: /logo/minato-mark.svg
-    alt: Minato
+    src: /logo/kobune-mark.svg
+    alt: Kobune
   actions:
     - theme: brand
       text: Get started
       link: /guide/getting-started
     - theme: alt
-      text: What is Minato?
+      text: What is Kobune?
       link: /guide/
     - theme: alt
       text: GitHub
-      link: https://github.com/hota1024/minato
+      link: https://github.com/hota1024/kobune
 
 features:
   - title: One worktree, one environment
@@ -27,9 +27,9 @@ features:
   - title: Scale to zero
     details: An untouched environment stops itself and wakes on the next request, in a second or two. Make as many worktrees as you like.
   - title: Agents can drive it
-    details: Every command speaks --json and exits with a code that says what kind of failure it was. minato skill install teaches an agent the rest.
+    details: Every command speaks --json and exits with a code that says what kind of failure it was. kobune skill install teaches an agent the rest.
   - title: Your choice of runtime
-    details: Docker and Apple Container behind one abstraction. Switch with a single line of minato.toml.
+    details: Docker and Apple Container behind one abstraction. Switch with a single line of kobune.toml.
   - title: Share a preview
     details: Put a branch behind a Cloudflare Tunnel and send the link to a phone or a reviewer. Scale-to-zero still applies.
 ---

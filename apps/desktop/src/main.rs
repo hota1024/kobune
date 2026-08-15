@@ -1,4 +1,4 @@
-//! minato-desktop — Minato's GUI.
+//! kobune-desktop — Kobune's GUI.
 //!
 //! Not something to keep open. It is for glancing at which environments
 //! are running and opening one. It lives in the menu bar, and the window
@@ -18,14 +18,14 @@ use gpui::{Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_component::Root;
 use tracing_subscriber::EnvFilter;
 
-use crate::app::MinatoApp;
+use crate::app::KobuneApp;
 use crate::bridge::Notifier;
 use crate::state::SharedState;
 
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_env("MINATO_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_env("KOBUNE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -48,7 +48,7 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Minato".into()),
+                title: Some("Kobune".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -56,11 +56,11 @@ fn main() {
 
         let opened = cx.open_window(options, |window, cx| {
             let view = cx.new(|cx| {
-                let mut app = MinatoApp::new(state.clone(), commands);
+                let mut app = KobuneApp::new(state.clone(), commands);
                 app.follow_system_appearance(window, cx);
                 app
             });
-            MinatoApp::listen(&view, notifications, cx);
+            KobuneApp::listen(&view, notifications, cx);
 
             if let Some(tray) = tray {
                 tray::spawn_poller(tray, state, cx);

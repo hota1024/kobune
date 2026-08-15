@@ -84,7 +84,7 @@ const TEXT = {
  */
 const PAGES = {
   started: [
-    ['guide/', { en: 'What is Minato?', ja: 'Minato とは' }],
+    ['guide/', { en: 'What is Kobune?', ja: 'Kobune とは' }],
     ['guide/installation', { en: 'Installation', ja: 'インストール' }],
     ['guide/getting-started', { en: 'Your first environment', ja: '最初の環境を作る' }],
     ['guide/configuration', { en: 'Configuration', ja: '設定' }],
@@ -106,7 +106,7 @@ const PAGES = {
   ],
   reference: [
     ['reference/cli', { en: 'CLI commands', ja: 'CLI コマンド' }],
-    ['reference/minato-toml', { en: 'minato.toml', ja: 'minato.toml' }],
+    ['reference/kobune-toml', { en: 'kobune.toml', ja: 'kobune.toml' }],
     ['reference/exit-codes', { en: 'Exit codes', ja: '終了コード' }],
   ],
   tutorials: [
@@ -195,7 +195,7 @@ function themeConfig(base: string, lang: Lang): DefaultTheme.Config {
     sidebar: { [`${base}/`]: sidebar(base, lang) },
     outline: { level: [2, 3], label: t.outline },
     editLink: {
-      pattern: 'https://github.com/hota1024/minato/edit/main/docs/:path',
+      pattern: 'https://github.com/hota1024/kobune/edit/main/docs/:path',
       text: t.editLink,
     },
     lastUpdatedText: t.lastUpdated,
@@ -242,7 +242,7 @@ function locales(): DefaultTheme.Config extends never ? never : Record<string, a
 }
 
 export default defineConfig({
-  title: 'Minato',
+  title: 'Kobune',
   description: TEXT.en.description,
   cleanUrls: true,
   lastUpdated: true,
@@ -315,11 +315,11 @@ export default defineConfig({
     // SVG only, with no .ico beside it. Every browser that has shipped in
     // the last five years takes one, and the fallback would be a raster to
     // regenerate by hand every time the logo changes.
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo/minato-icon.svg' }],
-    ['link', { rel: 'apple-touch-icon', href: '/logo/minato-icon.svg' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo/kobune-icon.svg' }],
+    ['link', { rel: 'apple-touch-icon', href: '/logo/kobune-icon.svg' }],
     ['meta', { name: 'theme-color', content: BRAND }],
     ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:title', content: 'Minato' }],
+    ['meta', { property: 'og:title', content: 'Kobune' }],
     ['meta', { property: 'og:description', content: TEXT.en.description }],
 
     // Drawn from the logo by `scripts/og.mjs` on every build, so it is
@@ -329,15 +329,15 @@ export default defineConfig({
     ['meta', { property: 'og:image', content: `${HOSTNAME}/og.png` }],
     ['meta', { property: 'og:image:width', content: '1200' }],
     ['meta', { property: 'og:image:height', content: '630' }],
-    ['meta', { property: 'og:image:alt', content: 'Minato' }],
+    ['meta', { property: 'og:image:alt', content: 'Kobune' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
   ],
 
   themeConfig: {
     // Copied out of `assets/logo/` by `pnpm sync`, so the repository holds
     // one copy of it. See `assets/README.md`.
-    logo: { src: '/logo/minato-mark.svg', alt: 'Minato' },
-    socialLinks: [{ icon: 'github', link: 'https://github.com/hota1024/minato' }],
+    logo: { src: '/logo/kobune-mark.svg', alt: 'Kobune' },
+    socialLinks: [{ icon: 'github', link: 'https://github.com/hota1024/kobune' }],
     search: { provider: 'local' },
     footer: {
       message: 'Released under the Apache License 2.0.',

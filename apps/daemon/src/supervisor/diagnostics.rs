@@ -1,4 +1,4 @@
-//! What `minato doctor` asks, and how each answer is worded.
+//! What `kobune doctor` asks, and how each answer is worded.
 //!
 //! **A check is not a status line.** Every one of these carries what it
 //! found *and* what to do about it, because the whole reason someone runs
@@ -6,7 +6,7 @@
 //! not say enough. A check that reports a problem with no fix has failed
 //! at its job.
 
-use minato_api::{ApiError, Check, Diagnostics, Pong, Response, Target, TunnelState};
+use kobune_api::{ApiError, Check, Diagnostics, Pong, Response, Target, TunnelState};
 
 use crate::gateway::BindFailure;
 use crate::tunnel;
@@ -19,7 +19,7 @@ impl Supervisor {
         // uses is its own business, and a handshake that named Docker on a
         // machine running Apple Container was simply wrong.
         let mut reachable = Vec::new();
-        for id in minato_runtime::AVAILABLE_RUNTIMES {
+        for id in kobune_runtime::AVAILABLE_RUNTIMES {
             if let Some(info) = self.probe_runtime(id).await {
                 reachable.push(format!("{} {}", info.id, info.version));
             }
@@ -30,7 +30,7 @@ impl Supervisor {
             // CLI compares against its own to notice a daemon left running
             // from the build an update replaced.
             version: crate::version(),
-            protocol: minato_api::PROTOCOL_VERSION,
+            protocol: kobune_api::PROTOCOL_VERSION,
             runtime: if reachable.is_empty() {
                 "none reachable".to_string()
             } else {
@@ -44,7 +44,7 @@ impl Supervisor {
     /// Both a runtime that cannot be constructed and one that cannot be
     /// reached mean the same thing to a caller, and neither is worth an
     /// error of its own.
-    async fn probe_runtime(&self, id: &str) -> Option<minato_runtime::RuntimeInfo> {
+    async fn probe_runtime(&self, id: &str) -> Option<kobune_runtime::RuntimeInfo> {
         self.runtime(id).await.ok()?.probe().await.ok()
     }
     /// Diagnoses what the daemon can see.
@@ -60,11 +60,11 @@ impl Supervisor {
         //
         // **Asked for this daemon's home**, because that is what makes the
         // answer true of this daemon. A job registered for another
-        // `MINATO_HOME` holds 80, 443 and 53 and hands none of them here,
+        // `KOBUNE_HOME` holds 80, 443 and 53 and hands none of them here,
         // so blaming it for a port in use would name a cause that cannot
         // be acted on from inside this instance.
-        let job = minato_core::launchd::job(self.paths.root());
-        let launchd_has_the_job = job == minato_core::launchd::Job::Registered;
+        let job = kobune_core::launchd::job(self.paths.root());
+        let launchd_has_the_job = job == kobune_core::launchd::Job::Registered;
 
         // **Resolved once.** This walks git, finds the configuration and
         // registers the project in the state store — a write, under the
@@ -125,7 +125,7 @@ impl Supervisor {
                 )
                 .with_fix(
                     "stop whatever else is on that address, or name free ports \
-                     with MINATO_HTTP_PORT and MINATO_HTTPS_PORT",
+                     with KOBUNE_HTTP_PORT and KOBUNE_HTTPS_PORT",
                 ),
             );
         }
@@ -153,14 +153,14 @@ impl Supervisor {
         // the runtime in use: the address exists on any machine with Apple
         // Container installed, and a Docker project never goes near it.
         let unreachable = self.gateway.unreachable_from_containers();
-        if !unreachable.is_empty() && minato_runtime::display_name(&configured) == "Apple Container"
+        if !unreachable.is_empty() && kobune_runtime::display_name(&configured) == "Apple Container"
         {
             checks.push(
                 Check::warn(
                     "container-reach",
                     "reachable from containers",
                     format!(
-                        "the proxy is not listening on {}, where containers                          reach the host, so a MINATO_URL_<SERVICE> resolves                          to nothing from inside one",
+                        "the proxy is not listening on {}, where containers                          reach the host, so a KOBUNE_URL_<SERVICE> resolves                          to nothing from inside one",
                         unreachable
                             .iter()
                             .map(|ip| bracketed(*ip))
@@ -169,7 +169,7 @@ impl Supervisor {
                     ),
                 )
                 .with_fix(
-                    "run `minato setup` again: the launchd job holds the                      privileged ports, and its plist names the addresses it                      holds them on",
+                    "run `kobune setup` again: the launchd job holds the                      privileged ports, and its plist names the addresses it                      holds them on",
                 ),
             );
         }
@@ -191,29 +191,29 @@ impl Supervisor {
         // handed over any descriptors.
         //
         // **A job launchd has, sitting idle, is its own state**, and the one
-        // `minato daemon stop` leaves behind. Telling that apart from "never
+        // `kobune daemon stop` leaves behind. Telling that apart from "never
         // set up" is the difference between a fix that works and being sent
-        // back to a `minato setup` that is already done.
+        // back to a `kobune setup` that is already done.
         //
         // The plist being on disk is not enough to say which it is: one
         // copied in without a `bootstrap` behind it leaves launchd knowing
         // nothing about the job, and `kickstart` no service to name. That is
         // the install case — and the job being registered for another home
         // is a third, where neither command reaches this daemon at all.
-        // [`minato_core::launchd::Job`] is that distinction, and it keeps
-        // this in step with what `minato setup` offers.
+        // [`kobune_core::launchd::Job`] is that distinction, and it keeps
+        // this in step with what `kobune setup` offers.
         checks.push(if crate::activation::is_active() {
             Check::ok(
                 "launchd",
                 "launchd socket activation",
                 "active (privileged ports are available)".to_string(),
             )
-        } else if let minato_core::launchd::Job::Elsewhere(home) = &job {
+        } else if let kobune_core::launchd::Job::Elsewhere(home) = &job {
             Check::warn(
                 "launchd",
                 "launchd socket activation",
                 format!(
-                    "inactive: launchd's job serves MINATO_HOME={}, and this daemon \
+                    "inactive: launchd's job serves KOBUNE_HOME={}, and this daemon \
                      runs under {}",
                     home.display(),
                     self.paths.root().display()
@@ -222,13 +222,13 @@ impl Supervisor {
             // **Nothing here can move those ports**, which is why this is
             // not the state above with a different sentence. Restarting
             // reaches :80 and finds a daemon serving the other home;
-            // `kickstart` starts that same job again; and `minato setup`
+            // `kickstart` starts that same job again; and `kobune setup`
             // asks launchd to bootstrap a label it already has, which comes
             // back `Input/output error`. What is left is a choice about
             // which home this machine is being run under.
             .with_fix(format!(
                 "launchd holds 80, 443 and 53 for that home and no command here moves \
-                 them. Point MINATO_HOME at {} to reach the daemon they belong to, or \
+                 them. Point KOBUNE_HOME at {} to reach the daemon they belong to, or \
                  leave this one on the ports above",
                 home.display()
             ))
@@ -256,8 +256,8 @@ impl Supervisor {
                 "this daemon was not started by launchd, so it holds the \
                  socket launchd's job wants. `{}` hands it over and lets \
                  launchd start its own; if it stays inactive, run `{}`",
-                minato_core::launchd::RESTART_COMMAND,
-                minato_core::launchd::kickstart_command()
+                kobune_core::launchd::RESTART_COMMAND,
+                kobune_core::launchd::kickstart_command()
             ))
         } else {
             Check::warn(
@@ -265,7 +265,7 @@ impl Supervisor {
                 "launchd socket activation",
                 "inactive; 80 and 443 are out, so it listens elsewhere".to_string(),
             )
-            .with_fix("follow `minato setup` to install the LaunchDaemon")
+            .with_fix("follow `kobune setup` to install the LaunchDaemon")
         });
 
         checks.push(match self.gateway.ca_path() {
@@ -305,17 +305,17 @@ impl Supervisor {
             Ok(runtime) => match runtime.probe().await {
                 Ok(info) => Check::ok("runtime", title, format!("{} {}", info.id, info.version)),
                 Err(err) => Check::fail("runtime", title, err.to_string())
-                    .with_fix(minato_runtime::start_hint(configured)),
+                    .with_fix(kobune_runtime::start_hint(configured)),
             },
             // An unknown identifier in `[runtime] default` is a
             // configuration mistake, not an unreachable runtime.
             Err(err) => Check::fail("runtime", title, err.to_string()).with_fix(format!(
                 "set [runtime] default to one of: {}",
-                minato_runtime::AVAILABLE_RUNTIMES.join(", ")
+                kobune_runtime::AVAILABLE_RUNTIMES.join(", ")
             )),
         });
 
-        for id in minato_runtime::AVAILABLE_RUNTIMES {
+        for id in kobune_runtime::AVAILABLE_RUNTIMES {
             if *id == configured {
                 continue;
             }
@@ -323,7 +323,7 @@ impl Supervisor {
             if let Some(info) = self.probe_runtime(id).await {
                 checks.push(Check::ok(
                     "runtime-available",
-                    format!("{} (available)", minato_runtime::display_name(id)),
+                    format!("{} (available)", kobune_runtime::display_name(id)),
                     format!("{} {}", info.id, info.version),
                 ));
             }
@@ -343,7 +343,7 @@ impl Supervisor {
     ///
     /// A project whose domain falls outside the constraint is broken —
     /// every HTTPS URL it issues will be refused — and the browser error
-    /// for it names neither Minato nor the constraint. A failure, with
+    /// for it names neither Kobune nor the constraint. A failure, with
     /// the two ways out.
     fn ca_scope_check(&self, domain: Option<String>) -> Option<Check> {
         // Nothing to say before there is a CA at all; the check above
@@ -364,10 +364,10 @@ impl Supervisor {
                         .to_string(),
                 )
                 .with_fix(
-                    "stop trusting it first — `minato uninstall` prints the \
+                    "stop trusting it first — `kobune uninstall` prints the \
                      command, and it names the file, so it has to run while \
-                     the file is still there. Then delete ~/.minato/ca/, \
-                     restart the daemon, and run `minato setup` to trust the \
+                     the file is still there. Then delete ~/.kobune/ca/, \
+                     restart the daemon, and run `kobune setup` to trust the \
                      replacement. Leaving the old one trusted keeps every \
                      certificate its key ever signed working",
                 ),
@@ -380,7 +380,7 @@ impl Supervisor {
             return Some(Check::ok("ca-scope", title, permitted.join(", ")));
         };
 
-        if minato_proxy::permits(permitted, &domain) {
+        if kobune_proxy::permits(permitted, &domain) {
             return Some(Check::ok(
                 "ca-scope",
                 title,
@@ -433,7 +433,7 @@ impl Supervisor {
                 title,
                 format!("enabled for *.{domain}, but not running"),
             )
-            .with_fix("run `minato tunnel enable --public`, or `minato tunnel status` for why"),
+            .with_fix("run `kobune tunnel enable --public`, or `kobune tunnel status` for why"),
         })
     }
 }
@@ -457,7 +457,7 @@ fn bracketed(address: std::net::IpAddr) -> String {
 /// the daemon never had.
 ///
 /// Keyed on having fallen back rather than on the port not being 80: a port
-/// named with `MINATO_HTTP_PORT` is what was asked for, and calling that
+/// named with `KOBUNE_HTTP_PORT` is what was asked for, and calling that
 /// unexpected would be wrong.
 fn listening_detail(port: u16, fell_back: bool) -> String {
     if !fell_back {
@@ -472,19 +472,19 @@ fn detail_for(failure: Option<BindFailure>) -> String {
 }
 /// What to do about a listener that could not be held.
 ///
-/// **The launchd case comes first.** After `minato daemon stop` the job is
+/// **The launchd case comes first.** After `kobune daemon stop` the job is
 /// idle while launchd keeps holding 80, so the bind fails with the port in
 /// use — and the old advice, "a port below 1024 needs privileges, follow
-/// `minato setup`", names neither the cause nor a step that helps.
+/// `kobune setup`", names neither the cause nor a step that helps.
 ///
 /// The `job` is passed in rather than read here, so the advice can be
 /// checked without a LaunchDaemon on the machine running the tests.
 fn bind_fix(
     failure: Option<BindFailure>,
     port_env: &str,
-    job: &minato_core::launchd::Job,
+    job: &kobune_core::launchd::Job,
 ) -> String {
-    use minato_core::launchd::Job;
+    use kobune_core::launchd::Job;
 
     if failure == Some(BindFailure::InUse) && *job == Job::Registered {
         return format!(
@@ -492,20 +492,20 @@ fn bind_fix(
              `{}` hands the socket back and starts the job, and needs no \
              root; if it stays in use, `{}` forces the job up. If something \
              unrelated has the port, name another with {port_env}",
-            minato_core::launchd::RESTART_COMMAND,
-            minato_core::launchd::kickstart_command()
+            kobune_core::launchd::RESTART_COMMAND,
+            kobune_core::launchd::kickstart_command()
         );
     }
 
     // **A privileged port is not coming back here.** launchd holds it for
     // a job serving another home, and every command that would hand it
-    // over hands it to that one — so sending the reader to `minato setup`
+    // over hands it to that one — so sending the reader to `kobune setup`
     // is sending them to a step it will decline to offer.
     if let Job::Elsewhere(home) = job
         && matches!(failure, Some(BindFailure::Privileged | BindFailure::InUse))
     {
         return format!(
-            "launchd holds this port for MINATO_HOME={}, so nothing this \
+            "launchd holds this port for KOBUNE_HOME={}, so nothing this \
              daemon can run will take it. Name another with {port_env}",
             home.display()
         );
@@ -513,7 +513,7 @@ fn bind_fix(
 
     match failure.unwrap_or(BindFailure::Other) {
         BindFailure::Privileged => format!(
-            "a port below 1024 needs privileges. Follow `minato setup`, \
+            "a port below 1024 needs privileges. Follow `kobune setup`, \
              or name another port with {port_env}"
         ),
         BindFailure::InUse => {
@@ -528,7 +528,7 @@ mod tests {
     use super::*;
     use crate::gateway::Gateway;
     use crate::supervisor::tests::supervisor;
-    use minato_api::CheckStatus;
+    use kobune_api::CheckStatus;
 
     #[test]
     fn no_ca_means_nothing_to_say_about_its_scope() {
@@ -622,19 +622,19 @@ mod tests {
     }
     #[test]
     fn a_port_in_use_under_launchd_points_at_launchd() {
-        // The state `minato daemon stop` leaves behind: the job is idle,
-        // launchd still holds 80. Advising `minato setup` here sends
+        // The state `kobune daemon stop` leaves behind: the job is idle,
+        // launchd still holds 80. Advising `kobune setup` here sends
         // someone to re-run what they have already done.
         let fix = bind_fix(
             Some(BindFailure::InUse),
-            "MINATO_HTTP_PORT",
-            &minato_core::launchd::Job::Registered,
+            "KOBUNE_HTTP_PORT",
+            &kobune_core::launchd::Job::Registered,
         );
 
         assert!(fix.contains("launchd"), "name the cause: {fix}");
-        assert!(fix.contains(minato_core::launchd::RESTART_COMMAND), "{fix}");
+        assert!(fix.contains(kobune_core::launchd::RESTART_COMMAND), "{fix}");
         assert!(
-            !fix.contains("minato setup"),
+            !fix.contains("kobune setup"),
             "setup is already done in this state: {fix}"
         );
         // **The order is the whole point.** The launchd check says the same
@@ -644,7 +644,7 @@ mod tests {
         // ladder — one that asks for a password only where the step that
         // does not has already failed.
         assert!(
-            fix.find(minato_core::launchd::RESTART_COMMAND).unwrap()
+            fix.find(kobune_core::launchd::RESTART_COMMAND).unwrap()
                 < fix.find("kickstart").unwrap(),
             "the answer that needs no root comes first: {fix}"
         );
@@ -653,41 +653,41 @@ mod tests {
     fn a_privileged_port_still_points_at_setup() {
         let fix = bind_fix(
             Some(BindFailure::Privileged),
-            "MINATO_HTTP_PORT",
-            &minato_core::launchd::Job::Missing,
+            "KOBUNE_HTTP_PORT",
+            &kobune_core::launchd::Job::Missing,
         );
 
-        assert!(fix.contains("minato setup"), "{fix}");
-        assert!(fix.contains("MINATO_HTTP_PORT"), "{fix}");
+        assert!(fix.contains("kobune setup"), "{fix}");
+        assert!(fix.contains("KOBUNE_HTTP_PORT"), "{fix}");
     }
     #[test]
     fn a_port_in_use_without_launchd_blames_the_other_process() {
         let fix = bind_fix(
             Some(BindFailure::InUse),
-            "MINATO_DNS_PORT",
-            &minato_core::launchd::Job::Missing,
+            "KOBUNE_DNS_PORT",
+            &kobune_core::launchd::Job::Missing,
         );
 
         assert!(!fix.contains("launchd"), "{fix}");
-        assert!(fix.contains("MINATO_DNS_PORT"), "{fix}");
+        assert!(fix.contains("KOBUNE_DNS_PORT"), "{fix}");
     }
     #[test]
     fn a_port_held_for_another_home_is_not_answered_with_setup() {
-        // `minato setup` declines to offer the launchd step in this state,
+        // `kobune setup` declines to offer the launchd step in this state,
         // launchd having a job under that label already — so a fix naming
         // it sends the reader to a command that will tell them the same
         // thing again. The port this daemon can have is another one.
         let fix = bind_fix(
             Some(BindFailure::Privileged),
-            "MINATO_DNS_PORT",
-            &minato_core::launchd::Job::Elsewhere(std::path::PathBuf::from(
-                "/Users/someone/.minato",
+            "KOBUNE_DNS_PORT",
+            &kobune_core::launchd::Job::Elsewhere(std::path::PathBuf::from(
+                "/Users/someone/.kobune",
             )),
         );
 
-        assert!(fix.contains("/Users/someone/.minato"), "{fix}");
-        assert!(fix.contains("MINATO_DNS_PORT"), "{fix}");
-        assert!(!fix.contains("minato setup"), "{fix}");
+        assert!(fix.contains("/Users/someone/.kobune"), "{fix}");
+        assert!(fix.contains("KOBUNE_DNS_PORT"), "{fix}");
+        assert!(!fix.contains("kobune setup"), "{fix}");
     }
     #[test]
     fn the_detail_says_which_kind_of_failure_it_was() {
@@ -721,7 +721,7 @@ mod tests {
     }
     #[test]
     fn a_port_that_was_asked_for_is_reported_plainly() {
-        // MINATO_HTTPS_PORT=8443 got exactly what it named. Calling that a
+        // KOBUNE_HTTPS_PORT=8443 got exactly what it named. Calling that a
         // fallback would present the user's own choice as an anomaly.
         assert_eq!(listening_detail(8443, false), "127.0.0.1:8443");
         assert_eq!(listening_detail(443, false), "127.0.0.1:443");

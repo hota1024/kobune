@@ -18,7 +18,7 @@ here ships in the product.
 docs/
   index.md            English home
   guide/              the guide
-  reference/          CLI, minato.toml, exit codes
+  reference/          CLI, kobune.toml, exit codes
   tutorials/          worked examples
   ja/                 the same tree in Japanese
   v0.1/               a released version, frozen (created at release time)

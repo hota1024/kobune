@@ -5,7 +5,7 @@
 //! project — is simply absent, and the environment fails to start every
 //! time. `[project] carry` names those files; this copies them.
 //!
-//! **A `minato.toml` arrives with a clone as readily as it is written by
+//! **A `kobune.toml` arrives with a clone as readily as it is written by
 //! hand**, so both ends are treated as untrusted: the source must resolve
 //! inside the repository, and the destination inside the worktree. The
 //! second is not the same check as the first — `git worktree add` has just
@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use minato_runtime::EventSink;
+use kobune_runtime::EventSink;
 
 use crate::paths::{Containment, resolve_within};
 
@@ -28,7 +28,7 @@ const LABEL: &str = "carrying files over";
 /// so it is visible rather than silently missing.
 ///
 /// `announce` is false where this runs on every start: a step that reports
-/// "nothing to copy" on each `minato up` is noise, while one that reports a
+/// "nothing to copy" on each `kobune up` is noise, while one that reports a
 /// file appearing is worth seeing.
 pub fn files(
     entries: &[String],
@@ -210,7 +210,7 @@ fn copy_file(source: &Path, destination: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minato_api::Event;
+    use kobune_api::Event;
     use std::path::PathBuf;
 
     /// A main checkout and an empty worktree beside it.
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn nothing_declared_says_nothing() {
-        // Otherwise every `minato new` grows a step for a feature the
+        // Otherwise every `kobune new` grows a step for a feature the
         // project does not use.
         let (_dir, main, worktree) = dirs();
 
@@ -424,7 +424,7 @@ mod tests {
             matches!(
                 event,
                 Event::Step {
-                    status: minato_api::StepStatus::Skipped { .. },
+                    status: kobune_api::StepStatus::Skipped { .. },
                     ..
                 }
             )
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn a_quiet_run_says_nothing_when_there_was_nothing_to_do() {
-        // `minato up` happens constantly. A step reporting "nothing to
+        // `kobune up` happens constantly. A step reporting "nothing to
         // copy" every time trains people to skim past the output.
         let (_dir, main, worktree) = dirs();
         std::fs::write(main.join(".env"), "a\n").expect("writes");

@@ -10,10 +10,10 @@ in the sentence, not evidence that the rule has softened.
 
 **`we` and `our` do not appear.** One instance today, in `guide/agents.md`.
 There is no project voice speaking about itself in the first person; where you
-want one, name the thing instead — "Minato waits for the health check", not "we
+want one, name the thing instead — "Kobune waits for the health check", not "we
 wait for the health check".
 
-**Present tense, indicative.** "`minato url` prints one line", not "will print".
+**Present tense, indicative.** "`kobune url` prints one line", not "will print".
 
 **Address the software as a subject where it has agency**, and the reader where
 they do. "`depends_on` waits for the dependency to be ready" and "Commit it".
@@ -55,7 +55,7 @@ the contractions, the first person and the spelling exactly as they were said.
 Rewrapping is fine; it changes nothing.
 
 **Nor inside quotation marks.** `Report "it's up" without checking`, in
-`skills/minato/SKILL.md`, names the thing an agent should not say, and it has to
+`skills/kobune/SKILL.md`, names the thing an agent should not say, and it has to
 sound like the thing it would have said. `"it is up"` is nobody's sentence. The
 same principle as the blockquote, one scale down.
 
@@ -126,5 +126,5 @@ sentence ends; the corpus does not one-sentence-per-line.
 banned sense is the one that tells the reader a thing is small when it is not.
 
 **`worktree`** is one word, lowercase, and is the git term. **`workspace`** is
-Minato's name for the environment a worktree has. They are not interchangeable;
+Kobune's name for the environment a worktree has. They are not interchangeable;
 `references/glossary.md` has the rest.

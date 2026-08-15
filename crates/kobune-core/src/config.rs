@@ -1,0 +1,1594 @@
+//! The schema and validation of `kobune.toml`.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::time::Duration;
+
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+
+use crate::env;
+use crate::error::{Error, Result};
+use crate::naming;
+
+/// The name of the configuration file.
+pub const CONFIG_FILE: &str = "kobune.toml";
+
+/// Where the worktree's source is mounted inside the container.
+pub const MOUNT_TARGET: &str = "/workspace";
+
+/// Where a service can write things worth keeping but not committing.
+///
+/// **Deliberately outside [`MOUNT_TARGET`].** Anywhere under the worktree
+/// is the host's disk, inside the repository — which is how a package
+/// store ends up as a gigabyte of untracked files in someone's checkout.
+/// Handed to every service as `KOBUNE_CACHE_DIR`.
+pub const CACHE_TARGET: &str = "/var/cache/kobune";
+
+/// The name of the volume behind [`CACHE_TARGET`].
+///
+/// **Deliberately not a valid volume name.** [`naming::is_valid_label`]
+/// allows only lowercase letters, digits and hyphens, and `VolumeMount`
+/// checks every declared name against it — so no `volumes` entry can reach
+/// this one however it is spelled.
+///
+/// Calling it `cache` would have collided with anyone already using that
+/// name: their storage would quietly have become the cache, which is the
+/// sort of migration nobody notices until the data looks gone.
+pub const CACHE_VOLUME: &str = "_cache";
+
+/// Where Kobune's own CA certificate is mounted, read-only.
+///
+/// **The browser trusts it and a container does not.** `kobune setup`
+/// puts the CA in the host's keychain, which is what makes
+/// `https://api.myapp.localhost` load without a warning — but a container
+/// carries its own trust store, so the same URL called from inside one
+/// fails to verify. Mounting the certificate is what lets a service call
+/// the URL it was handed instead of turning verification off.
+///
+/// Not under [`MOUNT_TARGET`]: it is not the worktree's, and a file that
+/// appeared in the repository would be committed by somebody. Handed to
+/// every service as `KOBUNE_CA_FILE`.
+pub const CA_TARGET: &str = "/etc/kobune/ca.crt";
+
+/// The paths Kobune mounts itself, and what to say when one is taken.
+///
+/// A table rather than a branch each: the next `KOBUNE_*` path should cost
+/// a line here, not another eight-line copy of the same check.
+const RESERVED_MOUNTS: [(&str, &str, &str); 2] = [
+    (
+        CACHE_TARGET,
+        "KOBUNE_CACHE_DIR",
+        "Write under $KOBUNE_CACHE_DIR, or mount yours somewhere else",
+    ),
+    (CA_TARGET, "KOBUNE_CA_FILE", "Mount yours somewhere else"),
+];
+
+/// The default when `idle_timeout` is omitted.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KobuneConfig {
+    pub project: ProjectSection,
+
+    #[serde(default)]
+    pub runtime: RuntimeSection,
+
+    #[serde(default)]
+    pub services: IndexMap<String, ServiceConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSection {
+    pub name: String,
+
+    /// The URL suffix. Defaults to `{name}.localhost`.
+    #[serde(default)]
+    pub domain: Option<String>,
+
+    /// Files to copy into a new worktree, relative to the repository root.
+    ///
+    /// For what git does not carry: an untracked but required `.env`.
+    #[serde(default)]
+    pub carry: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeSection {
+    #[serde(default = "default_runtime")]
+    pub default: String,
+}
+
+impl Default for RuntimeSection {
+    fn default() -> Self {
+        Self {
+            default: default_runtime(),
+        }
+    }
+}
+
+fn default_runtime() -> String {
+    "docker".to_string()
+}
+
+/// Whether a `volumes` source asks for per-worktree storage.
+///
+/// **A host path is never scoped**, however it is spelled: there is nothing
+/// to namespace about a directory the user already owns, and `@` is legal
+/// in a path. Without this, a real directory called `certs@workspace` on a
+/// shared service would be refused with a message describing something
+/// nobody wrote.
+///
+/// Mirrors how `VolumeMount::parse` decides the same thing, in
+/// `kobune-runtime`. It cannot be called from here — the runtime sits above
+/// this crate — so the one rule the two share is the prefix test, kept
+/// deliberately trivial so it can be read side by side.
+fn is_workspace_scoped(source: &str) -> bool {
+    let is_host_path =
+        source.starts_with('/') || source.starts_with('.') || source.starts_with('~');
+
+    !is_host_path && source.ends_with("@workspace")
+}
+
+/// An `env_file` entry as the file it names.
+///
+/// **Drops `.` segments**, so that two spellings of one file compare as
+/// one. Refusing `.kobune/env.local` while accepting `./.kobune/env.local`
+/// would not be much of a refusal, and two services claiming the same file
+/// under different spellings would go on overwriting each other.
+fn env_file_path(entry: &str) -> PathBuf {
+    Path::new(entry)
+        .components()
+        .filter(|part| !matches!(part, std::path::Component::CurDir))
+        .collect()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceConfig {
+    /// A prebuilt image. Mutually exclusive with `build`.
+    #[serde(default)]
+    pub image: Option<String>,
+
+    /// The build context, relative to the repository root. Mutually
+    /// exclusive with `image`.
+    #[serde(default)]
+    pub build: Option<String>,
+
+    /// The Dockerfile, relative to the repository root.
+    ///
+    /// Defaults to `Dockerfile` inside the build context. Naming it
+    /// separately is what lets several services build different images
+    /// from one context.
+    #[serde(default)]
+    pub dockerfile: Option<String>,
+
+    /// `--build-arg` values.
+    ///
+    /// A `BTreeMap` so the order is stable: these feed the fingerprint that
+    /// decides whether a rebuild is needed, and a map that reordered itself
+    /// would rebuild at random.
+    #[serde(default)]
+    pub build_args: BTreeMap<String, String>,
+
+    /// The port the service listens on inside the container.
+    #[serde(default)]
+    pub port: Option<u16>,
+
+    /// The start command. Falls back to the image's CMD.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// What to run once, before the service first starts.
+    ///
+    /// **Not once per container.** A stopped container is recreated by the
+    /// next `up`, so tying this to container creation would run it on
+    /// every `down`/`up` — which is the thing it exists to stop. It is
+    /// remembered against the worktree, and runs again when this changes.
+    #[serde(default)]
+    pub setup: Option<String>,
+
+    /// The working directory inside the container. Defaults to [`MOUNT_TARGET`].
+    #[serde(default)]
+    pub workdir: Option<String>,
+
+    /// Give the process a terminal, and keep its stdin open.
+    ///
+    /// **What a program looks for before it draws anything.** Turborepo,
+    /// Vitest and the rest ask whether stdout is a terminal, and settle for
+    /// plain scrolling text when it is not — which is what a container
+    /// without this gives them. With it, `kobune logs -f <service>` becomes
+    /// that terminal: colour comes through and keys reach the program.
+    ///
+    /// Off by default, because a terminal changes what the logs *are*: the
+    /// two output streams become one, so nothing separates stderr from
+    /// stdout any more, and lines arrive ending `\r\n`. A pipeline that
+    /// greps `kobune logs` should not have that happen to it unasked.
+    #[serde(default)]
+    pub tty: bool,
+
+    /// How readiness is determined. Used by scale-to-zero.
+    #[serde(default)]
+    pub health: Option<HealthCheck>,
+
+    /// How long without traffic before the service is stopped.
+    #[serde(default, with = "humantime_serde::option")]
+    pub idle_timeout: Option<Duration>,
+
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+
+    /// Where to write this service's settled environment, relative to the
+    /// worktree.
+    ///
+    /// **For the tools that read a file rather than their process's
+    /// environment.** `wrangler dev --env-file`, dotenvx and Vite all do,
+    /// and a variable Kobune injects cannot reach them otherwise.
+    ///
+    /// Secrets are left out of it. Written before the service starts, and
+    /// again whenever it is started.
+    #[serde(default)]
+    pub env_file: Option<String>,
+
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+
+    #[serde(default)]
+    pub scope: ServiceScope,
+
+    /// Whether to publish a URL. Defaults to true when `port` is set.
+    #[serde(default)]
+    pub expose: Option<bool>,
+
+    #[serde(default)]
+    pub volumes: Vec<String>,
+}
+
+impl ServiceConfig {
+    /// The effective value of `expose`.
+    pub fn exposed(&self) -> bool {
+        self.expose.unwrap_or(self.port.is_some())
+    }
+
+    pub fn workdir(&self) -> &str {
+        self.workdir.as_deref().unwrap_or(MOUNT_TARGET)
+    }
+
+    pub fn idle_timeout(&self) -> Duration {
+        self.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT)
+    }
+}
+
+/// Whether a service gets one instance per worktree or one per project.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceScope {
+    /// One independent instance per worktree.
+    #[default]
+    Workspace,
+    /// A single instance shared by every worktree of the project.
+    Project,
+}
+
+/// How readiness is determined.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum HealthCheck {
+    /// Ready when the response is 2xx or 3xx.
+    Http(String),
+    /// Ready when a TCP connection can be established.
+    Tcp(String),
+    /// Runs inside the container; ready on exit code 0.
+    Cmd(String),
+}
+
+impl FromStr for HealthCheck {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let s = s.trim();
+        if let Some(rest) = s.strip_prefix("cmd:") {
+            let cmd = rest.trim();
+            if cmd.is_empty() {
+                return Err("nothing follows `cmd:`".to_string());
+            }
+            return Ok(Self::Cmd(cmd.to_string()));
+        }
+        if s.starts_with("http://") || s.starts_with("https://") {
+            return Ok(Self::Http(s.to_string()));
+        }
+        if let Some(rest) = s.strip_prefix("tcp://") {
+            if rest.is_empty() {
+                return Err("nothing follows `tcp://`".to_string());
+            }
+            return Ok(Self::Tcp(rest.to_string()));
+        }
+        Err(format!(
+            "cannot parse `{s}` as a health check. \
+             Use `http://...`, `https://...`, `tcp://host:port` or `cmd:...`"
+        ))
+    }
+}
+
+impl TryFrom<String> for HealthCheck {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<HealthCheck> for String {
+    fn from(value: HealthCheck) -> Self {
+        match value {
+            HealthCheck::Http(url) => url,
+            HealthCheck::Tcp(addr) => format!("tcp://{addr}"),
+            HealthCheck::Cmd(cmd) => format!("cmd:{cmd}"),
+        }
+    }
+}
+
+impl KobuneConfig {
+    /// Searches upwards from `start` for `kobune.toml`.
+    ///
+    /// Returns the path found along with the parsed configuration.
+    pub fn find(start: &Path) -> Result<(PathBuf, Self)> {
+        let mut dir = Some(start);
+        while let Some(current) = dir {
+            let candidate = current.join(CONFIG_FILE);
+            if candidate.is_file() {
+                let config = Self::load(&candidate)?;
+                return Ok((candidate, config));
+            }
+            dir = current.parent();
+        }
+        Err(Error::ConfigNotFound(start.to_path_buf()))
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path).map_err(|source| Error::ConfigRead {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+        let config: Self = toml::from_str(&text).map_err(|source| Error::ConfigParse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// The URL suffix. `{name}.localhost` when `[project] domain` is unset.
+    pub fn domain(&self) -> String {
+        self.project
+            .domain
+            .clone()
+            .unwrap_or_else(|| format!("{}.localhost", self.project.name))
+    }
+
+    pub fn service(&self, name: &str) -> Result<&ServiceConfig> {
+        self.services
+            .get(name)
+            .ok_or_else(|| Error::ServiceNotFound(name.to_string()))
+    }
+
+    /// Checks that a syntactically valid configuration also makes sense.
+    pub fn validate(&self) -> Result<()> {
+        if !naming::is_valid_label(&self.project.name) {
+            return Err(Error::ConfigInvalid(format!(
+                "[project] name = \"{}\" is not a usable DNS label. \
+                 Use lowercase letters, digits and hyphens, up to 63 characters",
+                self.project.name
+            )));
+        }
+
+        for entry in &self.project.carry {
+            self.validate_carry_entry(entry)?;
+        }
+
+        if self.services.is_empty() {
+            return Err(Error::ConfigInvalid("no services are defined".to_string()));
+        }
+
+        for (name, svc) in &self.services {
+            self.validate_service(name, svc)?;
+        }
+
+        self.validate_env_files_are_distinct()?;
+        self.validate_no_dependency_cycle()?;
+        Ok(())
+    }
+
+    /// Checks that no two services want the same file.
+    ///
+    /// **They hold different environments**, so sharing a path means each
+    /// start overwrites the other's — whichever service woke last decides
+    /// what the file says, and "rewriting it unchanged is not a write"
+    /// never holds, so anything watching it restarts every time.
+    fn validate_env_files_are_distinct(&self) -> Result<()> {
+        let mut claimed: BTreeMap<PathBuf, &str> = BTreeMap::new();
+
+        for (name, svc) in &self.services {
+            let Some(entry) = svc.env_file.as_deref() else {
+                continue;
+            };
+
+            if let Some(other) = claimed.insert(env_file_path(entry), name) {
+                return Err(Error::ConfigInvalid(format!(
+                    "services `{other}` and `{name}` both write env_file \
+                     `{entry}`. They hold different environments, so each \
+                     start would overwrite the other — give them one path each"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Checks one `carry` entry before anything is copied.
+    ///
+    /// **These name files Kobune reads on the user's behalf**, and a
+    /// `kobune.toml` arrives with a cloned repository as readily as it is
+    /// written by hand. Anything reaching outside the repository is refused
+    /// here rather than at copy time, so a bad entry is a configuration error
+    /// with a clear message instead of a surprise during `kobune new`.
+    ///
+    /// Syntax only. A symlink inside the repository can still point out of it,
+    /// and that is caught where the copy happens, against the resolved path.
+    fn validate_carry_entry(&self, entry: &str) -> Result<()> {
+        let refuse = |why: &str| {
+            Err(Error::ConfigInvalid(format!(
+                "[project] carry entry `{entry}` {why}. Use a path relative to \
+                 the repository root, like \".env\" or \"apps/api/.env\""
+            )))
+        };
+
+        if entry.trim().is_empty() {
+            return refuse("is empty");
+        }
+
+        let path = Path::new(entry);
+
+        // Its own message: `~/x` is not an absolute path, and saying it is
+        // sends someone looking for a leading slash they never wrote.
+        if entry.starts_with('~') {
+            return refuse("starts with ~, which Kobune does not expand");
+        }
+
+        if path.is_absolute() {
+            return refuse("is an absolute path");
+        }
+
+        if path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return refuse("leaves the repository");
+        }
+
+        Ok(())
+    }
+
+    /// Checks where a service wants its environment written.
+    ///
+    /// Syntax and scope only. Whether the path is one Kobune may write —
+    /// tracked by git, or holding a file it did not write — is decided
+    /// against the worktree at start, where those questions can be asked.
+    fn validate_env_file(&self, name: &str, entry: &str, scope: ServiceScope) -> Result<()> {
+        let refuse = |why: &str| {
+            Err(Error::ConfigInvalid(format!(
+                "service `{name}`: env_file `{entry}` {why}. Use a path \
+                 relative to the worktree, like \".kobune/env.api\" or \
+                 \"apps/web/.env.local\""
+            )))
+        };
+
+        if entry.trim().is_empty() {
+            return refuse("is empty");
+        }
+
+        // Padding is never what was meant, and joining it produces a file
+        // whose name nothing else will ever spell the same way.
+        if entry != entry.trim() {
+            return refuse("has whitespace around it");
+        }
+
+        let path = Path::new(entry);
+
+        if entry.starts_with('~') {
+            return refuse("starts with ~, which Kobune does not expand");
+        }
+
+        if path.is_absolute() {
+            return refuse("is an absolute path");
+        }
+
+        if path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return refuse("leaves the worktree");
+        }
+
+        // **Kobune reads these two itself**, so writing one would feed the
+        // generated file back in as a layer — and the workspace layer is
+        // the most specific there is. Last run's `KOBUNE_URL_*` would then
+        // outrank the one being injected now, and a value put there with
+        // `kobune env set --workspace` would be overwritten at the next
+        // start, since the header it keeps still reads as generated.
+        let reserved = [
+            Path::new(env::ENV_DIR).join(env::PROJECT_ENV_FILE),
+            Path::new(env::ENV_DIR).join(env::WORKSPACE_ENV_FILE),
+        ];
+
+        // Compared as `./x` and `x` name one file, which a refusal that
+        // spelling could walk around would not be much of a refusal.
+        if reserved.iter().any(|held| env_file_path(entry) == *held) {
+            return refuse(
+                "is a file Kobune reads as an environment layer of its own. \
+                 Write beside it instead, like \".kobune/env.api\"",
+            );
+        }
+
+        // A shared service is mounted no worktree, so the file would be
+        // written where that container cannot see it — into whichever
+        // worktree happened to start it.
+        if scope == ServiceScope::Project {
+            return refuse(
+                "is on a service with scope = \"project\", which is mounted \
+                 no worktree to write it into",
+            );
+        }
+
+        Ok(())
+    }
+
+    fn validate_service(&self, name: &str, svc: &ServiceConfig) -> Result<()> {
+        if !naming::is_valid_label(name) {
+            return Err(Error::ConfigInvalid(format!(
+                "the service name `{name}` is not a usable DNS label. \
+                 Use lowercase letters, digits and hyphens, up to 63 characters"
+            )));
+        }
+
+        match (&svc.image, &svc.build) {
+            (Some(_), Some(_)) => {
+                return Err(Error::ConfigInvalid(format!(
+                    "service `{name}`: image and build are mutually exclusive"
+                )));
+            }
+            (None, None) => {
+                return Err(Error::ConfigInvalid(format!(
+                    "service `{name}`: one of image or build is required"
+                )));
+            }
+            _ => {}
+        }
+
+        if svc.dockerfile.is_some() && svc.build.is_none() {
+            return Err(Error::ConfigInvalid(format!(
+                "service `{name}`: dockerfile needs build to say which \
+                 context to build in"
+            )));
+        }
+
+        if !svc.build_args.is_empty() && svc.build.is_none() {
+            return Err(Error::ConfigInvalid(format!(
+                "service `{name}`: build_args has no effect without build"
+            )));
+        }
+
+        if svc.expose == Some(true) && svc.port.is_none() {
+            return Err(Error::ConfigInvalid(format!(
+                "service `{name}`: expose = true requires a port"
+            )));
+        }
+
+        if let Some(env_file) = &svc.env_file {
+            self.validate_env_file(name, env_file, svc.scope)?;
+        }
+
+        for dep in &svc.depends_on {
+            let target = self.services.get(dep).ok_or_else(|| {
+                Error::ConfigInvalid(format!(
+                    "service `{name}`: depends_on refers to undefined service `{dep}`"
+                ))
+            })?;
+
+            // A shared instance depending on a per-worktree one leaves no
+            // way to decide which worktree's instance to connect to.
+            if svc.scope == ServiceScope::Project && target.scope == ServiceScope::Workspace {
+                return Err(Error::ConfigInvalid(format!(
+                    "service `{name}` (scope = \"project\") depends on \
+                     `{dep}` (scope = \"workspace\"). A shared service cannot \
+                     depend on a per-worktree one"
+                )));
+            }
+        }
+
+        // An empty one splits to no words at all, which the runtime reads
+        // as "use the image's default command" — so `setup = ""` would
+        // start the service's own entrypoint in the setup container and
+        // wait for it to exit, which for a server is never.
+        if svc
+            .setup
+            .as_deref()
+            .is_some_and(|setup| setup.trim().is_empty())
+        {
+            return Err(Error::ConfigInvalid(format!(
+                "service `{name}`: setup is empty. Give it a command, or \
+                 remove the line"
+            )));
+        }
+
+        // The names cannot be taken — `_cache` is not a valid volume name,
+        // and the CA is not a named volume at all — but the places they
+        // are mounted can be. Two mounts on one target is an error from
+        // the container engine, several steps away from the line that
+        // caused it.
+        for volume in &svc.volumes {
+            let mut parts = volume.split(':');
+            let _source = parts.next();
+            let target = parts.next();
+
+            for (reserved, variable, way_out) in RESERVED_MOUNTS {
+                if target != Some(reserved) {
+                    continue;
+                }
+
+                return Err(Error::ConfigInvalid(format!(
+                    "service `{name}`: {reserved} is where {variable} is \
+                     already mounted, so `{volume}` would be a second mount \
+                     on the same path. {way_out}"
+                )));
+            }
+        }
+
+        // Same reason, for storage rather than services: one instance
+        // serves every worktree, so there is no worktree whose volume it
+        // would be. Caught here rather than at start, where it would come
+        // out as a container mounting whichever one it happened to make.
+        if svc.scope == ServiceScope::Project {
+            for volume in &svc.volumes {
+                if volume.split(':').next().is_some_and(is_workspace_scoped) {
+                    return Err(Error::ConfigInvalid(format!(
+                        "service `{name}` (scope = \"project\") asks for the \
+                         workspace-scoped volume `{volume}`. A shared service \
+                         has no worktree to keep one per"
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_no_dependency_cycle(&self) -> Result<()> {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Mark {
+            Unvisited,
+            InProgress,
+            Done,
+        }
+
+        let mut marks: IndexMap<&str, Mark> = self
+            .services
+            .keys()
+            .map(|k| (k.as_str(), Mark::Unvisited))
+            .collect();
+
+        // Explicit-stack DFS. The path is kept so the cycle can be named.
+        for root in self.services.keys() {
+            if marks[root.as_str()] != Mark::Unvisited {
+                continue;
+            }
+
+            let mut path: Vec<&str> = vec![root.as_str()];
+            let mut cursor: Vec<usize> = vec![0];
+            marks[root.as_str()] = Mark::InProgress;
+
+            while let Some(&node) = path.last() {
+                let index = *cursor
+                    .last()
+                    .expect("cursor and path are pushed in lockstep");
+                let deps = &self.services[node].depends_on;
+
+                if index >= deps.len() {
+                    marks[node] = Mark::Done;
+                    path.pop();
+                    cursor.pop();
+                    continue;
+                }
+
+                *cursor.last_mut().expect("as above") += 1;
+                let dep = deps[index].as_str();
+
+                match marks[dep] {
+                    Mark::Done => {}
+                    Mark::InProgress => {
+                        let start = path.iter().position(|n| *n == dep).unwrap_or(0);
+                        let mut chain: Vec<&str> = path[start..].to_vec();
+                        chain.push(dep);
+                        return Err(Error::ConfigInvalid(format!(
+                            "depends_on has a cycle: {}",
+                            chain.join(" -> ")
+                        )));
+                    }
+                    Mark::Unvisited => {
+                        marks[dep] = Mark::InProgress;
+                        path.push(dep);
+                        cursor.push(0);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Orders service names so that dependencies come first.
+    ///
+    /// Every service is returned: [`Self::validate`] has already ruled out
+    /// cycles.
+    pub fn startup_order(&self) -> Vec<&str> {
+        let mut ordered: Vec<&str> = Vec::with_capacity(self.services.len());
+        let mut visited: IndexMap<&str, bool> =
+            self.services.keys().map(|k| (k.as_str(), false)).collect();
+
+        for root in self.services.keys() {
+            let mut stack = vec![(root.as_str(), 0usize)];
+
+            while let Some((node, index)) = stack.pop() {
+                if visited[node] {
+                    continue;
+                }
+
+                let deps = &self.services[node].depends_on;
+                if index < deps.len() {
+                    stack.push((node, index + 1));
+                    let dep = deps[index].as_str();
+                    if !visited[dep] {
+                        stack.push((dep, 0));
+                    }
+                } else {
+                    visited[node] = true;
+                    ordered.push(node);
+                }
+            }
+        }
+
+        ordered
+    }
+
+    /// Groups services so that everything in one wave can start at once.
+    ///
+    /// Wave 0 is what depends on nothing. Wave *n* is what depends only on
+    /// services in earlier waves — so nothing within a wave depends on
+    /// anything else in it, which is what makes starting them together
+    /// safe.
+    ///
+    /// **Flattened, this is a valid startup order but not the same one
+    /// [`Self::startup_order`] gives.** Bucketing by depth necessarily
+    /// pulls every independent service ahead of every service one level
+    /// down, and `startup_order`'s depth-first walk does not. For
+    /// `web -> {api, cache}`, `api -> db`, `worker -> db`:
+    ///
+    /// ```text
+    /// startup_order  db, api, cache, web, worker
+    /// flattened      db, cache, api, worker, web
+    /// ```
+    ///
+    /// Both put every dependency in front of what needs it, which is all
+    /// either promises. A caller that cares which of the two it walks —
+    /// because something reads the state of whatever is already running —
+    /// wants `startup_order`, not this flattened.
+    pub fn startup_waves(&self) -> Vec<Vec<&str>> {
+        // One pass is enough because `startup_order` has already put every
+        // dependency in front of the service that names it: by the time a
+        // service is reached, each of its dependencies has a depth.
+        let mut depths: IndexMap<&str, usize> = IndexMap::with_capacity(self.services.len());
+
+        for name in self.startup_order() {
+            let depth = self.services[name]
+                .depends_on
+                .iter()
+                // Indexed, not looked up with a fallback. A missing
+                // dependency cannot happen — `validate` rejects one that
+                // names nothing, and `startup_order` puts the rest in
+                // front — and reading it as depth 0 would put a service in
+                // the same wave as its own dependency, which is the one
+                // thing this must never do.
+                .map(|dep| depths[dep.as_str()] + 1)
+                .max()
+                .unwrap_or(0);
+
+            depths.insert(name, depth);
+        }
+
+        let mut waves: Vec<Vec<&str>> = Vec::new();
+        for (name, depth) in depths {
+            if waves.len() <= depth {
+                waves.resize_with(depth + 1, Vec::new);
+            }
+            waves[depth].push(name);
+        }
+
+        waves
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> Result<KobuneConfig> {
+        let config: KobuneConfig = toml::from_str(text).expect("syntax is assumed valid");
+        config.validate()?;
+        Ok(config)
+    }
+
+    const MINIMAL: &str = r#"
+        [project]
+        name = "myapp"
+
+        [services.web]
+        image = "node:22"
+        port = 3000
+    "#;
+
+    #[test]
+    fn parses_minimal_config() {
+        let config = parse(MINIMAL).expect("valid");
+        assert_eq!(config.project.name, "myapp");
+        assert_eq!(config.runtime.default, "docker");
+        assert_eq!(config.domain(), "myapp.localhost");
+
+        let web = config.service("web").expect("exists");
+        assert!(web.exposed());
+        assert_eq!(web.workdir(), MOUNT_TARGET);
+        assert_eq!(web.idle_timeout(), DEFAULT_IDLE_TIMEOUT);
+    }
+
+    #[test]
+    fn parses_full_config() {
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            domain = "dev.example.com"
+
+            [runtime]
+            default = "docker"
+
+            [services.web]
+            image = "node:22"
+            port = 3000
+            command = "pnpm dev"
+            health = "http://localhost:3000/healthz"
+            idle_timeout = "15m"
+            depends_on = ["db"]
+            env = { NODE_ENV = "development" }
+
+            [services.db]
+            image = "postgres:16"
+            port = 5432
+            scope = "project"
+            expose = false
+            volumes = ["pgdata:/var/lib/postgresql/data"]
+            health = "tcp://localhost:5432"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(config.domain(), "dev.example.com");
+
+        let web = config.service("web").expect("exists");
+        assert_eq!(web.idle_timeout(), Duration::from_secs(15 * 60));
+        assert_eq!(
+            web.health,
+            Some(HealthCheck::Http("http://localhost:3000/healthz".into()))
+        );
+
+        let db = config.service("db").expect("exists");
+        assert_eq!(db.scope, ServiceScope::Project);
+        assert!(
+            !db.exposed(),
+            "expose = false hides the service even with a port"
+        );
+        assert_eq!(db.health, Some(HealthCheck::Tcp("localhost:5432".into())));
+    }
+
+    #[test]
+    fn rejects_image_and_build_together() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            build = "./web"
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn rejects_service_without_source() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            port = 3000
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("one of image or build"));
+    }
+
+    #[test]
+    fn accepts_files_to_carry() {
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            carry = [".env", "apps/api/.dev.vars"]
+            [services.web]
+            image = "node:22"
+        "#,
+        )
+        .expect("is valid");
+
+        assert_eq!(config.project.carry, vec![".env", "apps/api/.dev.vars"]);
+    }
+
+    #[test]
+    fn carry_defaults_to_nothing() {
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+        "#,
+        )
+        .expect("is valid");
+
+        assert!(config.project.carry.is_empty());
+    }
+
+    #[test]
+    fn refuses_carry_entries_that_leave_the_repository() {
+        // These name files Kobune reads on someone's behalf, and a
+        // kobune.toml arrives with a clone as readily as it is hand-written.
+        // Asserted per entry: a message that is true of one of these and
+        // not the others is exactly the drift worth catching.
+        let cases = [
+            ("../.env", "leaves the repository"),
+            ("a/../../b", "leaves the repository"),
+            ("/etc/passwd", "is an absolute path"),
+            ("~/.aws/credentials", "which Kobune does not expand"),
+        ];
+
+        for (entry, expected) in cases {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                carry = ["{entry}"]
+                [services.web]
+                image = "node:22"
+            "#
+            ))
+            .unwrap_err();
+
+            let message = err.to_string();
+            assert!(message.contains("carry"), "{entry}: {message}");
+            assert!(message.contains(expected), "{entry}: {message}");
+        }
+    }
+
+    #[test]
+    fn accepts_an_env_file_anywhere_in_the_worktree() {
+        // Anywhere, because the tools that need this read a path of their
+        // own choosing: `.env.local` beside the app, not `.kobune/`.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            env_file = "apps/web/.env.local"
+        "#,
+        )
+        .expect("is valid");
+
+        assert_eq!(
+            config.services["web"].env_file.as_deref(),
+            Some("apps/web/.env.local")
+        );
+    }
+
+    #[test]
+    fn refuses_an_env_file_that_leaves_the_worktree() {
+        let cases = [
+            ("../.env", "leaves the worktree"),
+            ("/etc/environment", "is an absolute path"),
+            ("~/.env", "which Kobune does not expand"),
+            ("  ", "is empty"),
+            (" .env ", "has whitespace around it"),
+        ];
+
+        for (entry, expected) in cases {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "node:22"
+                env_file = "{entry}"
+            "#
+            ))
+            .unwrap_err();
+
+            let message = err.to_string();
+            assert!(message.contains("env_file"), "{entry}: {message}");
+            assert!(message.contains(expected), "{entry}: {message}");
+        }
+    }
+
+    #[test]
+    fn refuses_an_env_file_kobune_reads_as_a_layer_of_its_own() {
+        // Writing one feeds the generated file back in as input, and the
+        // workspace layer is the most specific there is: last run's
+        // KOBUNE_URL_* would outrank the one being injected now, and a
+        // `kobune env set --workspace` value would be overwritten.
+        for entry in [".kobune/env", ".kobune/env.local", "./.kobune/env.local"] {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "node:22"
+                env_file = "{entry}"
+            "#
+            ))
+            .unwrap_err();
+
+            let message = err.to_string();
+            assert!(message.contains("environment layer"), "{entry}: {message}");
+        }
+    }
+
+    #[test]
+    fn refuses_two_services_writing_the_same_env_file() {
+        // They hold different environments, so each start would overwrite
+        // the other's — and nothing watching the file would ever settle.
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            env_file = ".kobune/env.shared"
+            [services.api]
+            image = "node:22"
+            env_file = ".kobune/env.shared"
+        "#,
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("env_file"), "{message}");
+        assert!(
+            message.contains("web") && message.contains("api"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn refuses_an_env_file_on_a_shared_service() {
+        // A shared service is mounted no worktree, so the file would land
+        // where that container cannot see it.
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.db]
+            image = "postgres:16"
+            scope = "project"
+            env_file = ".kobune/env.db"
+        "#,
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("env_file"), "{message}");
+        assert!(message.contains("scope"), "{message}");
+    }
+
+    #[test]
+    fn refuses_an_empty_carry_entry() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            carry = ["  "]
+            [services.web]
+            image = "node:22"
+        "#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("is empty"), "{err}");
+    }
+
+    #[test]
+    fn rejects_expose_without_port() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            expose = true
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("requires a port"));
+    }
+
+    #[test]
+    fn rejects_unknown_dependency() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            depends_on = ["nope"]
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("undefined service"));
+    }
+
+    #[test]
+    fn rejects_shared_service_depending_on_workspace_service() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.cache]
+            image = "redis:7"
+            scope = "project"
+            depends_on = ["web"]
+            [services.web]
+            image = "node:22"
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("A shared service cannot"));
+    }
+
+    #[test]
+    fn refuses_a_workspace_volume_on_a_shared_service() {
+        // One instance serves every worktree, so there is no worktree whose
+        // volume it would be.
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.db]
+            image = "postgres:16"
+            scope = "project"
+            volumes = ["pgdata@workspace:/var/lib/postgresql/data"]
+        "#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("no worktree"), "{err}");
+    }
+
+    #[test]
+    fn a_host_path_ending_in_workspace_is_not_a_scope() {
+        // A real directory named `certs@workspace`. Refusing this would
+        // fail the whole project with a message about something the user
+        // did not write.
+        parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.db]
+            image = "postgres:16"
+            scope = "project"
+            volumes = ["./certs@workspace:/certs:ro"]
+        "#,
+        )
+        .expect("a host path is never scoped, however it is spelled");
+    }
+
+    #[test]
+    fn an_empty_setup_is_refused() {
+        // It splits to no words, which the runtime reads as "use the
+        // image's command" — so the setup container would start the
+        // service itself and be waited on for ever.
+        for setup in ["", "   "] {
+            let err = parse(&format!(
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "node:22"
+                setup = "{setup}"
+            "#
+            ))
+            .unwrap_err();
+
+            assert!(err.to_string().contains("setup is empty"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_cache_volume_cannot_be_named() {
+        // Not a reservation to remember — `_cache` is not a valid volume
+        // name, so no spelling of `volumes` can reach it. Anyone already
+        // using a volume called `cache` keeps it, and keeps its contents.
+        assert!(!naming::is_valid_label(CACHE_VOLUME));
+
+        parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["cache:/tmp/cache"]
+        "#,
+        )
+        .expect("`cache` is an ordinary name, and stays one");
+    }
+
+    #[test]
+    fn a_second_mount_on_the_cache_path_is_refused() {
+        // Two mounts on one target is an error from the container engine,
+        // a long way from the line that caused it.
+        let err = parse(&format!(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["mine:{CACHE_TARGET}"]
+        "#
+        ))
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("KOBUNE_CACHE_DIR"), "{message}");
+        assert!(!message.contains("  "), "run-together spacing: {message}");
+    }
+
+    #[test]
+    fn a_second_mount_on_the_certificate_path_is_refused() {
+        // Same reason as the cache path, and the same failure without it:
+        // the engine refuses the container and names neither the file nor
+        // the line that asked for it.
+        let err = parse(&format!(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["mine:{CA_TARGET}"]
+        "#
+        ))
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("KOBUNE_CA_FILE"), "{message}");
+    }
+
+    #[test]
+    fn mounting_below_the_cache_path_is_allowed() {
+        parse(&format!(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["mine:{CACHE_TARGET}/mine"]
+        "#
+        ))
+        .expect("only the exact path is taken");
+    }
+
+    #[test]
+    fn a_workspace_volume_is_fine_on_a_per_worktree_service() {
+        parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            volumes = ["node-modules@workspace:/workspace/node_modules"]
+        "#,
+        )
+        .expect("this is the case the scope exists for");
+    }
+
+    #[test]
+    fn rejects_dependency_cycle() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.a]
+            image = "x"
+            depends_on = ["b"]
+            [services.b]
+            image = "x"
+            depends_on = ["a"]
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("has a cycle"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_self_dependency() {
+        let err = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.a]
+            image = "x"
+            depends_on = ["a"]
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("has a cycle"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_project_name() {
+        let err = parse(
+            r#"
+            [project]
+            name = "My App"
+            [services.web]
+            image = "node:22"
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a usable DNS label"));
+    }
+
+    #[test]
+    fn rejects_unknown_field() {
+        let result: std::result::Result<KobuneConfig, _> = toml::from_str(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "node:22"
+            porrt = 3000
+        "#,
+        );
+        assert!(result.is_err(), "a typo must be caught");
+    }
+
+    /// `web` -> `api` -> `db`: nothing can overlap.
+    const CHAIN: &str = r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["api"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.db]
+            image = "x"
+        "#;
+
+    /// `web` over both `api` and `worker`, which share `db`. The two
+    /// middles are independent of each other.
+    const DIAMOND: &str = r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["api", "worker"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.worker]
+            image = "x"
+            depends_on = ["db"]
+            [services.db]
+            image = "x"
+        "#;
+
+    #[test]
+    fn startup_order_respects_dependencies() {
+        let config = parse(CHAIN).expect("valid");
+
+        let order = config.startup_order();
+        assert_eq!(order.len(), 3);
+
+        let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
+        assert!(pos("db") < pos("api"));
+        assert!(pos("api") < pos("web"));
+    }
+
+    #[test]
+    fn startup_order_handles_diamond() {
+        let config = parse(DIAMOND).expect("valid");
+
+        let order = config.startup_order();
+        assert_eq!(
+            order.len(),
+            4,
+            "every service appears exactly once: {order:?}"
+        );
+
+        let pos = |name: &str| order.iter().position(|s| *s == name).expect("present");
+        assert!(pos("db") < pos("api"));
+        assert!(pos("db") < pos("worker"));
+        assert!(pos("api") < pos("web"));
+        assert!(pos("worker") < pos("web"));
+    }
+
+    #[test]
+    fn services_that_need_nothing_share_the_first_wave() {
+        // The point of the whole thing: three services that know nothing
+        // of each other are one wave, not three.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            [services.api]
+            image = "x"
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(config.startup_waves(), vec![vec!["web", "api", "db"]]);
+    }
+
+    #[test]
+    fn a_chain_gets_a_wave_each() {
+        let config = parse(CHAIN).expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api"], vec!["web"]]
+        );
+    }
+
+    #[test]
+    fn a_diamond_puts_the_two_middles_together() {
+        let config = parse(DIAMOND).expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api", "worker"], vec!["web"]]
+        );
+    }
+
+    #[test]
+    fn a_wave_waits_for_the_furthest_of_its_dependencies() {
+        // `web` depends on `db` directly as well as through `api`. Put in
+        // wave 1 it would start alongside `api`, which is the one thing
+        // `depends_on` promises it will not do.
+        let config = parse(
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["db", "api"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.db]
+            image = "x"
+        "#,
+        )
+        .expect("valid");
+
+        assert_eq!(
+            config.startup_waves(),
+            vec![vec!["db"], vec!["api"], vec!["web"]]
+        );
+    }
+
+    /// `web` over `api` and `cache`; `api` and `worker` over `db`. The
+    /// point of it is that `cache` and `worker` are independent of the
+    /// chain through `api`, which is where the two orders come apart.
+    const FORK: &str = r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            depends_on = ["api", "cache"]
+            [services.api]
+            image = "x"
+            depends_on = ["db"]
+            [services.worker]
+            image = "x"
+            depends_on = ["db"]
+            [services.cache]
+            image = "x"
+            [services.db]
+            image = "x"
+        "#;
+
+    #[test]
+    fn every_dependency_still_comes_first_when_the_waves_are_flattened() {
+        let config = parse(FORK).expect("valid");
+
+        let flattened: Vec<&str> = config.startup_waves().concat();
+        let pos = |name: &str| flattened.iter().position(|s| *s == name).expect("present");
+
+        assert_eq!(flattened.len(), config.services.len());
+        assert!(pos("db") < pos("api"));
+        assert!(pos("db") < pos("worker"));
+        assert!(pos("api") < pos("web"));
+        assert!(pos("cache") < pos("web"));
+    }
+
+    #[test]
+    fn flattening_the_waves_is_not_the_same_list_as_startup_order() {
+        // Pinned because it is easy to assume otherwise, and something
+        // did: the two are both valid, and a caller that reads the state
+        // of whatever is already running can tell them apart. See the
+        // note on `startup_waves`, and `supervisor::waves`, which keeps
+        // sequential backends on `startup_order` for this reason.
+        let config = parse(FORK).expect("valid");
+
+        assert_eq!(
+            config.startup_order(),
+            vec!["db", "api", "cache", "web", "worker"]
+        );
+        assert_eq!(
+            config.startup_waves().concat(),
+            vec!["db", "cache", "api", "worker", "web"]
+        );
+    }
+
+    #[test]
+    fn health_check_roundtrip() {
+        let cases = [
+            (
+                "http://localhost:3000/healthz",
+                "http://localhost:3000/healthz",
+            ),
+            ("tcp://localhost:5432", "tcp://localhost:5432"),
+            ("cmd:pg_isready", "cmd:pg_isready"),
+        ];
+
+        for (input, expected) in cases {
+            let parsed: HealthCheck = input.parse().expect("parses");
+            let back: String = parsed.into();
+            assert_eq!(back, expected);
+        }
+    }
+
+    #[test]
+    fn health_check_rejects_unknown_scheme() {
+        assert!("ftp://x".parse::<HealthCheck>().is_err());
+        assert!("localhost:3000".parse::<HealthCheck>().is_err());
+    }
+}

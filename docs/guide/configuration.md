@@ -1,10 +1,10 @@
 # Configuration
 
-Everything lives in `minato.toml` at the repository root. It is committed, and
+Everything lives in `kobune.toml` at the repository root. It is committed, and
 every worktree reads the same one.
 
 For an exhaustive list of keys, see the
-[`minato.toml` reference](../reference/minato-toml). This page is about the
+[`kobune.toml` reference](../reference/kobune-toml). This page is about the
 decisions behind them.
 
 ## A minimal file
@@ -20,7 +20,7 @@ command = "npm run dev"
 ```
 
 The project name appears in every URL, so it has to be unique across the
-projects one daemon manages. Minato refuses to register two projects with the
+projects one daemon manages. Kobune refuses to register two projects with the
 same name rather than let their URLs collide.
 
 ## Several services
@@ -66,7 +66,7 @@ shared one means every branch sees the same data, which is usually what you
 want while developing, and occasionally the opposite, when two branches carry
 different migrations.
 
-Minato does not solve the migration problem. If two branches migrate the same
+Kobune does not solve the migration problem. If two branches migrate the same
 shared database in incompatible ways, they will fight. Use
 `scope = "workspace"` for those, and accept the seeding cost.
 
@@ -89,14 +89,14 @@ health = "http://localhost:3000/healthz"
 health = "tcp://localhost:5432"
 ```
 
-This is how Minato decides a service is *ready*, as opposed to merely started.
+This is how Kobune decides a service is *ready*, as opposed to merely started.
 Without it, readiness means "a TCP connection succeeds", which for an HTTP
 service can be true well before it can serve anything.
 
 Two things to know:
 
 - **Only the path is used** for `http://`. What you write is the address from
-  inside the container; what Minato can reach is whatever the runtime assigned.
+  inside the container; what Kobune can reach is whatever the runtime assigned.
   The host and port you write are ignored.
 - **`cmd:` runs inside the container.** `health = "cmd:pg_isready -U postgres"`
   is the only way to tell a database that accepts connections from one that
@@ -205,7 +205,7 @@ image already exists. That last part is what keeps waking a stopped service
 fast.
 
 The fingerprint cannot see a file the Dockerfile copies in, so a change to
-`package.json` alone does not rebuild. `minato up --build` forces one.
+`package.json` alone does not rebuild. `kobune up --build` forces one.
 
 Prefer a prebuilt image where you can. Mounting your source into `node:22`
 starts faster than building, and it is the shorter path to a working
@@ -214,5 +214,5 @@ that an off-the-shelf image does not carry.
 
 ## What is not supported yet
 
-- **`minato.local.toml`** — per-worktree overrides. Environment variable layers
+- **`kobune.local.toml`** — per-worktree overrides. Environment variable layers
   cover most of what it was for.

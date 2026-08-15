@@ -9,9 +9,9 @@ on:
     #
     # `**/*.md` is deliberately not here. The only markdown outside docs/ is
     # `README.md`, which is packaged into the archive, and
-    # `skills/minato/SKILL.md`, which `include_str!` puts inside the binary
+    # `skills/kobune/SKILL.md`, which `include_str!` puts inside the binary
     # — so both change what is released, and ignoring them would leave
-    # `minato skill install` writing last month's text.
+    # `kobune skill install` writing last month's text.
     #
     # `assets/**` is the logo. It is served by the site and shown in the
     # README; nothing in it has ever been inside a binary.
@@ -72,23 +72,23 @@ jobs:
       - name: Build and package
         env:
           # Every nightly reports the same 0.1.0, so the binary records the
-          # commit it was built from instead. `minato update` compares that
+          # commit it was built from instead. `kobune update` compares that
           # against the release to decide whether there is anything to do.
-          MINATO_BUILD_COMMIT: ${{ github.sha }}
+          KOBUNE_BUILD_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           mkdir -p dist
 
           for target in ${{ matrix.targets }}; do
             cargo build --release --locked \
-              --target "$target" -p minato -p minatod
+              --target "$target" -p kobune -p kobuned
 
-            name="minato-$target"
+            name="kobune-$target"
             staging="$(mktemp -d)/$name"
             mkdir -p "$staging"
 
-            cp "target/$target/release/minato" "$staging/"
-            cp "target/$target/release/minatod" "$staging/"
+            cp "target/$target/release/kobune" "$staging/"
+            cp "target/$target/release/kobuned" "$staging/"
             # NOTICE travels with every distribution — Apache-2.0 §4(d).
             cp LICENSE NOTICE README.md "$staging/"
 
@@ -151,17 +151,17 @@ jobs:
             "\`\`\`" \
             "" \
             "That picks the right archive, checks it against its \`.sha256\`," \
-            "and installs shell completions. \`minato update\` replaces an" \
+            "and installs shell completions. \`kobune update\` replaces an" \
             "installation with whatever this tag points at." \
             "" \
             "By hand:" \
             "" \
             "\`\`\`console" \
-            "\$ tar xzf minato-x86_64-unknown-linux-gnu.tar.gz" \
-            "\$ cd minato-x86_64-unknown-linux-gnu && ./minato doctor" \
+            "\$ tar xzf kobune-x86_64-unknown-linux-gnu.tar.gz" \
+            "\$ cd kobune-x86_64-unknown-linux-gnu && ./kobune doctor" \
             "\`\`\`" \
             "" \
-            "\`minato\` and \`minatod\` have to stay in the same directory:" \
+            "\`kobune\` and \`kobuned\` have to stay in the same directory:" \
             "the CLI starts the daemon by looking next to itself.")
 
           if gh release view "$CHANNEL" >/dev/null 2>&1; then

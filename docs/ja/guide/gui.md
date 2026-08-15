@@ -1,6 +1,6 @@
 # デスクトップアプリ
 
-`minato-desktop` は、メニューバーに常駐する GPUI 製の小さなアプリケーション
+`kobune-desktop` は、メニューバーに常駐する GPUI 製の小さなアプリケーション
 です。稼働中の環境、その URL、ログを確認できます。
 
 常時開いておくことは想定していません。現在の状況を確認し、必要な環境を開く
@@ -9,8 +9,8 @@
 ## 起動
 
 ```console
-$ cargo build --release -p minato-desktop
-$ ./target/release/minato-desktop
+$ cargo build --release -p kobune-desktop
+$ ./target/release/kobune-desktop
 ```
 
 ## ビルド
@@ -28,7 +28,7 @@ bindgen がシステムヘッダを見つけられない場合は、`PATH` の�
 $ export PATH=$(echo $PATH | tr ':' '\n' | grep -v wasi-sdk | paste -sd: -)
 $ unset WASI_SDK_PATH
 $ export LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib
-$ cargo build -p minato-desktop
+$ cargo build -p kobune-desktop
 ```
 
 症状は CoreMedia などのフレームワークが見つからないというもので、原因は

@@ -1,10 +1,10 @@
-# What is Minato?
+# What is Kobune?
 
-Minato gives every git worktree its own running environment, reachable at its
+Kobune gives every git worktree its own running environment, reachable at its
 own URL.
 
 ```console
-$ minato new feature/user-auth
+$ kobune new feature/user-auth
   ✓ creating worktree feature/user-auth
   ✓ starting web
   ✓ waiting for web
@@ -25,7 +25,7 @@ switching, waiting for it to come back, and losing your place. Running several
 branches at once means finding free ports, remembering which is which, and
 tripping over shared state.
 
-Worktrees already solve the source-code half of this. Minato solves the
+Worktrees already solve the source-code half of this. Kobune solves the
 running-it half:
 
 - **Every worktree gets a URL** built from its branch name, so
@@ -43,7 +43,7 @@ code needs to check that its change works, and the usual answer — reach for
 `docker`, guess a port, curl it — goes wrong in ways that are hard to see.
 
 So every command speaks `--json`, every failure exits with a code that says
-what kind of failure it was, and `minato skill install` writes a Skill file
+what kind of failure it was, and `kobune skill install` writes a Skill file
 that tells an agent which commands to reach for and which to avoid. An agent
 that follows it never touches `docker` directly, never guesses a port, and gets
 a real error instead of an empty response when something is wrong.
@@ -56,9 +56,9 @@ information, laid out to be read rather than parsed.
 - **Not a production deployment tool.** Everything here assumes a development
   machine and a person who owns it.
 - **Not a container runtime.** Docker or Apple Container does that work;
-  Minato arranges it.
+  Kobune arranges it.
 - **Not a replacement for compose.** If one stack on one branch is all you
-  need, compose is simpler and you should keep using it. Minato earns its keep
+  need, compose is simpler and you should keep using it. Kobune earns its keep
   when branches multiply.
 
 ## Where to go next

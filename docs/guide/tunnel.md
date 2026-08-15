@@ -4,7 +4,7 @@ A Cloudflare Tunnel makes an environment reachable from outside your machine —
 a phone, a reviewer, a webhook that has to reach you.
 
 ::: danger This puts your environment on the internet
-Minato cannot apply a Cloudflare Access policy: that needs Cloudflare's API,
+Kobune cannot apply a Cloudflare Access policy: that needs Cloudflare's API,
 and everything here goes through the `cloudflared` CLI. Since it cannot promise
 a policy is in place, it will not expose anything without `--public`, and it
 says so every time.
@@ -23,14 +23,14 @@ Put an Access policy in front of the hostname yourself.
 $ cloudflared tunnel login
 ```
 
-That opens a browser and waits, which is why Minato does not run it for you —
-the same reason `minato setup` runs nothing where there is no terminal to
+That opens a browser and waits, which is why Kobune does not run it for you —
+the same reason `kobune setup` runs nothing where there is no terminal to
 answer at. An unattended interactive prompt hangs an agent.
 
-Everything after login, Minato does:
+Everything after login, Kobune does:
 
 ```console
-$ minato tunnel enable --domain example.com --public
+$ kobune tunnel enable --domain example.com --public
   ✓ starting the tunnel
 ╭ tunnel ─────────────────────────────────────────────────────────────────╮
 │ running  *.example.com                                                  │
@@ -42,7 +42,7 @@ $ minato tunnel enable --domain example.com --public
 │ ! any other name in the zone reaches this machine.                      │
 │                                                                         │
 │ this environment is reachable from the internet.                        │
-│ Minato cannot see whether a Cloudflare Access policy is in front of it. │
+│ Kobune cannot see whether a Cloudflare Access policy is in front of it. │
 ╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -57,19 +57,19 @@ It also has to be **the zone your `cloudflared tunnel login` covers**. That
 login writes a certificate scoped to one zone, and `cloudflared tunnel route
 dns` takes a hostname outside it as a name *relative* to that zone: naming
 `other.com` on a login for `example.com` creates `*.other.com.example.com`,
-exits successfully, and leaves `*.other.com` never having existed. Minato
+exits successfully, and leaves `*.other.com` never having existed. Kobune
 checks the name resolves after routing it and says so when it does not,
 because nothing else about that state looks wrong — the tunnel is up, `status`
 says `running`, and no URL ever arrives. Log in again to switch zones.
 
 The record covers the whole zone, so it is worth knowing what that does and
 does not claim. An explicit record wins over a wildcard, so anything already
-published under the domain keeps answering as before. A name Minato does not
+published under the domain keeps answering as before. A name Kobune does not
 know reaches the local proxy and gets a 404. That is what the note above says,
 and it appears on the first `enable` for a domain and not again.
 
 If a `*` record was already in the zone, `enable` says that instead. Cloudflare
-reports only that the name is taken, not what it points at, so Minato cannot
+reports only that the name is taken, not what it points at, so Kobune cannot
 tell whether the record reaches this tunnel — and if it does not, every hostname
 goes elsewhere while everything here still reports `running`. Check that record
 in the dashboard before trusting the URLs.
@@ -77,7 +77,7 @@ in the dashboard before trusting the URLs.
 ## The URLs
 
 ```console
-$ minato status
+$ kobune status
 ╭ myapp / feature-auth ──────────────────────────────────╮
 │ feature/auth  /path/to/myapp.wt/feature-auth           │
 │                                                        │
@@ -110,7 +110,7 @@ service. Both are ordinary routes.
 ## Turning it off
 
 ```console
-$ minato tunnel disable
+$ kobune tunnel disable
 ╭ tunnel ─────────────────╮
 │ disabled  *.example.com │
 ╰─────────────────────────╯
@@ -123,14 +123,14 @@ re-enabling does not need another login.
 The domain is remembered, so next time:
 
 ```console
-$ minato tunnel enable --public
+$ kobune tunnel enable --public
 ```
 
 ## Checking on it
 
 ```console
-$ minato tunnel status
-$ minato doctor | grep -i tunnel
+$ kobune tunnel status
+$ kobune doctor | grep -i tunnel
 ```
 
 `status` runs nothing. If setup is incomplete it prints the commands that are

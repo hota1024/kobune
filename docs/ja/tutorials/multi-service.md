@@ -28,7 +28,7 @@ health = "http://localhost:8080/healthz"
 ```
 
 ```console
-$ minato up
+$ kobune up
   ✓ starting api
   ✓ waiting for api
   ✓ starting web
@@ -46,19 +46,19 @@ $ minato up
 
 ## フロントエンドから API を参照する
 
-API の URL はブランチごとに異なるため、ハードコードできません。Minato が
+API の URL はブランチごとに異なるため、ハードコードできません。Kobune が
 環境変数として注入します。
 
 ```js
-const api = process.env.MINATO_URL_API   // https://api.feature-x.myapp.localhost
+const api = process.env.KOBUNE_URL_API   // https://api.feature-x.myapp.localhost
 ```
 
 ```console
-$ minato exec web -- printenv MINATO_URL_API
+$ kobune exec web -- printenv KOBUNE_URL_API
 https://api.myapp.localhost
 ```
 
-すべてのサービスに、他のすべてのサービスの `MINATO_URL_<SERVICE>` が渡されます。
+すべてのサービスに、他のすべてのサービスの `KOBUNE_URL_<SERVICE>` が渡されます。
 **worktree ごとの環境が成立するのは、この仕組みによるものです。** これがなけ
 れば、フロントエンドは URL を推測するほかありません。
 
@@ -98,7 +98,7 @@ depends_on = ["db"]
 プロジェクト単位で共有されます。
 
 ```console
-$ minato up
+$ kobune up
   ✓ starting db
   ✓ starting api
   ✓ starting web
@@ -116,9 +116,9 @@ $ minato up
 ## 共有されていることを確認する
 
 ```console
-$ minato new feature/reports
+$ kobune new feature/reports
 $ cd ../myapp.wt/feature-reports
-$ minato status
+$ kobune status
 ╭ myapp / feature-reports ──────────────────────────────────╮
 │ feature/reports  /path/to/myapp.wt/feature-reports        │
 │                                                           │
@@ -131,21 +131,21 @@ $ minato status
 `web` と `api` は新しく作成され、`db` は既存のものが使われています。
 
 ```console
-$ docker ps --filter label=dev.minato.project=myapp --format '{{.Names}}'
-minato-myapp-feature-reports-web
-minato-myapp-feature-reports-api
-minato-myapp-main-web
-minato-myapp-main-api
-minato-myapp-shared-db
+$ docker ps --filter label=dev.kobune.project=myapp --format '{{.Names}}'
+kobune-myapp-feature-reports-web
+kobune-myapp-feature-reports-api
+kobune-myapp-main-web
+kobune-myapp-main-api
+kobune-myapp-shared-db
 ```
 
-`minato-myapp-shared-db` は 1 つだけで、worktree ごとには作成されていません。
+`kobune-myapp-shared-db` は 1 つだけで、worktree ごとには作成されていません。
 一方のブランチで書き込んだデータは、もう一方からも参照できます。
 
 ## 共有が適さない場合
 
 互換性のないマイグレーションを持つ 2 つのブランチが 1 つのデータベースを共有
-すれば、当然衝突します。Minato はこの問題を解決しません。該当する場合は次の
+すれば、当然衝突します。Kobune はこの問題を解決しません。該当する場合は次の
 ように設定します。
 
 ```toml
@@ -168,7 +168,7 @@ Docker では `db:5432` が解決されます。ただし、パスワードは�
 ほうが望ましいでしょう。
 
 ```console
-$ minato env set DATABASE_PASSWORD='op://Development/myapp/db' --scope project
+$ kobune env set DATABASE_PASSWORD='op://Development/myapp/db' --scope project
 ```
 
 これは値ではなく参照です。コンテナの起動時に解決され、ディスクには書き込まれ

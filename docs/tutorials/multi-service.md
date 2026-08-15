@@ -28,7 +28,7 @@ health = "http://localhost:8080/healthz"
 ```
 
 ```console
-$ minato up
+$ kobune up
   ✓ starting api
   ✓ waiting for api
   ✓ starting web
@@ -45,24 +45,24 @@ $ minato up
 
 ## Letting the frontend find the API
 
-The API's URL is different on every branch, so it cannot be hardcoded. Minato
+The API's URL is different on every branch, so it cannot be hardcoded. Kobune
 injects it:
 
 ```js
-const api = process.env.MINATO_URL_API   // https://api.feature-x.myapp.localhost
+const api = process.env.KOBUNE_URL_API   // https://api.feature-x.myapp.localhost
 ```
 
 ```console
-$ minato exec web -- printenv MINATO_URL_API
+$ kobune exec web -- printenv KOBUNE_URL_API
 https://api.myapp.localhost
 ```
 
-Every service gets `MINATO_URL_<SERVICE>` for every other service. **This is
+Every service gets `KOBUNE_URL_<SERVICE>` for every other service. **This is
 the piece that makes per-worktree environments work at all** — without it, the
 frontend would have to guess.
 
 **The URL works from inside a container too**, not only in the browser. The
-name is pointed at Minato's gateway in every container of the workspace, so the
+name is pointed at Kobune's gateway in every container of the workspace, so the
 frontend's server side can call the same `https://api.myapp.localhost` its
 browser half does — same Host, same Origin, so cookie domains and CORS do not
 have to be told about two of them.
@@ -71,12 +71,12 @@ For a call that has no reason to leave the network you can still use the
 service name directly on Docker (`http://api:8080`), which skips the proxy.
 That does not work on Apple Container; see [Runtimes](../guide/runtimes).
 
-The certificate verifies in there too, with nothing to configure. Minato's CA
-is mounted into every service, named as `MINATO_CA_FILE`, and handed to Node as
+The certificate verifies in there too, with nothing to configure. Kobune's CA
+is mounted into every service, named as `KOBUNE_CA_FILE`, and handed to Node as
 `NODE_EXTRA_CA_CERTS` — so the server-side call above is verified rather than
 excused with `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 
-See [`MINATO_CA_FILE`](../guide/environment-variables#minato-ca-file) for other
+See [`KOBUNE_CA_FILE`](../guide/environment-variables#kobune-ca-file) for other
 stacks, for keeping an image's own bundle, and for what to do when a task
 runner drops the variable before your server sees it.
 
@@ -111,7 +111,7 @@ is named rather than a host path, the runtime manages it and it is scoped to
 the project.
 
 ```console
-$ minato up
+$ kobune up
   ✓ starting db
   ✓ starting api
   ✓ starting web
@@ -129,9 +129,9 @@ $ minato up
 ## Confirming the sharing
 
 ```console
-$ minato new feature/reports
+$ kobune new feature/reports
 $ cd ../myapp.wt/feature-reports
-$ minato status
+$ kobune status
 ╭ myapp / feature-reports ──────────────────────────────────╮
 │ feature/reports  /path/to/myapp.wt/feature-reports        │
 │                                                           │
@@ -144,21 +144,21 @@ $ minato status
 New `web` and `api`; the *same* `db`:
 
 ```console
-$ docker ps --filter label=dev.minato.project=myapp --format '{{.Names}}'
-minato-myapp-feature-reports-web
-minato-myapp-feature-reports-api
-minato-myapp-main-web
-minato-myapp-main-api
-minato-myapp-shared-db
+$ docker ps --filter label=dev.kobune.project=myapp --format '{{.Names}}'
+kobune-myapp-feature-reports-web
+kobune-myapp-feature-reports-api
+kobune-myapp-main-web
+kobune-myapp-main-api
+kobune-myapp-shared-db
 ```
 
-`minato-myapp-shared-db` — one, not one per worktree. Write a row from one
+`kobune-myapp-shared-db` — one, not one per worktree. Write a row from one
 branch and the other sees it.
 
 ## When sharing is wrong
 
 Two branches with incompatible migrations against one database will fight.
-Minato does not solve this. When it applies:
+Kobune does not solve this. When it applies:
 
 ```toml
 [services.db]
@@ -178,7 +178,7 @@ env = { DATABASE_URL = "postgres://postgres:postgres@db:5432/myapp" }
 `db:5432` resolves on Docker. Better, keep the password out of the repository:
 
 ```console
-$ minato env set DATABASE_PASSWORD='op://Development/myapp/db' --scope project
+$ kobune env set DATABASE_PASSWORD='op://Development/myapp/db' --scope project
 ```
 
 That is a reference, not a value. It is resolved when the container starts and

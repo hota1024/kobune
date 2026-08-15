@@ -10,7 +10,7 @@
 //! adding a helper for one suite break the other.
 //!
 //! **The home is temporary; Docker is not.** [`Harness`] hands the daemon a
-//! `MINATO_HOME` of its own, so anything under that directory belongs to
+//! `KOBUNE_HOME` of its own, so anything under that directory belongs to
 //! the test — but the containers, networks and volumes it makes are real,
 //! shared with whatever else is on the machine, and told apart only by the
 //! project name. Never send this supervisor a `Purge { dry_run: false }`:
@@ -23,12 +23,12 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use minato_api::{Request, Target};
-use minato_core::Paths;
-use minato_runtime::{EventSink, Runtime};
-use minatod::gateway::Gateway;
-use minatod::supervisor::Supervisor;
-use minatod::tunnel::TunnelHandle;
+use kobune_api::{Request, Target};
+use kobune_core::Paths;
+use kobune_runtime::{EventSink, Runtime};
+use kobuned::gateway::Gateway;
+use kobuned::supervisor::Supervisor;
+use kobuned::tunnel::TunnelHandle;
 
 /// Long enough for `busybox` to be pulled on a cold runner.
 pub const START_WAIT: Duration = Duration::from_secs(180);
@@ -98,9 +98,9 @@ impl Harness {
 
         git(&root, &["init", "--initial-branch=main"]);
         git(&root, &["config", "user.email", "test@example.com"]);
-        git(&root, &["config", "user.name", "Minato Test"]);
+        git(&root, &["config", "user.name", "Kobune Test"]);
         git(&root, &["config", "commit.gpgsign", "false"]);
-        std::fs::write(root.join("minato.toml"), config).expect("writes");
+        std::fs::write(root.join("kobune.toml"), config).expect("writes");
         git(&root, &["add", "."]);
         git(&root, &["commit", "-m", "initial"]);
 
@@ -127,7 +127,7 @@ impl Harness {
         Target::new(self.root.clone())
     }
 
-    pub async fn request(&self, request: Request) -> minato_api::Response {
+    pub async fn request(&self, request: Request) -> kobune_api::Response {
         self.request_watching(request, &EventSink::discard()).await
     }
 
@@ -135,7 +135,7 @@ impl Harness {
         &self,
         request: Request,
         events: &EventSink,
-    ) -> minato_api::Response {
+    ) -> kobune_api::Response {
         // Nothing here types at a terminal, so the keyboard channel is
         // only ever the shape the signature wants.
         let (_keys, from_client) = tokio::sync::mpsc::unbounded_channel();
@@ -164,7 +164,7 @@ impl Harness {
     /// request has already returned, so everything is queued by now. A
     /// `recv` loop would instead hang on any clone of the sink the daemon
     /// happens to be holding.
-    pub async fn up_watching(&self) -> Vec<minato_api::Event> {
+    pub async fn up_watching(&self) -> Vec<kobune_api::Event> {
         let (events, mut received) = EventSink::channel();
         self.request_watching(self.up_request(), &events).await;
 
@@ -201,7 +201,7 @@ impl Harness {
     /// comparing it to what you expect. Three unrelated pull requests
     /// were held up by assertions that did the latter.
     pub async fn running(&self) -> Vec<String> {
-        let runtime = minato_runtime::docker::DockerRuntime::connect().expect("Docker answers");
+        let runtime = kobune_runtime::docker::DockerRuntime::connect().expect("Docker answers");
 
         let mut names: Vec<String> = runtime
             .list_project(&self.project)
@@ -285,7 +285,7 @@ impl Harness {
 /// find it and draw the wrong conclusion.
 impl Drop for Harness {
     fn drop(&mut self) {
-        let filter = format!("label={}={}", minato_runtime::labels::PROJECT, self.project);
+        let filter = format!("label={}={}", kobune_runtime::labels::PROJECT, self.project);
 
         let ids = Command::new("docker")
             .args(["ps", "-aq", "--filter", &filter])

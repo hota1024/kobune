@@ -16,7 +16,7 @@ ignore = [
     # CPU exhaustion during message encoding (O(n²) name compression).
     #
     # **This one is real and it is in the product.** hickory-server is
-    # the DNS server in `minato-dns`, and it ships inside `minatod`.
+    # the DNS server in `kobune-dns`, and it ships inside `kobuned`.
     #
     # What bounds it: the server binds 127.0.0.1 only, deliberately
     # (`GatewaySettings::dns_bind`, and `docs/DESIGN.md` §5), so
@@ -34,9 +34,9 @@ ignore = [
     # Quadratic run time on duplicate attribute names, and unbounded
     # allocation on namespace declarations. Both denial of service.
     #
-    # Neither reaches anything that ships. `cargo tree -p minato -e
-    # normal` and the same for `minatod` find no quick-xml at all: it
-    # arrives through GPUI, so it exists only in `minato-desktop` —
+    # Neither reaches anything that ships. `cargo tree -p kobune -e
+    # normal` and the same for `kobuned` find no quick-xml at all: it
+    # arrives through GPUI, so it exists only in `kobune-desktop` —
     # which is not distributed, because an unsigned .app is stopped by
     # Gatekeeper outright (`docs/DESIGN.md` §14).
     #
