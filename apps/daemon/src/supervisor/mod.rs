@@ -218,7 +218,15 @@ impl Supervisor {
     }
 
     /// The runtime for an identifier, built once and reused.
-    async fn runtime(&self, id: &str) -> Result<Arc<dyn Runtime>, ApiError> {
+    ///
+    /// **Which instance answers is part of the behaviour**, not an
+    /// implementation detail to be shrugged at: a backend may hold what it
+    /// knows about the containers it started, and Docker's holds what each
+    /// terminal container has made of its terminal — watched live, because
+    /// it cannot be read back. A second instance connected to the same
+    /// Docker knows none of it. Reachable from outside so that a test can
+    /// ask the instance that actually started something.
+    pub async fn runtime(&self, id: &str) -> Result<Arc<dyn Runtime>, ApiError> {
         let mut runtimes = self.runtimes.lock().await;
 
         if let Some(runtime) = runtimes.get(id) {

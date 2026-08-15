@@ -48,9 +48,10 @@ less accurately.
   in the first bytes it writes, and an attachment that arrives later missed
   the request entirely: the terminal sent nothing and the wheel did nothing,
   and the program's frames landed on the normal screen rather than the
-  alternate one. What the program made of its terminal is now read back when
-  you attach — the modes only, not the picture, which the program redraws
-  anyway — and put back when you leave
+  alternate one. What the program makes of its terminal is now watched from
+  before the container starts — the modes only, not the picture, which the
+  program redraws anyway — replayed to you when you attach and put back when
+  you leave
 
 - The daemon says which build it is: a `Ping` — and so `kobune daemon status` —
   now carries `0.1.0 (abc1234)` rather than the crate version alone, which is
@@ -107,6 +108,19 @@ less accurately.
   so a task runner's own interface works (#33)
 
 ### Fixed
+
+- **The mouse and the alternate screen reach a Docker service after all.**
+  The modes were to be found by reading the container's log back, and that
+  can never work: Docker holds everything after the last newline until the
+  process ends, and a program that draws by moving the cursor has no reason
+  ever to end a line — so the one thing being looked for was the one thing
+  the log would not give up, and every attachment got an empty preamble.
+  Measured on a live container, which is where it had to be measured: it
+  answers `starting` alone while it runs and the announcement as well once
+  it exits, and `docker logs --follow` waits alongside it. The daemon now
+  watches the terminal from before the container starts, which is what the
+  Apple Container backend already did, and inherits its one limitation —
+  a daemon that restarted since a container started has nothing to replay
 
 - **`kobune daemon restart` calls it a restart only when one happened.** The
   stop gets five seconds to take, and a daemon that outlasts it is shaken hands
