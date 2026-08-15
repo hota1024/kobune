@@ -1,13 +1,17 @@
-//! What a full-screen program left on its terminal, read back from a real
+//! What a full-screen program made of its terminal, heard from a real
 //! container.
 //!
-//! **This is the shape a unit test could not have.** The scan reads a
-//! container's log through Docker's API, and what it gets back depends on
-//! how the client library frames that stream — which no fixture written by
-//! hand describes. Reading the log through `logs` returned nothing at all
-//! for the programs the feature exists for, and every unit test around it
-//! passed the whole time: they hand `Modes::watch` the bytes directly, so
-//! they check the parser and never the delivery.
+//! **This is the shape a unit test could not have.** Every unit test around
+//! `Modes` hands it bytes directly, so they check the parser and never the
+//! delivery — and the delivery was the whole of the bug. The feature was
+//! built to read a container's log back and find the announcement in it,
+//! which cannot work: Docker holds back everything after the last newline
+//! until the process ends, and a program that draws by moving the cursor
+//! has no reason ever to end a line. Nothing on this side of the socket
+//! could have found those bytes, because they were never sent.
+//!
+//! So the daemon watches the terminal instead, from before the container
+//! starts. That is a fact about a running Docker and cannot be faked.
 //!
 //! Ignored like the rest of the suites that need a runtime:
 //!
@@ -22,16 +26,15 @@ mod common;
 
 use common::Harness;
 use futures::StreamExt;
-use kobune_runtime::{DockerRuntime, Runtime};
 
 /// A service that announces itself the way a full-screen program does.
 ///
-/// **The newline placement is the whole test.** `printf` writes a line that
-/// ends in `\n`, then the announcement, and then nothing ever again — which
-/// is what a program that draws by positioning the cursor looks like. Read
-/// through a decoder that splits on `\n`, everything from `ESC[?1049h`
-/// onwards stays buffered and is dropped at the end of the stream, so the
-/// scan sees the first line and none of what it came for.
+/// **The missing newline is the whole test.** One line that ends in `\n`,
+/// then the announcement, and then nothing ever again — which is what a
+/// program that positions the cursor to draw looks like from outside. Ask
+/// this container for its log while it runs and Docker answers `starting`
+/// and stops there; ask again after it exits and the rest appears. The
+/// announcement is only ever heard by someone already listening.
 fn full_screen(project: &str) -> String {
     format!(
         r#"
@@ -52,7 +55,7 @@ command = '''sh -c 'printf "starting\n"; printf "\033[?1049h\033[?1000h"; sleep 
 
 #[tokio::test]
 #[ignore = "needs a Docker daemon"]
-async fn a_full_screen_program_is_heard_through_the_last_newline() {
+async fn a_full_screen_program_is_heard_although_its_log_never_says() {
     require_docker!();
 
     let harness = Harness::new("mnte2emodes", &full_screen("mnte2emodes"));
@@ -63,7 +66,16 @@ async fn a_full_screen_program_is_heard_through_the_last_newline() {
     // "has written" are not the same instant.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let runtime = DockerRuntime::connect().expect("connects to Docker");
+    // **The daemon's own instance, not a fresh connection to the same
+    // Docker.** What the program made of its terminal is watched as it
+    // goes past and held by the runtime that started the container, so a
+    // second instance would report an empty preamble and look exactly like
+    // the failure this test is here for.
+    let runtime = harness
+        .supervisor
+        .runtime("docker")
+        .await
+        .expect("the daemon's Docker runtime");
 
     // Taken from the runtime rather than built here: the workspace is named
     // after the branch, and a key assembled from a guess about that would

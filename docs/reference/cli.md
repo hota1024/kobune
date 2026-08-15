@@ -278,10 +278,17 @@ without being able to type by accident.
 **The wheel scrolls what the program scrolls.** A full-screen program asks
 for mouse reports once, in the first bytes it writes, and attaching an hour
 later would otherwise miss the request — leaving a terminal that sends
-nothing and a wheel that does nothing. What the program made of its terminal
-is read back when you attach and set again here, so Turborepo's log pane
-scrolls under the pointer as it does when you run it yourself. It is put
-back the way it was when you detach.
+nothing and a wheel that does nothing. So the daemon listens to the service's
+terminal from before the container starts, keeps what the program made of it,
+and sets it again here — so Turborepo's log pane scrolls under the pointer as
+it does when you run it yourself. It is put back the way it was when you
+detach.
+
+**Restarting the daemon loses it.** The announcement was heard once, by a
+daemon that is no longer running, and there is nowhere to read it back from:
+the container's log does not hold those bytes and never did. The service
+keeps running and keys still reach it, but the mouse and the alternate screen
+are gone until `kobune down && kobune up` starts the container again.
 
 Ctrl-C belongs to the program: in a task runner it usually means "quit",
 which stops the service. Ctrl-P Ctrl-Q is how you leave without stopping

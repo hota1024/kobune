@@ -46,26 +46,6 @@ use crate::spec::{
 
 const RUNTIME_ID: &str = "docker";
 
-/// How much of a service's log to read looking for what the program made
-/// of its terminal.
-///
-/// The announcement is in the first bytes a program writes and the log is
-/// read from the beginning, so this bounds a chatty service rather than
-/// limiting what can be found. A program that first asks for a mouse after
-/// a megabyte of output is not worth slowing every attach for.
-const MODE_SCAN_LIMIT: usize = 1024 * 1024;
-
-/// How long to spend on that.
-///
-/// **Both bounds are needed.** The size cap alone bounds the volume and
-/// not the time, and the read is on the way to an attachment: a log driver
-/// that answers slowly, or a daemon that stalls mid-stream, would leave
-/// `kobune logs -f` waiting with nothing said, because the client is not
-/// told it is attached until this returns. Running out of either loses the
-/// mouse and the alternate screen, which is where every attachment stood
-/// before any of this existed.
-const MODE_SCAN_TIME: std::time::Duration = std::time::Duration::from_secs(2);
-
 /// Runs a `cmd:` health check inside a container.
 ///
 /// Its own path rather than [`DockerRuntime::exec`]: that one streams output
@@ -192,6 +172,13 @@ pub struct DockerRuntime {
     /// One lock per network name, held across
     /// [`DockerRuntime::ensure_network`]. See there for why.
     network_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// What each container with a terminal has made of it, by container
+    /// id. Filled by [`DockerRuntime::watch_terminal`] and emptied by the
+    /// same watcher when the container's output ends.
+    ///
+    /// Shared rather than borrowed because the watcher outlives the call
+    /// that started it: it runs for as long as the container does.
+    terminals: Arc<Mutex<HashMap<String, Arc<Mutex<Modes>>>>>,
 }
 
 impl DockerRuntime {
@@ -215,6 +202,7 @@ impl DockerRuntime {
             docker,
             asked_to_stop: Mutex::new(HashSet::new()),
             network_locks: Mutex::new(HashMap::new()),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -682,89 +670,115 @@ impl DockerRuntime {
         Ok(containers.into_iter().next())
     }
 
-    /// What the program has already made of the terminal it was given.
+    /// What the program has made of the terminal it was given.
     ///
-    /// The log of a container that has a terminal *is* what the program
-    /// wrote to it, escape sequences and all, so reading it back from the
-    /// beginning finds the `ESC[?1049h` and `ESC[?1000h` a full-screen
-    /// program announced itself with — the ones an attachment that arrives
-    /// later would otherwise never hear.
+    /// **Watched on its way past, not read back afterwards.** The obvious
+    /// reading — a terminal container's log *is* what the program wrote to
+    /// it, escape sequences and all, so scan it — cannot be made to work,
+    /// and the reason is on Docker's side of the pty rather than in any
+    /// client: its log holds back everything after the last newline until
+    /// the process ends. A program that draws by moving the cursor has no
+    /// reason ever to end a line, so the `ESC[?1049h` it announced itself
+    /// with sits in that buffer for exactly as long as it is running —
+    /// which is exactly whenever anyone would want it.
     ///
-    /// **From this run only.** A container's log outlives the process in
-    /// it — scale-to-zero stops one and the next request starts it again,
-    /// both writing into the same log — and a mode the last run set and
-    /// never took back is not a description of this one.
+    /// Measured rather than deduced: one container shows `starting` alone
+    /// while it lives and the announcement as well once it exits, and
+    /// `docker logs --follow` waits alongside it.
     ///
-    /// **Never a failure.** An unreadable log — a rotated one, a container
-    /// whose driver keeps none, one that takes too long to answer — costs
-    /// the mouse and the alternate screen, which is exactly where every
-    /// attachment stood before this existed.
-    async fn terminal_modes(&self, id: &str) -> Modes {
-        match tokio::time::timeout(MODE_SCAN_TIME, self.scan_for_modes(id)).await {
-            Ok(modes) => modes,
-            Err(_) => {
-                tracing::debug!("gave up reading back what {id} did to its terminal");
-                Modes::new()
-            }
-        }
+    /// So this is [`crate::terminal::Terminal`]'s arrangement, one backend
+    /// along: read every chunk as it goes by and keep only what it changed.
+    ///
+    /// **Empty is a fine answer.** It costs the mouse and the alternate
+    /// screen, which is where every attachment stood before any of this
+    /// existed. A daemon that restarted since the container started has
+    /// exactly that, and says so in the same breath Apple Container's
+    /// backend does.
+    fn terminal_modes(&self, id: &str) -> Modes {
+        let watched = self.terminals().get(id).cloned();
+
+        watched
+            .and_then(|modes| modes.lock().ok().map(|modes| modes.clone()))
+            .unwrap_or_default()
     }
 
-    /// The scan itself, for [`terminal_modes`](Self::terminal_modes) to put
-    /// a clock on.
-    async fn scan_for_modes(&self, id: &str) -> Modes {
-        let mut modes = Modes::new();
-        let mut scanned = 0usize;
-
-        let mut log = self.docker.logs(
-            id,
-            Some(LogsOptions::<String> {
-                follow: false,
-                stdout: true,
-                stderr: true,
-                tail: "all".to_string(),
-                since: self.started_at(id).await.unwrap_or(0),
-                ..Default::default()
-            }),
-        );
-
-        while let Some(chunk) = log.next().await {
-            let bytes = match chunk {
-                Ok(output) => output.into_bytes(),
-                Err(err) => {
-                    tracing::debug!("cannot read back what {id} did to its terminal: {err}");
-                    break;
-                }
-            };
-
-            modes.watch(&bytes);
-
-            scanned = scanned.saturating_add(bytes.len());
-            if scanned >= MODE_SCAN_LIMIT {
-                tracing::debug!("stopped reading {id}'s log after {scanned} bytes");
-                break;
-            }
-        }
-
-        modes
+    /// The terminals being watched.
+    ///
+    /// **Poisoning is not an error here**, for the reason it is not one in
+    /// [`stopped_set`](Self::stopped_set): what this holds is a preamble,
+    /// and going without one is a worse terminal rather than a failed
+    /// request.
+    fn terminals(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Mutex<Modes>>>> {
+        self.terminals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// When the process now inside the container started, in seconds.
+    /// Starts watching a container's terminal, before it has run anything.
     ///
-    /// `None` when Docker will not say, which reads the whole log rather
-    /// than none of it: an older run's announcements are a worse answer
-    /// than this one's, and no announcements at all is worse than both.
-    async fn started_at(&self, id: &str) -> Option<i64> {
-        let started = self
+    /// **Attached before the container is started**, the way
+    /// [`run_throwaway`](Self::run_throwaway) attaches before starting
+    /// one. A program announces itself in its first bytes, and nothing
+    /// replays them — an attachment a moment late has missed them for
+    /// good, which is the whole reason any of this exists.
+    ///
+    /// Nothing is typed through this one. A client that attaches later
+    /// opens its own, and Docker gives each attachment the same output.
+    ///
+    /// **Never a failure.** A terminal that cannot be watched leaves the
+    /// container with no preamble, which is where they all were before.
+    async fn watch_terminal(&self, id: &str) {
+        let attached = self
             .docker
-            .inspect_container(id, None)
-            .await
-            .ok()?
-            .state?
-            .started_at?;
+            .attach_container(
+                id,
+                Some(AttachContainerOptions::<String> {
+                    stream: Some(true),
+                    stdout: Some(true),
+                    stderr: Some(true),
+                    logs: Some(false),
+                    ..Default::default()
+                }),
+            )
+            .await;
 
-        chrono::DateTime::parse_from_rfc3339(&started)
-            .ok()
-            .map(|at| at.timestamp())
+        let mut output = match attached {
+            Ok(attached) => attached.output,
+            Err(err) => {
+                tracing::debug!("cannot watch {id}'s terminal: {err}");
+                return;
+            }
+        };
+
+        let modes = Arc::new(Mutex::new(Modes::new()));
+        self.terminals().insert(id.to_string(), modes.clone());
+
+        // Held rather than borrowed: this outlives the start that began
+        // it, and ends when the container's output does.
+        let terminals = self.terminals.clone();
+        let id = id.to_string();
+
+        tokio::spawn(async move {
+            while let Some(chunk) = output.next().await {
+                let Ok(chunk) = chunk else { break };
+
+                // A lock that cannot be taken costs the replay and nothing
+                // else. Nobody is waiting on this: the bytes are Docker's
+                // to deliver to whoever attaches, and this only reads them.
+                if let Ok(mut modes) = modes.lock() {
+                    modes.watch(&chunk.into_bytes());
+                }
+            }
+
+            // The container's output ended, so the container has. Its id
+            // is never handed out again — `start` creates another rather
+            // than restarting this one — so leaving the entry would be a
+            // map that only grows.
+            terminals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&id);
+        });
     }
 
     /// Creates the container, replacing any existing one.
@@ -1270,6 +1284,13 @@ impl Runtime for DockerRuntime {
                 .await;
         }
 
+        // **Before the container runs a single byte.** What this is here
+        // to catch is announced in the program's first ones, and Docker
+        // replays nothing — see [`watch_terminal`](Self::watch_terminal).
+        if spec.tty {
+            self.watch_terminal(&id).await;
+        }
+
         self.docker
             .start_container(&id, None::<StartContainerOptions<String>>)
             .await
@@ -1570,10 +1591,10 @@ impl Runtime for DockerRuntime {
             .await
             .map_err(|e| RuntimeError::failed(format!("attaching to {}", key.service), e))?;
 
-        // **After the attachment is open**, so that nothing written while
-        // the log is being read is missed. The log is only scanned, never
-        // shown, so seeing the same bytes twice costs nothing.
-        let preamble = self.terminal_modes(&id).await.preamble();
+        // Taken from the watcher that has been reading this terminal since
+        // before the container started. Nothing is read back here, and
+        // nothing can be — see [`terminal_modes`](Self::terminal_modes).
+        let preamble = self.terminal_modes(&id).preamble();
 
         // With a terminal there is one stream, and Docker reports it as
         // `Console`. The rest are matched so that a container that turns
