@@ -725,6 +725,17 @@ impl DockerRuntime {
     /// Nothing is typed through this one. A client that attaches later
     /// opens its own, and Docker gives each attachment the same output.
     ///
+    /// **This runs for as long as the container does, and is not bounded.**
+    /// The scan it replaces had a megabyte and two seconds to work in;
+    /// there is nothing here to put a bound on, because there is no moment
+    /// the answer is wanted by — an announcement can come at any point in
+    /// a program's life and the last one is the true one. What it costs is
+    /// a read that discards what it reads: no output is kept, only what
+    /// the modes changed. The loop is worth keeping tight all the same,
+    /// since a Docker terminal attachment has no buffer of its own, and a
+    /// watcher that stopped draining would push back on the program's own
+    /// stdout.
+    ///
     /// **Never a failure.** A terminal that cannot be watched leaves the
     /// container with no preamble, which is where they all were before.
     async fn watch_terminal(&self, id: &str) {
@@ -760,7 +771,21 @@ impl DockerRuntime {
 
         tokio::spawn(async move {
             while let Some(chunk) = output.next().await {
-                let Ok(chunk) = chunk else { break };
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    // **Kept, not discarded.** The container is still
+                    // running and nothing re-establishes this watch, so
+                    // throwing the entry away here would trade a preamble
+                    // that has stopped being updated for none at all —
+                    // and what it is mostly made of arrived in the first
+                    // bytes, long before whatever went wrong. The entry
+                    // outlives its container in this one case, which is a
+                    // few modes held for as long as the daemon runs.
+                    Err(err) => {
+                        tracing::debug!("stopped hearing {id}'s terminal: {err}");
+                        return;
+                    }
+                };
 
                 // A lock that cannot be taken costs the replay and nothing
                 // else. Nobody is waiting on this: the bytes are Docker's
@@ -770,7 +795,7 @@ impl DockerRuntime {
                 }
             }
 
-            // The container's output ended, so the container has. Its id
+            // Ended rather than failed, so the container has gone. Its id
             // is never handed out again — `start` creates another rather
             // than restarting this one — so leaving the entry would be a
             // map that only grows.
@@ -1295,6 +1320,13 @@ impl Runtime for DockerRuntime {
             .start_container(&id, None::<StartContainerOptions<String>>)
             .await
             .map_err(|e| {
+                // The watch above was for a container that never ran, so
+                // it has nothing to say and no end coming: what it is
+                // attached to sits in `created` until the next start
+                // removes it. Dropping the entry keeps the map to
+                // containers that exist; the task goes with the removal.
+                self.terminals().remove(&id);
+
                 events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
                 RuntimeError::failed(format!("starting container {name}"), e)
             })?;

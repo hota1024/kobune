@@ -127,9 +127,11 @@ impl Attachment {
     /// A program that only ever printed text leaves `preamble` empty, and
     /// then nothing at all is sent ahead of its output.
     ///
-    /// Where the preamble comes from is the backend's own business: the
-    /// daemon owns Apple Container's terminal and watches it go past,
-    /// while Docker's is read back out of the container's log.
+    /// Where the preamble comes from is the backend's own business, and
+    /// both backends arrive at the same answer: the daemon watches the
+    /// terminal go past and keeps what changed. Docker's used to be read
+    /// back out of the container's log instead, until that turned out to
+    /// be a log which holds the announcement until the program ends.
     pub fn opening_with(
         preamble: Vec<u8>,
         output: BoxStream<'static, Vec<u8>>,

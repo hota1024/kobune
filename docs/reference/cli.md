@@ -285,10 +285,13 @@ it does when you run it yourself. It is put back the way it was when you
 detach.
 
 **Restarting the daemon loses it.** The announcement was heard once, by a
-daemon that is no longer running, and there is nowhere to read it back from:
-the container's log does not hold those bytes and never did. The service
-keeps running and keys still reach it, but the mouse and the alternate screen
-are gone until `kobune down && kobune up` starts the container again.
+daemon that is no longer running, and there is nowhere to read it back from.
+The log is not that place: Docker holds everything after a program's last
+newline until the program ends, and a full-screen one never ends a line — so
+those bytes arrive in the log only once the service is over, which is exactly
+too late to be of use. The service keeps running and keys still reach it, but
+the mouse and the alternate screen are gone until `kobune down && kobune up`
+starts the container again.
 
 Ctrl-C belongs to the program: in a task runner it usually means "quit",
 which stops the service. Ctrl-P Ctrl-Q is how you leave without stopping
