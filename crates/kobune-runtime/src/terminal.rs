@@ -69,18 +69,27 @@ impl Terminal {
     pub(crate) fn open(mut command: tokio::process::Command) -> std::io::Result<Self> {
         let (master, slave) = open_pty(DEFAULT_WINDOW.cols, DEFAULT_WINDOW.rows)?;
 
+        // A copy each for the child, so that `slave` itself stays here.
+        // **macOS empties a terminal the moment its last far end closes**:
+        // a program that prints and exits leaves a master that reads
+        // end-of-file and nothing else, so everything it said is lost
+        // unless it was read before it went — a race the reader below
+        // loses whenever the machine is busy, and a container's whole
+        // output with it. The copy kept here keeps the terminal from
+        // emptying, and what ends the reader is the child going rather
+        // than an end-of-file that arrives too early.
         let stdin = slave.try_clone()?;
         let stdout = slave.try_clone()?;
+        let stderr = slave.try_clone()?;
         let mut child = command
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(slave))
+            .stderr(Stdio::from(stderr))
             .spawn()?;
 
         // **The command owns this side's copies of the far end**, and only
-        // gives them up when it is dropped. Held on to, they would keep
-        // the terminal open after the child exited, and the read below
-        // would wait for an end that never came.
+        // gives them up when it is dropped. Held, they would leave a
+        // descriptor open on a terminal nobody is at.
         drop(command);
 
         set_nonblocking(&master)?;
@@ -105,25 +114,13 @@ impl Terminal {
             loop {
                 tokio::select! {
                     read = read_some(&fd, &mut buffer) => match read {
-                        // The far end closed: the process exited, or the
-                        // container it was attached to went away.
+                        // Nothing more will come. The far end this side
+                        // holds makes an end-of-file here unlikely — the
+                        // child going is what normally ends this loop —
+                        // but a terminal that cannot be read is over
+                        // either way.
                         Ok(0) | Err(_) => break,
-                        Ok(count) => {
-                            // Read before it is handed on, and whether or
-                            // not anyone is listening: the announcement
-                            // this is looking for comes long before the
-                            // first attachment. A lock that cannot be
-                            // taken costs the replay and nothing else, so
-                            // the output still goes on below.
-                            if let Ok(mut watched) = watched.lock() {
-                                watched.watch(&buffer[..count]);
-                            }
-
-                            // An error means nobody is listening, which is
-                            // the normal state of a service nobody has
-                            // attached to.
-                            let _ = published.send(buffer[..count].to_vec());
-                        }
+                        Ok(count) => hand_on(&buffer[..count], &watched, &published),
                     },
                     keys = typed.recv() => match keys {
                         Some(keys) => {
@@ -133,8 +130,24 @@ impl Terminal {
                         }
                         None => break,
                     },
+                    // The program has gone. What it wrote on its way out
+                    // is still in the terminal, held there by the far end
+                    // this side kept, and is read here before that goes
+                    // too — a container that says why it is stopping says
+                    // it in its last breath.
+                    _ = child.wait() => {
+                        drain(&fd, &mut buffer, &watched, &published);
+                        break;
+                    }
                 }
             }
+
+            // Both ends are let go before the wait below: a child still
+            // writing to a terminal nobody is at gets a hangup, which is
+            // what makes the wait finish rather than hold this task for as
+            // long as the process cares to run.
+            drop(fd);
+            drop(slave);
 
             // Reaped here rather than left behind. The process is a
             // `container start` that has already exited by the time the
@@ -300,6 +313,60 @@ async fn read_some(fd: &AsyncFd<OwnedFd>, buffer: &mut [u8]) -> std::io::Result<
     .await
 }
 
+/// Passes a chunk of output on, reading it on the way past.
+///
+/// The reading happens whether or not anyone is listening: the
+/// announcement [`Modes`] is looking for comes long before the first
+/// attachment. A lock that cannot be taken costs the replay and nothing
+/// else, so the output still goes out below, and a send that fails means
+/// nobody is listening — the normal state of a service nobody has
+/// attached to.
+fn hand_on(chunk: &[u8], watched: &Mutex<Modes>, published: &broadcast::Sender<Vec<u8>>) {
+    if let Ok(mut modes) = watched.lock() {
+        modes.watch(chunk);
+    }
+
+    let _ = published.send(chunk.to_vec());
+}
+
+/// Reads out what the terminal still holds, without waiting for more.
+///
+/// For the moment the program exits: everything it ever wrote is already
+/// in the terminal by then, so a read that would have to wait is the end
+/// of it. Read directly rather than through [`read_some`], which waits for
+/// a descriptor that is never going to be readable again.
+fn drain(
+    fd: &AsyncFd<OwnedFd>,
+    buffer: &mut [u8],
+    watched: &Mutex<Modes>,
+    published: &broadcast::Sender<Vec<u8>>,
+) {
+    loop {
+        // SAFETY: as in `read_some`, for a buffer borrowed at the length
+        // passed and a descriptor owned by the caller.
+        let count = unsafe {
+            libc::read(
+                fd.get_ref().as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as libc::size_t,
+            )
+        };
+
+        match count {
+            // Nothing there, or nothing that can be read. An
+            // interruption is the exception: it says nothing about
+            // whether there is more.
+            count if count < 0 => {
+                if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                    return;
+                }
+            }
+            0 => return,
+            count => hand_on(&buffer[..count as usize], watched, published),
+        }
+    }
+}
+
 /// Writes every byte, or gives up on the first real failure.
 async fn write_all(fd: &AsyncFd<OwnedFd>, mut bytes: &[u8]) -> std::io::Result<()> {
     while !bytes.is_empty() {
@@ -339,6 +406,33 @@ mod tests {
 
         let terminal = Terminal::open(command).expect("opens");
         let mut output = terminal.subscribe();
+
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .expect("does not time out")
+            .expect("a chunk arrives");
+
+        assert!(
+            String::from_utf8_lossy(&chunk).contains("hello"),
+            "got: {chunk:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_a_program_said_before_it_went_is_still_there() {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("echo hello");
+
+        let terminal = Terminal::open(command).expect("opens");
+        let mut output = terminal.subscribe();
+
+        // Blocking, so that nothing inside the terminal can run: by the
+        // time anything on this side looks, the program has printed,
+        // exited, and closed its end of the terminal. That is the point
+        // at which macOS empties one, and it is a race the reader loses
+        // on a busy machine — a container's whole output, or the reason
+        // it refused to start, gone.
+        std::thread::sleep(std::time::Duration::from_millis(300));
 
         let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
             .await
