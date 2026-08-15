@@ -1079,7 +1079,7 @@ fn tunnel_style(state: TunnelState) -> ratatui::style::Style {
 
 /// `3d 4h`, `12m`, `8s` — the daemon's uptime at the precision anyone
 /// reads it at.
-fn format_uptime(seconds: u64) -> String {
+pub fn format_uptime(seconds: u64) -> String {
     let (days, hours) = (seconds / 86_400, (seconds % 86_400) / 3_600);
     let (minutes, seconds) = ((seconds % 3_600) / 60, seconds % 60);
 
