@@ -17,6 +17,7 @@ use kobune_api::{
 use kobune_core::{KobuneConfig, Paths, ServiceScope, ServiceState, StateStore, WorkspaceRecord};
 use kobune_proxy::Route;
 use kobune_runtime::{EventSink, Runtime, ServiceStatus, Sizing, WorkspaceKey};
+use kobune_tunnel::{Hostnames, TunnelTarget};
 
 /// How the idle sweep groups services: (workspace, service).
 type ServiceKeyRef = (String, String);
@@ -90,7 +91,7 @@ pub struct Supervisor {
     gateway: Arc<Gateway>,
     /// Last-access times, which is what scale-to-zero decides on.
     idle: IdleTracker,
-    /// The Cloudflare Tunnel, when one is running.
+    /// The tunnel, when one is running. Whichever service carries it.
     tunnel: Arc<TunnelHandle>,
     started_at: Instant,
     shutdown: Arc<tokio::sync::Notify>,
@@ -209,9 +210,13 @@ impl Supervisor {
             Request::EnvUnset { target, scope, key } => self.env_unset(target, scope, key).await,
             Request::TunnelEnable {
                 target,
+                provider,
                 domain,
                 public,
-            } => self.tunnel_enable(target, domain, public, events).await,
+            } => {
+                self.tunnel_enable(target, provider, domain, public, events)
+                    .await
+            }
             Request::TunnelDisable { target } => self.tunnel_disable(target).await,
             Request::TunnelStatus { target } => self.tunnel_status(target).await,
         }
@@ -279,7 +284,7 @@ impl Supervisor {
             project,
             &records,
             &statuses,
-            self.tunnel.domain().as_deref(),
+            self.tunnel.hostnames().as_ref(),
         );
 
         // Give a baseline to hosts that are running with no record — after
@@ -1256,7 +1261,7 @@ fn route_entries(
     project: &str,
     records: &[WorkspaceRecord],
     statuses: &[ServiceStatus],
-    tunnel_domain: Option<&str>,
+    hostnames: Option<&Hostnames>,
 ) -> Vec<(String, Route)> {
     let domain = config.domain();
     let shared_key = WorkspaceKey::shared(project);
@@ -1288,18 +1293,21 @@ fn route_entries(
 
             // The tunnel hostname resolves to the same service.
             //
-            // This is what lets cloudflared run one wildcard ingress rule
-            // that never changes: the Host header arrives untouched and
-            // the proxy already knows what it means. Rewriting Host at the
-            // tunnel instead would need a rule per service, regenerated
-            // and reloaded every time a worktree appeared.
-            if let Some(tunnel_domain) = tunnel_domain {
-                let tunnel = kobune_core::naming::tunnel_host(
-                    name,
-                    record.url_label(),
-                    project,
-                    tunnel_domain,
-                );
+            // This is what lets a wildcard ingress rule never change: the
+            // Host header arrives untouched and the proxy already knows
+            // what it means. Rewriting Host at the tunnel instead would
+            // need a rule per service, regenerated every time a worktree
+            // appeared.
+            //
+            // **The name is asked for, not worked out.** Only the tunnel
+            // knows it — derived under the user's zone for one provider,
+            // handed out at connect time by another — and a name invented
+            // here would be one nothing outside has heard of.
+            let tunnel = hostnames.and_then(|hostnames| {
+                hostnames.host_for(&TunnelTarget::new(project, record.url_label(), name))
+            });
+
+            if let Some(tunnel) = tunnel {
                 entries.push((tunnel, route.clone()));
             }
 
@@ -1323,7 +1331,7 @@ impl Supervisor {
         let workspace_key = WorkspaceKey::new(project, &record.label);
         let shared_key = WorkspaceKey::shared(project);
         let domain = config.domain();
-        let tunnel_domain = self.tunnel.domain();
+        let hostnames = self.tunnel.hostnames();
 
         let services = config
             .services
@@ -1351,21 +1359,22 @@ impl Supervisor {
                     None
                 };
 
-                // Only while the tunnel is actually up. A URL for a
-                // tunnel that is down points at a 502, and unlike the
-                // local URL there is nothing a request can do to wake it.
-                let tunnel_url = tunnel_domain
-                    .as_deref()
+                // Only while the tunnel is actually up, and only for a
+                // service it reaches. A URL for a tunnel that is down
+                // points at a 502, and unlike the local URL there is
+                // nothing a request can do to wake it.
+                //
+                // A provider that hands names out one at a time reaches
+                // the services it was asked about and no others, so this
+                // is `None` for the rest — the same answer as no tunnel,
+                // which is the truth from where the reader is sitting.
+                let tunnel_url = hostnames
+                    .as_ref()
                     .filter(|_| service_config.exposed())
-                    .map(|tunnel_domain| {
-                        let host = kobune_core::naming::tunnel_host(
-                            name,
-                            record.url_label(),
-                            project,
-                            tunnel_domain,
-                        );
-                        format!("https://{host}")
-                    });
+                    .and_then(|hostnames| {
+                        hostnames.host_for(&TunnelTarget::new(project, record.url_label(), name))
+                    })
+                    .map(|host| format!("https://{host}"));
 
                 ServiceInfo {
                     name: name.clone(),
@@ -1545,6 +1554,13 @@ pub(super) mod tests {
             is_main,
             created_at: chrono::Utc::now(),
             setup_done: Default::default(),
+        }
+    }
+
+    /// A tunnel whose whole zone reaches here.
+    fn zone() -> Hostnames {
+        Hostnames::Wildcard {
+            domain: "example.com".to_string(),
         }
     }
 
@@ -1830,13 +1846,7 @@ pub(super) mod tests {
             ServiceScope::Workspace,
         )];
 
-        let entries = route_entries(
-            &config(SAMPLE),
-            "myapp",
-            &records,
-            &statuses,
-            Some("example.com"),
-        );
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &statuses, Some(&zone()));
 
         let local = entries
             .iter()
@@ -1856,7 +1866,7 @@ pub(super) mod tests {
         // link, not just for someone on the machine.
         let records = vec![record("feat-1", false)];
 
-        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some(&zone()));
 
         let tunnel = entries
             .iter()
@@ -1881,7 +1891,7 @@ pub(super) mod tests {
     fn the_main_worktree_keeps_its_shorter_tunnel_hostname() {
         // Matching the local URL, where main omits the workspace label.
         let records = vec![record("main", true)];
-        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some(&zone()));
 
         assert!(
             entries
@@ -1897,7 +1907,7 @@ pub(super) mod tests {
         // label is refused at Cloudflare's edge with a TLS handshake
         // failure — nothing local goes wrong and nothing local shows it.
         let records = vec![record("feat-1", false)];
-        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some(&zone()));
 
         let tunnel_hosts: Vec<&str> = entries
             .iter()
@@ -1916,11 +1926,56 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_handed_out_name_is_registered_as_given() {
+        // The other shape of tunnel: no zone, and a name that exists
+        // because something asked for it half a second ago. Deriving one
+        // here instead would register a hostname nothing outside has
+        // heard of, and every request through the tunnel would 404 with
+        // the tunnel reporting `running`.
+        let records = vec![record("feat-1", false)];
+        let handed_out = Hostnames::Assigned(std::collections::BTreeMap::from([(
+            TunnelTarget::new("myapp", Some("feat-1"), "web"),
+            "restless-mode-1234.trycloudflare.com".to_string(),
+        )]));
+
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some(&handed_out));
+
+        assert!(
+            entries
+                .iter()
+                .any(|(host, _)| host == "restless-mode-1234.trycloudflare.com"),
+            "got: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn a_service_no_name_was_handed_out_for_is_left_off() {
+        // What a service that gives out one name at a time means. The
+        // route has to be absent rather than invented: `api` is reachable
+        // locally and simply is not shared.
+        let records = vec![record("feat-1", false)];
+        let handed_out = Hostnames::Assigned(std::collections::BTreeMap::from([(
+            TunnelTarget::new("myapp", Some("feat-1"), "web"),
+            "restless-mode-1234.trycloudflare.com".to_string(),
+        )]));
+
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some(&handed_out));
+
+        let shared: Vec<&str> = entries
+            .iter()
+            .map(|(host, _)| host.as_str())
+            .filter(|host| !host.ends_with(".localhost"))
+            .collect();
+
+        assert_eq!(shared, vec!["restless-mode-1234.trycloudflare.com"]);
+    }
+
+    #[test]
     fn unexposed_services_get_no_tunnel_hostname() {
         // A database on the public internet is the accident this exists to
         // avoid.
         let records = vec![record("feat-1", false)];
-        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some("example.com"));
+        let entries = route_entries(&config(SAMPLE), "myapp", &records, &[], Some(&zone()));
 
         assert!(
             !entries.iter().any(|(host, _)| host.starts_with("db")),

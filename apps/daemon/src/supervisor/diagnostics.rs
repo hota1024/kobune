@@ -407,31 +407,60 @@ impl Supervisor {
         )
     }
     /// Diagnoses the tunnel, or nothing when there is none to diagnose.
+    ///
+    /// **What is wrong and what fixes it are the provider's words.**
+    /// "cloudflared is not installed" is the right sentence for exactly
+    /// one tunnel service, and printing it about another would send
+    /// somebody looking for a binary that has nothing to do with their
+    /// problem.
     async fn tunnel_check(&self) -> Option<Check> {
         let record = self.tunnel_record().await.ok().flatten()?;
 
-        let settings = self.tunnel_settings(&record).ok();
-        let info = tunnel::info(Some(&record), &self.tunnel, settings.as_ref()).await;
-        let title = "Cloudflare Tunnel";
-        let domain = record.domain.clone();
+        let configured = self.tunnel_configured(&record).ok();
+        let info = tunnel::info(Some(&record), &self.tunnel, configured.as_ref()).await;
+
+        let title = configured
+            .as_ref()
+            .map(|configured| configured.provider.display_name())
+            .unwrap_or("tunnel");
+        // What the tunnel is *for*, in one phrase. A provider with no
+        // zone of yours has nothing to name here, and saying `*.` with
+        // nothing after it would read as a bug.
+        let covers = match record.domain.as_deref() {
+            Some(domain) => format!("*.{domain}"),
+            None => "this machine".to_string(),
+        };
+
+        // Asked for the readiness `info` already settled on rather than
+        // probing again, so what `doctor` explains cannot drift from what
+        // it reports.
+        let waiting = |readiness: kobune_tunnel::Readiness| {
+            let missing = configured
+                .as_ref()
+                .and_then(|configured| configured.provider.missing(&readiness));
+
+            let Some(missing) = missing else {
+                return Check::fail("tunnel", title, "not ready".to_string());
+            };
+
+            let check = Check::fail("tunnel", title, missing.summary);
+            match missing.commands.first() {
+                Some(fix) => check.with_fix(fix.clone()),
+                None => check,
+            }
+        };
 
         Some(match info.state {
-            TunnelState::Running => Check::ok("tunnel", title, format!("running for *.{domain}")),
+            TunnelState::Running => Check::ok("tunnel", title, format!("running for {covers}")),
             TunnelState::Disabled => Check::ok("tunnel", title, "disabled".to_string()),
-            TunnelState::NotInstalled => {
-                Check::fail("tunnel", title, "cloudflared is not installed".to_string())
-                    .with_fix("brew install cloudflared")
-            }
-            TunnelState::NeedsLogin => {
-                Check::fail("tunnel", title, "cloudflared is not logged in".to_string())
-                    .with_fix("cloudflared tunnel login")
-            }
+            TunnelState::NotInstalled => waiting(kobune_tunnel::Readiness::NotInstalled),
+            TunnelState::NeedsLogin => waiting(kobune_tunnel::Readiness::NeedsLogin),
             // Enabled but not up. Everything published through it is
             // unreachable, and nothing local would show that.
             TunnelState::Stopped => Check::fail(
                 "tunnel",
                 title,
-                format!("enabled for *.{domain}, but not running"),
+                format!("enabled for {covers}, but not running"),
             )
             .with_fix("run `kobune tunnel enable --public`, or `kobune tunnel status` for why"),
         })

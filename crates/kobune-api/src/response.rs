@@ -206,6 +206,16 @@ pub struct PurgeWorkspace {
 pub struct TunnelInfo {
     pub state: TunnelState,
 
+    /// Which tunnel service this is about.
+    ///
+    /// **Always answered**, unlike [`Self::domain`], which is the user's
+    /// zone and so does not exist before setup. A tunnel that was never
+    /// configured still has a provider — the one `tunnel enable` would
+    /// use — so `tunnel status --json | jq -r .provider` never comes back
+    /// null and no reader needs a branch for it.
+    #[serde(default = "default_provider")]
+    pub provider: String,
+
     /// The zone the hostnames live under. `None` before setup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
@@ -234,21 +244,57 @@ pub struct TunnelInfo {
 
     /// Whether the tunnel is unauthenticated.
     ///
-    /// True means the environment is on the public internet with no
-    /// Cloudflare Access policy that Kobune knows of.
+    /// True means the environment is on the public internet with nothing
+    /// in front of it that Kobune knows of.
     #[serde(default)]
     pub public: bool,
+
+    /// What stands between the internet and the environment.
+    ///
+    /// **The enum, not the sentence.** How to word "there is no access
+    /// control on this" is the CLI's and the GUI's own decision
+    /// (`docs/DESIGN.md` §3), and the three cases read differently enough
+    /// that collapsing them into a flag would lose the one that matters:
+    /// a hostname you own can be protected, and one the service handed out
+    /// cannot.
+    #[serde(default)]
+    pub access: TunnelAccess,
+}
+
+/// What guards an environment that is on the internet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelAccess {
+    /// Kobune puts authentication in front of it.
+    Managed,
+
+    /// None that Kobune can see, on a hostname that is yours to protect.
+    ///
+    /// The default, and what every provider Kobune has had until now
+    /// reports — so a response from a build without this field lands on
+    /// the answer that was always true of it.
+    #[default]
+    Unknown,
+
+    /// None to be had. Anyone with the URL reaches the environment.
+    Open,
+}
+
+fn default_provider() -> String {
+    kobune_core::DEFAULT_TUNNEL_PROVIDER.to_string()
 }
 
 impl TunnelInfo {
     pub fn disabled() -> Self {
         Self {
             state: TunnelState::Disabled,
+            provider: default_provider(),
             domain: None,
             record: None,
             setup: Vec::new(),
             notes: Vec::new(),
             public: false,
+            access: TunnelAccess::default(),
         }
     }
 }
@@ -612,5 +658,51 @@ mod tests {
         );
         // Check for the key, not the value of `"scope":"workspace"`.
         assert!(!json.contains(r#""workspace":"#), "got: {json}");
+    }
+
+    #[test]
+    fn a_tunnel_names_its_provider_even_when_there_is_none() {
+        // The opposite rule to the one above, and deliberately: `domain`
+        // is the user's zone and is absent until they name it, but the
+        // provider always has an answer. A reader that has to branch on a
+        // missing key is the shape §10 already went wrong with once.
+        let json = serde_json::to_value(TunnelInfo::disabled()).expect("serializes");
+
+        assert_eq!(json["provider"], kobune_core::DEFAULT_TUNNEL_PROVIDER);
+        assert!(json.get("domain").is_none(), "got: {json}");
+    }
+
+    #[test]
+    fn a_tunnel_from_a_build_without_access_reads_as_unknown() {
+        // Every provider that existed before this field reported exactly
+        // that: a hostname of yours, and Kobune unable to see what is in
+        // front of it. Landing anywhere else would either invent a
+        // guarantee or warn about a service that never applied.
+        let info: TunnelInfo = serde_json::from_str(r#"{"state":"running"}"#).expect("parses");
+
+        assert_eq!(info.access, TunnelAccess::Unknown);
+    }
+
+    #[test]
+    fn access_goes_on_the_wire_as_a_word_a_reader_can_compare() {
+        // §10's lesson: a state an agent has to destructure is one it
+        // compares wrongly on the first try.
+        let json = serde_json::to_value(TunnelInfo {
+            access: TunnelAccess::Open,
+            ..TunnelInfo::disabled()
+        })
+        .expect("serializes");
+
+        assert_eq!(json["access"], "open");
+    }
+
+    #[test]
+    fn a_tunnel_from_a_build_without_providers_reads_as_cloudflare() {
+        // A client older or newer than the daemon it is talking to. The
+        // socket carries whatever the daemon writes, so a missing key has
+        // to land on the same default the state file uses.
+        let info: TunnelInfo = serde_json::from_str(r#"{"state":"running"}"#).expect("parses");
+
+        assert_eq!(info.provider, kobune_core::DEFAULT_TUNNEL_PROVIDER);
     }
 }

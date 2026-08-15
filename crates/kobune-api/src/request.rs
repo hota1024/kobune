@@ -224,11 +224,18 @@ pub enum Request {
         key: String,
     },
 
-    /// Sets up the Cloudflare Tunnel and starts it.
+    /// Sets the tunnel up and starts it.
     TunnelEnable {
         target: Target,
+        /// Which tunnel service carries it. Reuses the configured one
+        /// when omitted, and the default on a machine with none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
         /// The zone the hostnames live under. Reuses the configured one
         /// when omitted, so re-enabling does not mean naming it again.
+        ///
+        /// Not every provider has one: a service that hands out its own
+        /// hostnames has nothing here to name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         domain: Option<String>,
         /// Acknowledges that the environment goes on the public internet

@@ -22,6 +22,12 @@ use crate::naming;
 /// The schema version of the state file.
 pub const CURRENT_VERSION: u32 = 1;
 
+/// The tunnel service used when a record does not name one.
+///
+/// Cloudflare is what every tunnel was before there was anything to
+/// choose, so it is what a state file written by an older build means.
+pub const DEFAULT_TUNNEL_PROVIDER: &str = "cloudflare";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct State {
     pub version: u32,
@@ -34,7 +40,7 @@ pub struct State {
     #[serde(default)]
     pub projects: BTreeMap<String, ProjectRecord>,
 
-    /// The Cloudflare Tunnel, if one has been set up.
+    /// The tunnel, if one has been set up.
     ///
     /// Machine-wide rather than per-project: one named tunnel carries every
     /// project, and the project name is part of the hostname's single
@@ -53,13 +59,34 @@ impl Default for State {
     }
 }
 
-/// A configured Cloudflare Tunnel.
+/// A configured tunnel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TunnelRecord {
+    /// Which tunnel service carries it.
+    ///
+    /// **A string rather than an enum**, for the same reason
+    /// `[runtime] default` is one: an unknown value has to read as an
+    /// unknown value. This file holds every project Kobune manages, so a
+    /// variant a build does not recognise failing to deserialize would
+    /// take the whole registry down — and a state file written by a newer
+    /// build, or by hand, is exactly where an unrecognised name comes
+    /// from.
+    ///
+    /// Absent means [`DEFAULT_TUNNEL_PROVIDER`], which is what every
+    /// record written before there was a choice meant.
+    #[serde(default = "default_tunnel_provider")]
+    pub provider: String,
     /// The named tunnel that carries the traffic.
     pub name: String,
     /// The zone the hostnames live under (`example.com`).
-    pub domain: String,
+    ///
+    /// `None` for a service that has no zone of yours to put names under
+    /// — it hands them out in its own domain, and there was never
+    /// anything for the user to name. Absent in a state file written
+    /// before there was a provider that worked that way, which is why it
+    /// defaults rather than being required.
+    #[serde(default)]
+    pub domain: Option<String>,
     /// Whether the daemon should be running it.
     ///
     /// `disable` clears this but keeps the record, so re-enabling does not
@@ -68,6 +95,12 @@ pub struct TunnelRecord {
     pub enabled: bool,
 
     /// Whether Kobune has routed this zone's wildcard record itself.
+    ///
+    /// **Cloudflare's alone.** A service that hands out its own hostnames
+    /// has no zone to route and nothing to say here, so this belongs with
+    /// the provider rather than beside [`Self::provider`] — it is left at
+    /// the top level until there is a second provider to shape that place
+    /// around.
     ///
     /// The one thing `cloudflared tunnel route dns` cannot tell us is who
     /// owns a record that already exists, and `*.{zone}` is a name a zone
@@ -80,6 +113,10 @@ pub struct TunnelRecord {
     /// deserialize an existing state file rather than fall back.
     #[serde(default)]
     pub zone_routed: bool,
+}
+
+fn default_tunnel_provider() -> String {
+    DEFAULT_TUNNEL_PROVIDER.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -606,5 +643,88 @@ mod tests {
 
         let err = StateStore::new(path).load().unwrap_err();
         assert!(err.to_string().contains("corrupt"), "got: {err}");
+    }
+
+    /// A state file from before the tunnel named its service.
+    ///
+    /// Every one on disk today looks like this, so the field cannot be
+    /// required — and what it meant is the one service there was.
+    const TUNNEL_WITHOUT_A_PROVIDER: &str = r#"{
+        "version": 1,
+        "projects": {},
+        "tunnel": {
+            "name": "kobune",
+            "domain": "example.com",
+            "enabled": true,
+            "zone_routed": true
+        }
+    }"#;
+
+    #[test]
+    fn a_tunnel_written_before_providers_reads_as_cloudflare() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, TUNNEL_WITHOUT_A_PROVIDER).expect("writes");
+
+        let tunnel = StateStore::new(path)
+            .load()
+            .expect("loads")
+            .tunnel
+            .expect("kept");
+
+        assert_eq!(tunnel.provider, DEFAULT_TUNNEL_PROVIDER);
+        assert!(tunnel.enabled, "the rest of the record is untouched");
+    }
+
+    #[test]
+    fn a_tunnel_with_no_zone_of_yours_is_a_tunnel() {
+        // A service that hands out its own hostnames has nothing for the
+        // user to have named, so the field has to be allowed to be
+        // absent rather than stored as an empty string that every reader
+        // then has to remember to treat as missing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "version": 1,
+                "projects": {},
+                "tunnel": { "provider": "quick", "name": "kobune", "enabled": true }
+            }"#,
+        )
+        .expect("writes");
+
+        let tunnel = StateStore::new(path)
+            .load()
+            .expect("loads")
+            .tunnel
+            .expect("kept");
+
+        assert_eq!(tunnel.provider, "quick");
+        assert!(tunnel.domain.is_none());
+    }
+
+    #[test]
+    fn a_provider_this_build_does_not_know_still_loads() {
+        // The field is a string so that this is a tunnel Kobune can refuse
+        // to start, rather than a registry it cannot read. A file naming an
+        // unknown service comes from a newer build or from an editor, and
+        // taking every project down with it would be the worse failure by
+        // far — the projects have nothing to do with the tunnel.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let json = TUNNEL_WITHOUT_A_PROVIDER.replace(
+            r#""name": "kobune""#,
+            r#""provider": "from-the-future", "name": "kobune""#,
+        );
+        std::fs::write(&path, &json).expect("writes");
+
+        let state = StateStore::new(path).load().expect("loads");
+
+        assert_eq!(
+            state.tunnel.expect("kept").provider,
+            "from-the-future",
+            "kept as written, for something above to make sense of"
+        );
     }
 }
