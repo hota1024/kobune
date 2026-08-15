@@ -136,6 +136,13 @@ pub fn tunnel(info: &TunnelInfo) {
     Surface::stdout().print(|decor| views::tunnel(info, decor));
 }
 
+/// How long a daemon has been up, worded as the panels word it.
+///
+/// Out here because an error says it too: a restart that met the daemon it
+/// meant to replace names how long that one has been running, and two
+/// spellings of the same number would read as two different facts.
+pub use views::format_uptime;
+
 /// `ping`, and `daemon status` when there is a daemon to report on.
 pub fn daemon(pong: &Pong, socket: Option<&Path>) {
     Surface::stdout().print(|decor| views::daemon(pong, socket, decor));

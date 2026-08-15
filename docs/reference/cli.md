@@ -440,6 +440,22 @@ answers — so the exit code says 1 and the hint says which of those states the
 machine is in. Nothing else changes its exit code over this: `kobune up` and the
 rest did what they were asked, and print the same wording as a notice.
 
+`restart` fails for a second reason: the daemon it meant to replace is still
+there. The stop is given five seconds to take, and one that outlasts it is
+holding the socket when the start reaches for it, so nothing was restarted
+however readily it answers.
+
+```
+error: the daemon outlasted every stop, so nothing was restarted: what is
+answering has been up 1h 0m
+```
+
+A daemon launchd woke during the stop answers in exactly the same way, and that
+one is where a restart wanted the machine. What tells the two apart is how long
+each has been up: the replacement started while the restart was waiting, and
+the daemon that would not go away carries that wait on top of the uptime it had
+before.
+
 ## Keeping it current
 
 ```console

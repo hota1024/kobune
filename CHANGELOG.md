@@ -108,6 +108,17 @@ less accurately.
 
 ### Fixed
 
+- **`kobune daemon restart` calls it a restart only when one happened.** The
+  stop gets five seconds to take, and a daemon that outlasts it is shaken hands
+  with rather than replaced — which exited 0, so `kobune setup`'s wake step went
+  on to write `/etc/resolver/localhost` for :53 with DNS still on the fallback
+  port. The daemon that legitimately answers there, launchd's job woken by a
+  request arriving in the gap, looks identical from the socket, so the uptime on
+  the handshake is read before the stop and compared after it: the daemon that
+  was replaced started during the wait, and the one that was not carries that
+  wait on top of the uptime it already had. Still there after both rounds, it
+  exits 1 and says how long what it met has been running (#105)
+
 - **`kobune daemon start` and `restart` say whether launchd took the
   sockets.** A start that fell back to a daemon of its own leaves 80, 443 and
   53 with the job that did not come up, so no URL answers — and every caller

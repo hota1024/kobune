@@ -444,6 +444,21 @@ talk to. Restart it with `kobune daemon restart`
 です。`kobune up` などは依頼された処理自体は完了しているため、同じ内容を
 notice として表示します。
 
+`restart` にはもう 1 つ失敗する場合があります。置き換えるはずだった daemon が
+残っているときです。停止には 5 秒の猶予がありますが、それを越えて残った daemon
+は起動側がソケットをつかみに行った時点でまだ保持しています。応答自体は普通に
+返ってきますが、再起動は起きていません。
+
+```
+error: the daemon outlasted every stop, so nothing was restarted: what is
+answering has been up 1h 0m
+```
+
+停止中に launchd が起こした daemon も、まったく同じ応答を返します。そちらは
+restart が望んだとおりの状態です。両者を見分けるのは稼働時間です。起こされた
+ほうは restart が待っている間に始まっており、居座ったほうは停止前の稼働時間に
+その待ち時間が上乗せされています。
+
 ## 更新
 
 ```console

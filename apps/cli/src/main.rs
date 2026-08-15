@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use kobune_api::{Event, Request, Response, Target, Window};
+use kobune_api::{Event, Pong, Request, Response, Target, Window};
 use kobune_client::{Client, ClientError, DaemonStart};
 
 /// `0.1.0 (abc1234)`. Every nightly reports the same version, so the commit
@@ -816,6 +816,15 @@ enum CliError {
     /// is, [`unprivileged`] decides.
     #[error("{message}")]
     Unprivileged { message: String, hint: String },
+
+    /// The stop did not take, so the restart met the daemon it meant to
+    /// replace.
+    ///
+    /// Its own kind for the same reason as [`Self::Unprivileged`]: it is a
+    /// failure that leaves something running, and what to do about the
+    /// state the machine is in is not what the message says happened.
+    #[error("{message}")]
+    DidNotStop { message: String, hint: String },
 }
 
 fn as_api_error(err: &CliError) -> Option<&kobune_api::ApiError> {
@@ -829,14 +838,14 @@ fn hint_for(err: &CliError) -> Option<&str> {
     match err {
         CliError::Client(client) => client.hint(),
         CliError::Local(_) => None,
-        CliError::Unprivileged { hint, .. } => Some(hint),
+        CliError::Unprivileged { hint, .. } | CliError::DidNotStop { hint, .. } => Some(hint),
     }
 }
 
 fn exit_code_for(err: &CliError) -> i32 {
     match err {
         CliError::Client(client) => client.exit_code(),
-        CliError::Local(_) | CliError::Unprivileged { .. } => 1,
+        CliError::Local(_) | CliError::Unprivileged { .. } | CliError::DidNotStop { .. } => 1,
     }
 }
 
@@ -2443,6 +2452,14 @@ async fn handle_daemon(
 }
 
 /// Starts the daemon and says what answered.
+async fn start_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError> {
+    let (_, pong) = start_or_meet_daemon(client).await?;
+    report_daemon(cli, client, &pong);
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Starts a daemon, or meets the one already answering, and says which.
 ///
 /// **A start that could not go through launchd is a failed start.** The
 /// daemon is running, and holds none of the ports it was installed to hold,
@@ -2451,10 +2468,16 @@ async fn handle_daemon(
 /// is how a `setup` run came to write `/etc/resolver/localhost` for a port
 /// nothing was listening on.
 ///
-/// Only here, and in the `restart` that runs through it. Every other
-/// command carries on and prints the notice: what they were asked to do
-/// did happen.
-async fn start_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError> {
+/// Only [`start_daemon`] and [`restart_daemon`] come through here. Every
+/// other command carries on and prints the notice: what they were asked to
+/// do did happen.
+///
+/// Split out because starting is not the only thing a caller can want to
+/// know: [`restart_daemon`] has to judge what answered before it can call
+/// the result a restart, and it cannot judge an [`ExitCode`]. Nothing is
+/// printed here for the same reason — a round that turns out not to have
+/// restarted anything must not have announced a daemon on the way past.
+async fn start_or_meet_daemon(client: &Client) -> Result<(DaemonStart, Pong), CliError> {
     let (mut connection, start) = client.connect_or_spawn().await?;
 
     if let Some(unprivileged) = unprivileged_start(start, client.home()) {
@@ -2469,13 +2492,16 @@ async fn start_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError> 
 
     let pong = connection.handshake().await?;
 
-    if cli.json {
-        output::print_json(&pong);
-    } else {
-        ui::daemon(&pong, Some(client.socket_path()));
-    }
+    Ok((start, pong))
+}
 
-    Ok(ExitCode::SUCCESS)
+/// Prints the daemon that answered, in whichever form was asked for.
+fn report_daemon(cli: &Cli, client: &Client, pong: &Pong) {
+    if cli.json {
+        output::print_json(pong);
+    } else {
+        ui::daemon(pong, Some(client.socket_path()));
+    }
 }
 
 /// Asks the daemon to stop. `false` when there was none.
@@ -2508,25 +2534,118 @@ async fn stop_daemon(client: &Client) -> Result<bool, CliError> {
 /// restarting. The second round stops it again rather than only waiting
 /// longer: what answers may be a daemon this run started, which nobody has
 /// asked to stop, and no amount of waiting moves that one.
+///
+/// A daemon of *this* build outliving the wait is the same failure with
+/// none of the noise: it shakes hands perfectly well, so the round above
+/// never runs and the command reports a restart that did not happen. What
+/// separates it from the daemon that legitimately answers here — launchd's
+/// job, woken by a request arriving in the gap — is [`Outgoing`], read
+/// before the stop.
 async fn restart_daemon(cli: &Cli, client: &Client) -> Result<ExitCode, CliError> {
     const ROUNDS: usize = 2;
 
-    let mut refused = None;
+    let mut met = None;
 
     for round in 1..=ROUNDS {
+        let last = round == ROUNDS;
+
+        // **Before the stop**, because this is the only moment the daemon
+        // being replaced can still be asked anything.
+        let outgoing = outgoing_daemon(client).await;
+
         let _ = stop_daemon(client).await;
 
         // **Waited for.** The next start binds the same socket, and a
         // daemon on its way out still holds it.
         wait_until_stopped(client).await;
 
-        match start_daemon(cli, client).await {
-            Err(err) if round < ROUNDS && is_unspeakable(&err) => refused = Some(err),
-            result => return result,
+        match start_or_meet_daemon(client).await {
+            // The daemon the stop was for, still there. Nothing was
+            // restarted, so nothing is printed and nothing is reported.
+            Ok((DaemonStart::Existing, pong)) if outgoing.outlasted(&pong) => met = Some(pong),
+            Ok((_, pong)) => {
+                report_daemon(cli, client, &pong);
+                return Ok(ExitCode::SUCCESS);
+            }
+            Err(err) if is_unspeakable(&err) && !last => {}
+            Err(err) => return Err(err),
         }
     }
 
-    Err(refused.expect("the loop only falls through after a refusal"))
+    let met = met.expect("the loop only falls through after meeting the outgoing daemon");
+
+    Err(CliError::DidNotStop {
+        message: format!(
+            "the daemon outlasted every stop, so nothing was restarted: what is \
+             answering has been up {}",
+            ui::format_uptime(met.uptime_secs)
+        ),
+        hint: format!(
+            "it may still be finishing what it was asked to do, so this is worth a \
+             second try; `lsof {}` names the process holding the socket if it is not",
+            client.socket_path().display()
+        ),
+    })
+}
+
+/// The daemon a restart means to replace, as it was on the way in.
+///
+/// **Read before the stop**, because the comparison afterwards is the whole
+/// of what tells a daemon started in the gap from the one that would not go
+/// away. Both answer a start with [`DaemonStart::Existing`], and nothing
+/// else on the socket separates them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outgoing {
+    /// Nothing answered, so anything met afterwards started in the gap.
+    Absent,
+    /// How long it said it had been up, in whole seconds.
+    Up(u64),
+    /// It answered, and this build could not read the answer.
+    Mute,
+}
+
+impl Outgoing {
+    /// Whether the daemon that answered a start is this one, still there.
+    fn outlasted(self, met: &Pong) -> bool {
+        match self {
+            // Nothing was asked to stop, so nothing can have failed to.
+            // A restart with no daemon to replace is a start, and what
+            // answers here started during it — launchd's job, woken by a
+            // request reaching :80, is what does that.
+            Self::Absent => false,
+
+            // A daemon started in its place reports next to nothing.
+            // Whole seconds are enough in the direction that matters: a
+            // daemon still answering has had the whole five-second wait
+            // added to it, and a tie at the boundary costs a wasted round
+            // rather than a restart reported wrongly.
+            Self::Up(uptime) => met.uptime_secs >= uptime,
+
+            // Nothing to compare against, so having met anything at all
+            // is the whole of the evidence. Another round costs a stop
+            // and a wait; believing this one reports a restart that did
+            // not happen, which is the failure worth avoiding.
+            Self::Mute => true,
+        }
+    }
+}
+
+/// Asks the daemon on the socket how long it has been up.
+///
+/// **Nothing here shakes hands**, for the reason [`stop_daemon`] makes no
+/// handshake either: the daemon most worth restarting is one this build
+/// cannot talk to, and refusing to read its uptime would go blind exactly
+/// there. A `Pong` that cannot be read at all is [`Outgoing::Mute`], which
+/// is a state of its own rather than a missing number.
+async fn outgoing_daemon(client: &Client) -> Outgoing {
+    let Ok(mut connection) = client.connect().await else {
+        return Outgoing::Absent;
+    };
+
+    match connection.request(Request::Ping).await {
+        Ok(Response::Pong(pong)) => Outgoing::Up(pong.uptime_secs),
+        _ => Outgoing::Mute,
+    }
 }
 
 /// Whether the daemon that answered is one this build cannot talk to.
@@ -2676,6 +2795,62 @@ mod tests {
         ] {
             assert!(!is_unspeakable(&err), "got: {err}");
         }
+    }
+
+    /// A handshake from a daemon that has been up this long.
+    fn up_for(seconds: u64) -> Pong {
+        Pong {
+            version: "0.1.0 (abc1234)".to_string(),
+            protocol: kobune_api::PROTOCOL_VERSION,
+            runtime: "docker 28.0.0".to_string(),
+            uptime_secs: seconds,
+        }
+    }
+
+    #[test]
+    fn a_daemon_that_outlasted_the_wait_is_the_one_that_was_already_there() {
+        // The failure the rounds are against, and the quiet one: a daemon
+        // of *this* build shakes hands perfectly well, so meeting it
+        // after a stop was reported as a restart that had happened. Its
+        // uptime is what gives it away — it carries the five-second wait
+        // on top of what it had on the way in.
+        assert!(Outgoing::Up(3_600).outlasted(&up_for(3_605)));
+    }
+
+    #[test]
+    fn a_daemon_launchd_woke_during_the_stop_is_a_restart() {
+        // The good case wears the same `DaemonStart::Existing`: a request
+        // reaching :80 in the gap wakes launchd's job, so the connect at
+        // the top of `connect_or_spawn` succeeds and never gets as far as
+        // waking anything itself. That machine is where the restart
+        // wanted it, and what answers has been up no time at all.
+        assert!(!Outgoing::Up(3_600).outlasted(&up_for(0)));
+    }
+
+    #[test]
+    fn a_daemon_that_was_never_there_cannot_have_failed_to_stop() {
+        // With nothing on the socket, a restart is a start — and one that
+        // produced a daemon did what it was asked, however long that
+        // daemon then reports having been up.
+        assert!(!Outgoing::Absent.outlasted(&up_for(0)));
+    }
+
+    #[test]
+    fn a_daemon_that_would_not_say_is_taken_for_the_same_one() {
+        // Nothing to compare against, so having met anything at all is
+        // the whole of the evidence. Erring the other way is the bug: one
+        // wasted round costs a stop and a wait, and believing it reports
+        // a restart that did not happen.
+        assert!(Outgoing::Mute.outlasted(&up_for(0)));
+    }
+
+    #[test]
+    fn two_daemons_of_the_same_age_are_taken_for_one() {
+        // Uptime arrives in whole seconds, so a daemon started moments
+        // before the restart began ties with one started during it. The
+        // tie goes to another round, which is the direction that cannot
+        // report a restart that did not happen.
+        assert!(Outgoing::Up(0).outlasted(&up_for(0)));
     }
 
     #[test]
