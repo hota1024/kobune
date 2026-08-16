@@ -111,6 +111,11 @@ impl Terminal {
             };
 
             let mut buffer = vec![0u8; 8192];
+
+            // Why the loop ended. The child having gone is the ordinary
+            // way and the only one that leaves nothing to end.
+            let mut child_went = false;
+
             loop {
                 tokio::select! {
                     read = read_some(&fd, &mut buffer) => match read {
@@ -137,21 +142,35 @@ impl Terminal {
                     // it in its last breath.
                     _ = child.wait() => {
                         drain(&fd, &mut buffer, &watched, &published);
+                        child_went = true;
                         break;
                     }
                 }
             }
 
-            // Both ends are let go before the wait below: a child still
-            // writing to a terminal nobody is at gets a hangup, which is
-            // what makes the wait finish rather than hold this task for as
-            // long as the process cares to run.
             drop(fd);
             drop(slave);
 
-            // Reaped here rather than left behind. The process is a
-            // `container start` that has already exited by the time the
-            // terminal closes; without a wait it stays a zombie.
+            // **Letting go of both ends is not a hangup.** A terminal
+            // sends one only to the session it is the controlling
+            // terminal of, and this one is not any session's: the child
+            // is spawned without `setsid`, so it keeps the daemon's, and
+            // the far end is three ordinary descriptors to it. Closing
+            // this side leaves its reads at end-of-file and its writes
+            // failing with `EIO`, both of which a program is free to
+            // ignore — and one that does would hold this task, and the
+            // process, for as long as it cared to run.
+            //
+            // So it is ended rather than asked. Everything that drops a
+            // `Terminal` does so because the container it belonged to has
+            // gone (`apple.rs`), which makes a `container start --attach`
+            // still running one with nothing left to attach to.
+            if !child_went {
+                let _ = child.start_kill();
+            }
+
+            // Reaped here rather than left behind. Without a wait, a
+            // process that has exited stays a zombie.
             let _ = child.wait().await;
         });
 
@@ -561,6 +580,58 @@ mod tests {
             .expect("does not time out");
 
         assert!(terminal.preamble().is_empty());
+    }
+
+    #[tokio::test]
+    async fn letting_go_of_the_terminal_ends_what_was_on_it() {
+        // **Closing both ends is not a hangup.** The far end is not any
+        // session's controlling terminal — nothing calls `setsid` — so a
+        // program that ignores its reads going quiet keeps running, and
+        // the wait below would hold this task for as long as it cared to.
+        //
+        // Everything that drops a `Terminal` does so because the
+        // container it belonged to has gone (`apple.rs`), so an attach
+        // still running is one with nothing left to attach to.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pidfile = dir.path().join("pid");
+
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg(format!(
+            // Ignores a hangup, and gives up on its own after ten seconds
+            // so that a failure here leaves nothing behind.
+            "trap '' HUP; echo $$ > {}; for _ in $(seq 1 100); do sleep 0.1; done",
+            pidfile.display()
+        ));
+
+        let terminal = Terminal::open(command).expect("opens");
+
+        let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pidfile)
+                    && let Ok(pid) = text.trim().parse::<libc::pid_t>()
+                {
+                    return pid;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the program says which process it is");
+
+        drop(terminal);
+
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            // SAFETY: signal 0 checks for the process and sends nothing.
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            ended.is_ok(),
+            "a program on a terminal nobody is at is ended, not waited on"
+        );
     }
 
     #[tokio::test]
