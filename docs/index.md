@@ -2,7 +2,6 @@
 layout: home
 
 hero:
-  name: Kobune
   text: A preview environment per git worktree
   tagline: Create a branch, and the environment is already running at a URL of its own. Made to be driven by an agent as readily as by you.
   actions:

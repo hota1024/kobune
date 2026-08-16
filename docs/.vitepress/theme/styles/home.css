@@ -56,34 +56,30 @@
   width: 100%;
 }
 
+/*
+ * The mark sits after the last word, at the size of the word.
+ *
+ * Sized in `em` so it tracks the headline's clamp rather than being a fixed
+ * block that grows out of proportion as the type shrinks. The negative
+ * `vertical-align` drops it from the baseline onto the type's optical centre.
+ */
 .kb-hero .kb-mark {
-  display: block;
-  width: 40px;
-  height: 40px;
-  margin-bottom: var(--kb-4);
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-left: 0.3em;
+  vertical-align: -0.12em;
 }
 
 .kb-title {
-  display: flex;
-  flex-direction: column;
-  gap: var(--kb-2);
   margin: 0;
   font-family: var(--kb-font-display);
-}
-
-/* An explicit line height, because the file beside the hero is positioned
-   from it — see `--kb-hero-lead` below. */
-.kb-name {
-  font-size: 15px;
-  line-height: 20px;
-  font-weight: 600;
-  letter-spacing: 0;
-  color: var(--vp-c-text-1);
 }
 
 /* 22ch is where the line breaks after "environment" rather than after
    "preview", and where the Japanese breaks after `git worktree`. */
 .kb-text {
+  display: block;
   max-width: 22ch;
   font-size: clamp(26px, 3.4vw, 38px);
   line-height: 1.18;
@@ -526,16 +522,10 @@
     width: 56%;
   }
 
-  /*
-   * The file starts level with the headline, not with the mark above it.
-   *
-   * Everything the headline sits under, added up: the mark and its margin,
-   * then the name and the gap under it. Spelled out rather than measured so
-   * that changing one of them moves the file with it.
-   */
+  /* Nothing precedes the headline any more, so the file starts level with
+     the top of the column it sits beside. */
   .VPContent .VPHome .VPHero .image {
-    --kb-hero-lead: calc(40px + var(--kb-4) + 20px + var(--kb-2));
-    margin: var(--kb-hero-lead) 0 0 var(--kb-7);
+    margin: 0 0 0 var(--kb-7);
   }
 }
 

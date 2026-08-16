@@ -2,7 +2,6 @@
 layout: home
 
 hero:
-  name: Kobune
   text: git worktree ごとのプレビュー環境
   tagline: ブランチを切れば、環境は専用の URL ですでに動いています。人からもエージェントからも同じように扱えます。
   actions:
