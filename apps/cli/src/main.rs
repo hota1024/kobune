@@ -304,7 +304,11 @@ enum TunnelCommand {
         /// it, until the tunnel stops.
         ///
         /// Remembered, so later runs need not repeat it.
-        #[arg(long)]
+        ///
+        /// Checked here rather than at the daemon, so that a typo is a
+        /// sentence rather than a round trip — and so that `--help` and
+        /// the shell completions can say what there is to choose from.
+        #[arg(long, value_parser = kobune_core::TUNNEL_PROVIDERS.to_vec())]
         provider: Option<String>,
 
         /// The zone the hostnames live under, for a service that uses yours
