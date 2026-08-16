@@ -62,11 +62,9 @@ impl Default for QuickProvider {
 
 impl QuickProvider {
     pub fn new() -> Self {
+        // The same binary as the named tunnel, found the same way.
         Self {
-            program: kobune_core::program::resolve_with(
-                std::env::var(cloudflare::PROGRAM_ENV).ok().as_deref(),
-                cloudflare::PROGRAM,
-            ),
+            program: cloudflare::program(),
         }
     }
 
@@ -150,30 +148,50 @@ impl TunnelProvider for QuickProvider {
             ));
         }
 
+        // **Started together, not one after another.** Each waits on its
+        // own banner from Cloudflare's edge, and the waits have nothing
+        // to do with each other: in a row, four services is four round
+        // trips end to end, and up to two minutes before `enable` reports
+        // a failure that was visible after thirty seconds.
+        let mut starting = tokio::task::JoinSet::new();
+        for target in &request.targets {
+            let program = self.program.clone();
+            let port = request.local_port;
+            let target = target.clone();
+
+            starting.spawn(async move { (target, spawn(&program, port).await) });
+        }
+
         let mut children = Vec::new();
         let mut names = BTreeMap::new();
+        let mut failed = None;
 
-        for target in &request.targets {
-            // Every one of these is a separate connection to Cloudflare's
-            // edge, published under a name of its own. Stopping half way
-            // would leave the earlier ones running and unreferenced, so
-            // the failure takes them all down with it.
-            match spawn(&self.program, request.local_port).await {
-                Ok((child, hostname)) => {
-                    names.insert(target.clone(), hostname);
+        while let Some(joined) = starting.join_next().await {
+            match joined {
+                Ok((target, Ok((child, hostname)))) => {
+                    names.insert(target, hostname);
                     children.push(child);
                 }
+                Ok((_, Err(err))) => failed = failed.or(Some(err)),
                 Err(err) => {
-                    QuickTunnel {
-                        children,
-                        hostnames: Hostnames::Assigned(names),
-                    }
-                    .kill_all()
-                    .await;
-
-                    return Err(err);
+                    failed = failed.or(Some(TunnelError::failed("starting a quick tunnel", err)));
                 }
             }
+        }
+
+        // One of them not arriving is the whole tunnel not arriving: a
+        // service with no hostname is one nothing can reach, and the
+        // others would otherwise be left running with nothing holding
+        // them.
+        if let Some(err) = failed {
+            QuickTunnel {
+                children,
+                hostnames: Hostnames::Assigned(names),
+            }
+            .kill_all()
+            .await;
+
+            return Err(err);
         }
 
         let notes = notes_for(request, names.len());
@@ -275,9 +293,11 @@ async fn spawn(program: &str, local_port: u16) -> Result<(Child, String)> {
         .stdout(Stdio::null())
         // **Piped rather than inherited**, unlike the named tunnel's. The
         // hostname is only ever announced here, so this is the one place
-        // it can be read from — which is also why a quick tunnel's log
-        // does not reach the daemon's the way the named one's does.
+        // it can be read from.
         .stderr(Stdio::piped())
+        // The child goes when nothing is holding it, rather than outliving
+        // the daemon as a tunnel nobody is managing.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
@@ -291,9 +311,33 @@ async fn spawn(program: &str, local_port: u16) -> Result<(Child, String)> {
         .stderr
         .take()
         .ok_or_else(|| TunnelError::failed("starting a quick tunnel", "no stderr to read"))?;
+    let mut lines = BufReader::new(stderr);
 
-    match tokio::time::timeout(HOSTNAME_TIMEOUT, read_hostname(stderr)).await {
-        Ok(Some(hostname)) => Ok((child, hostname)),
+    match tokio::time::timeout(HOSTNAME_TIMEOUT, read_hostname(&mut lines)).await {
+        Ok(Some(hostname)) => {
+            // **The pipe has to outlive the read.** cloudflared writes to
+            // stderr for as long as it is up — a line per edge connection,
+            // then heartbeats — and Go terminates a program on SIGPIPE for
+            // fd 2. Dropping the reader here would close the far end and
+            // kill the tunnel seconds after `enable` printed its URL, with
+            // nothing anywhere to say why.
+            //
+            // Draining it is also where a quick tunnel's log finally goes.
+            // The named tunnel inherits the daemon's stderr; this one
+            // cannot, because the hostname had to be read out of it first.
+            tokio::spawn(async move {
+                let mut line = Vec::new();
+                while let Ok(read) = lines.read_until(b'\n', &mut line).await {
+                    if read == 0 {
+                        break;
+                    }
+                    tracing::debug!("cloudflared: {}", String::from_utf8_lossy(&line).trim_end());
+                    line.clear();
+                }
+            });
+
+            Ok((child, hostname))
+        }
         Ok(None) => {
             let _ = child.kill().await;
             Err(TunnelError::failed(
@@ -312,16 +356,31 @@ async fn spawn(program: &str, local_port: u16) -> Result<(Child, String)> {
 }
 
 /// Reads stderr until a hostname goes past.
-async fn read_hostname(stderr: tokio::process::ChildStderr) -> Option<String> {
-    let mut lines = BufReader::new(stderr).lines();
+///
+/// Bytes rather than lines, decoded lossily. `AsyncBufReadExt::lines`
+/// fails a whole read on one byte that is not UTF-8, and treating that as
+/// the end of the output would kill a working cloudflared and report that
+/// it "exited without giving out a hostname" — which is not what happened.
+async fn read_hostname(reader: &mut BufReader<tokio::process::ChildStderr>) -> Option<String> {
+    let mut line = Vec::new();
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(hostname) = hostname_in(&line) {
+    loop {
+        line.clear();
+
+        match reader.read_until(b'\n', &mut line).await {
+            // End of output, and no hostname in any of it.
+            Ok(0) => return None,
+            Ok(_) => {}
+            Err(err) => {
+                tracing::debug!("cannot read cloudflared's output: {err}");
+                return None;
+            }
+        }
+
+        if let Some(hostname) = hostname_in(&String::from_utf8_lossy(&line)) {
             return Some(hostname);
         }
     }
-
-    None
 }
 
 /// Picks the hostname out of a line of cloudflared's banner.
@@ -330,16 +389,26 @@ async fn read_hostname(stderr: tokio::process::ChildStderr) -> Option<String> {
 /// is decoration cloudflare changes at will, and it arrives wrapped in box
 /// characters and log prefixes. What does not change is that the only
 /// `trycloudflare.com` name in the output is the one that was handed out.
+///
+/// **Every URL on the line is considered, not just the first.** The same
+/// banner carries a link to Cloudflare's documentation, and a line that
+/// happened to hold both would otherwise read as holding neither — the
+/// tunnel then waits out its timeout and is killed for saying nothing.
 fn hostname_in(line: &str) -> Option<String> {
-    let start = line.find("https://")? + "https://".len();
-    let rest = &line[start..];
+    line.match_indices("https://").find_map(|(at, marker)| {
+        let rest = &line[at + marker.len()..];
 
-    let end = rest
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
-        .unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+            .unwrap_or(rest.len());
 
-    let host = &rest[..end];
-    host.ends_with(DOMAIN).then(|| host.to_string())
+        // A label under the domain, so that a name merely *ending* in it —
+        // `nottrycloudflare.com` — is not taken for one of Cloudflare's.
+        rest[..end]
+            .strip_suffix(DOMAIN)
+            .filter(|prefix| prefix.ends_with('.'))
+            .map(|_| rest[..end].to_string())
+    })
 }
 
 #[cfg(test)]
@@ -370,6 +439,26 @@ mod tests {
         ] {
             assert_eq!(hostname_in(line), None, "got a hostname from: {line}");
         }
+    }
+
+    #[test]
+    fn the_name_is_found_past_another_url_on_the_line() {
+        // cloudflared's banner carries a link to its own documentation.
+        // Reading only the first URL on a line that held both would find
+        // no hostname, wait out the timeout, and kill a working tunnel
+        // for saying nothing.
+        let line = "INF See https://developers.cloudflare.com/ |                     https://restless-mode-1234.trycloudflare.com |";
+
+        assert_eq!(
+            hostname_in(line).as_deref(),
+            Some("restless-mode-1234.trycloudflare.com")
+        );
+    }
+
+    #[test]
+    fn a_name_merely_ending_in_the_domain_is_not_one_of_them() {
+        // `nottrycloudflare.com` is somebody else's.
+        assert_eq!(hostname_in("INF https://nottrycloudflare.com/x"), None);
     }
 
     #[test]
@@ -487,6 +576,90 @@ sleep 30"#,
         };
 
         assert!(err.to_string().contains("hostname"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_that_keeps_logging_keeps_running() {
+        // **cloudflared writes to stderr for as long as it is up** — a
+        // line per edge connection, then heartbeats. Reading the hostname
+        // and letting the pipe go closes the read end under it, and the
+        // next write kills the process: Go terminates on SIGPIPE for fd 2.
+        // Every URL `tunnel enable` had just printed would stop answering
+        // seconds after it returned, with nothing to say why.
+        //
+        // The stub keeps writing the way the real thing does, and `sh`
+        // dies on SIGPIPE just as readily.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provider = QuickProvider::with_program(crate::testing::stub(
+            dir.path(),
+            r#"echo "INF https://stub-$$.trycloudflare.com" >&2
+while :; do echo "INF still here" >&2; sleep 0.1; done"#,
+        ));
+
+        let request = TunnelRequest::new(dir.path(), 80).with_targets(targets(&["web"]));
+        let mut started = provider.start(&request).await.expect("starts");
+
+        // Long enough for several writes to have gone past.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        assert!(
+            started.tunnel.is_running(),
+            "a tunnel still logging must still be up"
+        );
+
+        started.tunnel.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_byte_that_is_not_utf8_is_not_the_end_of_the_output() {
+        // Reading by line fails the whole read on one such byte, and
+        // treating that as end-of-output would kill a healthy cloudflared
+        // and report that it "exited without giving out a hostname" —
+        // which is not what happened.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provider = QuickProvider::with_program(crate::testing::stub(
+            dir.path(),
+            r#"printf 'INF \377\376 banner
+' >&2
+echo "INF https://stub-$$.trycloudflare.com" >&2
+sleep 30"#,
+        ));
+
+        let request = TunnelRequest::new(dir.path(), 80).with_targets(targets(&["web"]));
+        let started = provider
+            .start(&request)
+            .await
+            .expect("reads past the bad line");
+
+        started.tunnel.stop().await;
+    }
+
+    #[tokio::test]
+    async fn services_are_published_together_rather_than_in_a_queue() {
+        // Each waits on its own banner from Cloudflare's edge, and the
+        // waits are independent. In a row, four services would be four
+        // round trips end to end.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provider = QuickProvider::with_program(crate::testing::stub(
+            dir.path(),
+            r#"sleep 1
+echo "INF https://stub-$$.trycloudflare.com" >&2
+sleep 30"#,
+        ));
+
+        let request =
+            TunnelRequest::new(dir.path(), 80).with_targets(targets(&["web", "api", "docs"]));
+
+        let began = tokio::time::Instant::now();
+        let started = provider.start(&request).await.expect("starts");
+        let took = began.elapsed();
+
+        assert!(
+            took < Duration::from_millis(2500),
+            "three one-second waits overlapped into one: took {took:?}"
+        );
+
+        started.tunnel.stop().await;
     }
 
     #[tokio::test]

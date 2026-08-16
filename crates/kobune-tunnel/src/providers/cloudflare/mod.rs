@@ -44,6 +44,20 @@ pub const PROGRAM: &str = "cloudflared";
 /// without a Cloudflare account.
 pub const PROGRAM_ENV: &str = "KOBUNE_CLOUDFLARED";
 
+/// The command to run, honouring [`PROGRAM_ENV`].
+///
+/// Looked up rather than left as a name: the daemon is started by
+/// launchd, whose `PATH` holds nothing a package manager can install
+/// into, so a bare `cloudflared` reads as missing on a machine that has
+/// it.
+///
+/// **Both providers that drive cloudflared come through here.** The quick
+/// tunnel runs the same binary, and a second copy of this would be the
+/// one that did not get the next change to how the override is honoured.
+pub fn program() -> String {
+    kobune_core::program::resolve_with(std::env::var(PROGRAM_ENV).ok().as_deref(), PROGRAM)
+}
+
 /// Where `cloudflared tunnel login` leaves its certificate.
 ///
 /// Its presence is what tells us whether login has happened; there is no
@@ -72,12 +86,7 @@ impl Default for CloudflareProvider {
 
 impl CloudflareProvider {
     pub fn new() -> Self {
-        Self {
-            program: kobune_core::program::resolve_with(
-                std::env::var(PROGRAM_ENV).ok().as_deref(),
-                PROGRAM,
-            ),
-        }
+        Self { program: program() }
     }
 
     /// Points it at a different binary. For tests, and for [`PROGRAM_ENV`].

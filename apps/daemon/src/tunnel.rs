@@ -77,7 +77,15 @@ impl TunnelHandle {
         };
 
         if !alive {
-            guard.take();
+            // **Stopped, not dropped.** A provider that runs a process
+            // per service reports "not running" the moment one of them
+            // has gone, and the others are still up — still publishing an
+            // environment, and no longer held by anything that could take
+            // them down. Dropping the box would strand them for the life
+            // of the daemon.
+            if let Some(tunnel) = guard.take() {
+                tunnel.stop().await;
+            }
             self.set_hostnames(None);
         }
 
@@ -249,6 +257,53 @@ mod tests {
             enabled,
             zone_routed: true,
         }
+    }
+
+    /// A tunnel that says whether it was stopped or merely dropped.
+    struct Recorded {
+        alive: bool,
+        hostnames: Hostnames,
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl RunningTunnel for Recorded {
+        fn hostnames(&self) -> &Hostnames {
+            &self.hostnames
+        }
+
+        fn is_running(&mut self) -> bool {
+            self.alive
+        }
+
+        async fn stop(self: Box<Self>) {
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_found_dead_is_stopped_rather_than_dropped() {
+        // **A provider that runs a process per service is not all or
+        // nothing.** It reports "not running" as soon as one of them has
+        // gone, and the rest are still up, still publishing — and once
+        // the handle has let go of them, nothing can take them down for
+        // the life of the daemon.
+        let handle = TunnelHandle::default();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        *handle.running.lock().await = Some(Box::new(Recorded {
+            alive: false,
+            hostnames: Hostnames::Assigned(Default::default()),
+            stopped: stopped.clone(),
+        }));
+
+        assert!(!handle.is_running().await);
+        assert!(
+            stopped.load(std::sync::atomic::Ordering::SeqCst),
+            "what it was still holding was taken down"
+        );
+        assert!(handle.hostnames().is_none(), "and stops being advertised");
     }
 
     /// A provider pointed at a program, so readiness is the test's to set.

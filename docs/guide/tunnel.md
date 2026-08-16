@@ -94,10 +94,10 @@ no hostname, and neither does a service you add to `kobune.toml`. Run
 and they stop existing when the tunnel does. Restarting gives out different
 ones, so a link you sent someone in the morning is dead by the afternoon.
 
-**The daemon does not bring one back.** After `kobune daemon restart` the
-tunnel reads as `stopped` rather than reconnecting, because reconnecting would
-hand out hostnames nobody has — the links people are holding point at the old
-ones either way. Enabling again is a deliberate act.
+**The daemon does not bring one back.** Reconnecting would hand out hostnames
+nobody has, since the links people are holding point at the old ones either
+way. So after `kobune daemon restart` the tunnel reads as `disabled` rather
+than reconnecting, and enabling again is a deliberate act.
 
 **Nothing can be put in front of it.** The hostname is Cloudflare's, not yours,
 so there is nothing to attach a Cloudflare Access policy to. Anyone with the URL
@@ -251,8 +251,9 @@ left.
 goes from `not installed` straight to `running`.
 
 The daemon brings a named tunnel that was on back up when it restarts, so a
-link you gave someone keeps working. A quick tunnel it leaves stopped, for the
-reason above.
+link you gave someone keeps working. A quick tunnel it turns off instead, for
+the reason above — leaving it `stopped` would be a red mark in `doctor` about
+a state that is correct.
 
 ## How it is arranged
 

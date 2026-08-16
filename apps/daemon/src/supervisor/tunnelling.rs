@@ -76,8 +76,20 @@ impl Supervisor {
             zone_routed,
         };
 
+        let mut record = record;
         let mut configured = self.tunnel_configured(&record)?;
         let needs = configured.provider.needs();
+
+        // **A zone belongs to whoever uses one.** A domain named for a
+        // named tunnel is remembered, and switching to a service that
+        // hands out its own hostnames would carry it along: `status`
+        // would print `running  quick  *.example.com` over URLs that are
+        // all under someone else's domain, and `purge` would report
+        // something left in an account this provider never touched.
+        if !needs.domain {
+            record.domain = None;
+            configured.request = configured.request.with_domain(None);
+        }
 
         // An incomplete command before a question about it. Both are
         // true of `kobune tunnel enable` with neither flag, and "you left
@@ -121,6 +133,14 @@ impl Supervisor {
             .readiness(&configured.request)
             .is_ready()
         {
+            // **Saved even though nothing started.** The CLI's help says
+            // `--provider` is remembered, and the run that needs it
+            // remembered is exactly this one: the first, on a machine
+            // that is not set up yet. Without this, the next
+            // `kobune tunnel enable --public` falls back to the default
+            // provider and fails asking for a zone nobody wanted.
+            self.save_tunnel_record(Some(record.clone())).await?;
+
             return Ok(Response::Tunnel(
                 tunnel::info(Some(&record), &self.tunnel, Some(&configured)).await,
             ));
@@ -138,7 +158,6 @@ impl Supervisor {
             }
         };
 
-        let mut record = record;
         // Whether the provider has now seen its own setup work. Only ever
         // towards `true`: what a note describes outlasts the run that
         // found it, so the silence has to be earned once rather than
@@ -251,6 +270,24 @@ impl Supervisor {
             request: tunnel::request_for(record, self.paths.tunnel_dir(), port),
         })
     }
+    /// The provider and record, for the questions that need no proxy.
+    ///
+    /// **What a tunnel left in somebody's account has nothing to do with
+    /// where traffic goes.** Going through [`Self::tunnel_configured`]
+    /// for it meant a proxy that failed to bind — an ordinary state, and
+    /// one `doctor` reports — could silence an uninstall's report of the
+    /// named tunnel and the DNS record it is leaving behind, in an
+    /// account the user then has to find them in themselves.
+    fn tunnel_described(&self, record: &TunnelRecord) -> Option<Configured> {
+        let provider = kobune_tunnel::create(&record.provider).ok()?;
+
+        Some(Configured {
+            provider,
+            // Zero, and unread: nothing asked of a provider here depends
+            // on where the proxy is listening.
+            request: tunnel::request_for(record, self.paths.tunnel_dir(), 0),
+        })
+    }
     /// Brings the tunnel up at daemon start, when the state says it was on.
     ///
     /// Failing here does not stop the daemon. The local URLs work either
@@ -287,6 +324,17 @@ impl Supervisor {
                  went with it. Run `kobune tunnel enable --public` for new ones",
                 configured.provider.display_name()
             );
+
+            // **The record stops claiming it should be running.** Left
+            // enabled with nothing up, `status` reads `stopped` and
+            // `doctor` fails on it for as long as the machine stays up —
+            // a red check about a state the design calls correct.
+            let mut record = record;
+            record.enabled = false;
+            if let Err(err) = self.save_tunnel_record(Some(record)).await {
+                tracing::warn!("cannot record that the tunnel did not come back: {err}");
+            }
+
             return;
         }
 
@@ -351,12 +399,12 @@ impl Supervisor {
         // knows what it created and what its own tooling can remove; a
         // record with no delete command can only be described.
         //
-        // Absent when the record names a provider this build does not
-        // have. There is then nothing truthful to say about an account
-        // Kobune cannot describe, and the local half has gone regardless.
+        // Absent only when the record names a provider this build does
+        // not have. There is then nothing truthful to say about an
+        // account Kobune cannot describe, and the local half has gone
+        // regardless.
         let leftover = self
-            .tunnel_configured(&record)
-            .ok()
+            .tunnel_described(&record)
             .map(|configured| configured.provider.leftovers(&configured.request))
             .unwrap_or_default();
 

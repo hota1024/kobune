@@ -85,7 +85,13 @@ pub struct TunnelRecord {
     /// anything for the user to name. Absent in a state file written
     /// before there was a provider that worked that way, which is why it
     /// defaults rather than being required.
-    #[serde(default)]
+    ///
+    /// **Left off entirely when there is none**, rather than written as
+    /// `null`. This file holds every project Kobune manages, and a build
+    /// that still has this as a `String` fails the whole load on a null —
+    /// taking the registry down over a field about the tunnel, which is
+    /// the failure [`Self::provider`] is a string to avoid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
     /// Whether the daemon should be running it.
     ///
@@ -702,6 +708,24 @@ mod tests {
 
         assert_eq!(tunnel.provider, "quick");
         assert!(tunnel.domain.is_none());
+    }
+
+    #[test]
+    fn a_tunnel_with_no_zone_writes_no_zone() {
+        // Not `"domain": null`. A build that still has this as a `String`
+        // fails the whole load on a null, and takes every project's
+        // record with it over a field about the tunnel.
+        let record = TunnelRecord {
+            provider: "quick".into(),
+            name: "kobune".into(),
+            domain: None,
+            enabled: true,
+            zone_routed: false,
+        };
+
+        let json = serde_json::to_string(&record).expect("serializes");
+
+        assert!(!json.contains("domain"), "got: {json}");
     }
 
     #[test]

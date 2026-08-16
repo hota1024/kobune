@@ -38,7 +38,9 @@ const ALREADY_EXISTS: &[&str] = &[
 ///
 /// Dropping it kills the child, which is what should happen: a tunnel
 /// outliving the daemon would keep publishing an environment nothing is
-/// managing any more.
+/// managing any more. That takes [`Command::kill_on_drop`] below —
+/// tokio's default is to leave the process running and merely reap it,
+/// so the promise is not free.
 #[derive(Debug)]
 pub struct TunnelProcess {
     child: Child,
@@ -99,6 +101,9 @@ pub async fn start(
         // stderr puts it in the daemon log, which is where anyone
         // looking for "why is the tunnel down" will look.
         .stderr(Stdio::inherit())
+        // See [`TunnelProcess`]: without this, dropping one leaves a
+        // tunnel published with nothing managing it.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|err| spawn_error(program, err))?;
 
