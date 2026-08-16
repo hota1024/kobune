@@ -65,7 +65,7 @@ impl Supervisor {
             record.zone_routed && record.domain == domain && record.provider == provider
         });
 
-        let record = TunnelRecord {
+        let mut record = TunnelRecord {
             provider,
             name: existing
                 .as_ref()
@@ -76,26 +76,26 @@ impl Supervisor {
             zone_routed,
         };
 
-        let mut record = record;
         let mut configured = self.tunnel_configured(&record)?;
         let needs = configured.provider.needs();
 
-        // **A zone belongs to whoever uses one.** A domain named for a
-        // named tunnel is remembered, and switching to a service that
-        // hands out its own hostnames would carry it along: `status`
-        // would print `running  quick  *.example.com` over URLs that are
-        // all under someone else's domain, and `purge` would report
-        // something left in an account this provider never touched.
+        // **A zone is remembered even by a provider with no use for one.**
+        // The CLI's help says a domain named once need not be named again,
+        // and a spell on a quick tunnel is not a reason to have to type it
+        // back in. What it must not do is show up: `status` printing
+        // `running  quick  *.example.com` over URLs that are all under
+        // Cloudflare's own domain would say this tunnel is on that zone.
+        // So it is kept out of the request and out of the answer — see
+        // `tunnel::info_with_notes` — rather than out of the record.
         //
-        // What the old one left there is a different question, and this
-        // is the last moment anything can answer it: `uninstall` reports
-        // leftovers from the record, and the record is about to stop
-        // naming the zone at all.
+        // What the old provider left in an account is a different
+        // question, and this is where it is asked: a switch is the moment
+        // a tunnel and a DNS record stop being anything Kobune will
+        // mention again.
         let mut left_behind = Vec::new();
 
         if !needs.domain {
             left_behind = self.what_the_last_provider_left(existing.as_ref(), &record.provider);
-            record.domain = None;
             configured.request = configured.request.with_domain(None);
         }
 
@@ -141,6 +141,22 @@ impl Supervisor {
             .readiness(&configured.request)
             .is_ready()
         {
+            // **What was up does not survive being replaced by
+            // something that cannot run.** Every other way out of this
+            // command replaces the running tunnel; this one used to
+            // leave it up, publishing under a provider and a zone the
+            // answer no longer mentions. `status` and `doctor` then read
+            // `not installed` over an environment that is still on the
+            // internet, which is the one reading nobody should be given.
+            //
+            // Not for the same tunnel asked for again: a binary that has
+            // gone from `PATH` says nothing about the process still
+            // carrying the traffic.
+            if replaces_what_is_running(existing.as_ref(), &record) {
+                self.tunnel.stop().await;
+                self.refresh(&context.project, &context.config).await?;
+            }
+
             // **Saved even though nothing started.** The CLI's help says
             // `--provider` is remembered, and the run that needs it
             // remembered is exactly this one: the first, on a machine
@@ -346,14 +362,6 @@ impl Supervisor {
             }
         };
 
-        let mut configured = match self.tunnel_configured(&record) {
-            Ok(configured) => configured,
-            Err(err) => {
-                tracing::warn!("not starting the tunnel: {err}");
-                return;
-            }
-        };
-
         // **A tunnel that has to be told what to publish is not brought
         // back.** The names it handed out died with the processes that
         // held them, and starting again would hand out different ones —
@@ -361,11 +369,19 @@ impl Supervisor {
         // old names. What was published is not stored either, so there is
         // nothing to restore it from. `tunnel status` says `stopped`, and
         // enabling again is a deliberate act.
-        if configured.provider.needs().targets {
+        //
+        // **Asked before anything that needs the proxy.** What a provider
+        // needs is a constant of the provider, and going through
+        // `tunnel_configured` for it meant a proxy that had not bound —
+        // it is started alongside this — could send the daemon home
+        // before the record stopped claiming it should be running.
+        if let Some(described) = self.tunnel_described(&record)
+            && described.provider.needs().targets
+        {
             tracing::info!(
                 "not restoring the {} tunnel: the hostnames it handed out \
                  went with it. Run `kobune tunnel enable --public` for new ones",
-                configured.provider.display_name()
+                described.provider.display_name()
             );
 
             // **The record stops claiming it should be running.** Left
@@ -380,6 +396,14 @@ impl Supervisor {
 
             return;
         }
+
+        let mut configured = match self.tunnel_configured(&record) {
+            Ok(configured) => configured,
+            Err(err) => {
+                tracing::warn!("not starting the tunnel: {err}");
+                return;
+            }
+        };
 
         // **Nobody is waiting to be told what happened.** There is no
         // reply for a note to travel in and nothing here writes the
@@ -489,6 +513,18 @@ impl Supervisor {
             notes,
         })
     }
+}
+
+/// Whether what is running has stopped being what the record describes.
+///
+/// A different service, or the same one on a different zone: either way
+/// the tunnel that is up publishes hostnames nothing will report any
+/// more. The same tunnel asked for again is not one of these — the
+/// answer would otherwise be to take down a working tunnel because
+/// something has since gone from `PATH`.
+fn replaces_what_is_running(previous: Option<&TunnelRecord>, now: &TunnelRecord) -> bool {
+    previous
+        .is_some_and(|previous| previous.provider != now.provider || previous.domain != now.domain)
 }
 
 /// What a provider left in an account, as lines somebody can act on.
@@ -732,6 +768,50 @@ mod tests {
         let request = kobune_tunnel::TunnelRequest::new("/tmp", 0);
 
         assert!(left_in_the_account(provider.as_ref(), &request, "example.com").is_empty());
+    }
+
+    fn a_record(provider: &str, domain: Option<&str>) -> TunnelRecord {
+        TunnelRecord {
+            provider: provider.into(),
+            name: "kobune".into(),
+            domain: domain.map(str::to_string),
+            enabled: true,
+            zone_routed: false,
+        }
+    }
+
+    #[test]
+    fn a_tunnel_that_cannot_run_still_replaces_the_one_that_can() {
+        // The record is saved even when the provider is not installed, so
+        // without this the old tunnel keeps publishing while `status` and
+        // `doctor` describe the new one — "not installed" printed over an
+        // environment that is still on the internet.
+        assert!(replaces_what_is_running(
+            Some(&a_record("cloudflare", Some("example.com"))),
+            &a_record("quick", Some("example.com"))
+        ));
+        assert!(
+            replaces_what_is_running(
+                Some(&a_record("cloudflare", Some("example.com"))),
+                &a_record("cloudflare", Some("elsewhere.example"))
+            ),
+            "a zone is as much a change of tunnel as a service is"
+        );
+    }
+
+    #[test]
+    fn the_same_tunnel_asked_for_again_is_left_running() {
+        // A `cloudflared` that has gone from `PATH` says nothing about
+        // the process still carrying the traffic, and taking a working
+        // tunnel down over it would be the command doing harm.
+        assert!(!replaces_what_is_running(
+            Some(&a_record("cloudflare", Some("example.com"))),
+            &a_record("cloudflare", Some("example.com"))
+        ));
+        assert!(
+            !replaces_what_is_running(None, &a_record("quick", None)),
+            "and a first enable has nothing to replace"
+        );
     }
 
     #[test]

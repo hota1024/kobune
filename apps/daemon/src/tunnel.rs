@@ -195,6 +195,13 @@ pub async fn info_with_notes(
         return TunnelInfo::disabled();
     };
 
+    // **Built from the id the record names, not taken from
+    // `configured`.** What a provider needs and what guards it are
+    // constants of the provider, and `configured` is absent whenever the
+    // proxy has no plain-HTTP port — an ordinary state, and one `doctor`
+    // reports. `None` only for a provider this build does not have.
+    let named = kobune_tunnel::create(&record.provider).ok();
+
     // Only asked about a tunnel somebody wants up. Readiness is a `PATH`
     // lookup and a stat, and the answer for a disabled one reads neither
     // — `status`, `disable` and every `doctor` run would pay for it.
@@ -233,7 +240,17 @@ pub async fn info_with_notes(
     TunnelInfo {
         state,
         provider: record.provider.clone(),
-        domain: record.domain.clone(),
+        // **Only a provider that uses one names a zone.** The record
+        // keeps a domain across a switch to a provider that has no use
+        // for it — named once is remembered, and coming back should not
+        // mean typing it again — but printing `*.example.com` beside a
+        // set of URLs that are all under somebody else's domain says
+        // this tunnel is on that zone, which is what dropping it from
+        // the record used to prevent.
+        domain: record
+            .domain
+            .clone()
+            .filter(|_| named.as_ref().is_some_and(|named| named.needs().domain)),
         record: configured
             .and_then(|configured| configured.provider.dns_record(&configured.request)),
         setup,
@@ -243,16 +260,12 @@ pub async fn info_with_notes(
         // acknowledge.
         public: record.enabled,
         // The enum, not the sentence. Wording it belongs to whoever is
-        // drawing the screen.
-        //
-        // **Asked of the provider the record names, not of
-        // `configured`.** What guards a tunnel is a constant per provider
-        // and has nothing to do with where the proxy is listening —
-        // which is the other reason `configured` is absent. Falling back
-        // to "Kobune cannot see" there would send a quick tunnel's user
-        // looking for an access policy on a hostname that is not theirs.
-        access: kobune_tunnel::create(&record.provider)
-            .map(|provider| access_of(provider.access()))
+        // drawing the screen. Falling back to "Kobune cannot see" for
+        // want of a proxy port would send a quick tunnel's user looking
+        // for an access policy on a hostname that is not theirs.
+        access: named
+            .as_ref()
+            .map(|named| access_of(named.access()))
             .unwrap_or_default(),
     }
 }
@@ -405,6 +418,26 @@ mod tests {
         assert!(
             handle.hostnames().is_none(),
             "and what it published stopped being advertised with it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zone_a_provider_has_no_use_for_is_kept_and_not_shown() {
+        // The record remembers it, so switching back is not a matter of
+        // typing the domain in again — and the answer leaves it out, so
+        // nothing prints `*.example.com` over a set of URLs that are all
+        // under Cloudflare's own domain.
+        let handle = TunnelHandle::default();
+        let mut record = record(true);
+        record.provider = "quick".into();
+
+        let info = info(Some(&record), &handle, None).await;
+
+        assert!(info.domain.is_none(), "got: {:?}", info.domain);
+        assert_eq!(
+            record.domain.as_deref(),
+            Some("example.com"),
+            "the record still has it"
         );
     }
 
