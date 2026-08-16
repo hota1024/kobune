@@ -32,7 +32,7 @@ const RESPONSE: Row[] = [
   [['plain', '  '], ...key('services'), ['muted', '[{']],
   [['plain', '    '], ...key('name'), ['good', '"web"'], ['muted', ',']],
   [['plain', '    '], ...key('state'), ['good', '"ready"'], ['muted', ',']],
-  [['plain', '    '], ...key('url'), ['good', '"https://web.feature-user-auth…"']],
+  [['plain', '    '], ...key('url'), ['good', '"https://web.feature-user-auth.myapp.localhost"']],
   [['muted', '  }]']],
   [['muted', '}']],
 ]
