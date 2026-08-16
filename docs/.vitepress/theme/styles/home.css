@@ -182,9 +182,16 @@
 
 /* --- the demo -------------------------------------------------------- */
 
+/*
+ * The section is the content column, gutter included — the same shape as
+ * every other section, so its children start where the hero does.
+ *
+ * They used to be capped at 1152 and centred inside a padded section, which
+ * put anything narrower than the cap — the caption, with its own measure —
+ * at the section's padding rather than at the column's edge.
+ */
 .demo {
   margin-top: var(--kb-8);
-  padding: 0 24px;
 }
 
 /* 1a's stage sits directly under the hero, which has its own padding. */
@@ -192,13 +199,8 @@
   margin-top: 0;
 }
 
-/* `width: 100%` matters once `.demo-full` is a flex column: an item with
-   `margin-inline: auto` and no definite width stops stretching and shrinks
-   to its content, which centres the text under a left-aligned page. */
 .demo > * {
   width: 100%;
-  max-width: 1152px;
-  margin-inline: auto;
 }
 
 .demo-head h2 {
@@ -668,17 +670,28 @@
   font-variant-ligatures: none;
 }
 
+.kb-runtimes-lead {
+  max-width: 52ch;
+  margin: 0 0 var(--kb-4);
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--vp-c-text-2);
+}
+
 .kb-runtimes ul {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/*
+ * The value you write, then whether you can write it, then what it means.
+ * The state sits second because it is what a reader is scanning for.
+ */
 .kb-runtimes li {
   display: grid;
-  grid-template-columns: 12ch minmax(0, 1fr) auto;
-  gap: var(--kb-3);
-  align-items: baseline;
+  grid-template-columns: 13ch minmax(0, 1fr);
+  gap: var(--kb-1) var(--kb-3);
   padding: var(--kb-3) 0;
   border-top: 1px solid var(--vp-c-divider);
   font-size: 14px;
@@ -691,14 +704,16 @@
   font-variant-ligatures: none;
 }
 
+/* Under the state, in the second column, so the two read as one entry. */
 .kb-runtimes .name {
+  grid-column: 2;
+  line-height: 1.6;
   color: var(--vp-c-text-2);
 }
 
 .kb-runtimes .state {
-  font-family: var(--kb-font-mono);
-  font-size: 12px;
-  color: var(--vp-c-text-3);
+  font-size: 13px;
+  color: var(--vp-c-text-1);
 }
 
 .kb-runtimes li.absent code,
@@ -840,25 +855,7 @@
 
 /* --- widths ---------------------------------------------------------- */
 
-@media (min-width: 640px) {
-  .demo,
-  .kb-steps,
-  .kb-agents,
-  .kb-specs,
-  .kb-notes {
-    padding-inline: 48px;
-  }
-}
-
-@media (min-width: 960px) {
-  .demo,
-  .kb-steps,
-  .kb-agents,
-  .kb-specs,
-  .kb-notes {
-    padding-inline: 64px;
-  }
-}
+/* The gutter itself is set once, at the foot of this file. */
 
 @media (max-width: 859px) {
   .kb-steps ol {
@@ -941,6 +938,7 @@
   }
 }
 
+.demo,
 .kb-steps,
 .kb-agents,
 .kb-compare,

@@ -32,7 +32,7 @@ defineProps<{
           <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
           <path d="M5.75 7V5.25a2.25 2.25 0 0 1 4.5 0V7" />
         </svg>
-        <span><span class="scheme">https://</span>{{ url }}</span>
+        <span class="url"><span class="scheme">https://</span>{{ url }}</span>
       </span>
     </div>
     <!-- Gone once the page has painted, the way a browser's is. -->
@@ -106,8 +106,15 @@ defineProps<{
   font-family: var(--kb-font-mono);
   font-size: 11px;
   color: var(--kb-page-fg);
-  white-space: nowrap;
   overflow: hidden;
+}
+
+/* The ellipsis has to live on the item, not on the flex container it is in:
+   a flex container clips its children rather than trimming their text. */
+.url {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 

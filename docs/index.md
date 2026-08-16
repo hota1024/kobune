@@ -32,9 +32,9 @@ steps:
       body: Open it. Nobody picked a port, and the name is the same after a restart.
 
 compare:
-  title: If you are coming from compose
+  title: If you are coming from docker compose
   body: The services are the ones you already have. What changes is that they are described per worktree rather than per checkout, and that a service can say it belongs to the project instead of the branch.
-  note: kobune init --from-compose writes the right-hand file from the left-hand one. Read the TODOs it leaves before the first kobune up — a compose file says things Kobune has no key for, and it marks them rather than guessing.
+  note: kobune init --from-compose writes the right-hand file from the left-hand one. Read the TODOs it leaves before the first kobune up — a docker compose file says things Kobune has no key for, and it marks them rather than guessing.
 
 specs:
   title: What you get
@@ -60,18 +60,19 @@ agents:
 
 runtimes:
   title: What runs the containers
+  lead: One of these goes in [runtime] default, in kobune.toml. Kobune arranges the containers; the runtime is what actually starts them.
   items:
     - key: docker
-      name: Docker, and anything that speaks its API
-      state: default
+      state: The default, and the better supported of the two.
+      name: Kobune calls the Docker API rather than the docker command, so Docker Desktop, OrbStack and colima all work.
       ready: true
     - key: apple
-      name: Apple Container, on Apple silicon
-      state: supported
+      state: Supported. Needs macOS 26 or later, with container system start already run.
+      name: Every container gets its own address, so nothing is published to the host and two worktrees cannot collide on a port.
       ready: true
     - key: firecracker
-      name: Firecracker microVMs
-      state: not implemented
+      state: Not implemented, and not being worked on.
+      name: It needs KVM, which macOS does not have, so there is nowhere to develop it here.
       ready: false
 
 notes:
@@ -81,8 +82,8 @@ notes:
       body: Everything here assumes a development machine and a person who owns it.
     - lead: Not a container runtime.
       body: Docker or Apple Container does that work; Kobune arranges it.
-    - lead: Not a replacement for compose.
-      body: If one stack on one branch is all you need, compose is simpler and you should keep using it.
+    - lead: Not a replacement for docker compose.
+      body: If one stack on one branch is all you need, docker compose is simpler and you should keep using it.
   link: /guide/how-it-works
   linkText: How it works
 ---

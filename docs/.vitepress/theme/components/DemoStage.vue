@@ -69,7 +69,8 @@ const fieldEl = ref<HTMLElement | null>(null)
 const narrow = ref(false)
 const scale = ref(1)
 
-const scene = computed(() => (narrow.value ? { w: 380, h: 620 } : { w: 1120, h: 700 }))
+// Two rows of 340 with 32 between them, and the narrow one two of 270.
+const scene = computed(() => (narrow.value ? { w: 380, h: 572 } : { w: 1120, h: 712 }))
 
 /*
  * Only the height is set. The field runs the width of the text column like

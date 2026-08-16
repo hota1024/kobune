@@ -16,12 +16,13 @@ const runtimes = computed(() => frontmatter.value.runtimes)
 <template>
   <section v-if="runtimes" class="kb-runtimes">
     <h2>{{ runtimes.title }}</h2>
+    <p class="kb-runtimes-lead">{{ runtimes.lead }}</p>
 
     <ul>
       <li v-for="runtime in runtimes.items" :key="runtime.key" :class="{ absent: !runtime.ready }">
         <code>{{ runtime.key }}</code>
-        <span class="name">{{ runtime.name }}</span>
         <span class="state">{{ runtime.state }}</span>
+        <span class="name">{{ runtime.name }}</span>
       </li>
     </ul>
   </section>

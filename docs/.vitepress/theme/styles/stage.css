@@ -60,15 +60,11 @@
     opacity var(--kb-dur-short) var(--kb-ease-out);
 }
 
-/* One width for both, so the two columns line up rather than nearly doing. */
-.surface[data-surface^='shell'] {
+/* One width and one height for both, so the rows and columns line up rather
+   than nearly doing. */
+.surface {
   width: 540px;
-  height: 348px;
-}
-
-.surface[data-surface^='web'] {
-  width: 540px;
-  height: 320px;
+  height: 340px;
 }
 
 /* --- the window itself ---------------------------------------------- */
@@ -192,12 +188,12 @@
 /* --- where everything stands, act by act ----------------------------- */
 
 /*
- * Two columns 24px apart, two rows 32px apart, inside a 1120 × 700 scene.
+ * Two columns 24px apart, two rows 32px apart, inside a 1120 × 712 scene.
  * The browsers take the top row and the terminals the bottom, and nothing
  * overlaps: the windows are a picture of a desk, not a pile on one.
  */
 .scene [data-surface='shell-a'] {
-  transform: translate(290px, 176px);
+  transform: translate(290px, 186px);
   z-index: 3;
 }
 
@@ -208,27 +204,29 @@
 }
 
 .scene [data-surface='shell-b'] {
-  transform: translate(290px, 760px);
+  transform: translate(290px, 780px);
   z-index: 4;
 }
 
 .scene [data-surface='web-a'] {
-  transform: translate(1180px, 190px);
+  transform: translate(1180px, 186px);
   z-index: 2;
 }
 
 .scene [data-surface='web-b'] {
-  transform: translate(1180px, 340px);
+  transform: translate(1180px, 372px);
   z-index: 2;
 }
 
 .scene[data-act='branch'] [data-surface='shell-a'] {
-  transform: translate(8px, 176px);
+  transform: translate(8px, 186px);
   z-index: 2;
 }
 
+/* The same y as the terminal beside it: equal heights, so they line up top
+   and bottom both. */
 .scene[data-act='branch'] [data-surface='web-a'] {
-  transform: translate(572px, 190px);
+  transform: translate(572px, 186px);
   z-index: 3;
   opacity: 1;
 }
@@ -247,13 +245,13 @@
 
 .scene[data-act='parallel'] [data-surface='shell-a'],
 .scene[data-act='preview'] [data-surface='shell-a'] {
-  transform: translate(8px, 352px);
+  transform: translate(8px, 372px);
   z-index: 3;
 }
 
 .scene[data-act='parallel'] [data-surface='shell-b'],
 .scene[data-act='preview'] [data-surface='shell-b'] {
-  transform: translate(572px, 352px);
+  transform: translate(572px, 372px);
   z-index: 4;
   opacity: 1;
 }
@@ -285,14 +283,9 @@
   --kb-bar-h: 22px;
 }
 
-.scene[data-narrow='true'] [data-surface^='shell'] {
+.scene[data-narrow='true'] .surface {
   width: 368px;
-  height: 280px;
-}
-
-.scene[data-narrow='true'] [data-surface^='web'] {
-  width: 368px;
-  height: 230px;
+  height: 270px;
 }
 
 .scene[data-narrow='true'] .lights i {
@@ -302,11 +295,11 @@
 
 /* One column, and the same 32px between whatever is stacked. */
 .scene[data-narrow='true'] [data-surface='shell-a'] {
-  transform: translate(6px, 170px);
+  transform: translate(6px, 151px);
 }
 
 .scene[data-narrow='true'] [data-surface='shell-b'] {
-  transform: translate(6px, 700px);
+  transform: translate(6px, 640px);
 }
 
 .scene[data-narrow='true'] [data-surface='web-a'],
@@ -320,7 +313,7 @@
 }
 
 .scene[data-narrow='true'][data-act='branch'] [data-surface='shell-a'] {
-  transform: translate(6px, 262px);
+  transform: translate(6px, 302px);
 }
 
 /* Two terminals, one above the other: on a phone that is what "at the same
@@ -330,7 +323,7 @@
 }
 
 .scene[data-narrow='true'][data-act='parallel'] [data-surface='shell-b'] {
-  transform: translate(6px, 312px);
+  transform: translate(6px, 302px);
   opacity: 1;
 }
 
@@ -339,12 +332,12 @@
 }
 
 .scene[data-narrow='true'][data-act='preview'] [data-surface='web-a'] {
-  transform: translate(6px, 30px);
+  transform: translate(6px, 0);
   opacity: 1;
 }
 
 .scene[data-narrow='true'][data-act='preview'] [data-surface='web-b'] {
-  transform: translate(6px, 292px);
+  transform: translate(6px, 302px);
   opacity: 1;
 }
 

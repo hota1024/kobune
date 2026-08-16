@@ -32,9 +32,9 @@ steps:
       body: あとは開くだけです。ポート番号は誰も選んでおらず、再起動しても同じ名前で届きます。
 
 compare:
-  title: Compose から移ってくる場合
+  title: docker compose から移ってくる場合
   body: サービスの内容はいま書いているものと同じです。変わるのは、チェックアウト単位ではなく worktree 単位で環境ができることと、サービスごとにブランチではなくプロジェクトに属すると宣言できることです。
-  note: kobune init --from-compose を実行すると、左のファイルから右のファイルを書き出します。最初の kobune up の前に、残された TODO を読んでください。Compose には Kobune に対応するキーがない設定もあり、その部分は推測せずに印を付けます。
+  note: kobune init --from-compose を実行すると、左のファイルから右のファイルを書き出します。最初の kobune up の前に、残された TODO を読んでください。docker compose には Kobune に対応するキーがない設定もあり、その部分は推測せずに印を付けます。
 
 specs:
   title: できること
@@ -60,29 +60,30 @@ agents:
 
 runtimes:
   title: コンテナを動かすもの
+  lead: kobune.toml の [runtime] default に、次のいずれかを書きます。コンテナの手配をするのが Kobune で、実際に起動するのはランタイムです。
   items:
     - key: docker
-      name: Docker と、その API を話すもの
-      state: 既定
+      state: 既定で、2 つのうち対応が手厚いほうです。
+      name: docker コマンドではなく Docker API を直接呼ぶため、Docker Desktop でも OrbStack でも colima でも動きます。
       ready: true
     - key: apple
-      name: Apple Container（Apple シリコン上）
-      state: 対応済み
+      state: 利用できます。macOS 26 以降で、container system start を実行済みであることが必要です。
+      name: コンテナごとに独自のアドレスが割り当てられ、ホスト側には何も公開されません。worktree が 2 つあってもポートは衝突しません。
       ready: true
     - key: firecracker
-      name: Firecracker の microVM
-      state: 未実装
+      state: 未実装で、着手もしていません。
+      name: KVM が必要ですが macOS にはないため、ここで開発する場所がありません。
       ready: false
 
 notes:
-  title: Kobune の対象外
+  title: Kobune がやらないこと
   items:
     - lead: 本番環境向けのデプロイツールではありません。
       body: 開発マシン上で、その所有者が操作することを前提としています。
     - lead: コンテナランタイムではありません。
       body: 実際にコンテナを動かすのは Docker や Apple Container です。Kobune はその手配をするだけです。
-    - lead: Docker Compose の代替でもありません。
-      body: 1 つのブランチで 1 つの環境を動かせば足りるのであれば、Compose のほうが単純です。
+    - lead: docker compose の代替でもありません。
+      body: 1 つのブランチで 1 つの環境を動かせば足りるのであれば、docker compose のほうが単純です。
   link: /ja/guide/how-it-works
   linkText: 仕組み
 ---
