@@ -71,7 +71,7 @@ runtimes:
       name: コンテナごとに独自のアドレスが割り当てられ、ホスト側には何も公開されません。worktree が 2 つあってもポートは衝突しません。
       ready: true
     - key: firecracker
-      state: 未対応です。
+      state: 対応予定です。
       ready: false
 
 notes:

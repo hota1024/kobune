@@ -2,10 +2,10 @@
 /**
  * What actually runs the containers.
  *
- * Firecracker is in the list and marked unsupported, because it is the thing
+ * A backend that cannot be used yet still gets a row, because it is the thing
  * a reader is most likely to be looking for and least likely to find out
- * about otherwise. Why it is unsupported is `guide/runtimes.md`'s business,
- * not the home page's — a row that stops at "no" is the honest length.
+ * about otherwise. `ready: false` greys it; the state says where it stands.
+ * Why it stands there is `guide/runtimes.md`'s business, not the home page's.
  */
 import { computed } from 'vue'
 import { useData } from 'vitepress'

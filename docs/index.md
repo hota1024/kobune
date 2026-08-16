@@ -71,7 +71,7 @@ runtimes:
       name: Every container gets its own address, so nothing is published to the host and two worktrees cannot collide on a port.
       ready: true
     - key: firecracker
-      state: Not supported.
+      state: Planned.
       ready: false
 
 notes:
