@@ -71,8 +71,7 @@ runtimes:
       name: コンテナごとに独自のアドレスが割り当てられ、ホスト側には何も公開されません。worktree が 2 つあってもポートは衝突しません。
       ready: true
     - key: firecracker
-      state: 未実装で、着手もしていません。
-      name: KVM が必要ですが macOS にはないため、ここで開発する場所がありません。
+      state: 未対応です。
       ready: false
 
 notes:

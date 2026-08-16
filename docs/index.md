@@ -71,8 +71,7 @@ runtimes:
       name: Every container gets its own address, so nothing is published to the host and two worktrees cannot collide on a port.
       ready: true
     - key: firecracker
-      state: Not implemented, and not being worked on.
-      name: It needs KVM, which macOS does not have, so there is nowhere to develop it here.
+      state: Not supported.
       ready: false
 
 notes:
