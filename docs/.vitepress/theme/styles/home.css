@@ -1,0 +1,449 @@
+/*
+ * The home page.
+ *
+ * Every rule here is inside `.VPHome`, which the default theme only renders
+ * on a `layout: home` page. Nothing in the guide, the reference or the
+ * tutorials is reachable from any of it.
+ *
+ * The default theme's own styles are scoped, so a rule like `.VPHero .main`
+ * compiles with a data attribute on its last selector and outranks a plain
+ * one. Where something of theirs has to be overruled, the selector is deep
+ * enough to win outright rather than relying on which file the bundler put
+ * first.
+ */
+
+/*
+ * No ligatures, anywhere the monospaced face is used.
+ *
+ * Coding faces fuse `--` into a single dash, and `--json` and `-fsSL` are
+ * things a reader is meant to be able to retype. This is also why the
+ * terminal switches them off: a fused pair is one glyph in two columns, and
+ * that is a sheared line.
+ */
+.VPHome .kb-title,
+.VPHome .kb-install code,
+.VPHome .demo-head h2,
+.VPHome .demo .caption,
+.VPHome .chapter,
+.VPHome .replay,
+.VPHome .transcript summary,
+.VPHome .transcript pre,
+.VPHome .kb-specs h2,
+.VPHome .kb-specs dt,
+.VPHome .kb-notes h2,
+.VPHome .kb-more {
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+/* Nothing on this page may widen the document. `clip` rather than `hidden`,
+   which would make the page a scroll container and break `position: sticky`
+   in the nav above it. */
+.VPHome {
+  overflow-x: clip;
+}
+
+/* --- the hero -------------------------------------------------------- */
+
+.VPContent .VPHome .VPHero {
+  padding-bottom: var(--kb-6);
+}
+
+/* The hero has no image beside it any more, so it has no reason to stop
+   two-thirds of the way across. */
+.VPContent .VPHome .VPHero .main {
+  width: 100%;
+}
+
+.kb-hero .kb-mark {
+  display: block;
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--kb-4);
+}
+
+.kb-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kb-2);
+  margin: 0;
+  font-family: var(--kb-font-display);
+}
+
+.kb-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--vp-c-text-1);
+}
+
+/* 22ch is where the line breaks after "environment" rather than after
+   "preview", and where the Japanese breaks after `git worktree`. */
+.kb-text {
+  max-width: 22ch;
+  font-size: clamp(26px, 3.4vw, 38px);
+  line-height: 1.18;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--vp-c-text-1);
+  /* Japanese breaks between any two kana unless told otherwise, and
+     `プレビュー環境` split across two lines is not a line break, it is a
+     typo. `keep-all` does nothing to the English. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.kb-lede {
+  max-width: 46ch;
+  margin: var(--kb-5) 0 0;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+/* One accent on the page, and it is not this: a filled ink button and a
+   hairline one beside it, so the eye goes to the demo rather than to a
+   coloured rectangle. */
+.VPContent .VPHome .VPHero .actions {
+  padding-top: var(--kb-6);
+}
+
+.VPHome .VPButton.medium {
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.VPHome .VPButton.brand {
+  border-color: var(--vp-c-text-1);
+  background-color: var(--vp-c-text-1);
+  color: var(--vp-c-bg);
+}
+
+.VPHome .VPButton.brand:hover {
+  border-color: var(--vp-c-text-2);
+  background-color: var(--vp-c-text-2);
+}
+
+.VPHome .VPButton.alt {
+  border-color: var(--vp-c-divider);
+  background-color: transparent;
+  color: var(--vp-c-text-1);
+}
+
+.VPHome .VPButton.alt:hover {
+  border-color: var(--vp-c-text-3);
+  background-color: transparent;
+}
+
+/* `min-width: 0` on both, or a flex item's automatic minimum is the width of
+   the command with nowrap on it — which becomes the whole document's minimum
+   and gives a phone a page it has to scroll sideways. */
+.kb-install {
+  display: flex;
+  align-items: center;
+  gap: var(--kb-3);
+  width: fit-content;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: var(--kb-5);
+  padding: var(--kb-2) var(--kb-2) var(--kb-2) var(--kb-3);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+}
+
+.kb-install code {
+  display: block;
+  min-width: 0;
+  overflow-x: auto;
+  font-family: var(--kb-font-mono);
+  font-size: 13px;
+  color: var(--vp-c-text-1);
+  white-space: nowrap;
+}
+
+.kb-install button {
+  flex: none;
+  padding: 3px var(--kb-2);
+  border-radius: 4px;
+  background: var(--vp-c-bg-soft);
+  font-family: var(--kb-font-mono);
+  font-size: 12px;
+  color: var(--vp-c-text-2);
+  transition: color var(--kb-dur-micro) var(--kb-ease-out);
+}
+
+.kb-install button:hover {
+  color: var(--vp-c-text-1);
+}
+
+/* --- the demo -------------------------------------------------------- */
+
+.demo {
+  padding: 0 24px;
+}
+
+.demo > * {
+  max-width: 1152px;
+  margin-inline: auto;
+}
+
+.demo-head h2 {
+  margin: 0;
+  font-family: var(--kb-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+}
+
+.demo-head .lead {
+  max-width: 52ch;
+  margin: var(--kb-2) 0 var(--kb-5);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+.demo .caption {
+  min-height: 3em;
+  margin: var(--kb-4) 0 0;
+  max-width: 60ch;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--vp-c-text-2);
+}
+
+.demo .controls {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--kb-4);
+  margin-top: var(--kb-4);
+}
+
+.chapters {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: var(--kb-2);
+  max-width: 560px;
+}
+
+.chapter {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font-family: var(--kb-font-mono);
+  font-size: 12px;
+  text-align: left;
+  color: var(--vp-c-text-2);
+  transition: color var(--kb-dur-micro) var(--kb-ease-out);
+}
+
+.chapter:hover,
+.chapter.on {
+  color: var(--vp-c-text-1);
+}
+
+.chapter .rail {
+  display: block;
+  height: 2px;
+  margin-bottom: var(--kb-2);
+  background: var(--vp-c-divider);
+  overflow: hidden;
+}
+
+/* The chapter that is playing is the accent. The ones already played are
+   only a record of where the clock has been, and take a neutral. */
+.chapter .fill {
+  display: block;
+  height: 100%;
+  background: var(--vp-c-text-3);
+  transform-origin: left;
+}
+
+.chapter.on .fill {
+  background: var(--kb-accent);
+}
+
+.replay {
+  flex: none;
+  padding: var(--kb-1) var(--kb-3);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  font-family: var(--kb-font-mono);
+  font-size: 12px;
+  color: var(--vp-c-text-2);
+  transition: color var(--kb-dur-micro) var(--kb-ease-out);
+}
+
+.replay:hover {
+  color: var(--vp-c-text-1);
+}
+
+.demo :focus-visible,
+.VPHome .kb-install :focus-visible {
+  outline: 2px solid var(--kb-accent);
+  outline-offset: 2px;
+}
+
+.transcript {
+  margin-top: var(--kb-6);
+  font-size: 13px;
+}
+
+.transcript summary {
+  cursor: pointer;
+  font-family: var(--kb-font-mono);
+  color: var(--vp-c-text-2);
+}
+
+.transcript summary:hover {
+  color: var(--vp-c-text-1);
+}
+
+.transcript pre {
+  margin: var(--kb-3) 0 0;
+  padding: var(--kb-4);
+  border-radius: 8px;
+  background: var(--vp-c-bg-soft);
+  font-family: var(--kb-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--vp-c-text-2);
+  overflow-x: auto;
+}
+
+/* --- what you get, and what it is not -------------------------------- */
+
+.kb-specs,
+.kb-notes {
+  max-width: 1152px;
+  margin: var(--kb-9) auto 0;
+  padding: 0 24px;
+}
+
+.kb-specs h2,
+.kb-notes h2 {
+  margin: 0 0 var(--kb-5);
+  font-family: var(--kb-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+}
+
+.kb-specs dl {
+  display: grid;
+  grid-template-columns: minmax(0, 31ch) minmax(0, 1fr);
+  margin: 0;
+}
+
+.kb-specs dt,
+.kb-specs dd {
+  padding: var(--kb-4) 0;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.kb-specs dt {
+  padding-right: var(--kb-5);
+  font-family: var(--kb-font-mono);
+  font-size: 14px;
+  color: var(--vp-c-text-1);
+}
+
+.kb-specs dd {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+.kb-notes {
+  margin-top: var(--kb-8);
+}
+
+.kb-notes ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 78ch;
+}
+
+.kb-notes li {
+  padding: var(--kb-3) 0;
+  border-top: 1px solid var(--vp-c-divider);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+.kb-notes li b {
+  color: var(--vp-c-text-1);
+  font-weight: 600;
+}
+
+.kb-more {
+  display: inline-block;
+  margin-top: var(--kb-5);
+  font-family: var(--kb-font-mono);
+  font-size: 13px;
+  color: var(--vp-c-text-1);
+  border-bottom: 1px solid var(--vp-c-divider);
+  transition: border-color var(--kb-dur-micro) var(--kb-ease-out);
+}
+
+.kb-more:hover {
+  border-bottom-color: var(--kb-accent);
+}
+
+/* --- widths ---------------------------------------------------------- */
+
+@media (min-width: 640px) {
+  .demo,
+  .kb-specs,
+  .kb-notes {
+    padding-inline: 48px;
+  }
+}
+
+@media (min-width: 960px) {
+  .demo,
+  .kb-specs,
+  .kb-notes {
+    padding-inline: 64px;
+  }
+}
+
+@media (max-width: 719px) {
+  .kb-specs dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kb-specs dt {
+    padding-bottom: var(--kb-1);
+  }
+
+  .kb-specs dd {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .demo .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chapters {
+    max-width: none;
+  }
+}
+
+@media (max-width: 519px) {
+  /* The scene is already as wide as the screen; the gutter would only make
+     it smaller. */
+  .demo .stage {
+    margin-inline: -24px;
+    border-radius: 0;
+  }
+}

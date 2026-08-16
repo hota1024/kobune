@@ -4,10 +4,7 @@ layout: home
 hero:
   name: Kobune
   text: A preview environment per git worktree
-  tagline: Create a branch, and the environment is already running. Made to be driven by an agent as readily as by you.
-  image:
-    src: /logo/kobune-mark.svg
-    alt: Kobune
+  tagline: Create a branch, and the environment is already running at a URL of its own. Made to be driven by an agent as readily as by you.
   actions:
     - theme: brand
       text: Get started
@@ -18,18 +15,36 @@ hero:
     - theme: alt
       text: GitHub
       link: https://github.com/hota1024/kobune
+  install:
+    command: "curl -fsSL https://minato.1024.works/install.sh | sh"
+    copy: Copy
+    copied: Copied
 
-features:
-  - title: One worktree, one environment
-    details: An environment appears with its worktree and goes with it. That correspondence is the whole model, and the only thing to keep in your head.
-  - title: No ports to remember
-    details: Every service gets a stable URL — web.feature-auth.myapp.localhost — that survives restarts. Ports change underneath; the URL does not.
-  - title: Scale to zero
-    details: An untouched environment stops itself and wakes on the next request, in a second or two. Make as many worktrees as you like.
-  - title: Agents can drive it
-    details: Every command speaks --json and exits with a code that says what kind of failure it was. kobune skill install teaches an agent the rest.
-  - title: Your choice of runtime
-    details: Docker and Apple Container behind one abstraction. Switch with a single line of kobune.toml.
-  - title: Share a preview
-    details: Put a branch behind a Cloudflare Tunnel and send the link to a phone or a reviewer. Scale-to-zero still applies.
+specs:
+  title: What you get
+  items:
+    - label: one worktree, one environment
+      body: An environment appears with its worktree and goes with it. That correspondence is the whole model.
+    - label: no ports to remember
+      body: Every service gets a URL that survives restarts — web.feature-auth.myapp.localhost — while the port underneath changes as it likes.
+    - label: scale to zero
+      body: An untouched environment stops itself and wakes on the next request, in a second or two.
+    - label: agents can drive it
+      body: Every command speaks --json and exits with a code that says what kind of failure it was.
+    - label: docker or apple container
+      body: Two runtimes behind one abstraction, switched with a single line of kobune.toml.
+    - label: share over a tunnel
+      body: Put a branch behind a Cloudflare Tunnel and send the link to a phone or a reviewer.
+
+notes:
+  title: What it is not
+  items:
+    - lead: Not a production deployment tool.
+      body: Everything here assumes a development machine and a person who owns it.
+    - lead: Not a container runtime.
+      body: Docker or Apple Container does that work; Kobune arranges it.
+    - lead: Not a replacement for compose.
+      body: If one stack on one branch is all you need, compose is simpler and you should keep using it.
+  link: /guide/how-it-works
+  linkText: How it works
 ---

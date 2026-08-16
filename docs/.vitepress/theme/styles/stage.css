@@ -1,0 +1,327 @@
+/*
+ * The stage: the windows, the palette they print in, and where each one
+ * stands during each act.
+ *
+ * Position is CSS rather than JavaScript. The player only says which act it
+ * is — `data-act` on the scene — and every window's place in that act is a
+ * rule below, so the two layouts (wide and narrow) are a media query rather
+ * than a second code path.
+ */
+
+.demo .stage {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  /* Without this the scene's own width becomes the page's minimum, and a
+     phone gets a document wider than its screen. The scene is clipped and
+     scaled to fit instead. */
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--kb-stage-bg);
+  /* One glow, two stops, the same one the social card is drawn with. */
+  background-image: radial-gradient(120% 90% at 18% 0%, var(--kb-accent-quiet), transparent 70%);
+}
+
+.demo .scene {
+  position: relative;
+  flex: none;
+  transform-origin: top center;
+}
+
+.surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transition:
+    transform var(--kb-dur-long) var(--kb-ease-out),
+    opacity var(--kb-dur-short) var(--kb-ease-out);
+}
+
+.surface[data-surface^='shell'] {
+  width: 552px;
+  height: 360px;
+}
+
+.surface[data-surface^='web'] {
+  width: 520px;
+  height: 330px;
+}
+
+/* --- the window itself ---------------------------------------------- */
+
+.window {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--kb-stage-rule);
+  border-radius: 9px;
+  overflow: hidden;
+  /* Tight and dark. A halo around a card on a dark ground is the tell. */
+  box-shadow: 0 12px 28px oklch(0% 0 0 / 0.4);
+}
+
+.window .bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--kb-2);
+  height: var(--kb-bar-h);
+  padding: 0 10px;
+}
+
+.lights {
+  display: flex;
+  gap: var(--kb-2);
+  flex: none;
+}
+
+.lights i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.lights .close {
+  background: var(--kb-light-close);
+}
+
+.lights .min {
+  background: var(--kb-light-min);
+}
+
+.lights .zoom {
+  background: var(--kb-light-zoom);
+}
+
+.window .title {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--kb-font-mono);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+/* --- what the terminal prints ---------------------------------------- */
+
+.line {
+  min-height: 1em;
+}
+
+.line:empty::before {
+  content: ' ';
+}
+
+/*
+ * One column, whatever font ends up drawing it.
+ *
+ * Box drawing and Braille are missing from several system monospaces, and a
+ * per-glyph fallback to a proportional face is what shears a panel. Pinning
+ * the cell makes that impossible: the glyph may look borrowed, but it cannot
+ * push the column to its right out of line.
+ */
+.cell {
+  display: inline-block;
+  width: 1ch;
+  text-align: center;
+}
+
+.ink-plain {
+  color: var(--kb-ink-plain);
+}
+
+.ink-muted {
+  color: var(--kb-ink-muted);
+}
+
+.ink-subject {
+  color: var(--kb-ink-plain);
+  font-weight: 700;
+}
+
+.ink-heading {
+  color: var(--kb-ink-heading);
+  font-weight: 700;
+}
+
+.ink-link {
+  color: var(--kb-ink-link);
+}
+
+.ink-command {
+  color: var(--kb-ink-command);
+}
+
+.ink-good {
+  color: var(--kb-ink-good);
+}
+
+.ink-warn {
+  color: var(--kb-ink-warn);
+}
+
+.ink-bad {
+  color: var(--kb-ink-bad);
+}
+
+/* --- where everything stands, act by act ----------------------------- */
+
+.scene [data-surface='shell-a'] {
+  transform: translate(284px, 170px);
+  z-index: 3;
+}
+
+.scene [data-surface='shell-b'],
+.scene [data-surface='web-a'],
+.scene [data-surface='web-b'] {
+  opacity: 0;
+}
+
+.scene [data-surface='shell-b'] {
+  transform: translate(284px, 760px);
+  z-index: 4;
+}
+
+.scene [data-surface='web-a'] {
+  transform: translate(1180px, 190px);
+  z-index: 2;
+}
+
+.scene [data-surface='web-b'] {
+  transform: translate(1180px, 340px);
+  z-index: 2;
+}
+
+.scene[data-act='branch'] [data-surface='shell-a'] {
+  transform: translate(24px, 170px);
+  z-index: 2;
+}
+
+.scene[data-act='branch'] [data-surface='web-a'] {
+  transform: translate(576px, 190px);
+  z-index: 3;
+  opacity: 1;
+}
+
+.scene[data-act='parallel'] [data-surface='web-a'],
+.scene[data-act='preview'] [data-surface='web-a'] {
+  transform: translate(32px, 6px);
+  opacity: 1;
+}
+
+.scene[data-act='parallel'] [data-surface='web-b'],
+.scene[data-act='preview'] [data-surface='web-b'] {
+  transform: translate(568px, 6px);
+  opacity: 1;
+}
+
+.scene[data-act='parallel'] [data-surface='shell-a'],
+.scene[data-act='preview'] [data-surface='shell-a'] {
+  transform: translate(6px, 340px);
+  z-index: 3;
+}
+
+.scene[data-act='parallel'] [data-surface='shell-b'],
+.scene[data-act='preview'] [data-surface='shell-b'] {
+  transform: translate(562px, 340px);
+  z-index: 4;
+  opacity: 1;
+}
+
+/* The last act says nothing new. It only stops talking over the two windows
+   the whole session was for — still legible, because both are still running
+   and that is the claim. */
+.scene[data-act='preview'] [data-surface^='shell'] {
+  opacity: 0.42;
+  z-index: 1;
+}
+
+.scene[data-act='preview'] [data-surface^='web'] {
+  z-index: 4;
+}
+
+.scene[data-act='preview'] [data-surface^='web'] .window {
+  border-color: oklch(72% 0.13 217 / 0.55);
+}
+
+/* --- narrow: the same session, stacked ------------------------------- */
+
+.scene[data-narrow='true'] {
+  --kb-shell-size: 9px;
+  --kb-bar-h: 22px;
+}
+
+.scene[data-narrow='true'] [data-surface^='shell'] {
+  width: 376px;
+  height: 288px;
+}
+
+.scene[data-narrow='true'] [data-surface^='web'] {
+  width: 356px;
+  height: 226px;
+}
+
+.scene[data-narrow='true'] .lights i {
+  width: 9px;
+  height: 9px;
+}
+
+.scene[data-narrow='true'] [data-surface='shell-a'] {
+  transform: translate(2px, 166px);
+}
+
+.scene[data-narrow='true'] [data-surface='shell-b'] {
+  transform: translate(2px, 700px);
+}
+
+.scene[data-narrow='true'] [data-surface='web-a'],
+.scene[data-narrow='true'] [data-surface='web-b'] {
+  transform: translate(420px, 40px);
+}
+
+.scene[data-narrow='true'][data-act='branch'] [data-surface='web-a'] {
+  transform: translate(12px, 0);
+  opacity: 1;
+}
+
+.scene[data-narrow='true'][data-act='branch'] [data-surface='shell-a'] {
+  transform: translate(2px, 250px);
+}
+
+/* Two terminals, one above the other: on a phone that is what "at the same
+   time" has to look like. The browsers wait for the last act. */
+.scene[data-narrow='true'][data-act='parallel'] [data-surface='shell-a'] {
+  transform: translate(2px, 0);
+}
+
+.scene[data-narrow='true'][data-act='parallel'] [data-surface='shell-b'] {
+  transform: translate(2px, 300px);
+  opacity: 1;
+}
+
+.scene[data-narrow='true'][data-act='parallel'] [data-surface^='web'] {
+  opacity: 0;
+}
+
+.scene[data-narrow='true'][data-act='preview'] [data-surface='web-a'] {
+  transform: translate(12px, 40px);
+  opacity: 1;
+}
+
+.scene[data-narrow='true'][data-act='preview'] [data-surface='web-b'] {
+  transform: translate(12px, 320px);
+  opacity: 1;
+}
+
+.scene[data-narrow='true'][data-act='preview'] [data-surface^='shell'] {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .surface {
+    transition-duration: 150ms;
+    transition-property: opacity;
+  }
+}

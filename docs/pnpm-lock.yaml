@@ -17,6 +17,9 @@ importers:
       vitepress-plugin-llms:
         specifier: ^1.13.4
         version: 1.13.4
+      vue:
+        specifier: ^3.5.41
+        version: 3.5.41
       wawoff2:
         specifier: ^2.0.1
         version: 2.0.1
