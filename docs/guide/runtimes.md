@@ -123,11 +123,13 @@ Docker Desktop running, if your services reach each other through
 
 ## Firecracker
 
-Not implemented. It needs KVM and cannot run on macOS at all, so there is
-nowhere to develop it here. The `Runtime` trait exists to absorb exactly this
-kind of difference, and the Apple Container work confirmed it can — a backend
-returns the address the proxy should forward to, and the proxy never learns
-which one produced it.
+Planned, and not usable yet. It needs KVM, so it runs on a Linux host and
+never on macOS; a machine to develop it against is what it is waiting on.
+
+The `Runtime` trait exists to absorb exactly this kind of difference, and the
+Apple Container work confirmed it can — a backend returns the address the
+proxy should forward to, and the proxy never learns which one produced it.
+Nothing above the trait changes to add a third.
 
 ## Switching
 
