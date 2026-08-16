@@ -71,8 +71,11 @@
   font-family: var(--kb-font-display);
 }
 
+/* An explicit line height, because the file beside the hero is positioned
+   from it — see `--kb-hero-lead` below. */
 .kb-name {
   font-size: 15px;
+  line-height: 20px;
   font-weight: 600;
   letter-spacing: 0;
   color: var(--vp-c-text-1);
@@ -342,11 +345,17 @@
   flex-direction: column;
 }
 
+/* The outer box breaks the column; the field inside it fills what it gets. */
 .demo-full .stage {
   order: -1;
   max-width: none;
   margin-top: var(--kb-5);
   margin-inline: -24px;
+}
+
+.demo-full .stage-field {
+  width: 100%;
+  max-width: none;
   border-radius: 0;
 }
 
@@ -497,9 +506,15 @@
   margin: 0;
 }
 
-/* The default theme pulls the image column up and outwards to let a floating
-   logo bleed past the hero. A file has to stay inside it. */
+/*
+ * The default theme pulls the image column up and outwards to let a floating
+ * logo bleed past the hero. A file has to stay inside it — and below 960px it
+ * has to come *after* the claim: the theme orders the image first, which is
+ * right for a logo and wrong for a configuration file nobody has been told
+ * the purpose of yet.
+ */
 .VPContent .VPHome .VPHero .image {
+  order: 3;
   min-width: 0;
   margin: var(--kb-6) 0 0;
 }
@@ -509,8 +524,16 @@
     width: 56%;
   }
 
+  /*
+   * The file starts level with the headline, not with the mark above it.
+   *
+   * Everything the headline sits under, added up: the mark and its margin,
+   * then the name and the gap under it. Spelled out rather than measured so
+   * that changing one of them moves the file with it.
+   */
   .VPContent .VPHome .VPHero .image {
-    margin: 0 0 0 var(--kb-7);
+    --kb-hero-lead: calc(40px + var(--kb-4) + 20px + var(--kb-2));
+    margin: var(--kb-hero-lead) 0 0 var(--kb-7);
   }
 }
 
@@ -880,9 +903,11 @@
 @media (max-width: 519px) {
   /* The scene is already as wide as the screen; the gutter would only make
      it smaller. */
+  /* `width: auto` as well as the negative margins, or the box keeps the
+     column's width and simply sits 24px to the left of it. */
   .demo .stage {
+    width: auto;
     margin-inline: -24px;
-    border-radius: 0;
   }
 }
 

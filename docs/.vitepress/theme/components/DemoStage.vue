@@ -62,6 +62,7 @@ const webB = computed(() => web(timeline, 'web-b', t.value))
 
 const root = ref<HTMLElement | null>(null)
 const stage = ref<HTMLElement | null>(null)
+const fieldEl = ref<HTMLElement | null>(null)
 
 // Both are what the server renders. `onMounted` corrects them, which is an
 // update rather than a mismatch.
@@ -70,12 +71,32 @@ const scale = ref(1)
 
 const scene = computed(() => (narrow.value ? { w: 380, h: 620 } : { w: 1120, h: 700 }))
 
+/*
+ * Only the height is set. The field runs the width of the text column like
+ * every other section, and the scene is scaled to fill it — so the grey is a
+ * field the windows sit on rather than a margin around a smaller picture.
+ *
+ * The padding is read rather than assumed: on a phone the field loses its
+ * side padding to give the scene the whole screen, and a constant here would
+ * shrink the terminal to nothing at exactly the width where it is already
+ * smallest.
+ */
+const field = ref({ height: '0px' })
+
 function fit() {
-  const room = stage.value?.clientWidth ?? 0
-  if (!room) return
-  narrow.value = room < 900
-  const { w } = scene.value
+  if (!stage.value || !fieldEl.value) return
+
+  const pad = getComputedStyle(fieldEl.value)
+  const padX = parseFloat(pad.paddingLeft) + parseFloat(pad.paddingRight)
+  const padY = parseFloat(pad.paddingTop) + parseFloat(pad.paddingBottom)
+
+  const room = stage.value.clientWidth - padX
+  if (room <= 0) return
+
+  narrow.value = room < 860
+  const { w, h } = scene.value
   scale.value = Math.min(narrow.value ? 1.6 : props.maxScale, room / w)
+  field.value = { height: `${h * scale.value + padY}px` }
 }
 
 let watching: ResizeObserver | undefined
@@ -97,24 +118,31 @@ onUnmounted(() => watching?.disconnect())
       <p class="lead">{{ copy.lead }}</p>
     </div>
 
-    <div ref="stage" class="stage" :style="{ height: `${scene.h * scale}px` }" aria-hidden="true">
-      <div
-        class="scene"
-        :data-act="act"
-        :data-narrow="narrow"
-        :style="{ width: `${scene.w}px`, height: `${scene.h}px`, transform: `scale(${scale})` }"
-      >
-        <div class="surface" data-surface="web-a">
-          <BrowserWindow v-bind="webA" branch="feature/user-auth" />
-        </div>
-        <div class="surface" data-surface="web-b">
-          <BrowserWindow v-bind="webB" branch="fix/checkout-total" />
-        </div>
-        <div class="surface" data-surface="shell-a">
-          <ShellWindow :title="shellA.title.value" :rows="shellA.rows.value" :live="shellA.live.value" />
-        </div>
-        <div class="surface" data-surface="shell-b">
-          <ShellWindow :title="shellB.title.value" :rows="shellB.rows.value" :live="shellB.live.value" />
+    <!--
+      Two boxes on purpose. `.stage` is measured and never painted, so the
+      room it reports does not depend on the scale that room decides;
+      `.stage-field` is the grey panel the windows sit on.
+    -->
+    <div ref="stage" class="stage" aria-hidden="true">
+      <div ref="fieldEl" class="stage-field" :style="field">
+        <div
+          class="scene"
+          :data-act="act"
+          :data-narrow="narrow"
+          :style="{ width: `${scene.w}px`, height: `${scene.h}px`, transform: `scale(${scale})` }"
+        >
+          <div class="surface" data-surface="web-a">
+            <BrowserWindow v-bind="webA" branch="feature/user-auth" />
+          </div>
+          <div class="surface" data-surface="web-b">
+            <BrowserWindow v-bind="webB" branch="fix/checkout-total" />
+          </div>
+          <div class="surface" data-surface="shell-a">
+            <ShellWindow :title="shellA.title.value" :rows="shellA.rows.value" :live="shellA.live.value" />
+          </div>
+          <div class="surface" data-surface="shell-b">
+            <ShellWindow :title="shellB.title.value" :rows="shellB.rows.value" :live="shellB.live.value" />
+          </div>
         </div>
       </div>
     </div>

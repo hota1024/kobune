@@ -35,8 +35,7 @@ const { Layout } = DefaultTheme
     <template #home-hero-after><HomeSteps /></template>
     <template #home-features-after>
       <HomeCompare />
-      <!-- Smaller than 1a's, because here it confirms rather than explains. -->
-      <DemoStage :max-scale="0.8" />
+      <DemoStage />
       <HomeSpecs grid />
       <div class="kb-pair">
         <HomeAgents />

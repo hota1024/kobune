@@ -35,7 +35,12 @@ defineProps<{
         <span><span class="scheme">https://</span>{{ url }}</span>
       </span>
     </div>
-    <div class="progress" :style="{ transform: `scaleX(${loaded})` }" aria-hidden="true" />
+    <!-- Gone once the page has painted, the way a browser's is. -->
+    <div
+      class="progress"
+      :style="{ transform: `scaleX(${loaded})`, opacity: loaded < 1 ? 1 : 0 }"
+      aria-hidden="true"
+    />
 
     <div class="page" :class="{ blank: !page }">
       <div class="head">
@@ -121,7 +126,9 @@ defineProps<{
   height: 2px;
   background: var(--kb-accent);
   transform-origin: left;
-  transition: transform 90ms linear;
+  transition:
+    transform 90ms linear,
+    opacity var(--kb-dur-short) var(--kb-ease-out);
 }
 
 .page {

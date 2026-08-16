@@ -57,10 +57,18 @@
   --kb-dur-short: 220ms;
   --kb-dur-long: 420ms;
 
-  /* --- the stage, dark under both site themes, because a terminal is --- */
-
-  --kb-stage-bg: oklch(20% 0.028 235);
-  --kb-stage-rule: oklch(31% 0.028 235);
+  /*
+   * --- the stage ------------------------------------------------------
+   *
+   * A plain grey field the windows sit on, following the site's theme
+   * rather than staying dark under both. It carries no hue of its own: the
+   * windows on it are a dark terminal and a light page, and anything with a
+   * cast in it would tint one of the two. A trace of chroma keeps it off
+   * dead neutral, which photographs as a flat patch.
+   */
+  --kb-stage-bg: oklch(93.5% 0.004 250);
+  --kb-stage-rule: oklch(85% 0.005 250);
+  --kb-window-shadow: 0 6px 18px oklch(45% 0.01 250 / 0.14);
   --kb-bar-h: 28px;
   --kb-shell-size: 13px;
 
@@ -91,4 +99,17 @@
   --kb-light-close: #ff5f57;
   --kb-light-min: #febc2e;
   --kb-light-zoom: #28c840;
+}
+
+/*
+ * The stage in the dark theme.
+ *
+ * Only the field and what sits directly on it move. The terminal keeps its
+ * own colours in both themes — it is a terminal, and a terminal that went
+ * pale would stop being one — and so does the page in the browser window.
+ */
+.dark {
+  --kb-stage-bg: oklch(26% 0.004 250);
+  --kb-stage-rule: oklch(35% 0.005 250);
+  --kb-window-shadow: 0 8px 22px oklch(0% 0 0 / 0.32);
 }

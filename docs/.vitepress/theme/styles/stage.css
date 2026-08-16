@@ -8,19 +8,41 @@
  * than a second code path.
  */
 
+/* Measured, never painted. See the comment on the markup. */
 .demo .stage {
-  position: relative;
   display: flex;
   justify-content: center;
   /* Without this the scene's own width becomes the page's minimum, and a
      phone gets a document wider than its screen. The scene is clipped and
      scaled to fit instead. */
   min-width: 0;
+}
+
+.demo .stage-field {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  padding: 24px;
   overflow: hidden;
   border-radius: 12px;
   background: var(--kb-stage-bg);
-  /* One glow, two stops, the same one the social card is drawn with. */
-  background-image: radial-gradient(120% 90% at 18% 0%, var(--kb-accent-quiet), transparent 70%);
+}
+
+/*
+ * On a phone the field gives up its side padding: every pixel across is
+ * scene, and the terminal is already as small as it can be read at.
+ *
+ * This lives here rather than beside the rest of the narrow rules in
+ * `home.css`, because that file is imported first — a media query adds no
+ * specificity, so the rule above would win wherever it came later.
+ */
+@media (max-width: 519px) {
+  .demo .stage-field {
+    padding: 16px 0;
+    border-radius: 0;
+  }
 }
 
 .demo .scene {
@@ -38,14 +60,15 @@
     opacity var(--kb-dur-short) var(--kb-ease-out);
 }
 
+/* One width for both, so the two columns line up rather than nearly doing. */
 .surface[data-surface^='shell'] {
-  width: 552px;
-  height: 360px;
+  width: 540px;
+  height: 348px;
 }
 
 .surface[data-surface^='web'] {
-  width: 520px;
-  height: 330px;
+  width: 540px;
+  height: 320px;
 }
 
 /* --- the window itself ---------------------------------------------- */
@@ -57,7 +80,7 @@
   border-radius: 9px;
   overflow: hidden;
   /* Tight and dark. A halo around a card on a dark ground is the tell. */
-  box-shadow: 0 12px 28px oklch(0% 0 0 / 0.4);
+  box-shadow: var(--kb-window-shadow);
 }
 
 .window .bar {
@@ -168,8 +191,13 @@
 
 /* --- where everything stands, act by act ----------------------------- */
 
+/*
+ * Two columns 24px apart, two rows 32px apart, inside a 1120 × 700 scene.
+ * The browsers take the top row and the terminals the bottom, and nothing
+ * overlaps: the windows are a picture of a desk, not a pile on one.
+ */
 .scene [data-surface='shell-a'] {
-  transform: translate(284px, 170px);
+  transform: translate(290px, 176px);
   z-index: 3;
 }
 
@@ -180,7 +208,7 @@
 }
 
 .scene [data-surface='shell-b'] {
-  transform: translate(284px, 760px);
+  transform: translate(290px, 760px);
   z-index: 4;
 }
 
@@ -195,46 +223,50 @@
 }
 
 .scene[data-act='branch'] [data-surface='shell-a'] {
-  transform: translate(24px, 170px);
+  transform: translate(8px, 176px);
   z-index: 2;
 }
 
 .scene[data-act='branch'] [data-surface='web-a'] {
-  transform: translate(576px, 190px);
+  transform: translate(572px, 190px);
   z-index: 3;
   opacity: 1;
 }
 
 .scene[data-act='parallel'] [data-surface='web-a'],
 .scene[data-act='preview'] [data-surface='web-a'] {
-  transform: translate(32px, 6px);
+  transform: translate(8px, 0);
   opacity: 1;
 }
 
 .scene[data-act='parallel'] [data-surface='web-b'],
 .scene[data-act='preview'] [data-surface='web-b'] {
-  transform: translate(568px, 6px);
+  transform: translate(572px, 0);
   opacity: 1;
 }
 
 .scene[data-act='parallel'] [data-surface='shell-a'],
 .scene[data-act='preview'] [data-surface='shell-a'] {
-  transform: translate(6px, 340px);
+  transform: translate(8px, 352px);
   z-index: 3;
 }
 
 .scene[data-act='parallel'] [data-surface='shell-b'],
 .scene[data-act='preview'] [data-surface='shell-b'] {
-  transform: translate(562px, 340px);
+  transform: translate(572px, 352px);
   z-index: 4;
   opacity: 1;
 }
 
-/* The last act says nothing new. It only stops talking over the two windows
-   the whole session was for — still legible, because both are still running
-   and that is the claim. */
+/*
+ * The last act says nothing new. It marks the two windows the whole session
+ * was for, and leaves the terminals alone.
+ *
+ * They used to be dimmed. On a pale field that turns a dark window a washed
+ * grey rather than a quiet one, and both terminals are still running — which
+ * is the claim, so they had better stay readable.
+ */
 .scene[data-act='preview'] [data-surface^='shell'] {
-  opacity: 0.42;
   z-index: 1;
 }
 
@@ -243,7 +275,7 @@
 }
 
 .scene[data-act='preview'] [data-surface^='web'] .window {
-  border-color: oklch(72% 0.13 217 / 0.55);
+  border-color: var(--kb-accent);
 }
 
 /* --- narrow: the same session, stacked ------------------------------- */
@@ -254,13 +286,13 @@
 }
 
 .scene[data-narrow='true'] [data-surface^='shell'] {
-  width: 376px;
-  height: 288px;
+  width: 368px;
+  height: 280px;
 }
 
 .scene[data-narrow='true'] [data-surface^='web'] {
-  width: 356px;
-  height: 226px;
+  width: 368px;
+  height: 230px;
 }
 
 .scene[data-narrow='true'] .lights i {
@@ -268,12 +300,13 @@
   height: 9px;
 }
 
+/* One column, and the same 32px between whatever is stacked. */
 .scene[data-narrow='true'] [data-surface='shell-a'] {
-  transform: translate(2px, 166px);
+  transform: translate(6px, 170px);
 }
 
 .scene[data-narrow='true'] [data-surface='shell-b'] {
-  transform: translate(2px, 700px);
+  transform: translate(6px, 700px);
 }
 
 .scene[data-narrow='true'] [data-surface='web-a'],
@@ -282,22 +315,22 @@
 }
 
 .scene[data-narrow='true'][data-act='branch'] [data-surface='web-a'] {
-  transform: translate(12px, 0);
+  transform: translate(6px, 0);
   opacity: 1;
 }
 
 .scene[data-narrow='true'][data-act='branch'] [data-surface='shell-a'] {
-  transform: translate(2px, 250px);
+  transform: translate(6px, 262px);
 }
 
 /* Two terminals, one above the other: on a phone that is what "at the same
    time" has to look like. The browsers wait for the last act. */
 .scene[data-narrow='true'][data-act='parallel'] [data-surface='shell-a'] {
-  transform: translate(2px, 0);
+  transform: translate(6px, 0);
 }
 
 .scene[data-narrow='true'][data-act='parallel'] [data-surface='shell-b'] {
-  transform: translate(2px, 300px);
+  transform: translate(6px, 312px);
   opacity: 1;
 }
 
@@ -306,12 +339,12 @@
 }
 
 .scene[data-narrow='true'][data-act='preview'] [data-surface='web-a'] {
-  transform: translate(12px, 40px);
+  transform: translate(6px, 30px);
   opacity: 1;
 }
 
 .scene[data-narrow='true'][data-act='preview'] [data-surface='web-b'] {
-  transform: translate(12px, 320px);
+  transform: translate(6px, 292px);
   opacity: 1;
 }
 
