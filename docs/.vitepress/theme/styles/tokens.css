@@ -23,6 +23,16 @@
  */
 
 :root {
+  /*
+   * The bar above the nav claims this much room.
+   *
+   * The default theme offsets its sticky nav and its sidebar by this, so it
+   * has to be what `SiteBanner` actually measures — a bar taller than the
+   * number sits over the top of both, and one shorter than its text clips it.
+   * Two lines fit below 640px, where the sentence stops being one.
+   */
+  --vp-layout-top-height: 36px;
+
   /* The sail, spelled the way `config.ts` and `scripts/og.mjs` spell it. */
   --kb-accent: #00b4db;
   --kb-accent-quiet: oklch(72% 0.13 217 / 0.1);
@@ -99,6 +109,12 @@
   --kb-light-close: #ff5f57;
   --kb-light-min: #febc2e;
   --kb-light-zoom: #28c840;
+}
+
+@media (max-width: 639px) {
+  :root {
+    --vp-layout-top-height: 56px;
+  }
 }
 
 /*

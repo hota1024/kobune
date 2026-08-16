@@ -1,5 +1,5 @@
 /**
- * Everything the demo says in words.
+ * Everything this theme says in words.
  *
  * Shaped like `TEXT` in `.vitepress/config.ts`, and for the same reason:
  * everything that differs between locales in one place, so a missing
@@ -7,13 +7,19 @@
  * to open.
  *
  * Nothing the CLI printed is in here. Console output is not translated — see
- * `.claude/skills/prose/SKILL.md` — and `script.ts` is the only place it
+ * `.claude/skills/prose/SKILL.md` — and `demo/script.ts` is the only place it
  * lives. The chapter names are Latin in both languages for the same reason
  * `worktree` is.
  */
-import type { ActId } from './script'
+import type { ActId } from './demo/script'
 
 interface Copy {
+  /** The bar above the nav, on every page. */
+  readonly banner: {
+    readonly text: string
+    readonly link: string
+    readonly linkText: string
+  }
   readonly heading: string
   readonly lead: string
   readonly replay: string
@@ -24,6 +30,11 @@ interface Copy {
 
 export const COPY = {
   en: {
+    banner: {
+      text: 'Nightly build — not a release, and not stable yet.',
+      link: '/guide/installation',
+      linkText: 'What that means',
+    },
     heading: 'A session, from nothing to two previews',
     lead: 'Nothing here is a recording. It is the output the commands print, drawn as text.',
     replay: 'Play again',
@@ -37,6 +48,11 @@ export const COPY = {
     },
   },
   ja: {
+    banner: {
+      text: 'nightly ビルドです。リリース版ではなく、まだ安定していません。',
+      link: '/ja/guide/installation',
+      linkText: '詳しく',
+    },
     heading: '何もない状態から 2 つのプレビューまで',
     lead: '録画ではありません。コマンドが実際に出力する内容を、そのまま文字として描いています。',
     replay: 'もう一度再生する',

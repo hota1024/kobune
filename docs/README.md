@@ -69,10 +69,11 @@ panels are laid out from their content by the same arithmetic `panel.rs` uses,
 so a panel cannot come out one column short of its own border.
 
 **The words around it are translated, and no checker sees them.**
-`theme/demo/copy.ts` holds the captions in both languages, shaped like `TEXT`
-in `config.ts`; the rest sits in `hero:`, `specs:` and `notes:` in the two
-`index.md` files. `scripts/check.mjs` skips frontmatter and does not read
-TypeScript, so both are held to the house style by hand.
+`theme/copy.ts` holds everything the theme says in both languages — the bar
+above the nav and the demo's captions — shaped like `TEXT` in `config.ts`. The
+rest sits in `hero:`, `specs:` and `notes:` in the two `index.md` files.
+`scripts/check.mjs` skips frontmatter and does not read TypeScript, so both
+are held to the house style by hand.
 
 ## What agents read
 
@@ -177,6 +178,7 @@ deployment that built it.
   page has usually landed on it from a search.
 - **Show real output.** Every console block here was produced by running the
   command, not typed out from memory.
-- **Say what does not work.** `build`, `cmd:` health checks and Firecracker
-  are all unimplemented, and a reader is better served knowing that than
-  discovering it.
+- **Say what does not work.** Firecracker is planned and not usable yet, and
+  nothing has been released — a reader is better served knowing that than
+  discovering it. `build` and `cmd:` health checks were on this list until
+  they shipped; check before repeating it.

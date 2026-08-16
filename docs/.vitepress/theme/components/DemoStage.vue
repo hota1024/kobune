@@ -16,7 +16,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useData } from 'vitepress'
 import ShellWindow from './ShellWindow.vue'
 import BrowserWindow from './BrowserWindow.vue'
-import { copyFor } from '../demo/copy'
+import { copyFor } from '../copy'
 import { compile, cwd, live, scrollback, settled, transcript, usePlayer, web } from '../demo/player'
 
 const props = withDefaults(

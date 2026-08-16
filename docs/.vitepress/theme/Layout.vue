@@ -12,6 +12,7 @@
  * against something they already use.
  */
 import DefaultTheme from 'vitepress/theme'
+import SiteBanner from './components/SiteBanner.vue'
 import HomeHero from './components/HomeHero.vue'
 import HomeInstall from './components/HomeInstall.vue'
 import HomeConfig from './components/HomeConfig.vue'
@@ -28,6 +29,8 @@ const { Layout } = DefaultTheme
 
 <template>
   <Layout>
+    <!-- Every page, not only the home one: a reader arrives from a search. -->
+    <template #layout-top><SiteBanner /></template>
     <template #home-hero-info><HomeHero /></template>
     <template #home-hero-actions-after><HomeInstall /></template>
     <!-- Filling this slot is what puts VPHero into two columns. -->

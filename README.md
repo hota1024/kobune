@@ -11,6 +11,10 @@ by design.
 
 **Create a git worktree, and its preview environment is up.**
 
+> **Nightly only, and not stable.** Nothing has been released. `nightly` is a
+> rolling build of `main` and carries no version, so what works today can
+> change tomorrow with nothing to read but the commit that changed it.
+
 ```console
 $ curl -fsSL https://minato.1024.works/install.sh | sh
 ```
@@ -49,8 +53,11 @@ $ kobune new feature/user-auth
 
 ## Status
 
-**Everything is done except Firecracker, which is planned and needs a Linux
-host.**
+**Every milestone below is done except Firecracker, and nothing is released.**
+The roadmap is not the same thing as a version: `nightly` is rebuilt from
+`main` on every merge, so a milestone being ticked says the work landed, not
+that it has settled.
+
 Creating a worktree starts its containers and they answer on `*.localhost`. An
 untouched environment stops itself and comes back on the next request. Every
 service receives the others' URLs as `KOBUNE_URL_<SERVICE>`.
@@ -116,6 +123,14 @@ Access policy — that needs the API rather than the `cloudflared` CLI — so it
 will not put an environment on the internet without being asked. Put an Access
 policy in front of the hostname yourself.
 
+With no Cloudflare account, `--provider quick` gives each service a throwaway
+`trycloudflare.com` name instead — the services that exist when you run it,
+for as long as the tunnel runs, and different names the next time:
+
+```console
+$ kobune tunnel enable --provider quick --public
+```
+
 Scale-to-zero works through the tunnel too: a reviewer's first request wakes a
 stopped environment, same as a local one.
 
@@ -126,7 +141,7 @@ the one your project uses and any others that are reachable.
 
 ```toml
 [runtime]
-default = "apple"   # or "docker"
+default = "docker"   # or "apple"
 ```
 
 Apple Container needs macOS 26 or later and `container system start`. Two
