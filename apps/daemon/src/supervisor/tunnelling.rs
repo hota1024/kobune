@@ -65,7 +65,7 @@ impl Supervisor {
             record.zone_routed && record.domain == domain && record.provider == provider
         });
 
-        let record = TunnelRecord {
+        let mut record = TunnelRecord {
             provider,
             name: existing
                 .as_ref()
@@ -76,18 +76,26 @@ impl Supervisor {
             zone_routed,
         };
 
-        let mut record = record;
         let mut configured = self.tunnel_configured(&record)?;
         let needs = configured.provider.needs();
 
-        // **A zone belongs to whoever uses one.** A domain named for a
-        // named tunnel is remembered, and switching to a service that
-        // hands out its own hostnames would carry it along: `status`
-        // would print `running  quick  *.example.com` over URLs that are
-        // all under someone else's domain, and `purge` would report
-        // something left in an account this provider never touched.
+        // **A zone is remembered even by a provider with no use for one.**
+        // The CLI's help says a domain named once need not be named again,
+        // and a spell on a quick tunnel is not a reason to have to type it
+        // back in. What it must not do is show up: `status` printing
+        // `running  quick  *.example.com` over URLs that are all under
+        // Cloudflare's own domain would say this tunnel is on that zone.
+        // So it is kept out of the request and out of the answer — see
+        // `tunnel::info_with_notes` — rather than out of the record.
+        //
+        // What the old provider left in an account is a different
+        // question, and this is where it is asked: a switch is the moment
+        // a tunnel and a DNS record stop being anything Kobune will
+        // mention again.
+        let mut left_behind = Vec::new();
+
         if !needs.domain {
-            record.domain = None;
+            left_behind = self.what_the_last_provider_left(existing.as_ref(), &record.provider);
             configured.request = configured.request.with_domain(None);
         }
 
@@ -133,6 +141,22 @@ impl Supervisor {
             .readiness(&configured.request)
             .is_ready()
         {
+            // **What was up does not survive being replaced by
+            // something that cannot run.** Every other way out of this
+            // command replaces the running tunnel; this one used to
+            // leave it up, publishing under a provider and a zone the
+            // answer no longer mentions. `status` and `doctor` then read
+            // `not installed` over an environment that is still on the
+            // internet, which is the one reading nobody should be given.
+            //
+            // Not for the same tunnel asked for again: a binary that has
+            // gone from `PATH` says nothing about the process still
+            // carrying the traffic.
+            if replaces_what_is_running(existing.as_ref(), &record) {
+                self.tunnel.stop().await;
+                self.refresh(&context.project, &context.config).await?;
+            }
+
             // **Saved even though nothing started.** The CLI's help says
             // `--provider` is remembered, and the run that needs it
             // remembered is exactly this one: the first, on a machine
@@ -142,7 +166,13 @@ impl Supervisor {
             self.save_tunnel_record(Some(record.clone())).await?;
 
             return Ok(Response::Tunnel(
-                tunnel::info(Some(&record), &self.tunnel, Some(&configured)).await,
+                tunnel::info_with_notes(
+                    Some(&record),
+                    &self.tunnel,
+                    Some(&configured),
+                    left_behind,
+                )
+                .await,
             ));
         }
 
@@ -170,14 +200,14 @@ impl Supervisor {
         // until something else happens to refresh.
         self.refresh(&context.project, &context.config).await?;
 
+        // What the last provider left first: it is about a zone that has
+        // just stopped being mentioned anywhere, where the rest is about
+        // the tunnel that is now up.
+        let mut notes = left_behind;
+        notes.extend(outcome.notes);
+
         Ok(Response::Tunnel(
-            tunnel::info_with_notes(
-                Some(&record),
-                &self.tunnel,
-                Some(&configured),
-                outcome.notes,
-            )
-            .await,
+            tunnel::info_with_notes(Some(&record), &self.tunnel, Some(&configured), notes).await,
         ))
     }
     /// Stops the tunnel, keeping the record.
@@ -288,6 +318,35 @@ impl Supervisor {
             request: tunnel::request_for(record, self.paths.tunnel_dir(), 0),
         })
     }
+    /// What the provider a switch is leaving behind still has in an
+    /// account of the user's.
+    ///
+    /// Nothing when the same provider carries on — it has not stopped
+    /// being the one that put it there, and it is asked again at
+    /// uninstall — and nothing when there was no zone to have set
+    /// anything up on.
+    fn what_the_last_provider_left(
+        &self,
+        previous: Option<&TunnelRecord>,
+        now: &str,
+    ) -> Vec<String> {
+        let Some(previous) = previous else {
+            return Vec::new();
+        };
+
+        let Some(domain) = previous.domain.clone().filter(|_| previous.provider != now) else {
+            return Vec::new();
+        };
+
+        // Absent only for a provider this build does not have, which
+        // leaves nothing truthful to say about what it set up.
+        let Some(described) = self.tunnel_described(previous) else {
+            return Vec::new();
+        };
+
+        left_in_the_account(described.provider.as_ref(), &described.request, &domain)
+    }
+
     /// Brings the tunnel up at daemon start, when the state says it was on.
     ///
     /// Failing here does not stop the daemon. The local URLs work either
@@ -303,14 +362,6 @@ impl Supervisor {
             }
         };
 
-        let mut configured = match self.tunnel_configured(&record) {
-            Ok(configured) => configured,
-            Err(err) => {
-                tracing::warn!("not starting the tunnel: {err}");
-                return;
-            }
-        };
-
         // **A tunnel that has to be told what to publish is not brought
         // back.** The names it handed out died with the processes that
         // held them, and starting again would hand out different ones —
@@ -318,11 +369,19 @@ impl Supervisor {
         // old names. What was published is not stored either, so there is
         // nothing to restore it from. `tunnel status` says `stopped`, and
         // enabling again is a deliberate act.
-        if configured.provider.needs().targets {
+        //
+        // **Asked before anything that needs the proxy.** What a provider
+        // needs is a constant of the provider, and going through
+        // `tunnel_configured` for it meant a proxy that had not bound —
+        // it is started alongside this — could send the daemon home
+        // before the record stopped claiming it should be running.
+        if let Some(described) = self.tunnel_described(&record)
+            && described.provider.needs().targets
+        {
             tracing::info!(
                 "not restoring the {} tunnel: the hostnames it handed out \
                  went with it. Run `kobune tunnel enable --public` for new ones",
-                configured.provider.display_name()
+                described.provider.display_name()
             );
 
             // **The record stops claiming it should be running.** Left
@@ -337,6 +396,14 @@ impl Supervisor {
 
             return;
         }
+
+        let mut configured = match self.tunnel_configured(&record) {
+            Ok(configured) => configured,
+            Err(err) => {
+                tracing::warn!("not starting the tunnel: {err}");
+                return;
+            }
+        };
 
         // **Nobody is waiting to be told what happened.** There is no
         // reply for a note to travel in and nothing here writes the
@@ -427,11 +494,8 @@ impl Supervisor {
             None => Vec::new(),
         };
 
-        if !older.is_empty() {
-            notes.push(format!(
-                "and, from before tunnel hostnames were one label, {}",
-                older.join(", ")
-            ));
+        if let Some(note) = older_records_note(&older, &notes) {
+            notes.push(note);
         }
 
         // **Nothing left means nothing said.** A provider that touched
@@ -449,6 +513,79 @@ impl Supervisor {
             notes,
         })
     }
+}
+
+/// Whether what is running has stopped being what the record describes.
+///
+/// A different service, or the same one on a different zone: either way
+/// the tunnel that is up publishes hostnames nothing will report any
+/// more. The same tunnel asked for again is not one of these — the
+/// answer would otherwise be to take down a working tunnel because
+/// something has since gone from `PATH`.
+fn replaces_what_is_running(previous: Option<&TunnelRecord>, now: &TunnelRecord) -> bool {
+    previous
+        .is_some_and(|previous| previous.provider != now.provider || previous.domain != now.domain)
+}
+
+/// What a provider left in an account, as lines somebody can act on.
+///
+/// **The provider's own commands**, one short line each: these are drawn
+/// in a panel that wraps at the column rather than at a space, so prose
+/// has to arrive pre-broken. Nothing at all for a provider that touched
+/// no account of yours — there is then nothing to have been left.
+fn left_in_the_account(
+    provider: &dyn kobune_tunnel::TunnelProvider,
+    request: &kobune_tunnel::TunnelRequest,
+    domain: &str,
+) -> Vec<String> {
+    let leftover = provider.leftovers(request);
+    let dns = provider.dns_record(request);
+
+    if leftover.commands.is_empty() && dns.is_none() {
+        return Vec::new();
+    }
+
+    // Not "it set this up": how far it got is not known here, and a
+    // record saved before the provider was ever ready has nothing behind
+    // it. What is true either way is that this is the last time Kobune
+    // says the words.
+    let mut notes = vec![format!(
+        "kobune stops naming what {} has on {domain}",
+        provider.display_name()
+    )];
+
+    notes.extend(
+        leftover
+            .commands
+            .iter()
+            .map(|command| format!("remove it with `{command}`")),
+    );
+
+    // Named separately because no command removes it — the record is
+    // created by `tunnel route dns` and deleted in the dashboard.
+    if let Some(dns) = dns {
+        notes.push(format!("and the DNS record {dns}, in the dashboard"));
+    }
+
+    notes
+}
+
+/// The per-project records from before hostnames were one label.
+///
+/// **A continuation only when there is something to continue.** The
+/// provider's own notes come first and this reads as the next of them;
+/// with none, a line beginning "and," is the tail of something that was
+/// never printed.
+fn older_records_note(older: &[String], after: &[String]) -> Option<String> {
+    if older.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "{} from before tunnel hostnames were one label, {}",
+        if after.is_empty() { "left" } else { "and," },
+        older.join(", ")
+    ))
 }
 
 /// Why publishing was refused, when `--public` was not said out loud.
@@ -589,6 +726,113 @@ mod tests {
         // CLI cannot — and this pins the branch so the promise is not
         // discovered to be unwired on the day something makes it.
         assert!(refuse_without_public(Access::Managed, false).is_none());
+    }
+
+    #[test]
+    fn a_zone_a_switch_leaves_behind_is_named_while_anything_still_knows_it() {
+        // **The last moment it can be said.** Switching to a provider
+        // that has no use for a zone drops the domain from the record,
+        // and `uninstall` reports leftovers out of that record — so
+        // after this, nothing names the tunnel or the wildcard the old
+        // provider left in the account, and a record pointing at a
+        // deleted tunnel answers with Cloudflare's 1033 forever.
+        let provider = kobune_tunnel::create(kobune_core::DEFAULT_TUNNEL_PROVIDER).expect("builds");
+        let request = kobune_tunnel::TunnelRequest::new("/tmp", 0)
+            .with_name("kobune")
+            .with_domain(Some("example.com".into()));
+
+        let notes = left_in_the_account(provider.as_ref(), &request, "example.com");
+
+        assert!(
+            notes.iter().any(|note| note.contains("example.com")),
+            "it names the zone: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("tunnel delete --force kobune")),
+            "and what removes the tunnel: {notes:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("*.example.com")),
+            "and the record no command removes: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_provider_that_touched_no_account_leaves_nothing_to_say() {
+        // A quick tunnel writes nothing anywhere. "It keeps what it set
+        // up" about a provider that set nothing up would send somebody
+        // looking through a dashboard for something that was never there.
+        let provider = kobune_tunnel::create("quick").expect("builds");
+        let request = kobune_tunnel::TunnelRequest::new("/tmp", 0);
+
+        assert!(left_in_the_account(provider.as_ref(), &request, "example.com").is_empty());
+    }
+
+    fn a_record(provider: &str, domain: Option<&str>) -> TunnelRecord {
+        TunnelRecord {
+            provider: provider.into(),
+            name: "kobune".into(),
+            domain: domain.map(str::to_string),
+            enabled: true,
+            zone_routed: false,
+        }
+    }
+
+    #[test]
+    fn a_tunnel_that_cannot_run_still_replaces_the_one_that_can() {
+        // The record is saved even when the provider is not installed, so
+        // without this the old tunnel keeps publishing while `status` and
+        // `doctor` describe the new one — "not installed" printed over an
+        // environment that is still on the internet.
+        assert!(replaces_what_is_running(
+            Some(&a_record("cloudflare", Some("example.com"))),
+            &a_record("quick", Some("example.com"))
+        ));
+        assert!(
+            replaces_what_is_running(
+                Some(&a_record("cloudflare", Some("example.com"))),
+                &a_record("cloudflare", Some("elsewhere.example"))
+            ),
+            "a zone is as much a change of tunnel as a service is"
+        );
+    }
+
+    #[test]
+    fn the_same_tunnel_asked_for_again_is_left_running() {
+        // A `cloudflared` that has gone from `PATH` says nothing about
+        // the process still carrying the traffic, and taking a working
+        // tunnel down over it would be the command doing harm.
+        assert!(!replaces_what_is_running(
+            Some(&a_record("cloudflare", Some("example.com"))),
+            &a_record("cloudflare", Some("example.com"))
+        ));
+        assert!(
+            !replaces_what_is_running(None, &a_record("quick", None)),
+            "and a first enable has nothing to replace"
+        );
+    }
+
+    #[test]
+    fn the_older_records_read_as_a_sentence_on_their_own() {
+        let older = vec!["*.myapp.example.com".to_string()];
+
+        let following = older_records_note(&older, &["something the provider said".to_string()])
+            .expect("there are records");
+        assert!(following.starts_with("and,"), "got: {following}");
+
+        // Nothing above it to continue: a provider this build does not
+        // have describes no leftovers of its own, and "and, …" alone
+        // reads as the tail of a line that was never printed.
+        let alone = older_records_note(&older, &[]).expect("there are records");
+        assert!(!alone.starts_with("and,"), "got: {alone}");
+        assert!(alone.contains("*.myapp.example.com"), "got: {alone}");
+    }
+
+    #[test]
+    fn nothing_older_is_nothing_said() {
+        assert!(older_records_note(&[], &[]).is_none());
     }
 
     #[test]

@@ -25,7 +25,8 @@ pub use git::Repository;
 pub use paths::Paths;
 pub use service::ServiceState;
 pub use state::{
-    DEFAULT_TUNNEL_PROVIDER, ProjectRecord, State, StateStore, TunnelRecord, WorkspaceRecord,
+    DEFAULT_TUNNEL_PROVIDER, ProjectRecord, State, StateStore, TUNNEL_PROVIDERS, TunnelRecord,
+    WorkspaceRecord,
 };
 pub use terminal::Modes;
 
