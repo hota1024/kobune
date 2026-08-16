@@ -283,7 +283,7 @@ enum Command {
         shell: clap_complete::Shell,
     },
 
-    /// Reach this environment from outside, over Cloudflare Tunnel
+    /// Reach this environment from outside, over a tunnel service
     Tunnel {
         #[command(subcommand)]
         command: TunnelCommand,
@@ -294,7 +294,23 @@ enum Command {
 enum TunnelCommand {
     /// Set the tunnel up and start it
     Enable {
-        /// The Cloudflare zone the hostnames live under
+        /// Which tunnel service to use
+        ///
+        /// `cloudflare` is a named tunnel on a zone of yours: every
+        /// service reachable, hostnames that keep working, and a
+        /// `cloudflared tunnel login` first. `quick` needs no account and
+        /// no domain, and hands out a throwaway `trycloudflare.com` name
+        /// per service — covering the services that exist when you run
+        /// it, until the tunnel stops.
+        ///
+        /// Remembered, so later runs need not repeat it.
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// The zone the hostnames live under, for a service that uses yours
+        ///
+        /// `cloudflare` needs one; `quick` has a domain of its own and
+        /// takes no notice of this.
         ///
         /// The zone itself — `example.com`, not `dev.example.com`. A
         /// hostname one level below the zone is covered by the zone's
@@ -305,9 +321,11 @@ enum TunnelCommand {
 
         /// Confirm that this goes on the public internet
         ///
-        /// Kobune cannot apply a Cloudflare Access policy — that needs the
-        /// API, not cloudflared — so it will not expose an environment
-        /// without being asked.
+        /// No tunnel service Kobune drives puts authentication in front of
+        /// an environment, and it will not expose one without being asked.
+        /// Refusing says which case you are in: a hostname of yours that
+        /// you can protect and Kobune cannot see, or one the service handed
+        /// out that nothing can be attached to.
         #[arg(long)]
         public: bool,
     },
@@ -1176,8 +1194,13 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
         },
         Command::Env { command } => build_env_request(command, target)?,
         Command::Tunnel { command } => match command {
-            TunnelCommand::Enable { domain, public } => Request::TunnelEnable {
+            TunnelCommand::Enable {
+                provider,
+                domain,
+                public,
+            } => Request::TunnelEnable {
                 target,
+                provider: provider.clone(),
                 domain: domain.clone(),
                 public: *public,
             },
@@ -3242,6 +3265,46 @@ mod tests {
                 assert!(!public, "public is opt-in");
                 assert_eq!(domain.as_deref(), Some("example.com"));
             }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tunnel_service_can_be_named_and_needs_no_domain() {
+        // The whole point of the quick tunnel: no account, no zone. A CLI
+        // that still demanded --domain would make the one provider that
+        // needs nothing the hardest to reach.
+        let cli = Cli::try_parse_from([
+            "kobune",
+            "tunnel",
+            "enable",
+            "--provider",
+            "quick",
+            "--public",
+        ])
+        .expect("parses");
+        let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
+
+        match request {
+            Request::TunnelEnable {
+                provider, domain, ..
+            } => {
+                assert_eq!(provider.as_deref(), Some("quick"));
+                assert!(domain.is_none(), "got: {domain:?}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tunnel_service_is_remembered_rather_than_repeated() {
+        // Named once, the same as the domain. The daemon fills it in from
+        // the record.
+        let cli = Cli::try_parse_from(["kobune", "tunnel", "enable", "--public"]).expect("parses");
+        let request = build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds");
+
+        match request {
+            Request::TunnelEnable { provider, .. } => assert!(provider.is_none()),
             other => panic!("unexpected: {other:?}"),
         }
     }

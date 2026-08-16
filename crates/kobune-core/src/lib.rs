@@ -24,7 +24,9 @@ pub use error::{Error, Result};
 pub use git::Repository;
 pub use paths::Paths;
 pub use service::ServiceState;
-pub use state::{ProjectRecord, State, StateStore, TunnelRecord, WorkspaceRecord};
+pub use state::{
+    DEFAULT_TUNNEL_PROVIDER, ProjectRecord, State, StateStore, TunnelRecord, WorkspaceRecord,
+};
 pub use terminal::Modes;
 
 /// The commit this was built from, or `unknown`.

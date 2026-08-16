@@ -1,36 +1,59 @@
-//! Owning the Cloudflare Tunnel process.
+//! Owning the tunnel the daemon is running.
 //!
 //! The tunnel is machine-wide, not per-workspace: one named tunnel, one
-//! wildcard ingress rule, and the proxy sorts out what each hostname
-//! means. So this holds a single process and the daemon starts and stops
+//! ingress rule for the zone, and the proxy sorts out what each hostname
+//! means. So this holds a single tunnel and the daemon starts and stops
 //! it, rather than anything being tied to a workspace's lifecycle.
 //!
-//! Enabling is idempotent. `cloudflared tunnel create` and `route dns` are
-//! both run on every enable and on every daemon start, and "it already
-//! exists" reads as success — skipping the call on a stored flag instead
-//! would mean trusting the flag over Cloudflare, which can disagree.
+//! **Which service carries it is not decided here.** What that service
+//! needed to be told, what it left behind, and what it calls the state it
+//! is in all belong to [`kobune_tunnel::TunnelProvider`]; this reports
+//! what it is handed.
 //!
-//! `TunnelRecord.zone_routed` is a stored flag, but it gates nothing: the
-//! calls still run, and it only says whether an "already exists" is
-//! Kobune's own record or a stranger's.
+//! Enabling is idempotent, on every provider: setup runs on every enable
+//! and on every daemon start, and "it already exists" reads as success —
+//! skipping the call on a stored flag instead would mean trusting the flag
+//! over the service, which can disagree.
 
 use std::sync::Arc;
 
-use kobune_api::{TunnelInfo, TunnelState};
+use kobune_api::{TunnelAccess, TunnelInfo, TunnelState};
 use kobune_core::TunnelRecord;
-use kobune_tunnel::{Readiness, StepOutcome, TunnelProcess, TunnelSettings};
+use kobune_tunnel::{
+    Access, Hostnames, Readiness, RunningTunnel, StartOutcome, TunnelProvider, TunnelRequest,
+};
 use tokio::sync::Mutex;
+
+/// A provider and what to ask it for.
+///
+/// The two are resolved together and neither is usable alone, so they
+/// travel as a unit. Absent when the record names a provider this build
+/// does not have, or when there is no proxy port for a tunnel to reach.
+pub struct Configured {
+    pub provider: Box<dyn TunnelProvider>,
+    pub request: TunnelRequest,
+}
+
+impl Configured {
+    fn readiness(&self) -> Readiness {
+        self.provider.readiness(&self.request)
+    }
+}
 
 /// The tunnel, as the daemon holds it.
 #[derive(Default)]
 pub struct TunnelHandle {
-    running: Mutex<Option<TunnelProcess>>,
-    /// The domain being served right now, or `None` when nothing is up.
+    running: Mutex<Option<Box<dyn RunningTunnel>>>,
+    /// What arrives right now, or `None` when nothing is up.
     ///
-    /// Separate from the process so it can be read synchronously.
-    /// [`Self::domain`] is consulted while building every status response
-    /// and every routing table, which are not async paths.
-    active: std::sync::RwLock<Option<String>>,
+    /// Separate from the tunnel so it can be read synchronously.
+    /// [`Self::hostnames`] is consulted while building every status
+    /// response and every routing table, which are not async paths.
+    ///
+    /// **A copy, not a borrow of the running tunnel.** For an assigned
+    /// name that means the map as it was when the tunnel came up, which
+    /// is also the only time it changes.
+    active: std::sync::RwLock<Option<Hostnames>>,
 }
 
 impl TunnelHandle {
@@ -40,38 +63,57 @@ impl TunnelHandle {
 
     /// Whether traffic is flowing.
     ///
-    /// Asks the child rather than trusting the flag: cloudflared exiting
-    /// on its own — a revoked credential, a deleted tunnel — would
-    /// otherwise leave `status` claiming it is up while every tunnel URL
-    /// 502s. A child found dead clears [`Self::domain`], so the URLs stop
-    /// being advertised too.
+    /// Asks the tunnel rather than trusting the flag: one exiting on its
+    /// own — a revoked credential, a deleted tunnel — would otherwise
+    /// leave `status` claiming it is up while every tunnel URL 502s. One
+    /// found dead clears [`Self::domain`], so the URLs stop being
+    /// advertised too.
     pub async fn is_running(&self) -> bool {
         let mut guard = self.running.lock().await;
 
         let alive = match guard.as_mut() {
-            Some(process) => process.is_running(),
+            Some(tunnel) => tunnel.is_running(),
             None => false,
         };
 
         if !alive {
-            guard.take();
-            self.set_domain(None);
+            // **Stopped, not dropped.** A provider that runs a process
+            // per service reports "not running" the moment one of them
+            // has gone, and the others are still up — still publishing an
+            // environment, and no longer held by anything that could take
+            // them down. Dropping the box would strand them for the life
+            // of the daemon.
+            if let Some(tunnel) = guard.take() {
+                tunnel.stop().await;
+            }
+            self.set_hostnames(None);
         }
 
         alive
     }
 
-    /// The domain being served, if any.
-    pub fn domain(&self) -> Option<String> {
+    /// What arrives from outside, if anything does.
+    pub fn hostnames(&self) -> Option<Hostnames> {
         self.active
             .read()
             .ok()
-            .and_then(|domain| domain.as_ref().cloned())
+            .and_then(|hostnames| hostnames.as_ref().cloned())
     }
 
-    fn set_domain(&self, domain: Option<String>) {
+    /// The zone being served, for the places that name one.
+    ///
+    /// `None` both when nothing is up and when what is up has no zone to
+    /// name. The two are the same to a reader looking for a domain.
+    pub fn domain(&self) -> Option<String> {
+        self.hostnames()
+            .as_ref()
+            .and_then(Hostnames::domain)
+            .map(str::to_string)
+    }
+
+    fn set_hostnames(&self, hostnames: Option<Hostnames>) {
         if let Ok(mut guard) = self.active.write() {
-            *guard = domain;
+            *guard = hostnames;
         }
     }
 
@@ -81,64 +123,71 @@ impl TunnelHandle {
     /// a new domain does the obvious thing.
     pub async fn start(
         &self,
-        settings: TunnelSettings,
-    ) -> Result<StepOutcome, kobune_tunnel::TunnelError> {
+        configured: &Configured,
+    ) -> Result<StartOutcome, kobune_tunnel::TunnelError> {
         let mut guard = self.running.lock().await;
 
         if let Some(existing) = guard.take() {
             existing.stop().await;
         }
 
-        let domain = settings.domain.clone();
-        let (process, dns) = TunnelProcess::start(settings).await?;
-        *guard = Some(process);
-        self.set_domain(Some(domain));
+        let started = configured.provider.start(&configured.request).await?;
+        // Asked of the tunnel rather than taken from the request: a name
+        // handed out at connect time is not in the request, and is the
+        // only thing that will ever reach this machine.
+        self.set_hostnames(Some(started.tunnel.hostnames().clone()));
+        *guard = Some(started.tunnel);
 
-        Ok(dns)
+        Ok(started.outcome)
     }
 
     /// Stops the tunnel. Doing nothing when it is already down.
     pub async fn stop(&self) {
         let mut guard = self.running.lock().await;
-        if let Some(process) = guard.take() {
-            process.stop().await;
+        if let Some(tunnel) = guard.take() {
+            tunnel.stop().await;
         }
-        self.set_domain(None);
+        self.set_hostnames(None);
     }
 }
 
-/// Builds the settings for a record.
+/// Builds the request for a record.
 ///
 /// `local_port` is the proxy's plain-HTTP port. Without one the tunnel has
 /// nowhere to send traffic, so enabling is refused rather than started
-/// into a dead end.
-pub fn settings_for(
+/// into a dead end — which is why the caller resolves the port first.
+pub fn request_for(
     record: &TunnelRecord,
     dir: std::path::PathBuf,
     local_port: u16,
-) -> TunnelSettings {
-    TunnelSettings::new(&record.domain, dir, local_port).with_name(&record.name)
+) -> TunnelRequest {
+    TunnelRequest::new(dir, local_port)
+        .with_name(&record.name)
+        .with_domain(record.domain.clone())
+        .settled(record.zone_routed)
 }
 
 /// Reports where setup stands, without running anything.
 pub async fn info(
     record: Option<&TunnelRecord>,
     handle: &TunnelHandle,
-    settings: Option<&TunnelSettings>,
+    configured: Option<&Configured>,
 ) -> TunnelInfo {
-    info_with_notes(record, handle, settings, Vec::new()).await
+    info_with_notes(record, handle, configured, Vec::new()).await
 }
 
-/// [`info`], plus what the call that produced it changed about the zone.
+/// [`info`], plus what the call that produced it changed.
 pub async fn info_with_notes(
     record: Option<&TunnelRecord>,
     handle: &TunnelHandle,
-    settings: Option<&TunnelSettings>,
+    configured: Option<&Configured>,
     notes: Vec<String>,
 ) -> TunnelInfo {
     let Some(record) = record else {
         return TunnelInfo::disabled();
     };
+
+    let readiness = configured.map(Configured::readiness);
 
     // Turned off outranks everything. Reporting "needs login" about a
     // feature somebody deliberately switched off is noise, and `doctor`
@@ -146,7 +195,7 @@ pub async fn info_with_notes(
     let state = if !record.enabled {
         TunnelState::Disabled
     } else {
-        match settings.map(kobune_tunnel::readiness) {
+        match readiness {
             Some(Readiness::NotInstalled) => TunnelState::NotInstalled,
             Some(Readiness::NeedsLogin) => TunnelState::NeedsLogin,
             _ if handle.is_running().await => TunnelState::Running,
@@ -154,24 +203,45 @@ pub async fn info_with_notes(
         }
     };
 
-    let setup = match (state, settings) {
-        (TunnelState::NotInstalled, _) => {
-            vec!["brew install cloudflared".to_string()]
-        }
-        (TunnelState::NeedsLogin, Some(settings)) => settings.setup_commands(),
+    // Only for a state that is actually waiting on the user — a tunnel
+    // somebody turned off does not need to be told what to install. The
+    // words are the provider's, since "install cloudflared" is the right
+    // sentence for exactly one of them.
+    let setup = match state {
+        TunnelState::NotInstalled | TunnelState::NeedsLogin => configured
+            .zip(readiness.as_ref())
+            .and_then(|(configured, readiness)| configured.provider.missing(readiness))
+            .map(|missing| missing.commands)
+            .unwrap_or_default(),
         _ => Vec::new(),
     };
 
     TunnelInfo {
         state,
-        domain: Some(record.domain.clone()),
-        record: settings.map(|settings| settings.dns_record()),
+        provider: record.provider.clone(),
+        domain: record.domain.clone(),
+        record: configured
+            .and_then(|configured| configured.provider.dns_record(&configured.request)),
         setup,
         notes,
-        // Kobune cannot apply an Access policy through the CLI, so it
-        // cannot claim one is in place. Anything it did enable was
-        // acknowledged with `--public`.
+        // Anything enabled was acknowledged with `--public`, unless the
+        // provider guards it itself — in which case there was nothing to
+        // acknowledge.
         public: record.enabled,
+        // The enum, not the sentence. Wording it belongs to whoever is
+        // drawing the screen.
+        access: configured
+            .map(|configured| access_of(configured.provider.access()))
+            .unwrap_or_default(),
+    }
+}
+
+/// The provider's word for it, in the API's vocabulary.
+fn access_of(access: Access) -> TunnelAccess {
+    match access {
+        Access::Managed => TunnelAccess::Managed,
+        Access::Unknown { .. } => TunnelAccess::Unknown,
+        Access::Open => TunnelAccess::Open,
     }
 }
 
@@ -181,10 +251,66 @@ mod tests {
 
     fn record(enabled: bool) -> TunnelRecord {
         TunnelRecord {
+            provider: kobune_core::DEFAULT_TUNNEL_PROVIDER.into(),
             name: "kobune".into(),
-            domain: "example.com".into(),
+            domain: Some("example.com".into()),
             enabled,
             zone_routed: true,
+        }
+    }
+
+    /// A tunnel that says whether it was stopped or merely dropped.
+    struct Recorded {
+        alive: bool,
+        hostnames: Hostnames,
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl RunningTunnel for Recorded {
+        fn hostnames(&self) -> &Hostnames {
+            &self.hostnames
+        }
+
+        fn is_running(&mut self) -> bool {
+            self.alive
+        }
+
+        async fn stop(self: Box<Self>) {
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_found_dead_is_stopped_rather_than_dropped() {
+        // **A provider that runs a process per service is not all or
+        // nothing.** It reports "not running" as soon as one of them has
+        // gone, and the rest are still up, still publishing — and once
+        // the handle has let go of them, nothing can take them down for
+        // the life of the daemon.
+        let handle = TunnelHandle::default();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        *handle.running.lock().await = Some(Box::new(Recorded {
+            alive: false,
+            hostnames: Hostnames::Assigned(Default::default()),
+            stopped: stopped.clone(),
+        }));
+
+        assert!(!handle.is_running().await);
+        assert!(
+            stopped.load(std::sync::atomic::Ordering::SeqCst),
+            "what it was still holding was taken down"
+        );
+        assert!(handle.hostnames().is_none(), "and stops being advertised");
+    }
+
+    /// A provider pointed at a program, so readiness is the test's to set.
+    fn configured(program: &str) -> Configured {
+        Configured {
+            provider: Box::new(kobune_tunnel::CloudflareProvider::with_program(program)),
+            request: TunnelRequest::new("/tmp", 80).with_domain(Some("example.com".into())),
         }
     }
 
@@ -198,14 +324,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_cloudflared_outranks_being_enabled() {
+    async fn a_missing_program_outranks_being_enabled() {
         // Enabled in the state file but nothing to run it with. Reporting
         // "stopped" would send someone looking for the wrong problem.
         let handle = TunnelHandle::default();
-        let settings = TunnelSettings::new("example.com", "/tmp", 80)
-            .with_program("kobune-definitely-not-a-real-program");
+        let configured = configured("kobune-definitely-not-a-real-program");
 
-        let info = info(Some(&record(true)), &handle, Some(&settings)).await;
+        let info = info(Some(&record(true)), &handle, Some(&configured)).await;
 
         assert_eq!(info.state, TunnelState::NotInstalled);
         assert!(!info.setup.is_empty(), "it says what to install");
@@ -216,12 +341,24 @@ mod tests {
         // `disable` clears the flag and keeps the record, so re-enabling
         // does not mean naming the domain again.
         let handle = TunnelHandle::default();
-        let settings = TunnelSettings::new("example.com", "/tmp", 80).with_program("/bin/sh");
+        let configured = configured("/bin/sh");
 
-        let info = info(Some(&record(false)), &handle, Some(&settings)).await;
+        let info = info(Some(&record(false)), &handle, Some(&configured)).await;
 
         assert_eq!(info.state, TunnelState::Disabled);
         assert_eq!(info.domain.as_deref(), Some("example.com"));
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_that_is_off_is_not_told_what_to_install() {
+        // Whatever is missing, nobody asked for it to be there.
+        let handle = TunnelHandle::default();
+        let configured = configured("kobune-definitely-not-a-real-program");
+
+        let info = info(Some(&record(false)), &handle, Some(&configured)).await;
+
+        assert_eq!(info.state, TunnelState::Disabled);
+        assert!(info.setup.is_empty(), "got: {:?}", info.setup);
     }
 
     #[tokio::test]
@@ -229,11 +366,23 @@ mod tests {
         // "Nothing resolves" usually means the DNS route is missing, and
         // the answer is the record to look for.
         let handle = TunnelHandle::default();
-        let settings = TunnelSettings::new("example.com", "/tmp", 80).with_program("/bin/sh");
+        let configured = configured("/bin/sh");
 
-        let info = info(Some(&record(true)), &handle, Some(&settings)).await;
+        let info = info(Some(&record(true)), &handle, Some(&configured)).await;
 
         assert_eq!(info.record.as_deref(), Some("*.example.com"));
+    }
+
+    #[tokio::test]
+    async fn the_provider_travels_with_the_answer() {
+        // Every field beside it is about one service's way of working, so
+        // a reader needs to know which service it is reading about.
+        let handle = TunnelHandle::default();
+        let configured = configured("/bin/sh");
+
+        let info = info(Some(&record(true)), &handle, Some(&configured)).await;
+
+        assert_eq!(info.provider, kobune_core::DEFAULT_TUNNEL_PROVIDER);
     }
 
     #[tokio::test]

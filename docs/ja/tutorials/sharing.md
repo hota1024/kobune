@@ -145,6 +145,6 @@ $ tail -f ~/.kobune/logs/kobuned.log   # cloudflared のログもここに出力
 
 ## 次に読むもの
 
-- [Cloudflare Tunnel で共有する](../guide/tunnel) — 構成とその設計理由
+- [トンネルで共有する](../guide/tunnel) — 構成とその設計理由
 - [AI エージェントと使う](../guide/agents) — エージェントが `tunnel enable` を
   自ら実行すべきでない理由も含みます

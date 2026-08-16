@@ -395,18 +395,25 @@ send you to edit `.kobune/env` for a value the service overrides.
 ## The tunnel
 
 ```console
-$ kobune tunnel enable --domain example.com --public
+$ kobune tunnel enable --provider quick --public
+$ kobune tunnel enable --provider cloudflare --domain example.com --public
 $ kobune tunnel disable
 $ kobune tunnel status
 ```
 
-`--public` is required, and acknowledges that the environment goes on the
-internet with no Access policy Kobune can verify. The domain is remembered
-after the first time.
+`--provider` picks the tunnel service. `quick` needs no account and no domain
+and hands out a throwaway hostname per service; `cloudflare` runs a named
+tunnel on a zone of yours. Both are remembered after the first time, along with
+the domain, so later runs need neither flag. The default is `cloudflare`.
 
-`--domain` takes the zone itself — `example.com`, not `dev.example.com`. One
-level below the zone is what its Universal SSL certificate covers, and a tunnel
-hostname sits exactly there.
+`--public` is required, and acknowledges that the environment goes on the
+internet with nothing Kobune can verify in front of it. Refusing says which
+case you are in: a hostname of yours that you can protect, or one the service
+handed out that nothing can be attached to.
+
+`--domain` applies to `cloudflare` and takes the zone itself — `example.com`,
+not `dev.example.com`. One level below the zone is what its Universal SSL
+certificate covers, and a tunnel hostname sits exactly there.
 
 ## Agents
 

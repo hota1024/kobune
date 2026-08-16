@@ -6,13 +6,16 @@
 //! it. The one thing the CLI cannot do is apply an Access policy, which is
 //! why exposing a tunnel without one has to be asked for explicitly.
 
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use tokio::process::{Child, Command};
 
-use crate::{Result, TunnelError, TunnelSettings, config};
+use crate::provider::{Hostnames, RunningTunnel, TunnelRequest};
+use crate::{Result, TunnelError};
+
+use super::config;
 
 /// How long a setup command may take.
 ///
@@ -35,51 +38,24 @@ const ALREADY_EXISTS: &[&str] = &[
 ///
 /// Dropping it kills the child, which is what should happen: a tunnel
 /// outliving the daemon would keep publishing an environment nothing is
-/// managing any more.
+/// managing any more. That takes [`Command::kill_on_drop`] below —
+/// tokio's default is to leave the process running and merely reap it,
+/// so the promise is not free.
 #[derive(Debug)]
 pub struct TunnelProcess {
     child: Child,
-    settings: TunnelSettings,
+    hostnames: Hostnames,
 }
 
-impl TunnelProcess {
-    /// Prepares the tunnel and starts it.
+#[async_trait]
+impl RunningTunnel for TunnelProcess {
+    /// The zone, which reaches here the moment DNS is routed.
     ///
-    /// Creating the tunnel and routing DNS are both idempotent, so this is
-    /// safe to call on every daemon start rather than only the first.
-    ///
-    /// The DNS outcome comes back with the process because the caller is
-    /// the only one that knows whether Kobune has routed this zone before,
-    /// and so whether "already existed" is its own record or a stranger's.
-    pub async fn start(settings: TunnelSettings) -> Result<(Self, StepOutcome)> {
-        ensure_tunnel(&settings).await?;
-        let dns = ensure_dns(&settings).await?;
-
-        let path = config::write_config(&settings)?;
-
-        let child = Command::new(&settings.program)
-            .args(["tunnel", "--config"])
-            .arg(&path)
-            .args(["run", &settings.name])
-            .stdout(Stdio::null())
-            // cloudflared logs to stderr. Sending it to the daemon's own
-            // stderr puts it in the daemon log, which is where anyone
-            // looking for "why is the tunnel down" will look.
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|err| spawn_error(&settings.program, err))?;
-
-        tracing::info!(
-            "cloudflared tunnel `{}` running for *.{}",
-            settings.name,
-            settings.domain
-        );
-
-        Ok((Self { child, settings }, dns))
-    }
-
-    pub fn settings(&self) -> &TunnelSettings {
-        &self.settings
+    /// Known before the process starts rather than learned from it: the
+    /// wildcard record is what makes a name arrive, and it was written by
+    /// the step above. Nothing cloudflared prints would add to it.
+    fn hostnames(&self) -> &Hostnames {
+        &self.hostnames
     }
 
     /// Whether the child is still alive.
@@ -87,23 +63,71 @@ impl TunnelProcess {
     /// cloudflared exiting on its own — a revoked credential, a deleted
     /// tunnel — otherwise goes unnoticed, and every tunnel URL quietly
     /// stops working while `status` still claims it is up.
-    pub fn is_running(&mut self) -> bool {
+    fn is_running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Stops the tunnel.
-    pub async fn stop(mut self) {
+    async fn stop(mut self: Box<Self>) {
         if let Err(err) = self.child.kill().await {
             tracing::debug!("cannot stop cloudflared: {err}");
         }
     }
 }
 
+/// Prepares the tunnel and starts it.
+///
+/// Creating the tunnel and routing DNS are both idempotent, so this is
+/// safe to call on every daemon start rather than only the first.
+///
+/// The DNS outcome comes back with the process because the caller is the
+/// only one that knows whether Kobune has routed this zone before, and so
+/// whether "already existed" is its own record or a stranger's.
+pub async fn start(
+    program: &str,
+    request: &TunnelRequest,
+    domain: &str,
+) -> Result<(TunnelProcess, StepOutcome)> {
+    ensure_tunnel(program, request).await?;
+    let dns = ensure_dns(program, request, domain).await?;
+
+    let path = config::write_config(request, domain)?;
+
+    let child = Command::new(program)
+        .args(["tunnel", "--config"])
+        .arg(&path)
+        .args(["run", &request.name])
+        .stdout(Stdio::null())
+        // cloudflared logs to stderr. Sending it to the daemon's own
+        // stderr puts it in the daemon log, which is where anyone
+        // looking for "why is the tunnel down" will look.
+        .stderr(Stdio::inherit())
+        // See [`TunnelProcess`]: without this, dropping one leaves a
+        // tunnel published with nothing managing it.
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|err| spawn_error(program, err))?;
+
+    tracing::info!(
+        "cloudflared tunnel `{}` running for *.{domain}",
+        request.name
+    );
+
+    Ok((
+        TunnelProcess {
+            child,
+            hostnames: Hostnames::Wildcard {
+                domain: domain.to_string(),
+            },
+        },
+        dns,
+    ))
+}
+
 /// Creates the named tunnel unless it is already there.
-pub async fn ensure_tunnel(settings: &TunnelSettings) -> Result<()> {
+pub async fn ensure_tunnel(program: &str, request: &TunnelRequest) -> Result<()> {
     run(
-        settings,
-        &["tunnel", "create", &settings.name],
+        program,
+        &["tunnel", "create", &request.name],
         "creating the tunnel",
     )
     .await
@@ -117,12 +141,16 @@ pub async fn ensure_tunnel(settings: &TunnelSettings) -> Result<()> {
 /// with "already exists" without saying what holds the name — a record
 /// that is not this tunnel means every Kobune hostname silently goes
 /// nowhere, which is worth saying out loud.
-pub async fn ensure_dns(settings: &TunnelSettings) -> Result<StepOutcome> {
-    let record = settings.dns_record();
+pub async fn ensure_dns(
+    program: &str,
+    request: &TunnelRequest,
+    domain: &str,
+) -> Result<StepOutcome> {
+    let record = format!("*.{domain}");
 
     run(
-        settings,
-        &["tunnel", "route", "dns", &settings.name, &record],
+        program,
+        &["tunnel", "route", "dns", &request.name, &record],
         format!("routing {record}"),
     )
     .await
@@ -145,8 +173,8 @@ pub async fn ensure_dns(settings: &TunnelSettings) -> Result<StepOutcome> {
 /// `false` is "it did not answer", which a moment after the write can also
 /// mean a cached NXDOMAIN — so the caller reports it as something to look
 /// at rather than as a failure.
-pub async fn wildcard_resolves(settings: &TunnelSettings) -> bool {
-    let probe = format!("kobune-probe.{}:443", settings.domain);
+pub async fn wildcard_resolves(domain: &str) -> bool {
+    let probe = format!("kobune-probe.{domain}:443");
 
     match tokio::net::lookup_host(&probe).await {
         Ok(mut addresses) => addresses.next().is_some(),
@@ -155,21 +183,6 @@ pub async fn wildcard_resolves(settings: &TunnelSettings) -> bool {
             false
         }
     }
-}
-
-/// Deletes the named tunnel.
-///
-/// `disable` does not call this: the tunnel is machine-wide and cheap to
-/// leave in place, and deleting it would mean another `login`-scoped round
-/// trip to bring it back. It exists for tearing a machine down.
-pub async fn delete_tunnel(settings: &TunnelSettings) -> Result<()> {
-    run(
-        settings,
-        &["tunnel", "delete", "--force", &settings.name],
-        "deleting the tunnel",
-    )
-    .await
-    .map(|_| ())
 }
 
 /// What a setup step actually did.
@@ -192,28 +205,21 @@ pub enum StepOutcome {
     AlreadyThere,
 }
 
-async fn run(
-    settings: &TunnelSettings,
-    args: &[&str],
-    operation: impl Into<String>,
-) -> Result<StepOutcome> {
+async fn run(program: &str, args: &[&str], operation: impl Into<String>) -> Result<StepOutcome> {
     let operation = operation.into();
 
-    let output = tokio::time::timeout(
-        SETUP_TIMEOUT,
-        Command::new(&settings.program).args(args).output(),
-    )
-    .await
-    .map_err(|_| {
-        TunnelError::failed(
-            operation.clone(),
-            format!(
-                "cloudflared did not answer within {} seconds",
-                SETUP_TIMEOUT.as_secs()
-            ),
-        )
-    })?
-    .map_err(|err| spawn_error(&settings.program, err))?;
+    let output = tokio::time::timeout(SETUP_TIMEOUT, Command::new(program).args(args).output())
+        .await
+        .map_err(|_| {
+            TunnelError::failed(
+                operation.clone(),
+                format!(
+                    "cloudflared did not answer within {} seconds",
+                    SETUP_TIMEOUT.as_secs()
+                ),
+            )
+        })?
+        .map_err(|err| spawn_error(program, err))?;
 
     if output.status.success() {
         return Ok(StepOutcome::Done);
@@ -258,69 +264,16 @@ fn spawn_error(program: &str, err: std::io::Error) -> TunnelError {
     }
 }
 
-/// The path a generated configuration would be written to.
-pub fn config_path(settings: &TunnelSettings) -> PathBuf {
-    settings.config_path()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
-    /// A stand-in for `cloudflared` that reports what it was asked and
-    /// exits how the test wants.
-    ///
-    /// The real thing needs a Cloudflare account, so the argument handling
-    /// and the error mapping are what can be pinned down here.
-    fn stub(dir: &std::path::Path, script: &str) -> String {
-        let path = dir.join("cloudflared-stub");
-        let mut file = std::fs::File::create(&path).expect("creates");
-        // The probe below has to be answerable without running the body,
-        // or waiting for the stub would be a call the test can see.
-        write!(
-            file,
-            "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\n{script}\n"
-        )
-        .expect("writes");
-        drop(file);
+    use crate::testing::stub;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-            wait_until_runnable(&path);
-        }
+    const ZONE: &str = "example.com";
 
-        path.to_string_lossy().to_string()
-    }
-
-    /// Waits for the kernel to allow the stub to be executed.
-    ///
-    /// Tests run in parallel, and a sibling spawning a process in the
-    /// window where this file is open for writing leaves that child
-    /// holding a writer to it until it execs. Linux refuses to run a file
-    /// anything has open for writing, so the first spawn of a stub could
-    /// fail with `ETXTBSY` for a reason that has nothing to do with what
-    /// the test is checking. The window shuts on its own; wait for it here
-    /// instead of letting a test fail on it.
-    #[cfg(unix)]
-    fn wait_until_runnable(path: &std::path::Path) {
-        for _ in 0..500 {
-            match std::process::Command::new(path).arg("--probe").status() {
-                Ok(_) => return,
-                Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(err) => panic!("cannot run the stub at {}: {err}", path.display()),
-            }
-        }
-
-        panic!("{} never stopped being busy", path.display());
-    }
-
-    fn settings(dir: &std::path::Path, script: &str) -> TunnelSettings {
-        TunnelSettings::new("example.com", dir, 80).with_program(stub(dir, script))
+    fn request(dir: &std::path::Path) -> TunnelRequest {
+        TunnelRequest::new(dir, 80).with_domain(Some(ZONE.to_string()))
     }
 
     #[tokio::test]
@@ -328,23 +281,27 @@ mod tests {
         // Enable runs the setup steps every time, so a machine that is
         // already set up must not fail on the second run.
         let dir = tempfile::tempdir().expect("tempdir");
-        let settings = settings(
+        let program = stub(
             dir.path(),
             r#"echo 'tunnel with name kobune already exists' >&2; exit 1"#,
         );
 
-        ensure_tunnel(&settings).await.expect("treated as success");
+        ensure_tunnel(&program, &request(dir.path()))
+            .await
+            .expect("treated as success");
     }
 
     #[tokio::test]
     async fn an_existing_dns_record_succeeds() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let settings = settings(
+        let program = stub(
             dir.path(),
             r#"echo 'Failed to add route: code: 1003, reason: An A, AAAA, or CNAME record with that host already exists' >&2; exit 1"#,
         );
 
-        ensure_dns(&settings).await.expect("treated as success");
+        ensure_dns(&program, &request(dir.path()), ZONE)
+            .await
+            .expect("treated as success");
     }
 
     #[tokio::test]
@@ -352,21 +309,25 @@ mod tests {
         // "cert.pem not found" tells the user nothing. The fix is to log
         // in, so that has to be what comes back.
         let dir = tempfile::tempdir().expect("tempdir");
-        let settings = settings(
+        let program = stub(
             dir.path(),
             r#"echo 'Cannot determine default origin certificate path. No file cert.pem in ~/.cloudflared' >&2; exit 1"#,
         );
 
-        let err = ensure_tunnel(&settings).await.unwrap_err();
+        let err = ensure_tunnel(&program, &request(dir.path()))
+            .await
+            .unwrap_err();
         assert!(matches!(err, TunnelError::NotLoggedIn), "got: {err}");
     }
 
     #[tokio::test]
     async fn other_failures_carry_cloudflared_s_own_message() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let settings = settings(dir.path(), r#"echo 'zone not found' >&2; exit 1"#);
+        let program = stub(dir.path(), r#"echo 'zone not found' >&2; exit 1"#);
 
-        let err = ensure_dns(&settings).await.unwrap_err();
+        let err = ensure_dns(&program, &request(dir.path()), ZONE)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("zone not found"), "got: {err}");
         assert!(
             err.to_string().contains("*.example.com"),
@@ -376,10 +337,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_cloudflared_is_named_as_such() {
-        let settings =
-            TunnelSettings::new("example.com", "/tmp", 80).with_program("/nonexistent/cloudflared");
+        let err = ensure_tunnel(
+            "/nonexistent/cloudflared",
+            &request(std::path::Path::new("/tmp")),
+        )
+        .await
+        .unwrap_err();
 
-        let err = ensure_tunnel(&settings).await.unwrap_err();
         assert!(matches!(err, TunnelError::NotInstalled(_)), "got: {err}");
     }
 
@@ -389,7 +353,7 @@ mod tests {
         // about the running tunnel would say why.
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("calls.log");
-        let settings = settings(
+        let program = stub(
             dir.path(),
             &format!(
                 r#"echo "$@" >> {}
@@ -398,8 +362,10 @@ if [ "$2" = "run" ] || [ "$4" = "run" ]; then sleep 30; fi"#,
             ),
         );
 
-        let (tunnel, _) = TunnelProcess::start(settings).await.expect("starts");
-        tunnel.stop().await;
+        let (tunnel, _) = start(&program, &request(dir.path()), ZONE)
+            .await
+            .expect("starts");
+        Box::new(tunnel).stop().await;
 
         let calls = std::fs::read_to_string(&log).expect("reads");
         assert!(calls.contains("*.example.com"), "got:\n{calls}");
@@ -408,9 +374,11 @@ if [ "$2" = "run" ] || [ "$4" = "run" ]; then sleep 30; fi"#,
     #[tokio::test]
     async fn a_dead_child_is_visible() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let settings = settings(dir.path(), "exit 0");
+        let program = stub(dir.path(), "exit 0");
 
-        let (mut tunnel, _) = TunnelProcess::start(settings).await.expect("starts");
+        let (mut tunnel, _) = start(&program, &request(dir.path()), ZONE)
+            .await
+            .expect("starts");
 
         // The stub exits immediately; give it a moment to be reaped.
         tokio::time::sleep(Duration::from_millis(200)).await;

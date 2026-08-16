@@ -396,17 +396,26 @@ $ kobune env unset <KEY> [--scope …]
 ## トンネル
 
 ```console
-$ kobune tunnel enable --domain example.com --public
+$ kobune tunnel enable --provider quick --public
+$ kobune tunnel enable --provider cloudflare --domain example.com --public
 $ kobune tunnel disable
 $ kobune tunnel status
 ```
 
-`--public` は必須です。Kobune が検証できない状態でインターネットに公開する
-ことへの同意を意味します。ドメインは初回実行時に保存されます。
+`--provider` はトンネルサービスを選びます。`quick` はアカウントもドメインも
+不要で、サービスごとに使い捨てのホスト名を払い出します。`cloudflare` は自分の
+ゾーンの上で named tunnel を運用します。どちらもドメインと同様に初回実行時に
+保存されるため、次回以降はどちらのフラグも不要です。既定値は `cloudflare`
+です。
 
-`--domain` にはゾーン自体を指定します（`dev.example.com` ではなく
-`example.com`）。ゾーンの Universal SSL 証明書が覆うのは 1 階層下までで、
-トンネルのホスト名はちょうどそこに位置するためです。
+`--public` は必須です。Kobune が検証できるものが手前に何もない状態で
+インターネットに公開することへの同意を意味します。指定せずに実行すると、
+どちらの状況なのかを表示します。保護できる自分のホスト名なのか、何も紐づけ
+られないサービス側のホスト名なのか、ということです。
+
+`--domain` は `cloudflare` に対するもので、ゾーン自体を指定します
+（`dev.example.com` ではなく `example.com`）。ゾーンの Universal SSL 証明書が
+覆うのは 1 階層下までで、トンネルのホスト名はちょうどそこに位置するためです。
 
 ## エージェント
 

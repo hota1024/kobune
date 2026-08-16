@@ -9,8 +9,8 @@
 use std::path::Path;
 
 use kobune_api::{
-    Check, Diagnostics, EnvInfo, Pong, ServiceInfo, TunnelInfo, TunnelState, Unsettled,
-    UnsettledReason, WorkspaceInfo,
+    Check, Diagnostics, EnvInfo, Pong, ServiceInfo, TunnelAccess, TunnelInfo, TunnelState,
+    Unsettled, UnsettledReason, WorkspaceInfo,
 };
 use ratatui::text::{Line, Span};
 
@@ -659,7 +659,16 @@ pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
 pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
     let state = Span::styled(info.state.label(), tunnel_style(info.state));
 
-    let mut heading = vec![state];
+    // **Which service is carrying it**, now that there is more than one
+    // to be. Everything else on this panel means something different
+    // depending on the answer — a `stopped` quick tunnel has taken its
+    // URLs with it, a stopped named one has not — and a domain is only
+    // some of them.
+    let mut heading = vec![
+        state,
+        Span::styled(format!("  {}", info.provider), theme::muted()),
+    ];
+
     if let Some(domain) = &info.domain {
         heading.push(Span::styled(format!("  *.{domain}"), theme::link()));
     }
@@ -688,13 +697,21 @@ pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
     // **Yellow, not red.** `tunnel enable --public` prints this on the way
     // out of a command that worked, and red against a ✓ has been read as
     // the command having failed. Red is reserved for something that did.
-    if info.state.is_running() && info.public {
+    //
+    // The second line is worded here rather than sent down the wire: the
+    // daemon reports which of the three cases it is, and how to say it is
+    // this screen's business (`docs/DESIGN.md` §3).
+    let unguarded = info
+        .state
+        .is_running()
+        .then(|| access_note(info.access))
+        .flatten()
+        .filter(|_| info.public);
+
+    if let Some(detail) = unguarded {
         panel = panel.lines(vec![
             warning("this environment is reachable from the internet."),
-            Line::styled(
-                "Kobune cannot see whether a Cloudflare Access policy is in front of it.",
-                theme::muted(),
-            ),
+            Line::styled(detail, theme::muted()),
         ]);
     }
 
@@ -871,13 +888,14 @@ pub fn uninstall_plan(
         panel = panel.lines(lines);
     }
 
-    // What stays in the Cloudflare account. Silence here would read as
-    // "there is nothing left", and there is.
+    // What stays in the account of whatever service carried the tunnel.
+    // Silence here would read as "there is nothing left", and there is —
+    // the daemon leaves this out entirely when there is not.
     if let Some(tunnel) = daemon.ok().and_then(|report| report.tunnel.as_ref()) {
         let mut lines = vec![Line::styled(
             match &tunnel.domain {
-                Some(domain) => format!("left in your Cloudflare account (*.{domain}):"),
-                None => "left in your Cloudflare account:".to_string(),
+                Some(domain) => format!("left in your account (*.{domain}):"),
+                None => "left in your account:".to_string(),
             },
             theme::heading(),
         )];
@@ -1065,6 +1083,24 @@ fn running_style(running: usize, total: usize) -> ratatui::style::Style {
         theme::good()
     } else {
         theme::warn()
+    }
+}
+
+/// What to say under "reachable from the internet", if anything.
+///
+/// **The three cases are not the same warning.** "Kobune cannot see a
+/// policy" invites you to go and check one is there; on a hostname the
+/// service handed out there is nothing to check and nothing you could
+/// have put there, and printing the first sentence would send somebody
+/// looking for a dashboard page that does not apply to them.
+fn access_note(access: TunnelAccess) -> Option<&'static str> {
+    match access {
+        TunnelAccess::Unknown => {
+            Some("Kobune cannot see whether an access policy is in front of it.")
+        }
+        TunnelAccess::Open => Some("There is no access control: anyone with the URL reaches it."),
+        // Nothing is unguarded, so there is nothing to warn about.
+        TunnelAccess::Managed => None,
     }
 }
 
@@ -1760,11 +1796,13 @@ mod tests {
         let text = render(&tunnel(
             &TunnelInfo {
                 state: TunnelState::Running,
+                provider: kobune_core::DEFAULT_TUNNEL_PROVIDER.into(),
                 domain: Some("example.com".into()),
                 record: None,
                 setup: vec![],
                 notes: vec![],
                 public: true,
+                access: TunnelAccess::Unknown,
             },
             Decor::PLAIN,
         ));
@@ -1783,11 +1821,13 @@ mod tests {
         let text = render(&tunnel(
             &TunnelInfo {
                 state: TunnelState::Running,
+                provider: kobune_core::DEFAULT_TUNNEL_PROVIDER.into(),
                 domain: Some("example.com".into()),
                 record: Some("*.example.com".into()),
                 setup: vec![],
                 notes: vec!["*.example.com now points here.".into()],
                 public: true,
+                access: TunnelAccess::Unknown,
             },
             Decor::PLAIN,
         ));
@@ -1812,6 +1852,59 @@ mod tests {
     }
 
     #[test]
+    fn an_open_tunnel_is_not_told_to_check_for_a_policy() {
+        // There is nothing to check. The hostname belongs to the service,
+        // so "Kobune cannot see whether a policy is in front of it" would
+        // imply one could be.
+        let text = render(&tunnel(
+            &TunnelInfo {
+                state: TunnelState::Running,
+                provider: "quick".into(),
+                domain: None,
+                record: None,
+                setup: vec![],
+                notes: vec![],
+                public: true,
+                access: TunnelAccess::Open,
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("reachable from the internet"), "got:\n{text}");
+        assert!(text.contains("no access control"), "got:\n{text}");
+        assert!(!text.contains("cannot see whether"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_guarded_tunnel_does_not_warn_about_being_unguarded() {
+        // The one case where being on the internet is not news.
+        assert_eq!(access_note(TunnelAccess::Managed), None);
+    }
+
+    #[test]
+    fn a_tunnel_says_which_service_carries_it() {
+        // With two providers, `running` on its own does not say whether
+        // the URLs survive a restart. A quick tunnel's do not.
+        let text = render(&tunnel(
+            &TunnelInfo {
+                state: TunnelState::Running,
+                provider: "quick".into(),
+                domain: None,
+                record: None,
+                setup: vec![],
+                notes: vec![],
+                public: true,
+                access: TunnelAccess::Unknown,
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("quick"), "got:\n{text}");
+        // No zone was involved, so nothing claims one.
+        assert!(!text.contains("*."), "got:\n{text}");
+    }
+
+    #[test]
     fn a_private_tunnel_does_not_warn() {
         let text = render(&tunnel(&TunnelInfo::disabled(), Decor::PLAIN));
         assert!(!text.contains("internet"), "got:\n{text}");
@@ -1823,11 +1916,13 @@ mod tests {
         let text = render(&tunnel(
             &TunnelInfo {
                 state: TunnelState::NeedsLogin,
+                provider: kobune_core::DEFAULT_TUNNEL_PROVIDER.into(),
                 domain: None,
                 record: None,
                 setup: vec!["cloudflared tunnel login".into()],
                 notes: vec![],
                 public: false,
+                access: TunnelAccess::Unknown,
             },
             Decor::PLAIN,
         ));

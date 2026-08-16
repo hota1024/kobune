@@ -13,7 +13,8 @@
 
 use std::path::Path;
 
-use crate::{Result, TunnelError, TunnelSettings};
+use crate::provider::TunnelRequest;
+use crate::{Result, TunnelError};
 
 /// The parts of cloudflared's configuration that Kobune sets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,16 +27,16 @@ pub struct IngressConfig {
 }
 
 impl IngressConfig {
-    pub fn from_settings(settings: &TunnelSettings) -> Self {
+    pub fn from_request(request: &TunnelRequest, domain: &str) -> Self {
         Self {
-            tunnel: settings.name.clone(),
+            tunnel: request.name.clone(),
             // The whole zone, so the file never changes as projects are
             // added — the same shape as the DNS record
-            // ([`TunnelSettings::dns_record`]). What actually answers is
+            // ([`super::CloudflareProvider::dns_record`]). What actually answers is
             // decided further in: the proxy 404s a hostname it has no
             // route for, so an unclaimed name in the zone reaches nothing.
-            hostname: format!("*.{}", settings.domain),
-            service: format!("http://127.0.0.1:{}", settings.local_port),
+            hostname: format!("*.{domain}"),
+            service: format!("http://127.0.0.1:{}", request.local_port),
         }
     }
 }
@@ -63,10 +64,15 @@ pub fn render_config(config: &IngressConfig) -> String {
     )
 }
 
+/// Where the generated configuration is written.
+pub fn path(request: &TunnelRequest) -> std::path::PathBuf {
+    request.dir.join("config.yml")
+}
+
 /// Writes the configuration, creating the directory if needed.
-pub fn write_config(settings: &TunnelSettings) -> Result<std::path::PathBuf> {
-    let path = settings.config_path();
-    let contents = render_config(&IngressConfig::from_settings(settings));
+pub fn write_config(request: &TunnelRequest, domain: &str) -> Result<std::path::PathBuf> {
+    let path = path(request);
+    let contents = render_config(&IngressConfig::from_request(request, domain));
 
     write(&path, &contents)?;
     Ok(path)
@@ -90,13 +96,15 @@ fn write(path: &Path, contents: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn settings(dir: &Path) -> TunnelSettings {
-        TunnelSettings::new("example.com", dir, 80)
+    const ZONE: &str = "example.com";
+
+    fn request(dir: &Path) -> TunnelRequest {
+        TunnelRequest::new(dir, 80).with_domain(Some(ZONE.to_string()))
     }
 
     #[test]
     fn sends_the_whole_zone_to_the_local_proxy() {
-        let config = IngressConfig::from_settings(&settings(Path::new("/tmp")));
+        let config = IngressConfig::from_request(&request(Path::new("/tmp")), ZONE);
 
         assert_eq!(config.hostname, "*.example.com");
         assert_eq!(config.service, "http://127.0.0.1:80");
@@ -107,7 +115,10 @@ mod tests {
         // The proxy resolves the tunnel hostname itself. Rewriting Host
         // here would send every hostname in the zone to whichever single
         // name the rule named.
-        let rendered = render_config(&IngressConfig::from_settings(&settings(Path::new("/tmp"))));
+        let rendered = render_config(&IngressConfig::from_request(
+            &request(Path::new("/tmp")),
+            ZONE,
+        ));
 
         assert!(!rendered.contains("httpHostHeader"), "got:\n{rendered}");
         assert!(!rendered.contains("originRequest"), "got:\n{rendered}");
@@ -116,7 +127,10 @@ mod tests {
     #[test]
     fn falls_through_to_404() {
         // Without a catch-all, cloudflared refuses to start.
-        let rendered = render_config(&IngressConfig::from_settings(&settings(Path::new("/tmp"))));
+        let rendered = render_config(&IngressConfig::from_request(
+            &request(Path::new("/tmp")),
+            ZONE,
+        ));
         assert!(rendered.contains("http_status:404"), "got:\n{rendered}");
     }
 
@@ -124,11 +138,8 @@ mod tests {
     fn targets_plain_http_not_the_tls_port() {
         // cloudflared has no reason to trust the local CA, and the hop
         // never leaves loopback.
-        let config = IngressConfig::from_settings(&TunnelSettings::new(
-            "example.com",
-            Path::new("/tmp"),
-            8080,
-        ));
+        let config =
+            IngressConfig::from_request(&TunnelRequest::new(Path::new("/tmp"), 8080), ZONE);
 
         assert_eq!(config.service, "http://127.0.0.1:8080");
     }
@@ -138,7 +149,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let nested = dir.path().join("tunnel");
 
-        let path = write_config(&settings(&nested)).expect("writes");
+        let path = write_config(&request(&nested), ZONE).expect("writes");
 
         assert_eq!(path, nested.join("config.yml"));
         let contents = std::fs::read_to_string(&path).expect("reads");
@@ -149,7 +160,10 @@ mod tests {
     fn says_it_is_generated() {
         // A file that overwrites itself has to say so, or an edit is lost
         // without explanation.
-        let rendered = render_config(&IngressConfig::from_settings(&settings(Path::new("/tmp"))));
+        let rendered = render_config(&IngressConfig::from_request(
+            &request(Path::new("/tmp")),
+            ZONE,
+        ));
         assert!(
             rendered.starts_with("# Generated by Kobune"),
             "got:\n{rendered}"

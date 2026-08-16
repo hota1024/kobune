@@ -20,8 +20,8 @@ pub use protocol::{ClientMessage, Outcome, PROTOCOL_VERSION, RequestId, ServerMe
 pub use request::{Request, Target, Window};
 pub use response::{
     EnvInfo, Pong, PurgeFailure, PurgeProject, PurgeReport, PurgeStorageFailure, PurgeVolume,
-    PurgeWorkspace, Response, ServiceInfo, TunnelInfo, TunnelLeftover, TunnelState, Unsettled,
-    UnsettledReason, WorkspaceInfo,
+    PurgeWorkspace, Response, ServiceInfo, TunnelAccess, TunnelInfo, TunnelLeftover, TunnelState,
+    Unsettled, UnsettledReason, WorkspaceInfo,
 };
 
 /// Re-exported for convenience, so clients need not pull in `kobune-core`.
