@@ -86,7 +86,15 @@ impl Supervisor {
         // would print `running  quick  *.example.com` over URLs that are
         // all under someone else's domain, and `purge` would report
         // something left in an account this provider never touched.
+        //
+        // What the old one left there is a different question, and this
+        // is the last moment anything can answer it: `uninstall` reports
+        // leftovers from the record, and the record is about to stop
+        // naming the zone at all.
+        let mut left_behind = Vec::new();
+
         if !needs.domain {
+            left_behind = self.what_the_last_provider_left(existing.as_ref(), &record.provider);
             record.domain = None;
             configured.request = configured.request.with_domain(None);
         }
@@ -142,7 +150,13 @@ impl Supervisor {
             self.save_tunnel_record(Some(record.clone())).await?;
 
             return Ok(Response::Tunnel(
-                tunnel::info(Some(&record), &self.tunnel, Some(&configured)).await,
+                tunnel::info_with_notes(
+                    Some(&record),
+                    &self.tunnel,
+                    Some(&configured),
+                    left_behind,
+                )
+                .await,
             ));
         }
 
@@ -170,14 +184,14 @@ impl Supervisor {
         // until something else happens to refresh.
         self.refresh(&context.project, &context.config).await?;
 
+        // What the last provider left first: it is about a zone that has
+        // just stopped being mentioned anywhere, where the rest is about
+        // the tunnel that is now up.
+        let mut notes = left_behind;
+        notes.extend(outcome.notes);
+
         Ok(Response::Tunnel(
-            tunnel::info_with_notes(
-                Some(&record),
-                &self.tunnel,
-                Some(&configured),
-                outcome.notes,
-            )
-            .await,
+            tunnel::info_with_notes(Some(&record), &self.tunnel, Some(&configured), notes).await,
         ))
     }
     /// Stops the tunnel, keeping the record.
@@ -288,6 +302,35 @@ impl Supervisor {
             request: tunnel::request_for(record, self.paths.tunnel_dir(), 0),
         })
     }
+    /// What the provider a switch is leaving behind still has in an
+    /// account of the user's.
+    ///
+    /// Nothing when the same provider carries on — it has not stopped
+    /// being the one that put it there, and it is asked again at
+    /// uninstall — and nothing when there was no zone to have set
+    /// anything up on.
+    fn what_the_last_provider_left(
+        &self,
+        previous: Option<&TunnelRecord>,
+        now: &str,
+    ) -> Vec<String> {
+        let Some(previous) = previous else {
+            return Vec::new();
+        };
+
+        let Some(domain) = previous.domain.clone().filter(|_| previous.provider != now) else {
+            return Vec::new();
+        };
+
+        // Absent only for a provider this build does not have, which
+        // leaves nothing truthful to say about what it set up.
+        let Some(described) = self.tunnel_described(previous) else {
+            return Vec::new();
+        };
+
+        left_in_the_account(described.provider.as_ref(), &described.request, &domain)
+    }
+
     /// Brings the tunnel up at daemon start, when the state says it was on.
     ///
     /// Failing here does not stop the daemon. The local URLs work either
@@ -427,11 +470,8 @@ impl Supervisor {
             None => Vec::new(),
         };
 
-        if !older.is_empty() {
-            notes.push(format!(
-                "and, from before tunnel hostnames were one label, {}",
-                older.join(", ")
-            ));
+        if let Some(note) = older_records_note(&older, &notes) {
+            notes.push(note);
         }
 
         // **Nothing left means nothing said.** A provider that touched
@@ -449,6 +489,67 @@ impl Supervisor {
             notes,
         })
     }
+}
+
+/// What a provider left in an account, as lines somebody can act on.
+///
+/// **The provider's own commands**, one short line each: these are drawn
+/// in a panel that wraps at the column rather than at a space, so prose
+/// has to arrive pre-broken. Nothing at all for a provider that touched
+/// no account of yours — there is then nothing to have been left.
+fn left_in_the_account(
+    provider: &dyn kobune_tunnel::TunnelProvider,
+    request: &kobune_tunnel::TunnelRequest,
+    domain: &str,
+) -> Vec<String> {
+    let leftover = provider.leftovers(request);
+    let dns = provider.dns_record(request);
+
+    if leftover.commands.is_empty() && dns.is_none() {
+        return Vec::new();
+    }
+
+    // Not "it set this up": how far it got is not known here, and a
+    // record saved before the provider was ever ready has nothing behind
+    // it. What is true either way is that this is the last time Kobune
+    // says the words.
+    let mut notes = vec![format!(
+        "kobune stops naming what {} has on {domain}",
+        provider.display_name()
+    )];
+
+    notes.extend(
+        leftover
+            .commands
+            .iter()
+            .map(|command| format!("remove it with `{command}`")),
+    );
+
+    // Named separately because no command removes it — the record is
+    // created by `tunnel route dns` and deleted in the dashboard.
+    if let Some(dns) = dns {
+        notes.push(format!("and the DNS record {dns}, in the dashboard"));
+    }
+
+    notes
+}
+
+/// The per-project records from before hostnames were one label.
+///
+/// **A continuation only when there is something to continue.** The
+/// provider's own notes come first and this reads as the next of them;
+/// with none, a line beginning "and," is the tail of something that was
+/// never printed.
+fn older_records_note(older: &[String], after: &[String]) -> Option<String> {
+    if older.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "{} from before tunnel hostnames were one label, {}",
+        if after.is_empty() { "left" } else { "and," },
+        older.join(", ")
+    ))
 }
 
 /// Why publishing was refused, when `--public` was not said out loud.
@@ -589,6 +690,69 @@ mod tests {
         // CLI cannot — and this pins the branch so the promise is not
         // discovered to be unwired on the day something makes it.
         assert!(refuse_without_public(Access::Managed, false).is_none());
+    }
+
+    #[test]
+    fn a_zone_a_switch_leaves_behind_is_named_while_anything_still_knows_it() {
+        // **The last moment it can be said.** Switching to a provider
+        // that has no use for a zone drops the domain from the record,
+        // and `uninstall` reports leftovers out of that record — so
+        // after this, nothing names the tunnel or the wildcard the old
+        // provider left in the account, and a record pointing at a
+        // deleted tunnel answers with Cloudflare's 1033 forever.
+        let provider = kobune_tunnel::create(kobune_core::DEFAULT_TUNNEL_PROVIDER).expect("builds");
+        let request = kobune_tunnel::TunnelRequest::new("/tmp", 0)
+            .with_name("kobune")
+            .with_domain(Some("example.com".into()));
+
+        let notes = left_in_the_account(provider.as_ref(), &request, "example.com");
+
+        assert!(
+            notes.iter().any(|note| note.contains("example.com")),
+            "it names the zone: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("tunnel delete --force kobune")),
+            "and what removes the tunnel: {notes:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("*.example.com")),
+            "and the record no command removes: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_provider_that_touched_no_account_leaves_nothing_to_say() {
+        // A quick tunnel writes nothing anywhere. "It keeps what it set
+        // up" about a provider that set nothing up would send somebody
+        // looking through a dashboard for something that was never there.
+        let provider = kobune_tunnel::create("quick").expect("builds");
+        let request = kobune_tunnel::TunnelRequest::new("/tmp", 0);
+
+        assert!(left_in_the_account(provider.as_ref(), &request, "example.com").is_empty());
+    }
+
+    #[test]
+    fn the_older_records_read_as_a_sentence_on_their_own() {
+        let older = vec!["*.myapp.example.com".to_string()];
+
+        let following = older_records_note(&older, &["something the provider said".to_string()])
+            .expect("there are records");
+        assert!(following.starts_with("and,"), "got: {following}");
+
+        // Nothing above it to continue: a provider this build does not
+        // have describes no leftovers of its own, and "and, …" alone
+        // reads as the tail of a line that was never printed.
+        let alone = older_records_note(&older, &[]).expect("there are records");
+        assert!(!alone.starts_with("and,"), "got: {alone}");
+        assert!(alone.contains("*.myapp.example.com"), "got: {alone}");
+    }
+
+    #[test]
+    fn nothing_older_is_nothing_said() {
+        assert!(older_records_note(&[], &[]).is_none());
     }
 
     #[test]

@@ -131,6 +131,14 @@ impl TunnelHandle {
             existing.stop().await;
         }
 
+        // **Cleared as the old tunnel goes, not when the new one
+        // arrives.** What is between the two is nothing running, and a
+        // `start` that fails — a rate limit, a service that never
+        // announced a name — leaves exactly that. Names left here would
+        // go on being routed to and advertised in every status response,
+        // for hostnames that stopped existing when the tunnel above did.
+        self.set_hostnames(None);
+
         let started = configured.provider.start(&configured.request).await?;
         // Asked of the tunnel rather than taken from the request: a name
         // handed out at connect time is not in the request, and is the
@@ -187,7 +195,13 @@ pub async fn info_with_notes(
         return TunnelInfo::disabled();
     };
 
-    let readiness = configured.map(Configured::readiness);
+    // Only asked about a tunnel somebody wants up. Readiness is a `PATH`
+    // lookup and a stat, and the answer for a disabled one reads neither
+    // — `status`, `disable` and every `doctor` run would pay for it.
+    let readiness = record
+        .enabled
+        .then(|| configured.map(Configured::readiness))
+        .flatten();
 
     // Turned off outranks everything. Reporting "needs login" about a
     // feature somebody deliberately switched off is noise, and `doctor`
@@ -230,8 +244,15 @@ pub async fn info_with_notes(
         public: record.enabled,
         // The enum, not the sentence. Wording it belongs to whoever is
         // drawing the screen.
-        access: configured
-            .map(|configured| access_of(configured.provider.access()))
+        //
+        // **Asked of the provider the record names, not of
+        // `configured`.** What guards a tunnel is a constant per provider
+        // and has nothing to do with where the proxy is listening —
+        // which is the other reason `configured` is absent. Falling back
+        // to "Kobune cannot see" there would send a quick tunnel's user
+        // looking for an access policy on a hostname that is not theirs.
+        access: kobune_tunnel::create(&record.provider)
+            .map(|provider| access_of(provider.access()))
             .unwrap_or_default(),
     }
 }
@@ -304,6 +325,103 @@ mod tests {
             "what it was still holding was taken down"
         );
         assert!(handle.hostnames().is_none(), "and stops being advertised");
+    }
+
+    /// A provider whose `start` never gets anywhere.
+    struct Refuses;
+
+    #[async_trait::async_trait]
+    impl TunnelProvider for Refuses {
+        fn id(&self) -> &'static str {
+            "refuses"
+        }
+        fn display_name(&self) -> &'static str {
+            "a tunnel that will not start"
+        }
+        fn needs(&self) -> kobune_tunnel::Needs {
+            kobune_tunnel::Needs {
+                domain: false,
+                targets: true,
+            }
+        }
+        fn access(&self) -> Access {
+            Access::Open
+        }
+        fn readiness(&self, _request: &TunnelRequest) -> Readiness {
+            Readiness::Ready
+        }
+        fn missing(&self, _readiness: &Readiness) -> Option<kobune_tunnel::Missing> {
+            None
+        }
+        fn dns_record(&self, _request: &TunnelRequest) -> Option<String> {
+            None
+        }
+        async fn start(
+            &self,
+            _request: &TunnelRequest,
+        ) -> Result<kobune_tunnel::Started, kobune_tunnel::TunnelError> {
+            Err(kobune_tunnel::TunnelError::failed(
+                "starting the tunnel",
+                "no hostname was ever handed out",
+            ))
+        }
+        fn leftovers(&self, _request: &TunnelRequest) -> kobune_tunnel::Leftover {
+            kobune_tunnel::Leftover::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_start_that_fails_stops_the_old_names_being_advertised() {
+        // **`start` replaces, which means it takes the old tunnel down
+        // first.** A failure after that point is nothing running at all,
+        // and hostnames left behind would go on being routed to and
+        // printed as URLs — for names that died with the tunnel that was
+        // stopped to make room.
+        let handle = TunnelHandle::default();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        *handle.running.lock().await = Some(Box::new(Recorded {
+            alive: true,
+            hostnames: Hostnames::Assigned(Default::default()),
+            stopped: stopped.clone(),
+        }));
+        handle.set_hostnames(Some(Hostnames::Assigned(std::collections::BTreeMap::from(
+            [(
+                kobune_tunnel::TunnelTarget::new("myapp", None, "web"),
+                "restless-mode-1234.trycloudflare.com".to_string(),
+            )],
+        ))));
+
+        let configured = Configured {
+            provider: Box::new(Refuses),
+            request: TunnelRequest::new("/tmp", 80),
+        };
+
+        assert!(handle.start(&configured).await.is_err());
+        assert!(
+            stopped.load(std::sync::atomic::Ordering::SeqCst),
+            "the tunnel that was up was stopped to make room"
+        );
+        assert!(
+            handle.hostnames().is_none(),
+            "and what it published stopped being advertised with it"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_guards_a_tunnel_does_not_depend_on_the_proxy() {
+        // `Configured` is absent when the proxy has no plain-HTTP port —
+        // an ordinary state, and one `doctor` reports. What is in front
+        // of a tunnel is the provider's answer either way, and reporting
+        // "Kobune cannot see" would send a quick tunnel's user looking
+        // for an access policy on a hostname that is not theirs.
+        let handle = TunnelHandle::default();
+        let mut record = record(true);
+        record.provider = "quick".into();
+
+        let info = info(Some(&record), &handle, None).await;
+
+        assert_eq!(info.access, TunnelAccess::Open);
     }
 
     /// A provider pointed at a program, so readiness is the test's to set.
