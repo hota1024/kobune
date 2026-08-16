@@ -28,6 +28,17 @@ pub const CURRENT_VERSION: u32 = 1;
 /// choose, so it is what a state file written by an older build means.
 pub const DEFAULT_TUNNEL_PROVIDER: &str = "cloudflare";
 
+/// What can be named as a tunnel service.
+///
+/// **The names, not the providers.** Building one is `kobune-tunnel`'s,
+/// and nothing client-side may reach that crate (`docs/DESIGN.md` §13) —
+/// but `kobune tunnel enable --provider` has to be able to refuse a typo
+/// without a round trip to the daemon, and `--help` and the shell
+/// completions have to be able to list what there is. `kobune-tunnel`
+/// builds from this list rather than keeping a second one, so a provider
+/// added there and forgotten here fails its own test.
+pub const TUNNEL_PROVIDERS: &[&str] = &[DEFAULT_TUNNEL_PROVIDER, "quick"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct State {
     pub version: u32,
@@ -87,10 +98,17 @@ pub struct TunnelRecord {
     /// defaults rather than being required.
     ///
     /// **Left off entirely when there is none**, rather than written as
-    /// `null`. This file holds every project Kobune manages, and a build
-    /// that still has this as a `String` fails the whole load on a null —
-    /// taking the registry down over a field about the tunnel, which is
-    /// the failure [`Self::provider`] is a string to avoid.
+    /// `null`: absence is how "no zone" is said in this file, and it is
+    /// what the default above reads back.
+    ///
+    /// It buys nothing on the way back down, and the shape of the field
+    /// cannot. A build from before this was optional has it as a
+    /// `String`, and serde fails such a load on a missing key exactly as
+    /// it does on a null — so a state file written for a provider with no
+    /// zone takes the whole registry down on an older Kobune either way.
+    /// Only a version bump could have made that safe, and
+    /// [`CURRENT_VERSION`] is the place for it if downgrades ever have to
+    /// work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
     /// Whether the daemon should be running it.
