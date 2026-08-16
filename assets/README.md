@@ -6,15 +6,20 @@ has to be tracked down.
 ```
 assets/logo/
   kobune-mark.svg         the mark alone, transparent
-  kobune-icon.svg         the mark on a rounded dark square
-  kobune-icon-square.svg  the same on an unrounded square
+  kobune-icon.svg         the mark on a flat square
+  kobune-icon-square.svg  the same on the older gradient tile
 ```
 
-All three are 512×512 and hold the same drawing in the same three colours
-— `#B1CEF1` for the outer folds, `#00B4DB` for the sail, `#003357` for the
-hull. They differ only in what is behind it. The two icons sit the boat on
-a `#00B4DB`→`#003357` radial; the mark has no tile and is drawn straight
-onto whatever the page already has.
+All three hold the same drawing in the same three colours — `#B1CEF1` for
+the outer folds, `#00B4DB` for the sail, `#003357` for the hull. They
+differ only in what is behind it, and in how big the canvas is.
+
+`kobune-icon.svg` is 1024×1024 and sits the boat on flat `#626D9A`, with
+no corner radius: a favicon is drawn at 16px against whatever colour the
+browser's chrome happens to be, and a flat field reads at that size where
+a gradient turns to mud. `kobune-icon-square.svg` is 512×512 and still
+carries the older `#00B4DB`→`#003357` radial. The mark has no tile at all
+and is drawn straight onto whatever the page already has.
 
 ## Which one to use
 
@@ -25,8 +30,8 @@ onto whatever the page already has.
 - **`kobune-icon.svg`** — anywhere the logo is the whole tile and something
   else draws the frame: the favicon, an app icon, a social profile.
 - **`kobune-icon-square.svg`** — the same, for the platforms that round the
-  corners themselves (iOS, Android) and would otherwise round an already
-  rounded icon.
+  corners themselves (iOS, Android). Nothing points at it today, and it
+  still carries the tile the favicon has stopped using.
 
 ## Where they are used
 
@@ -62,13 +67,11 @@ here, and the social card is drawn from it on the next build. The one
 thing outside this directory that follows the logo is the brand blue,
 spelled out in `docs/.vitepress/config.ts` and `docs/scripts/og.mjs`.
 
-`kobune-mark.svg` is the export, and the two icons are it on a tile: the
-same paths, scaled into a 352-wide box and centred on the drawing's own
-bounds, which sit low on the canvas. The square one is the rounded one
-without the corner radius. Redo them that way rather than tidying any of
-the three by hand — a straightened path would have to be straightened
-again after the next export, and would be forgotten once. Size and
-position them where they are used instead.
+Each one is an export, and none of them is tidied by hand — a straightened
+path would have to be straightened again after the next export, and would
+be forgotten once. Size and position them where they are used instead.
+`kobune-icon.svg` still carries the clip path its export came with for
+that reason.
 
 `.github/workflows/docs.yml` watches `assets/**`, so a logo change on its
 own still deploys the site. `release.yml` ignores it, because a logo has

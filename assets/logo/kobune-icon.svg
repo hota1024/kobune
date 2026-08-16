@@ -1,20 +1,14 @@
-<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <radialGradient id="tile" cx="50%" cy="50%" r="100%" fx="50%" fy="0%" gradientUnits="objectBoundingBox">
-      <stop stop-color="#00B4DB"/>
-      <stop offset="1" stop-color="#003357"/>
-    </radialGradient>
-  </defs>
-  <rect width="512" height="512" rx="128" fill="url(#tile)"/>
-  <!-- The mark, scaled into the same 352-wide box the glyph before it sat
-       in. It is composed low on its own canvas, so the inner translate is
-       the drawing's centre rather than the canvas's. -->
-  <g transform="translate(256 256) scale(0.82) translate(-256 -281)">
-    <g stroke-linejoin="round" stroke-width="20">
-      <path d="M96 318 H174 L135 246 Z" fill="#B1CEF1" stroke="#B1CEF1"/>
-      <path d="M416 318 H338 L377 246 Z" fill="#B1CEF1" stroke="#B1CEF1"/>
-      <path d="M256 138 L332 318 H180 Z" fill="#00B4DB" stroke="#00B4DB"/>
-      <path d="M52 318 H460 L378 424 H134 Z" fill="#003357" stroke="#003357"/>
-    </g>
-  </g>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_28_51)">
+<rect width="1024" height="1024" fill="#626D9A"/>
+<path d="M192 636H348L270 492L192 636Z" fill="#B1CEF1" stroke="#B1CEF1" stroke-width="20" stroke-linejoin="round"/>
+<path d="M832 636H676L754 492L832 636Z" fill="#B1CEF1" stroke="#B1CEF1" stroke-width="20" stroke-linejoin="round"/>
+<path d="M512 276L664 636H360L512 276Z" fill="#00B4DB" stroke="#00B4DB" stroke-width="20" stroke-linejoin="round"/>
+<path d="M104 636H920L756 848H268L104 636Z" fill="#003357" stroke="#003357" stroke-width="20" stroke-linejoin="round"/>
+</g>
+<defs>
+<clipPath id="clip0_28_51">
+<rect width="1024" height="1024" fill="white"/>
+</clipPath>
+</defs>
 </svg>
