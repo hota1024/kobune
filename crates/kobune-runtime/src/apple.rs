@@ -608,6 +608,14 @@ impl AppleContainerRuntime {
             RuntimeError::failed(format!("opening a terminal for {}", spec.name()), err)
         })?;
 
+        // **Listening from before it has said anything.** What a start
+        // that refuses has to say goes to the terminal, which replays
+        // nothing to whoever comes later — and nobody attaches during a
+        // start. A subscription taken here keeps every chunk until it is
+        // read, which is what turns "the start command exited" into the
+        // reason it exited.
+        let mut said = terminal.subscribe();
+
         self.terminals
             .lock()
             .expect("lock")
@@ -636,14 +644,24 @@ impl AppleContainerRuntime {
                 .is_some_and(Terminal::is_open);
 
             if gone || std::time::Instant::now() >= deadline {
+                // Read before the terminal goes: what is buffered for a
+                // subscriber belongs to the subscriber, but there is no
+                // reason to depend on that.
+                let reason = last_words(&mut said);
+
                 self.forget_terminal(&spec.key);
+
+                let what_happened = if gone {
+                    "the start command exited without the container coming up"
+                } else {
+                    "the container did not come up in time"
+                };
+
                 return Err(RuntimeError::failed(
                     format!("starting {}", spec.name()),
-                    if gone {
-                        "the start command exited without the container \
-                         coming up"
-                    } else {
-                        "the container did not come up in time"
+                    match reason {
+                        Some(reason) => format!("{what_happened}: {reason}"),
+                        None => what_happened.to_string(),
                     },
                 ));
             }
@@ -1648,6 +1666,60 @@ fn parse_cidr_address(address: &str) -> Option<Ipv4Addr> {
         .and_then(|ip| ip.parse::<Ipv4Addr>().ok())
 }
 
+/// How many of a program's last lines a failure carries.
+const LAST_WORDS_LINES: usize = 3;
+
+/// And how much of them, so that one long line cannot become the error.
+const LAST_WORDS_CHARS: usize = 200;
+
+/// What a program said, for the failure that has to explain itself.
+///
+/// **The end of it, not the start.** A `container start` that refuses
+/// prints its reason last, after whatever it had to say about pulling and
+/// mounting, and the terminal keeps everything a subscriber has not read
+/// — the whole of a start, in a buffer sized for a session. So the tail
+/// is what is kept and the rest is let go of.
+fn last_words(said: &mut tokio::sync::broadcast::Receiver<Vec<u8>>) -> Option<String> {
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    let mut heard = Vec::new();
+
+    loop {
+        match said.try_recv() {
+            Ok(chunk) => heard.extend_from_slice(&chunk),
+            // Further behind than the terminal keeps. What is still
+            // there is the end of the output, which is the part wanted.
+            Err(TryRecvError::Lagged(_)) => continue,
+            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+        }
+    }
+
+    let text = String::from_utf8_lossy(&heard);
+    let mut tail: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .rev()
+        .take(LAST_WORDS_LINES)
+        .collect();
+
+    if tail.is_empty() {
+        return None;
+    }
+
+    tail.reverse();
+    let said = tail.join("; ");
+
+    // Counted in characters: the bytes are whatever the program wrote,
+    // and cutting one in half would leave a replacement character in an
+    // error message.
+    if said.chars().count() <= LAST_WORDS_CHARS {
+        return Some(said);
+    }
+
+    Some(said.chars().take(LAST_WORDS_CHARS).collect::<String>() + "…")
+}
+
 /// Picks the version out of `container CLI version 0.5.0 (build ...)`.
 fn parse_version(output: &str) -> String {
     output
@@ -1663,6 +1735,64 @@ mod tests {
 
     /// The name the runtime is built with when nothing overrides it.
     use kobune_core::apple::PROGRAM;
+
+    #[test]
+    fn a_start_that_refused_is_reported_in_its_own_words() {
+        // The whole point of keeping the terminal's output: without this
+        // the answer is "the start command exited without the container
+        // coming up" and the reason is nowhere on the machine.
+        let (said, mut heard) = tokio::sync::broadcast::channel(16);
+
+        said.send(b"pulling image\r\n".to_vec()).expect("sent");
+        said.send(b"Error: no such image: nope:latest\r\n".to_vec())
+            .expect("sent");
+
+        assert_eq!(
+            last_words(&mut heard).as_deref(),
+            Some("pulling image; Error: no such image: nope:latest")
+        );
+    }
+
+    #[test]
+    fn a_program_that_said_nothing_adds_nothing() {
+        // The failure then reads as it always did, rather than trailing a
+        // colon with nothing after it.
+        let (said, mut heard) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
+
+        assert!(last_words(&mut heard).is_none());
+
+        said.send(b"\r\n   \r\n".to_vec()).expect("sent");
+        assert!(
+            last_words(&mut heard).is_none(),
+            "and neither does one that only said blank lines"
+        );
+    }
+
+    #[test]
+    fn only_the_end_of_a_long_start_is_carried() {
+        // A page of progress before the reason for stopping. An error
+        // message is one line in a panel, so what it carries is the end.
+        let (said, mut heard) = tokio::sync::broadcast::channel(64);
+
+        for step in 0..20 {
+            said.send(format!("step {step}\r\n").into_bytes())
+                .expect("sent");
+        }
+        said.send(b"Error: the last thing it said\r\n".to_vec())
+            .expect("sent");
+
+        let reason = last_words(&mut heard).expect("something was said");
+
+        assert!(
+            reason.ends_with("Error: the last thing it said"),
+            "got: {reason}"
+        );
+        assert!(!reason.contains("step 0"), "got: {reason}");
+        assert!(
+            reason.chars().count() <= LAST_WORDS_CHARS + 1,
+            "got: {reason}"
+        );
+    }
 
     /// Captured from a real container on Apple Container 1.2.1.
     ///

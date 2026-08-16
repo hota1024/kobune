@@ -56,6 +56,16 @@ pub(crate) struct Terminal {
     /// from every chunk on its way past, so it costs nothing when nobody
     /// is listening.
     modes: Arc<Mutex<Modes>>,
+
+    /// How the reader hears that the terminal has been let go of.
+    ///
+    /// **Nothing is ever sent on it**; dropping it is the message, which
+    /// is why it belongs to the terminal and not to anything holding one.
+    /// The keyboard cannot carry this: [`Self::keyboard`] hands out a
+    /// clone of [`Self::input`] per attachment, so "everyone has stopped
+    /// typing" is only true once every session has ended — and the
+    /// reader would wait out an attachment to a container that has gone.
+    _closed: tokio::sync::oneshot::Sender<()>,
 }
 
 impl Terminal {
@@ -99,6 +109,8 @@ impl Terminal {
 
         let modes = Arc::new(Mutex::new(Modes::new()));
 
+        let (closed, mut let_go) = tokio::sync::oneshot::channel::<()>();
+
         let published = output.clone();
         let watched = modes.clone();
         tokio::spawn(async move {
@@ -139,12 +151,28 @@ impl Terminal {
                     },
                     keys = typed.recv() => match keys {
                         Some(keys) => {
-                            if write_all(&fd, &keys).await.is_err() {
+                            // As on the read side: what the terminal
+                            // still holds is taken before letting go of
+                            // it. A write failing says the descriptor is
+                            // done, not that what came the other way was
+                            // never said.
+                            if let Err(err) = write_all(&fd, &keys).await {
+                                tracing::warn!("cannot write to the terminal: {err}");
+                                drain(&fd, &mut buffer, &watched, &published);
                                 break;
                             }
                         }
                         None => break,
                     },
+                    // The terminal has been let go of. Not the same as
+                    // nobody typing: every attachment holds a keyboard of
+                    // its own, so `typed` runs dry only once the last
+                    // session has ended — and a session outliving the
+                    // container it was for is exactly when this matters.
+                    _ = &mut let_go => {
+                        drain(&fd, &mut buffer, &watched, &published);
+                        break;
+                    }
                     // The program has gone. What it wrote on its way out
                     // is still in the terminal, held there by the far end
                     // this side kept, and is read here before that goes
@@ -171,10 +199,13 @@ impl Terminal {
             // ignore — and one that does would hold this task, and the
             // process, for as long as it cared to run.
             //
-            // So it is ended rather than asked. Everything that drops a
-            // `Terminal` does so because the container it belonged to has
-            // gone (`apple.rs`), which makes a `container start --attach`
-            // still running one with nothing left to attach to.
+            // So it is ended rather than asked. Whatever drops a
+            // `Terminal` has stopped being able to use it: the container
+            // it belonged to has gone, or the start it was opened for was
+            // given up on (`apple.rs`). Neither leaves anything for a
+            // `container start --attach` to be attached to, and one left
+            // running would hold a pty nobody can reach for as long as
+            // the machine stays up.
             if !child_went {
                 let _ = child.start_kill();
             }
@@ -188,6 +219,7 @@ impl Terminal {
             input,
             output,
             modes,
+            _closed: closed,
         })
     }
 
@@ -592,23 +624,15 @@ mod tests {
         assert!(terminal.preamble().is_empty());
     }
 
-    #[tokio::test]
-    async fn letting_go_of_the_terminal_ends_what_was_on_it() {
-        // **Closing both ends is not a hangup.** The far end is not any
-        // session's controlling terminal — nothing calls `setsid` — so a
-        // program that ignores its reads going quiet keeps running, and
-        // the wait below would hold this task for as long as it cared to.
-        //
-        // Everything that drops a `Terminal` does so because the
-        // container it belonged to has gone (`apple.rs`), so an attach
-        // still running is one with nothing left to attach to.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let pidfile = dir.path().join("pid");
-
+    /// A terminal running a program that will not take a hint, and the
+    /// process it is running.
+    ///
+    /// It ignores a hangup and never reads, which is what a program is
+    /// free to do — and gives up on its own after ten seconds, so that a
+    /// failing test leaves nothing behind.
+    async fn a_program_that_will_not_leave(pidfile: &std::path::Path) -> (Terminal, libc::pid_t) {
         let mut command = tokio::process::Command::new("sh");
         command.arg("-c").arg(format!(
-            // Ignores a hangup, and gives up on its own after ten seconds
-            // so that a failure here leaves nothing behind.
             "trap '' HUP; echo $$ > {}; for _ in $(seq 1 100); do sleep 0.1; done",
             pidfile.display()
         ));
@@ -617,7 +641,7 @@ mod tests {
 
         let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if let Ok(text) = std::fs::read_to_string(&pidfile)
+                if let Ok(text) = std::fs::read_to_string(pidfile)
                     && let Ok(pid) = text.trim().parse::<libc::pid_t>()
                 {
                     return pid;
@@ -628,19 +652,59 @@ mod tests {
         .await
         .expect("the program says which process it is");
 
-        drop(terminal);
+        (terminal, pid)
+    }
 
-        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    /// Whether a process is gone within five seconds.
+    async fn ends(pid: libc::pid_t) -> bool {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             // SAFETY: signal 0 checks for the process and sends nothing.
             while unsafe { libc::kill(pid, 0) } == 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         })
-        .await;
+        .await
+        .is_ok()
+    }
+
+    #[tokio::test]
+    async fn letting_go_of_the_terminal_ends_what_was_on_it() {
+        // **Closing both ends is not a hangup.** The far end is not any
+        // session's controlling terminal — nothing calls `setsid` — so a
+        // program that ignores its reads going quiet keeps running, and
+        // the wait would hold the reader task for as long as it cared to.
+        //
+        // Whatever drops a `Terminal` has stopped being able to use it,
+        // so an attach still running is one with nothing to attach to.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (terminal, pid) = a_program_that_will_not_leave(&dir.path().join("pid")).await;
+
+        drop(terminal);
 
         assert!(
-            ended.is_ok(),
+            ends(pid).await,
             "a program on a terminal nobody is at is ended, not waited on"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_attachment_does_not_keep_a_let_go_terminal_alive() {
+        // **A keyboard is not a reason to wait.** Every attachment holds
+        // a clone of the sender the reader receives on, so "nobody is
+        // typing any more" is only true once the last session has ended
+        // — and a session that outlives the container it was for is
+        // exactly when the terminal has to be let go of. Waiting for the
+        // keyboard would hold the process, the pty and the task until
+        // whoever was attached happened to leave.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (terminal, pid) = a_program_that_will_not_leave(&dir.path().join("pid")).await;
+
+        let _attached = terminal.keyboard();
+        drop(terminal);
+
+        assert!(
+            ends(pid).await,
+            "the terminal was let go of, whoever was still holding a keyboard"
         );
     }
 
