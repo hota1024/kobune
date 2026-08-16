@@ -618,3 +618,42 @@
     border-radius: 0;
   }
 }
+
+/* --- one left edge --------------------------------------------------- */
+
+/*
+ * Every section lines up with the hero.
+ *
+ * `max-width` and `padding` on the same box makes the content the width
+ * *minus* the padding, which insets each section from the hero's container by
+ * the size of the gutter — near enough to look like a mistake and far enough
+ * to be one. Adding the gutter back to the maximum is what gives the hero,
+ * the stage and every heading under them a single left edge.
+ *
+ * Last in the file on purpose: it corrects the sections above rather than
+ * being corrected by them.
+ */
+.VPHome {
+  --kb-gutter: 24px;
+}
+
+@media (min-width: 640px) {
+  .VPHome {
+    --kb-gutter: 48px;
+  }
+}
+
+@media (min-width: 960px) {
+  .VPHome {
+    --kb-gutter: 64px;
+  }
+}
+
+.kb-steps,
+.kb-agents,
+.kb-specs,
+.kb-notes {
+  max-width: calc(1152px + 2 * var(--kb-gutter));
+  margin-inline: auto;
+  padding-inline: var(--kb-gutter);
+}
