@@ -1,16 +1,25 @@
 <script setup lang="ts">
 /**
- * The default theme, with the home page's five slots filled.
+ * Layout 1b — answer in the fold.
  *
- * Slots are lazy, and `VPHome` is the only thing that renders these, so none
- * of it is instantiated on a documentation page. `home-hero-after` is a
- * direct child of `.VPHome`, which has no width and no padding of its own —
- * which is why the demo can run the width of the page without a hack.
+ * The claim and the file that produces it stand side by side above the fold,
+ * then three panels say what happens, so the model is proved before a
+ * scroll. The session drops to evidence in the middle of the page: by the
+ * time a reader reaches it they know what they are looking at, and it is
+ * confirming rather than explaining.
+ *
+ * Denser than 1a on purpose — this one is for somebody evaluating the tool
+ * against something they already use.
  */
 import DefaultTheme from 'vitepress/theme'
 import HomeHero from './components/HomeHero.vue'
 import HomeInstall from './components/HomeInstall.vue'
+import HomeConfig from './components/HomeConfig.vue'
+import HomeSteps from './components/HomeSteps.vue'
+import HomeCompare from './components/HomeCompare.vue'
 import HomeSpecs from './components/HomeSpecs.vue'
+import HomeAgents from './components/HomeAgents.vue'
+import HomeRuntimes from './components/HomeRuntimes.vue'
 import HomeNotes from './components/HomeNotes.vue'
 import DemoStage from './components/DemoStage.vue'
 
@@ -21,9 +30,18 @@ const { Layout } = DefaultTheme
   <Layout>
     <template #home-hero-info><HomeHero /></template>
     <template #home-hero-actions-after><HomeInstall /></template>
-    <template #home-hero-after><DemoStage /></template>
+    <!-- Filling this slot is what puts VPHero into two columns. -->
+    <template #home-hero-image><HomeConfig /></template>
+    <template #home-hero-after><HomeSteps /></template>
     <template #home-features-after>
-      <HomeSpecs />
+      <HomeCompare />
+      <!-- Smaller than 1a's, because here it confirms rather than explains. -->
+      <DemoStage :max-scale="0.8" />
+      <HomeSpecs grid />
+      <div class="kb-pair">
+        <HomeAgents />
+        <HomeRuntimes />
+      </div>
       <HomeNotes />
     </template>
   </Layout>

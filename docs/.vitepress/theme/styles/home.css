@@ -49,9 +49,10 @@
   padding-bottom: var(--kb-6);
 }
 
-/* The hero has no image beside it any more, so it has no reason to stop
-   two-thirds of the way across. */
-.VPContent .VPHome .VPHero .main {
+/* With nothing beside it, the hero has no reason to stop two-thirds of the
+   way across. With something beside it, it very much does — `.main` at full
+   width pushes the second column clean out of the container. */
+.VPContent .VPHome .VPHero:not(.has-image) .main {
   width: 100%;
 }
 
@@ -179,10 +180,20 @@
 /* --- the demo -------------------------------------------------------- */
 
 .demo {
+  margin-top: var(--kb-8);
   padding: 0 24px;
 }
 
+/* 1a's stage sits directly under the hero, which has its own padding. */
+.demo-full {
+  margin-top: 0;
+}
+
+/* `width: 100%` matters once `.demo-full` is a flex column: an item with
+   `margin-inline: auto` and no definite width stops stretching and shrinks
+   to its content, which centres the text under a left-aligned page. */
 .demo > * {
+  width: 100%;
   max-width: 1152px;
   margin-inline: auto;
 }
@@ -314,6 +325,390 @@
   overflow-x: auto;
 }
 
+/* --- 1a: the stage runs edge to edge --------------------------------- */
+
+/*
+ * The band breaks the text column, and only the band. The heading, the
+ * caption and the controls stay lined up with the hero above them, so the
+ * page still has one left edge.
+ */
+/*
+ * The band comes first and its heading follows it. Above the fold the
+ * session has to be the thing you see, and "nothing here is a recording"
+ * only means something once you have seen it move.
+ */
+.demo-full {
+  display: flex;
+  flex-direction: column;
+}
+
+.demo-full .stage {
+  order: -1;
+  max-width: none;
+  margin-top: var(--kb-5);
+  margin-inline: -24px;
+  border-radius: 0;
+}
+
+.demo-full .demo-head {
+  margin-top: var(--kb-4);
+}
+
+.demo-full .demo-head h2 {
+  font-size: 16px;
+}
+
+@media (min-width: 640px) {
+  .demo-full .stage {
+    margin-inline: -48px;
+  }
+}
+
+@media (min-width: 960px) {
+  .demo-full .stage {
+    margin-inline: -64px;
+  }
+}
+
+/* --- three commands, and a URL --------------------------------------- */
+
+.kb-steps {
+  max-width: 1152px;
+  margin: var(--kb-8) auto 0;
+  padding: 0 24px;
+}
+
+.kb-steps h2 {
+  margin: 0 0 var(--kb-5);
+  font-family: var(--kb-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+  font-variant-ligatures: none;
+}
+
+.kb-steps ol {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--kb-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+
+.kb-steps li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kb-2);
+  padding-top: var(--kb-3);
+  border-top: 2px solid var(--vp-c-text-1);
+}
+
+.kb-steps .n {
+  font-family: var(--kb-font-mono);
+  font-size: 12px;
+  color: var(--vp-c-text-3);
+}
+
+.kb-steps code {
+  font-family: var(--kb-font-mono);
+  font-size: 14px;
+  font-variant-ligatures: none;
+  color: var(--vp-c-text-1);
+  overflow-wrap: anywhere;
+}
+
+/* The URL is 45 characters and the column is a third of the page. A step
+   down fits it on one line at every width that gives it three columns. */
+.kb-steps code.url {
+  font-size: 12.5px;
+  color: var(--vp-c-text-2);
+}
+
+.kb-steps p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+/* --- agents ---------------------------------------------------------- */
+
+.kb-agents {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--kb-7);
+  align-items: center;
+  max-width: 1152px;
+  margin: var(--kb-8) auto 0;
+  padding: 0 24px;
+}
+
+.kb-agents h2 {
+  margin: 0 0 var(--kb-3);
+  font-family: var(--kb-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+  font-variant-ligatures: none;
+}
+
+.kb-agents p {
+  margin: 0 0 var(--kb-4);
+  max-width: 46ch;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--vp-c-text-2);
+}
+
+.kb-agents-proof {
+  padding: var(--kb-4);
+  border-radius: 10px;
+  background: var(--kb-shell-bg);
+  font-family: var(--kb-font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre;
+  font-variant-ligatures: none;
+  overflow-x: auto;
+}
+
+/* --- 1b: the file sits in the fold, beside the claim ----------------- */
+
+/*
+ * VPHero puts anything in `home-hero-image` in a second column and centres
+ * the first one below 960px. The centring is undone here — the page has one
+ * left edge at every width — and the column is allowed its full share.
+ */
+.VPContent .VPHome .VPHero.has-image .container {
+  text-align: left;
+}
+
+.VPContent .VPHome .VPHero.has-image .main {
+  max-width: none;
+}
+
+.VPContent .VPHome .VPHero.has-image .name,
+.VPContent .VPHome .VPHero.has-image .text,
+.VPContent .VPHome .VPHero.has-image .tagline {
+  margin: 0;
+}
+
+/* The default theme pulls the image column up and outwards to let a floating
+   logo bleed past the hero. A file has to stay inside it. */
+.VPContent .VPHome .VPHero .image {
+  min-width: 0;
+  margin: var(--kb-6) 0 0;
+}
+
+@media (min-width: 960px) {
+  .VPContent .VPHome .VPHero.has-image .main {
+    width: 56%;
+  }
+
+  .VPContent .VPHome .VPHero .image {
+    margin: 0 0 0 var(--kb-7);
+  }
+}
+
+.VPContent .VPHome .VPHero .image-container {
+  width: 100%;
+  max-width: none;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  transform: none;
+}
+
+.VPContent .VPHome .VPHero .image-bg {
+  display: none;
+}
+
+.kb-config {
+  width: 100%;
+}
+
+.kb-config-note {
+  margin: var(--kb-3) 0 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+/* --- a card of code -------------------------------------------------- */
+
+.kb-code {
+  border-radius: 10px;
+  background: var(--kb-shell-bg);
+  overflow: hidden;
+}
+
+.kb-code.quiet {
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+}
+
+.kb-code-label {
+  margin: 0;
+  padding: var(--kb-2) var(--kb-4);
+  border-bottom: 1px solid var(--kb-shell-rule);
+  font-family: var(--kb-font-mono);
+  font-size: 11px;
+  color: var(--kb-shell-muted);
+  font-variant-ligatures: none;
+}
+
+.kb-code.quiet .kb-code-label {
+  border-bottom-color: var(--vp-c-divider);
+  color: var(--vp-c-text-3);
+}
+
+.kb-code-body {
+  padding: var(--kb-3) var(--kb-4) var(--kb-4);
+  font-family: var(--kb-font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre;
+  font-variant-ligatures: none;
+  overflow-x: auto;
+}
+
+/* The quiet card is the one Kobune is being compared against, so it is set
+   in the page's own ink rather than the terminal's. */
+.kb-code.quiet .kb-code-body .ink-plain,
+.kb-code.quiet .kb-code-body .ink-subject {
+  color: var(--vp-c-text-1);
+}
+
+.kb-code.quiet .kb-code-body .ink-muted {
+  color: var(--vp-c-text-3);
+}
+
+.kb-code.quiet .kb-code-body .ink-good,
+.kb-code.quiet .kb-code-body .ink-link {
+  color: var(--vp-c-text-2);
+}
+
+/* --- compose, and the same stack ------------------------------------- */
+
+.kb-compare {
+  max-width: 1152px;
+  margin: var(--kb-8) auto 0;
+  padding: 0 24px;
+}
+
+.kb-compare h2 {
+  margin: 0 0 var(--kb-2);
+  font-family: var(--kb-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+  font-variant-ligatures: none;
+}
+
+.kb-compare-lead {
+  max-width: 62ch;
+  margin: 0 0 var(--kb-5);
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--vp-c-text-2);
+}
+
+.kb-compare-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--kb-4);
+  align-items: start;
+}
+
+.kb-compare-note {
+  max-width: 62ch;
+  margin: var(--kb-4) 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--vp-c-text-3);
+}
+
+/* --- runtimes -------------------------------------------------------- */
+
+.kb-runtimes h2 {
+  margin: 0 0 var(--kb-3);
+  font-family: var(--kb-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+  font-variant-ligatures: none;
+}
+
+.kb-runtimes ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kb-runtimes li {
+  display: grid;
+  grid-template-columns: 12ch minmax(0, 1fr) auto;
+  gap: var(--kb-3);
+  align-items: baseline;
+  padding: var(--kb-3) 0;
+  border-top: 1px solid var(--vp-c-divider);
+  font-size: 14px;
+}
+
+.kb-runtimes code {
+  font-family: var(--kb-font-mono);
+  font-size: 13px;
+  color: var(--vp-c-text-1);
+  font-variant-ligatures: none;
+}
+
+.kb-runtimes .name {
+  color: var(--vp-c-text-2);
+}
+
+.kb-runtimes .state {
+  font-family: var(--kb-font-mono);
+  font-size: 12px;
+  color: var(--vp-c-text-3);
+}
+
+.kb-runtimes li.absent code,
+.kb-runtimes li.absent .name {
+  color: var(--vp-c-text-3);
+}
+
+/* --- the pair at the foot of 1b -------------------------------------- */
+
+.kb-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: var(--kb-7);
+  align-items: start;
+  max-width: 1152px;
+  margin: var(--kb-8) auto 0;
+  padding: 0 24px;
+}
+
+/* Inside the pair the two sections are already placed, so they drop their
+   own page-level margins and padding. */
+.kb-pair .kb-agents,
+.kb-pair .kb-runtimes {
+  display: block;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.kb-pair .kb-agents-proof {
+  margin-top: var(--kb-4);
+}
+
 /* --- what you get, and what it is not -------------------------------- */
 
 .kb-specs,
@@ -334,19 +729,19 @@
 }
 
 .kb-specs dl {
-  display: grid;
-  grid-template-columns: minmax(0, 31ch) minmax(0, 1fr);
   margin: 0;
 }
 
-.kb-specs dt,
-.kb-specs dd {
+/* The sheet: a label, then its sentence, ruled off. */
+.kb-specs dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 31ch) minmax(0, 1fr);
+  gap: var(--kb-5);
   padding: var(--kb-4) 0;
   border-top: 1px solid var(--vp-c-divider);
 }
 
 .kb-specs dt {
-  padding-right: var(--kb-5);
   font-family: var(--kb-font-mono);
   font-size: 14px;
   color: var(--vp-c-text-1);
@@ -357,6 +752,29 @@
   font-size: 15px;
   line-height: 1.6;
   color: var(--vp-c-text-2);
+}
+
+/* Two columns of three, for a page that has more to say below it. The label
+   sits above its sentence rather than beside it. */
+.kb-specs-grid dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--kb-7);
+}
+
+.kb-specs-grid dl > div {
+  display: block;
+  gap: 0;
+  padding: var(--kb-3) 0;
+}
+
+.kb-specs-grid dt {
+  margin-bottom: var(--kb-1);
+  font-size: 13.5px;
+}
+
+.kb-specs-grid dd {
+  font-size: 14px;
 }
 
 .kb-notes {
@@ -401,6 +819,8 @@
 
 @media (min-width: 640px) {
   .demo,
+  .kb-steps,
+  .kb-agents,
   .kb-specs,
   .kb-notes {
     padding-inline: 48px;
@@ -409,24 +829,42 @@
 
 @media (min-width: 960px) {
   .demo,
+  .kb-steps,
+  .kb-agents,
   .kb-specs,
   .kb-notes {
     padding-inline: 64px;
   }
 }
 
-@media (max-width: 719px) {
-  .kb-specs dl {
+@media (max-width: 859px) {
+  .kb-steps ol {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--kb-4);
+  }
+
+  .kb-agents {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--kb-5);
+  }
+}
+
+@media (max-width: 859px) {
+  .kb-compare-pair,
+  .kb-pair,
+  .kb-specs-grid dl {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .kb-specs dt {
-    padding-bottom: var(--kb-1);
+  .kb-pair {
+    gap: var(--kb-7);
   }
+}
 
-  .kb-specs dd {
-    padding-top: 0;
-    border-top: 0;
+@media (max-width: 719px) {
+  .kb-specs dl > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--kb-1);
   }
 
   .demo .controls {
@@ -446,4 +884,45 @@
     margin-inline: -24px;
     border-radius: 0;
   }
+}
+
+/* --- one left edge --------------------------------------------------- */
+
+/*
+ * Every section lines up with the hero.
+ *
+ * `max-width` and `padding` on the same box makes the content the width
+ * *minus* the padding, which insets each section from the hero's container by
+ * the size of the gutter — near enough to look like a mistake and far enough
+ * to be one. Adding the gutter back to the maximum is what gives the hero,
+ * the stage and every heading under them a single left edge.
+ *
+ * Last in the file on purpose: it corrects the sections above rather than
+ * being corrected by them.
+ */
+.VPHome {
+  --kb-gutter: 24px;
+}
+
+@media (min-width: 640px) {
+  .VPHome {
+    --kb-gutter: 48px;
+  }
+}
+
+@media (min-width: 960px) {
+  .VPHome {
+    --kb-gutter: 64px;
+  }
+}
+
+.kb-steps,
+.kb-agents,
+.kb-compare,
+.kb-pair,
+.kb-specs,
+.kb-notes {
+  max-width: calc(1152px + 2 * var(--kb-gutter));
+  margin-inline: auto;
+  padding-inline: var(--kb-gutter);
 }
