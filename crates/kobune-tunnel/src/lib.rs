@@ -7,10 +7,12 @@
 //! `kobune-runtime` makes for Docker and Apple Container, and for the same
 //! reason: the layer above should not be able to tell them apart.
 //!
-//! What every provider shares today is the shape of the hostnames, which
-//! come from the domain in the request
-//! ([`kobune_core::naming::tunnel_host`]). A service that hands out its
-//! own names instead is the next thing this has to absorb.
+//! What every provider shares is that it says where a service answers.
+//! Not what the answer looks like: a zone of the user's derives every
+//! name from the domain in the request, and a service with a domain of
+//! its own hands out one name at a time and covers nothing it was not
+//! asked about. [`Hostnames`] is where those two meet, and the daemon
+//! reads it rather than deriving anything itself.
 
 pub mod provider;
 pub mod providers;
@@ -33,7 +35,12 @@ pub use providers::{CloudflareProvider, QuickProvider};
 pub const DEFAULT_TUNNEL_NAME: &str = "kobune";
 
 /// The providers that can be named.
-pub const AVAILABLE_PROVIDERS: &[&str] = &[providers::cloudflare::ID, providers::quick::ID];
+///
+/// The list lives in `kobune-core` because the CLI validates `--provider`
+/// against it and may not reach this crate. What keeps the two honest is
+/// [`create`], which every name here is put through in this crate's own
+/// tests.
+pub const AVAILABLE_PROVIDERS: &[&str] = kobune_core::TUNNEL_PROVIDERS;
 
 /// Builds a provider from its identifier.
 ///
@@ -63,10 +70,16 @@ pub fn create(id: &str) -> Result<Box<dyn TunnelProvider>> {
 /// supplies it here.
 pub fn error_hint(id: &str, err: &TunnelError) -> Option<String> {
     match id {
+        providers::cloudflare::ID => providers::cloudflare::error_hint(err),
         // The quick tunnel drives the same binary, so the same advice
-        // applies — minus the login it never asks for, which it reports
-        // as nothing to do rather than as a step.
-        providers::cloudflare::ID | providers::quick::ID => providers::cloudflare::error_hint(err),
+        // applies — minus the login it never asks anyone for. Told to run
+        // `cloudflared tunnel login`, somebody would come back from it to
+        // the same failure, having authorised a tunnel that was never
+        // waiting on one.
+        providers::quick::ID => match err {
+            TunnelError::NotLoggedIn => None,
+            other => providers::cloudflare::error_hint(other),
+        },
         _ => None,
     }
 }
@@ -124,6 +137,25 @@ mod tests {
             let provider = create(id).unwrap_or_else(|err| panic!("{id} does not build: {err}"));
             assert_eq!(&provider.id(), id);
         }
+    }
+
+    #[test]
+    fn the_provider_that_never_logs_in_is_not_told_to_log_in() {
+        // It drives the same binary as the named tunnel, so most of that
+        // provider's advice is right for it too. A login is the
+        // exception: a quick tunnel never waits on one, and somebody sent
+        // to do it would come back to the same failure having authorised
+        // nothing that was asking.
+        assert!(error_hint(providers::quick::ID, &TunnelError::NotLoggedIn).is_none());
+
+        let shared = error_hint(
+            providers::quick::ID,
+            &TunnelError::NotInstalled("cloudflared".into()),
+        );
+        assert!(
+            shared.is_some_and(|hint| hint.contains("cloudflared")),
+            "what the two do share is still said"
+        );
     }
 
     #[test]

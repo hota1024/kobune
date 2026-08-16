@@ -314,7 +314,7 @@ async fn spawn(program: &str, local_port: u16) -> Result<(Child, String)> {
     let mut lines = BufReader::new(stderr);
 
     match tokio::time::timeout(HOSTNAME_TIMEOUT, read_hostname(&mut lines)).await {
-        Ok(Some(hostname)) => {
+        Ok(Ok(Some(hostname))) => {
             // **The pipe has to outlive the read.** cloudflared writes to
             // stderr for as long as it is up — a line per edge connection,
             // then heartbeats — and Go terminates a program on SIGPIPE for
@@ -338,11 +338,21 @@ async fn spawn(program: &str, local_port: u16) -> Result<(Child, String)> {
 
             Ok((child, hostname))
         }
-        Ok(None) => {
+        Ok(Ok(None)) => {
             let _ = child.kill().await;
             Err(TunnelError::failed(
                 "starting a quick tunnel",
                 format!("{program} exited without giving out a hostname"),
+            ))
+        }
+        // Not the same thing at all, and it was reported as it until the
+        // pipe stopped being readable for a reason of its own. What to
+        // look at is this machine, not cloudflared.
+        Ok(Err(err)) => {
+            let _ = child.kill().await;
+            Err(TunnelError::failed(
+                "starting a quick tunnel",
+                format!("cannot read what {program} is saying: {err}"),
             ))
         }
         Err(_) => {
@@ -361,24 +371,26 @@ async fn spawn(program: &str, local_port: u16) -> Result<(Child, String)> {
 /// fails a whole read on one byte that is not UTF-8, and treating that as
 /// the end of the output would kill a working cloudflared and report that
 /// it "exited without giving out a hostname" — which is not what happened.
-async fn read_hostname(reader: &mut BufReader<tokio::process::ChildStderr>) -> Option<String> {
+///
+/// **A failure to read is not an end of output either**, and for the same
+/// reason: the two mean different things to whoever is reading the error,
+/// and only one of them is about cloudflared. `None` is the end, an error
+/// is an error, and the caller says which happened.
+async fn read_hostname(
+    reader: &mut BufReader<tokio::process::ChildStderr>,
+) -> std::io::Result<Option<String>> {
     let mut line = Vec::new();
 
     loop {
         line.clear();
 
-        match reader.read_until(b'\n', &mut line).await {
-            // End of output, and no hostname in any of it.
-            Ok(0) => return None,
-            Ok(_) => {}
-            Err(err) => {
-                tracing::debug!("cannot read cloudflared's output: {err}");
-                return None;
-            }
+        // End of output, and no hostname in any of it.
+        if reader.read_until(b'\n', &mut line).await? == 0 {
+            return Ok(None);
         }
 
         if let Some(hostname) = hostname_in(&String::from_utf8_lossy(&line)) {
-            return Some(hostname);
+            return Ok(Some(hostname));
         }
     }
 }
