@@ -120,12 +120,22 @@ impl Terminal {
                 tokio::select! {
                     read = read_some(&fd, &mut buffer) => match read {
                         // Nothing more will come. The far end this side
-                        // holds makes an end-of-file here unlikely — the
-                        // child going is what normally ends this loop —
-                        // but a terminal that cannot be read is over
-                        // either way.
-                        Ok(0) | Err(_) => break,
+                        // holds makes this unlikely — the child going is
+                        // what normally ends this loop — but a terminal
+                        // with nothing left at the other end is over.
+                        Ok(0) => break,
                         Ok(count) => hand_on(&buffer[..count], &watched, &published),
+                        // Said rather than swallowed: a read that failed
+                        // and a program that ended look the same from the
+                        // outside, and only one of them is ordinary. What
+                        // the terminal still holds is taken first, since
+                        // `drain` reads through an interruption where this
+                        // gives up on one.
+                        Err(err) => {
+                            tracing::warn!("cannot read the terminal: {err}");
+                            drain(&fd, &mut buffer, &watched, &published);
+                            break;
+                        }
                     },
                     keys = typed.recv() => match keys {
                         Some(keys) => {
