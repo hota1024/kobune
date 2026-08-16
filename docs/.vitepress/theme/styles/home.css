@@ -182,7 +182,11 @@
   padding: 0 24px;
 }
 
+/* `width: 100%` matters once `.demo-full` is a flex column: an item with
+   `margin-inline: auto` and no definite width stops stretching and shrinks
+   to its content, which centres the text under a left-aligned page. */
 .demo > * {
+  width: 100%;
   max-width: 1152px;
   margin-inline: auto;
 }
@@ -314,6 +318,157 @@
   overflow-x: auto;
 }
 
+/* --- 1a: the stage runs edge to edge --------------------------------- */
+
+/*
+ * The band breaks the text column, and only the band. The heading, the
+ * caption and the controls stay lined up with the hero above them, so the
+ * page still has one left edge.
+ */
+/*
+ * The band comes first and its heading follows it. Above the fold the
+ * session has to be the thing you see, and "nothing here is a recording"
+ * only means something once you have seen it move.
+ */
+.demo-full {
+  display: flex;
+  flex-direction: column;
+}
+
+.demo-full .stage {
+  order: -1;
+  max-width: none;
+  margin-top: var(--kb-5);
+  margin-inline: -24px;
+  border-radius: 0;
+}
+
+.demo-full .demo-head {
+  margin-top: var(--kb-4);
+}
+
+.demo-full .demo-head h2 {
+  font-size: 16px;
+}
+
+@media (min-width: 640px) {
+  .demo-full .stage {
+    margin-inline: -48px;
+  }
+}
+
+@media (min-width: 960px) {
+  .demo-full .stage {
+    margin-inline: -64px;
+  }
+}
+
+/* --- three commands, and a URL --------------------------------------- */
+
+.kb-steps {
+  max-width: 1152px;
+  margin: var(--kb-8) auto 0;
+  padding: 0 24px;
+}
+
+.kb-steps h2 {
+  margin: 0 0 var(--kb-5);
+  font-family: var(--kb-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+  font-variant-ligatures: none;
+}
+
+.kb-steps ol {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--kb-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+
+.kb-steps li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kb-2);
+  padding-top: var(--kb-3);
+  border-top: 2px solid var(--vp-c-text-1);
+}
+
+.kb-steps .n {
+  font-family: var(--kb-font-mono);
+  font-size: 12px;
+  color: var(--vp-c-text-3);
+}
+
+.kb-steps code {
+  font-family: var(--kb-font-mono);
+  font-size: 14px;
+  font-variant-ligatures: none;
+  color: var(--vp-c-text-1);
+  overflow-wrap: anywhere;
+}
+
+/* The URL is 45 characters and the column is a third of the page. A step
+   down fits it on one line at every width that gives it three columns. */
+.kb-steps code.url {
+  font-size: 12.5px;
+  color: var(--vp-c-text-2);
+}
+
+.kb-steps p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+/* --- agents ---------------------------------------------------------- */
+
+.kb-agents {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--kb-7);
+  align-items: center;
+  max-width: 1152px;
+  margin: var(--kb-8) auto 0;
+  padding: 0 24px;
+}
+
+.kb-agents h2 {
+  margin: 0 0 var(--kb-3);
+  font-family: var(--kb-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+  font-variant-ligatures: none;
+}
+
+.kb-agents p {
+  margin: 0 0 var(--kb-4);
+  max-width: 46ch;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--vp-c-text-2);
+}
+
+.kb-agents-proof {
+  padding: var(--kb-4);
+  border-radius: 10px;
+  background: var(--kb-shell-bg);
+  font-family: var(--kb-font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre;
+  font-variant-ligatures: none;
+  overflow-x: auto;
+}
+
 /* --- what you get, and what it is not -------------------------------- */
 
 .kb-specs,
@@ -401,6 +556,8 @@
 
 @media (min-width: 640px) {
   .demo,
+  .kb-steps,
+  .kb-agents,
   .kb-specs,
   .kb-notes {
     padding-inline: 48px;
@@ -409,9 +566,23 @@
 
 @media (min-width: 960px) {
   .demo,
+  .kb-steps,
+  .kb-agents,
   .kb-specs,
   .kb-notes {
     padding-inline: 64px;
+  }
+}
+
+@media (max-width: 859px) {
+  .kb-steps ol {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--kb-4);
+  }
+
+  .kb-agents {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--kb-5);
   }
 }
 

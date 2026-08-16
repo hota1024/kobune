@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Kobune
   text: git worktree ごとのプレビュー環境
-  tagline: ブランチを切れば、環境は専用の URL ですでに動いています。人からもエージェントからも同じように扱えます。
+  tagline: ブランチを切れば、環境は専用の URL ですでに動いています。
   actions:
     - theme: brand
       text: はじめる
@@ -19,6 +19,17 @@ hero:
     command: "curl -fsSL https://minato.1024.works/install.sh | sh"
     copy: コピー
     copied: コピーしました
+
+steps:
+  title: コマンド 3 つと、URL 1 つ
+  items:
+    - command: kobune init
+      body: kobune.toml を 1 つ書き出します。コミットしておけば、あとから増える worktree すべてがこれを読みます。
+    - command: kobune new feature/user-auth
+      body: worktree を作り、その環境も一緒に立ち上げます。
+    - command: https://web.feature-user-auth.myapp.localhost
+      url: true
+      body: あとは開くだけです。ポート番号は誰も選んでおらず、再起動しても同じ名前で届きます。
 
 specs:
   title: できること
@@ -35,6 +46,11 @@ specs:
       body: 2 つのランタイムを共通のインタフェースで扱えます。切り替えは kobune.toml の 1 行だけです。
     - label: トンネルで共有できる
       body: Cloudflare Tunnel を経由して、スマートフォンやレビュアーに URL を共有できます。
+agents:
+  title: エージェントも同じコマンドを使う
+  body: 人が使うのと同じコマンドで、プログラムが読む部分だけ --json を付けます。失敗したときは種類の分かる終了コードが返るので、エージェントは空の応答ではなく理由を受け取ります。kobune skill install を実行すれば、どのコマンドを使い、どれを避けるべきかは Skill が教えます。
+  link: /ja/guide/agents
+  linkText: AI エージェントと使う
 
 notes:
   title: Kobune の対象外

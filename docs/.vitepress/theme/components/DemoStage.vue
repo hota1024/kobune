@@ -19,6 +19,16 @@ import BrowserWindow from './BrowserWindow.vue'
 import { copyFor } from '../demo/copy'
 import { compile, cwd, live, scrollback, settled, transcript, usePlayer, web } from '../demo/player'
 
+const props = withDefaults(
+  defineProps<{
+    /** Run the stage edge to edge rather than inside the text column. */
+    full?: boolean
+    /** How far the scene may be scaled up when there is room for it. */
+    maxScale?: number
+  }>(),
+  { full: false, maxScale: 1 },
+)
+
 const { lang } = useData()
 const copy = computed(() => copyFor(lang.value))
 
@@ -65,7 +75,7 @@ function fit() {
   if (!room) return
   narrow.value = room < 900
   const { w } = scene.value
-  scale.value = Math.min(narrow.value ? 1.6 : 1, room / w)
+  scale.value = Math.min(narrow.value ? 1.6 : props.maxScale, room / w)
 }
 
 let watching: ResizeObserver | undefined
@@ -81,7 +91,7 @@ onUnmounted(() => watching?.disconnect())
 </script>
 
 <template>
-  <section ref="root" class="demo">
+  <section ref="root" class="demo" :class="{ 'demo-full': full }">
     <div class="demo-head">
       <h2>{{ copy.heading }}</h2>
       <p class="lead">{{ copy.lead }}</p>

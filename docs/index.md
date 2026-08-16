@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Kobune
   text: A preview environment per git worktree
-  tagline: Create a branch, and the environment is already running at a URL of its own. Made to be driven by an agent as readily as by you.
+  tagline: Create a branch, and the environment is already running at a URL of its own.
   actions:
     - theme: brand
       text: Get started
@@ -19,6 +19,17 @@ hero:
     command: "curl -fsSL https://minato.1024.works/install.sh | sh"
     copy: Copy
     copied: Copied
+
+steps:
+  title: Three commands, and a URL
+  items:
+    - command: kobune init
+      body: Writes a kobune.toml. One file, committed, and read by every worktree the repository grows.
+    - command: kobune new feature/user-auth
+      body: Creates the worktree, and brings the environment up with it.
+    - command: https://web.feature-user-auth.myapp.localhost
+      url: true
+      body: Open it. Nobody picked a port, and the name is the same after a restart.
 
 specs:
   title: What you get
@@ -35,6 +46,12 @@ specs:
       body: Two runtimes behind one abstraction, switched with a single line of kobune.toml.
     - label: share over a tunnel
       body: Put a branch behind a Cloudflare Tunnel and send the link to a phone or a reviewer.
+
+agents:
+  title: An agent drives it the way you do
+  body: The same commands, with --json for the parts a program reads. A failure exits with a code that says what kind it was, so an agent gets a reason rather than an empty response. kobune skill install teaches it which commands to reach for and which to leave alone.
+  link: /guide/agents
+  linkText: Working with AI agents
 
 notes:
   title: What it is not
