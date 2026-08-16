@@ -49,7 +49,8 @@ $ kobune new feature/user-auth
 
 ## Status
 
-**Every milestone is done except Firecracker, which needs a Linux host.**
+**Everything is done except Firecracker, which is planned and needs a Linux
+host.**
 Creating a worktree starts its containers and they answer on `*.localhost`. An
 untouched environment stops itself and comes back on the next request. Every
 service receives the others' URLs as `KOBUNE_URL_<SERVICE>`.
@@ -136,7 +137,8 @@ Apple Container has no container-to-container DNS, so a service must declare
 default network, since a container can only join one and a per-workspace
 network would cut off `scope = "project"` services.
 
-Firecracker is not implemented. It needs KVM and cannot run on macOS.
+Firecracker is planned and not usable yet. It needs KVM, so it runs on a Linux
+host and never on macOS.
 
 ## Documentation
 
@@ -161,7 +163,8 @@ $ cd docs && pnpm install && pnpm dev
 | M4 ✅ | Cloudflare Tunnel: one named tunnel, scale-to-zero through it |
 | M5 ✅ | Skills, `logs` / `exec` |
 | M6 ✅ | GUI: GPUI, living in the menu bar |
-| M7 ✅ | Apple Container verified on real hardware; Firecracker needs a Linux host |
+| M7 ✅ | Apple Container verified on real hardware |
+| M8 | Firecracker, once there is a Linux host to develop it against |
 
 ## GUI
 

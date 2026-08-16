@@ -25,6 +25,10 @@ Everything written for a person to read:
 - `README.md`, `SECURITY.md`, `assets/README.md`
 - `docs/README.md`, `docs/DESIGN.md`, `docs/AGENT-RUN.md`
 - `skills/kobune/SKILL.md`, which ships to users and is read by agents
+- `docs/.vitepress/theme/demo/copy.ts` — the home page demo's captions, in
+  both languages. The checker cannot read TypeScript, and the frontmatter it
+  skips carries the rest of that page, so the home page is held to this style
+  by hand
 
 Leave alone:
 

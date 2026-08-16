@@ -25,6 +25,7 @@ docs/
   .vitepress/
     config.ts         nav, sidebar and locales, generated from one page list
     versions.json     which versions have been snapshotted
+    theme/            the home page. The default theme is untouched elsewhere
   scripts/og.mjs      draws the social card
   public/             git-ignored; filled by `pnpm sync`, see below
   DESIGN.md           the design record. Not part of the site
@@ -51,6 +52,27 @@ The card is set in Inter, read from the copy VitePress installs. resvg
 cannot read woff2, so `wawoff2` decompresses it first — the alternative is
 `loadSystemFonts`, which would set the card in whatever the machine
 happens to have and make a runner's output differ from a laptop's.
+
+## The home page
+
+`.vitepress/theme/` extends the default theme and fills five of the home
+page's slots. Nothing outside `.VPHome` is styled, so every other page is
+VitePress's as it was.
+
+Its centre is a session that plays: `kobune init`, a worktree, a second one
+beside it, and the two previews. Two rules govern it.
+
+**The console text is what the commands printed.** It lives in
+`theme/demo/script.ts`, taken from `apps/cli/src/ui/`, and it is not
+translated — the same rule as every console block on every other page. The
+panels are laid out from their content by the same arithmetic `panel.rs` uses,
+so a panel cannot come out one column short of its own border.
+
+**The words around it are translated, and no checker sees them.**
+`theme/demo/copy.ts` holds the captions in both languages, shaped like `TEXT`
+in `config.ts`; the rest sits in `hero:`, `specs:` and `notes:` in the two
+`index.md` files. `scripts/check.mjs` skips frontmatter and does not read
+TypeScript, so both are held to the house style by hand.
 
 ## What agents read
 

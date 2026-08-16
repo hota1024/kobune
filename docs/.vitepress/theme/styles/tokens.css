@@ -1,0 +1,115 @@
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench · theme: custom (kobune hull)
+ * enrichment: Tier A, hand-built · nav + footer: VitePress owns both, untouched
+ * chrome: macOS window, by decision — the address is the product, so the bar that
+ * carries it is information rather than an imitation of an operating system
+ * pre-emit critique: P5 H4 E4 S5 R4 V4
+ */
+
+/*
+ * The home page's tokens, and nothing else's.
+ *
+ * Every one of these is `--kb-`. Nothing here redefines a `--vp-` variable,
+ * so the guide, the reference and the tutorials look exactly as they did.
+ *
+ * The anchor hue is the hull of the logo — 235, a deep blue — and every
+ * neutral carries a trace of it. The one saturated colour is the sail, which
+ * `.vitepress/config.ts` already spells out and already explains: it tints the
+ * browser's chrome and nothing that has to pass contrast on white. It is used
+ * here for the same narrow set of things, a few percent of the page at most.
+ *
+ * The terminal's own colours are further down. Those are not decoration: they
+ * are the nine styles `apps/cli/src/ui/theme.rs` hands out, and the site is
+ * one more terminal theme deciding what they mean.
+ */
+
+:root {
+  /* The sail, spelled the way `config.ts` and `scripts/og.mjs` spell it. */
+  --kb-accent: #00b4db;
+  --kb-accent-quiet: oklch(72% 0.13 217 / 0.1);
+
+  --kb-font-mono: ui-monospace, 'SFMono-Regular', Menlo, 'DejaVu Sans Mono', 'Cascadia Mono', Consolas,
+    'Liberation Mono', monospace;
+
+  /*
+   * The headline is set in the same face as the output below it. The tool is
+   * a command line, and a page about one that sets its title in the body sans
+   * is a page that could be about anything. Japanese falls through to a
+   * gothic, which is what a Japanese reader expects a monospaced Latin run to
+   * sit next to.
+   */
+  --kb-font-display: ui-monospace, 'SFMono-Regular', Menlo, 'Cascadia Mono', Consolas, 'Hiragino Kaku Gothic ProN',
+    'Noto Sans JP', sans-serif;
+
+  /* 4pt, named for what they space. */
+  --kb-1: 4px;
+  --kb-2: 8px;
+  --kb-3: 12px;
+  --kb-4: 16px;
+  --kb-5: 24px;
+  --kb-6: 32px;
+  --kb-7: 48px;
+  --kb-8: 64px;
+  --kb-9: 96px;
+
+  --kb-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --kb-ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --kb-dur-micro: 120ms;
+  --kb-dur-short: 220ms;
+  --kb-dur-long: 420ms;
+
+  /*
+   * --- the stage ------------------------------------------------------
+   *
+   * A plain grey field the windows sit on, following the site's theme
+   * rather than staying dark under both. It carries no hue of its own: the
+   * windows on it are a dark terminal and a light page, and anything with a
+   * cast in it would tint one of the two. A trace of chroma keeps it off
+   * dead neutral, which photographs as a flat patch.
+   */
+  --kb-stage-bg: oklch(93.5% 0.004 250);
+  --kb-stage-rule: oklch(85% 0.005 250);
+  --kb-window-shadow: 0 6px 18px oklch(45% 0.01 250 / 0.14);
+  --kb-bar-h: 28px;
+  --kb-shell-size: 13px;
+
+  --kb-shell-bg: oklch(16.5% 0.026 235);
+  --kb-shell-rule: oklch(28% 0.026 235);
+  --kb-shell-fg: oklch(90% 0.012 235);
+  --kb-shell-muted: oklch(60% 0.016 235);
+
+  /* The ANSI sixteen, as this terminal theme reads them. */
+  --kb-ink-plain: var(--kb-shell-fg);
+  --kb-ink-muted: oklch(58% 0.016 235);
+  --kb-ink-heading: oklch(65% 0.016 235);
+  --kb-ink-link: oklch(80% 0.11 205);
+  --kb-ink-command: oklch(76% 0.15 330);
+  --kb-ink-good: oklch(78% 0.17 150);
+  --kb-ink-warn: oklch(84% 0.14 90);
+  --kb-ink-bad: oklch(70% 0.18 25);
+
+  /* --- the browser: a window showing an ordinary light page --- */
+
+  --kb-page-bg: oklch(99% 0.002 235);
+  --kb-page-fg: oklch(26% 0.02 235);
+  --kb-page-muted: oklch(60% 0.012 235);
+  --kb-page-rule: oklch(90% 0.006 235);
+  --kb-page-well: oklch(96% 0.004 235);
+
+  /* macOS, at the sizes and colours macOS draws them. */
+  --kb-light-close: #ff5f57;
+  --kb-light-min: #febc2e;
+  --kb-light-zoom: #28c840;
+}
+
+/*
+ * The stage in the dark theme.
+ *
+ * Only the field and what sits directly on it move. The terminal keeps its
+ * own colours in both themes — it is a terminal, and a terminal that went
+ * pale would stop being one — and so does the page in the browser window.
+ */
+.dark {
+  --kb-stage-bg: oklch(26% 0.004 250);
+  --kb-stage-rule: oklch(35% 0.005 250);
+  --kb-window-shadow: 0 8px 22px oklch(0% 0 0 / 0.32);
+}

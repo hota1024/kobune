@@ -1,0 +1,353 @@
+/*
+ * The stage: the windows, the palette they print in, and where each one
+ * stands during each act.
+ *
+ * Position is CSS rather than JavaScript. The player only says which act it
+ * is — `data-act` on the scene — and every window's place in that act is a
+ * rule below, so the two layouts (wide and narrow) are a media query rather
+ * than a second code path.
+ */
+
+/* Measured, never painted. See the comment on the markup. */
+.demo .stage {
+  display: flex;
+  justify-content: center;
+  /* Without this the scene's own width becomes the page's minimum, and a
+     phone gets a document wider than its screen. The scene is clipped and
+     scaled to fit instead. */
+  min-width: 0;
+}
+
+.demo .stage-field {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  padding: 24px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--kb-stage-bg);
+}
+
+/*
+ * On a phone the field gives up its side padding: every pixel across is
+ * scene, and the terminal is already as small as it can be read at.
+ *
+ * This lives here rather than beside the rest of the narrow rules in
+ * `home.css`, because that file is imported first — a media query adds no
+ * specificity, so the rule above would win wherever it came later.
+ */
+@media (max-width: 519px) {
+  .demo .stage-field {
+    padding: 16px 0;
+    border-radius: 0;
+  }
+}
+
+.demo .scene {
+  position: relative;
+  flex: none;
+  transform-origin: top center;
+}
+
+.surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transition:
+    transform var(--kb-dur-long) var(--kb-ease-out),
+    opacity var(--kb-dur-short) var(--kb-ease-out);
+}
+
+/* One width and one height for both, so the rows and columns line up rather
+   than nearly doing. */
+.surface {
+  width: 540px;
+  height: 340px;
+}
+
+/* --- the window itself ---------------------------------------------- */
+
+.window {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--kb-stage-rule);
+  border-radius: 9px;
+  overflow: hidden;
+  /* Tight and dark. A halo around a card on a dark ground is the tell. */
+  box-shadow: var(--kb-window-shadow);
+}
+
+.window .bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--kb-2);
+  height: var(--kb-bar-h);
+  padding: 0 10px;
+}
+
+.lights {
+  display: flex;
+  gap: var(--kb-2);
+  flex: none;
+}
+
+.lights i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.lights .close {
+  background: var(--kb-light-close);
+}
+
+.lights .min {
+  background: var(--kb-light-min);
+}
+
+.lights .zoom {
+  background: var(--kb-light-zoom);
+}
+
+.window .title {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--kb-font-mono);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+/* --- what the terminal prints ---------------------------------------- */
+
+.line {
+  min-height: 1em;
+}
+
+.line:empty::before {
+  content: ' ';
+}
+
+/*
+ * One column, whatever font ends up drawing it.
+ *
+ * Box drawing and Braille are missing from several system monospaces, and a
+ * per-glyph fallback to a proportional face is what shears a panel. Pinning
+ * the cell makes that impossible: the glyph may look borrowed, but it cannot
+ * push the column to its right out of line.
+ */
+.cell {
+  display: inline-block;
+  width: 1ch;
+  text-align: center;
+}
+
+.ink-plain {
+  color: var(--kb-ink-plain);
+}
+
+.ink-muted {
+  color: var(--kb-ink-muted);
+}
+
+.ink-subject {
+  color: var(--kb-ink-plain);
+  font-weight: 700;
+}
+
+.ink-heading {
+  color: var(--kb-ink-heading);
+  font-weight: 700;
+}
+
+.ink-link {
+  color: var(--kb-ink-link);
+}
+
+.ink-command {
+  color: var(--kb-ink-command);
+}
+
+.ink-good {
+  color: var(--kb-ink-good);
+}
+
+.ink-warn {
+  color: var(--kb-ink-warn);
+}
+
+.ink-bad {
+  color: var(--kb-ink-bad);
+}
+
+/* --- where everything stands, act by act ----------------------------- */
+
+/*
+ * Two columns 24px apart, two rows 32px apart, inside a 1120 × 712 scene.
+ * The browsers take the top row and the terminals the bottom, and nothing
+ * overlaps: the windows are a picture of a desk, not a pile on one.
+ */
+.scene [data-surface='shell-a'] {
+  transform: translate(290px, 186px);
+  z-index: 3;
+}
+
+.scene [data-surface='shell-b'],
+.scene [data-surface='web-a'],
+.scene [data-surface='web-b'] {
+  opacity: 0;
+}
+
+.scene [data-surface='shell-b'] {
+  transform: translate(290px, 780px);
+  z-index: 4;
+}
+
+.scene [data-surface='web-a'] {
+  transform: translate(1180px, 186px);
+  z-index: 2;
+}
+
+.scene [data-surface='web-b'] {
+  transform: translate(1180px, 372px);
+  z-index: 2;
+}
+
+.scene[data-act='branch'] [data-surface='shell-a'] {
+  transform: translate(8px, 186px);
+  z-index: 2;
+}
+
+/* The same y as the terminal beside it: equal heights, so they line up top
+   and bottom both. */
+.scene[data-act='branch'] [data-surface='web-a'] {
+  transform: translate(572px, 186px);
+  z-index: 3;
+  opacity: 1;
+}
+
+.scene[data-act='parallel'] [data-surface='web-a'],
+.scene[data-act='preview'] [data-surface='web-a'] {
+  transform: translate(8px, 0);
+  opacity: 1;
+}
+
+.scene[data-act='parallel'] [data-surface='web-b'],
+.scene[data-act='preview'] [data-surface='web-b'] {
+  transform: translate(572px, 0);
+  opacity: 1;
+}
+
+.scene[data-act='parallel'] [data-surface='shell-a'],
+.scene[data-act='preview'] [data-surface='shell-a'] {
+  transform: translate(8px, 372px);
+  z-index: 3;
+}
+
+.scene[data-act='parallel'] [data-surface='shell-b'],
+.scene[data-act='preview'] [data-surface='shell-b'] {
+  transform: translate(572px, 372px);
+  z-index: 4;
+  opacity: 1;
+}
+
+/*
+ * The last act says nothing new. It marks the two windows the whole session
+ * was for, and leaves the terminals alone.
+ *
+ * They used to be dimmed. On a pale field that turns a dark window a washed
+ * grey rather than a quiet one, and both terminals are still running — which
+ * is the claim, so they had better stay readable.
+ */
+.scene[data-act='preview'] [data-surface^='shell'] {
+  z-index: 1;
+}
+
+.scene[data-act='preview'] [data-surface^='web'] {
+  z-index: 4;
+}
+
+.scene[data-act='preview'] [data-surface^='web'] .window {
+  border-color: var(--kb-accent);
+}
+
+/* --- narrow: the same session, stacked ------------------------------- */
+
+.scene[data-narrow='true'] {
+  --kb-shell-size: 9px;
+  --kb-bar-h: 22px;
+}
+
+.scene[data-narrow='true'] .surface {
+  width: 368px;
+  height: 270px;
+}
+
+.scene[data-narrow='true'] .lights i {
+  width: 9px;
+  height: 9px;
+}
+
+/* One column, and the same 32px between whatever is stacked. */
+.scene[data-narrow='true'] [data-surface='shell-a'] {
+  transform: translate(6px, 151px);
+}
+
+.scene[data-narrow='true'] [data-surface='shell-b'] {
+  transform: translate(6px, 640px);
+}
+
+.scene[data-narrow='true'] [data-surface='web-a'],
+.scene[data-narrow='true'] [data-surface='web-b'] {
+  transform: translate(420px, 40px);
+}
+
+.scene[data-narrow='true'][data-act='branch'] [data-surface='web-a'] {
+  transform: translate(6px, 0);
+  opacity: 1;
+}
+
+.scene[data-narrow='true'][data-act='branch'] [data-surface='shell-a'] {
+  transform: translate(6px, 302px);
+}
+
+/* Two terminals, one above the other: on a phone that is what "at the same
+   time" has to look like. The browsers wait for the last act. */
+.scene[data-narrow='true'][data-act='parallel'] [data-surface='shell-a'] {
+  transform: translate(6px, 0);
+}
+
+.scene[data-narrow='true'][data-act='parallel'] [data-surface='shell-b'] {
+  transform: translate(6px, 302px);
+  opacity: 1;
+}
+
+.scene[data-narrow='true'][data-act='parallel'] [data-surface^='web'] {
+  opacity: 0;
+}
+
+.scene[data-narrow='true'][data-act='preview'] [data-surface='web-a'] {
+  transform: translate(6px, 0);
+  opacity: 1;
+}
+
+.scene[data-narrow='true'][data-act='preview'] [data-surface='web-b'] {
+  transform: translate(6px, 302px);
+  opacity: 1;
+}
+
+.scene[data-narrow='true'][data-act='preview'] [data-surface^='shell'] {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .surface {
+    transition-duration: 150ms;
+    transition-property: opacity;
+  }
+}

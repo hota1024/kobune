@@ -15,6 +15,7 @@
     "@resvg/resvg-js": "^2.6.2",
     "vitepress": "^1.6.3",
     "vitepress-plugin-llms": "^1.13.4",
+    "vue": "^3.5.41",
     "wawoff2": "^2.0.1",
     "wrangler": "^4.120.0"
   }

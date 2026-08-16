@@ -1281,6 +1281,28 @@ kobune/
     └── DESIGN.md         #   this file. Excluded from the site
 ```
 
+### The home page plays a session rather than showing one
+
+The home page runs the demo in `docs/.vitepress/theme/`: `kobune init`, a
+worktree, a second worktree beside it, and the two previews that result. It is
+HTML and CSS. The text is the CLI's own, taken from `apps/cli/src/ui/`, and the
+panels are laid out by the same arithmetic `panel.rs` uses rather than typed
+out — a panel one column short of its own border is then impossible rather than
+merely unlikely.
+
+A recording was the obvious alternative and is the wrong one for the same
+reason `docs/README.md` asks for real output: a capture goes stale silently the
+first time a string changes, and it cannot be selected, searched, read aloud by
+a screen reader or diffed in review. What is on the page instead is text, and
+`The session as text` under the stage is that text, in the order it happened.
+
+Two costs come with it. The theme is the site's first Vue code, so `docs/`
+gains `vue` as a devDependency — the SSR pass resolves imports from `docs/`,
+where VitePress's own copy is not reachable. And the demo is drawn with the
+window chrome of an operating system, which is ordinarily a thing to avoid;
+here the address bar carries the URL the product exists to produce, and two
+windows side by side is the only way to show two branches running at once.
+
 ### Versioning the documentation
 
 VitePress has no versioning of its own, but it keys locales by directory, and
