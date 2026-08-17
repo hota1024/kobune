@@ -269,7 +269,7 @@ agent, and `kobune logs -f` with no service named all get the plain stream
 they always did. `--no-input` turns it off for the times you want to watch
 without being able to type by accident.
 
-| Key | What it does |
+| Input | What it does |
 | --- | --- |
 | Ctrl-P Ctrl-Q | Detach. The service keeps running |
 | Anything else | Goes to the program, Ctrl-C included |

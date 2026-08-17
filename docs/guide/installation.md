@@ -12,7 +12,7 @@ Nothing it does needs root, and it prints the one PATH line you may need at the
 end — in the syntax of the shell you are actually in, so a fish user is told
 `fish_add_path` rather than an `export` line that fish would reject.
 
-## What you are installing {#nightly}
+## What you are installing
 
 There are no releases. `nightly` is a build of `main`, replaced on every merge
 to it, and it is what the command above fetches.
@@ -46,7 +46,7 @@ The desktop app is optional and needs a little more; see
 ## The install script
 
 Read it before you run it — [`install.sh`](https://minato.1024.works/install.sh)
-is about 250 lines of POSIX shell and does nothing surprising. Two settings:
+is about 700 lines of POSIX shell and does nothing surprising. Two settings:
 
 | Variable | Description |
 | --- | --- |
@@ -109,9 +109,8 @@ kind of line that gets pasted into a config file and stays broken for months.
 When it cannot tell, it prints all of them and lets you pick, rather than
 guessing.
 
-It installs the `nightly` build, which is replaced on every merge to `main`.
-That is the latest build rather than a release: nothing in it carries a version,
-and what it contains changes without notice.
+It installs the `nightly` build — [what that means](#what-you-are-installing),
+at the top of this page.
 
 Rerunning it upgrades in place. So does
 [`kobune update`](#keeping-it-up-to-date), without needing the network twice or

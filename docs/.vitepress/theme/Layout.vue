@@ -29,8 +29,13 @@ const { Layout } = DefaultTheme
 
 <template>
   <Layout>
-    <!-- Every page, not only the home one: a reader arrives from a search. -->
-    <template #layout-top><SiteBanner /></template>
+    <!--
+      Every page, not only the home one: a reader arrives from a search.
+      `layout-bottom` rather than `layout-top`, so the bar's link does not
+      come before "skip to content" in the tab order — it is fixed to the top
+      of the page by CSS, not by where it sits in the document.
+    -->
+    <template #layout-bottom><SiteBanner /></template>
     <template #home-hero-info><HomeHero /></template>
     <template #home-hero-actions-after><HomeInstall /></template>
     <!-- Filling this slot is what puts VPHero into two columns. -->

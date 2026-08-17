@@ -6,10 +6,12 @@
  */
 
 /*
- * The home page's tokens, and nothing else's.
+ * The theme's tokens.
  *
- * Every one of these is `--kb-`. Nothing here redefines a `--vp-` variable,
- * so the guide, the reference and the tutorials look exactly as they did.
+ * All but one are `--kb-`, and all but one are the home page's: the guide,
+ * the reference and the tutorials look as they did. The exception is
+ * `--vp-layout-top-height` below, which every page pays, because every page
+ * carries the bar above the nav.
  *
  * The anchor hue is the hull of the logo — 235, a deep blue — and every
  * neutral carries a trace of it. The one saturated colour is the sail, which
@@ -24,12 +26,12 @@
 
 :root {
   /*
-   * The bar above the nav claims this much room.
+   * The room the bar above the nav claims.
    *
-   * The default theme offsets its sticky nav and its sidebar by this, so it
-   * has to be what `SiteBanner` actually measures — a bar taller than the
-   * number sits over the top of both, and one shorter than its text clips it.
-   * Two lines fit below 640px, where the sentence stops being one.
+   * This is the starting value, for the static render and for a reader with
+   * no JavaScript. `SiteBanner` measures itself once it is mounted and writes
+   * the real height here, so a translation that grows cannot end up clipped
+   * against a number kept by hand in another file.
    */
   --vp-layout-top-height: 36px;
 
@@ -111,9 +113,14 @@
   --kb-light-zoom: #28c840;
 }
 
+/*
+ * A second guess for the narrow static render, where the sentence takes two
+ * lines. Both numbers are replaced by the measured one as soon as the bar is
+ * mounted; they only have to be close enough that nothing jumps.
+ */
 @media (max-width: 639px) {
   :root {
-    --vp-layout-top-height: 56px;
+    --vp-layout-top-height: 52px;
   }
 }
 

@@ -131,6 +131,11 @@ for as long as the tunnel runs, and different names the next time:
 $ kobune tunnel enable --provider quick --public
 ```
 
+**Nothing can be put in front of a quick tunnel.** The hostname is
+Cloudflare's rather than yours, so there is no zone to attach an Access
+policy to: anyone with the URL reaches the environment until you stop the
+tunnel. That is the trade for needing no account.
+
 Scale-to-zero works through the tunnel too: a reviewer's first request wakes a
 stopped environment, same as a local one.
 
@@ -169,7 +174,7 @@ $ cd docs && pnpm install && pnpm dev
 
 ## Roadmap
 
-| Milestone | What landed |
+| Milestone | Scope |
 | --- | --- |
 | M0 ✅ | Docker and Apple Container runtimes, `new` / `up` / `down` / `rm` / `ls` / `status` / `url` |
 | M1 ✅ | DNS, reverse proxy, TLS, `doctor` / `setup`, launchd socket activation |

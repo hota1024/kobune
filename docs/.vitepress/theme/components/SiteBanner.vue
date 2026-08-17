@@ -7,27 +7,66 @@
  * no other way to learn that, and the documentation's own rule is to say
  * what does not work before somebody finds out.
  *
- * It is fixed, and `--vp-layout-top-height` is set to what it measures.
+ * **It is fixed, and it reports its own height.** The default theme reserves
+ * `--vp-layout-top-height` above the page — `VPContent` takes it as a top
+ * margin at every width, and `VPNav` adds it to `top` once it goes
+ * `position: fixed` at 960px. A bar left in the normal flow is counted twice
+ * below 960 and leaves an empty band above the nav above it, so it has to
+ * come out of the flow; and a bar whose height is a constant somewhere else
+ * clips its own text the first time a translation grows. Measuring is what
+ * keeps the two the same fact.
  *
- * That pairing is the theme's contract, not a choice: `VPNav` is
- * `position: fixed; top: var(--vp-layout-top-height)`, so the room above the
- * nav is reserved whether or not anything is still in it. Left in the normal
- * flow the bar scrolls away and leaves that reserved strip empty, which is a
- * band of nothing sitting above the nav for the rest of the page.
+ * **It renders from `layout-bottom`, not `layout-top`.** The default layout
+ * emits `layout-top` before `VPSkipLink`, which would put this link ahead of
+ * *skip to content* in the tab order on every page — the one thing that link
+ * exists to be in front of. `position: fixed` puts it back at the top of the
+ * page without putting it back at the top of the document.
  */
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useData } from 'vitepress'
 import { copyFor } from '../copy'
 
-const { lang } = useData()
+const { lang, page } = useData()
 const banner = computed(() => copyFor(lang.value).banner)
+
+/**
+ * The locale and version this page lives under — `''`, `/ja`, `/v0.1`,
+ * `/v0.1/ja` — taken from the path the way `config.ts` builds every other
+ * link. A hardcoded `/guide/installation` would eject a reader out of a
+ * snapshot and into the current documentation.
+ */
+const base = computed(() => {
+  const [, prefix] = /^((?:v\d+(?:\.\d+)*\/)?(?:ja\/)?)/.exec(page.value.relativePath) ?? []
+  return prefix ? `/${prefix.slice(0, -1)}` : ''
+})
+
+/** A snapshot is a release. Saying "nothing is released" on one is a lie. */
+const frozen = computed(() => /^v\d/.test(page.value.relativePath))
+
+const el = ref<HTMLElement | null>(null)
+let watching: ResizeObserver | undefined
+
+onMounted(() => {
+  if (!el.value) return
+  const report = () => {
+    document.documentElement.style.setProperty('--vp-layout-top-height', `${el.value!.offsetHeight}px`)
+  }
+  report()
+  watching = new ResizeObserver(report)
+  watching.observe(el.value)
+})
+
+onUnmounted(() => {
+  watching?.disconnect()
+  document.documentElement.style.removeProperty('--vp-layout-top-height')
+})
 </script>
 
 <template>
-  <div class="kb-banner">
+  <div v-if="!frozen" ref="el" class="kb-banner">
     <p>
       {{ banner.text }}
-      <a :href="banner.link">{{ banner.linkText }}</a>
+      <a :href="`${base}/guide/installation#${banner.anchor}`">{{ banner.linkText }}</a>
     </p>
   </div>
 </template>
@@ -42,8 +81,7 @@ const banner = computed(() => copyFor(lang.value).banner)
   display: flex;
   align-items: center;
   justify-content: center;
-  height: var(--vp-layout-top-height);
-  padding: 0 24px;
+  padding: 9px 24px;
   border-bottom: 1px solid var(--vp-c-divider);
   background: var(--vp-c-bg-alt);
 }
@@ -68,11 +106,10 @@ const banner = computed(() => copyFor(lang.value).banner)
   border-bottom-color: var(--kb-accent);
 }
 
-/* The sentence stops being one line here; `--vp-layout-top-height` makes
-   room for the second, and the gutter narrows to put off the wrap. */
+/* Narrow enough that the sentence wraps; the height follows on its own. */
 @media (max-width: 639px) {
   .kb-banner {
-    padding: 0 16px;
+    padding: 8px 16px;
   }
 
   .kb-banner p {

@@ -52,9 +52,9 @@ If you cannot run it, leave the old block alone rather than composing a
 plausible one.
 
 **Say what does not work.** Firecracker is planned and not usable yet, and
-nothing has been released, and a reader is better served knowing that than
+nothing has been released — a reader is better served knowing that than
 discovering it. `build` and `cmd:` health checks were on this list until they
-shipped — check before repeating it.
+shipped; check before repeating it.
 
 ## Writing a page
 
