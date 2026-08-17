@@ -12,9 +12,29 @@ Nothing it does needs root, and it prints the one PATH line you may need at the
 end — in the syntax of the shell you are actually in, so a fish user is told
 `fish_add_path` rather than an `export` line that fish would reject.
 
+## What you are installing
+
+There are no releases. `nightly` is a build of `main`, replaced on every merge
+to it, and it is what the command above fetches.
+
+`kobune --version` prints the crate version and the commit it came from —
+`0.1.0 (a1b2c3d)`. The commit is the half that identifies a build. The number
+in front of it has never been released and does not move when something
+changes.
+
+So it is not stable in the sense the word usually carries. A flag can be
+renamed and a default can change, with nothing to read afterwards but the
+commit that did it.
+[CHANGELOG.md](https://github.com/hota1024/kobune/blob/main/CHANGELOG.md) is
+there for the moment that stops being true.
+
+None of which means unfinished. Every milestone but Firecracker has landed,
+and the environments the rest of this page sets up work. What has not happened
+yet is a version that holds still.
+
 ## Requirements
 
-| | |
+| Requirement | Notes |
 | --- | --- |
 | **A container runtime** | Docker, OrbStack or colima — or Apple Container on macOS 26+ |
 | **macOS** | Fully supported. Linux works for the core, minus launchd socket activation |
@@ -26,9 +46,9 @@ The desktop app is optional and needs a little more; see
 ## The install script
 
 Read it before you run it — [`install.sh`](https://minato.1024.works/install.sh)
-is about 250 lines of POSIX shell and does nothing surprising. Two settings:
+is about 700 lines of POSIX shell and does nothing surprising. Two settings:
 
-| | |
+| Variable | Description |
 | --- | --- |
 | `KOBUNE_INSTALL_DIR` | where the binaries go, `~/.local/bin` by default |
 | `KOBUNE_NO_COMPLETIONS` | set to anything to skip the completion scripts |
@@ -89,9 +109,8 @@ kind of line that gets pasted into a config file and stays broken for months.
 When it cannot tell, it prints all of them and lets you pick, rather than
 guessing.
 
-It installs the `nightly` build, which is replaced on every merge to `main`.
-That is the latest build rather than a release: nothing in it carries a version,
-and what it contains changes without notice.
+It installs the `nightly` build — [what that means](#what-you-are-installing),
+at the top of this page.
 
 Rerunning it upgrades in place. So does
 [`kobune update`](#keeping-it-up-to-date), without needing the network twice or
@@ -101,7 +120,7 @@ a shell pipeline.
 
 The same archives the script downloads:
 
-| | |
+| Machine | Archive |
 | --- | --- |
 | Apple Silicon | `kobune-aarch64-apple-darwin.tar.gz` |
 | Intel Mac | `kobune-x86_64-apple-darwin.tar.gz` |

@@ -25,7 +25,7 @@ docs/
   .vitepress/
     config.ts         nav, sidebar and locales, generated from one page list
     versions.json     which versions have been snapshotted
-    theme/            the home page. The default theme is untouched elsewhere
+    theme/            the home page, and the bar every page carries
   scripts/og.mjs      draws the social card
   public/             git-ignored; filled by `pnpm sync`, see below
   DESIGN.md           the design record. Not part of the site
@@ -56,8 +56,16 @@ happens to have and make a runner's output differ from a laptop's.
 ## The home page
 
 `.vitepress/theme/` extends the default theme and fills five of the home
-page's slots. Nothing outside `.VPHome` is styled, so every other page is
-VitePress's as it was.
+page's slots. Everything it styles is inside `.VPHome`, so a documentation
+page looks as it did.
+
+One thing is not the home page's: `SiteBanner`, in `layout-bottom`, is the
+bar that says this is a nightly build, and it is on every page. It is fixed
+to the top rather than sitting there in the document, so that its link does
+not come before *skip to content* in the tab order, and it measures itself
+into `--vp-layout-top-height` — the room the default theme reserves above
+`VPContent` and `VPNav`. That variable is the only `--vp-` one this theme
+sets.
 
 Its centre is a session that plays: `kobune init`, a worktree, a second one
 beside it, and the two previews. Two rules govern it.
@@ -69,10 +77,11 @@ panels are laid out from their content by the same arithmetic `panel.rs` uses,
 so a panel cannot come out one column short of its own border.
 
 **The words around it are translated, and no checker sees them.**
-`theme/demo/copy.ts` holds the captions in both languages, shaped like `TEXT`
-in `config.ts`; the rest sits in `hero:`, `specs:` and `notes:` in the two
-`index.md` files. `scripts/check.mjs` skips frontmatter and does not read
-TypeScript, so both are held to the house style by hand.
+`theme/copy.ts` holds everything the theme says in both languages — the bar
+above the nav and the demo's captions — shaped like `TEXT` in `config.ts`. The
+rest sits in `hero:`, `specs:` and `notes:` in the two `index.md` files.
+`scripts/check.mjs` skips frontmatter and does not read TypeScript, so both
+are held to the house style by hand.
 
 ## What agents read
 
@@ -95,6 +104,11 @@ generated files are the ones VitePress wrote — extension-less, so following
 one lands on the HTML page. And the guide index is written to `/guide.md`
 rather than `/guide/index.md`, which leaves its own `./installation` links
 resolving a directory too high.
+
+A fourth thing is not the plugin's: a heading given an explicit id with
+`{#…}` keeps the syntax in the copied Markdown, and `scripts/check.mjs`
+cannot resolve a link to one either. Both are reasons to let a heading make
+its own anchor.
 
 Every English page also carries a hidden `Are you an LLM? …` div pointing at
 its `.md`. It stays out of the local search index. `injectLLMHint: false`
@@ -177,6 +191,7 @@ deployment that built it.
   page has usually landed on it from a search.
 - **Show real output.** Every console block here was produced by running the
   command, not typed out from memory.
-- **Say what does not work.** `build`, `cmd:` health checks and Firecracker
-  are all unimplemented, and a reader is better served knowing that than
-  discovering it.
+- **Say what does not work.** Firecracker is planned and not usable yet, and
+  nothing has been released — a reader is better served knowing that than
+  discovering it. `build` and `cmd:` health checks were on this list until
+  they shipped; check before repeating it.

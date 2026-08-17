@@ -2,7 +2,7 @@
 
 Every command accepts `--json` and `-w, --workspace`.
 
-| Flag | |
+| Flag | Description |
 | --- | --- |
 | `--json` | Print the response as JSON. Errors go to stdout too, so an agent watches one stream |
 | `-w, --workspace <name>` | Which workspace to act on. Inferred from the current directory when omitted |
@@ -18,7 +18,7 @@ Piped, redirected or captured, the same views print as plain text: no frame,
 no colour, no cursor movement, and nothing wrapped or truncated however long a
 URL is. So `kobune status | grep web` reads the same as it always did.
 
-| | |
+| Setting or command | How it prints |
 | --- | --- |
 | `--json` | Never decorated, whatever it is printing to |
 | `NO_COLOR` | Set to anything: keeps the layout, drops the colour |
@@ -92,7 +92,7 @@ $ kobune setup --yes       # every step, without asking
 $ kobune setup --dry-run   # print the commands, run none of them
 ```
 
-| Flag | |
+| Flag | Description |
 | --- | --- |
 | `-y`, `--yes` | Run every step without asking |
 | `--dry-run` | Print the commands and run none of them |
@@ -124,7 +124,7 @@ $ kobune new feature/x --path ../elsewhere
 $ kobune new feature/x --no-start
 ```
 
-| Flag | |
+| Flag | Description |
 | --- | --- |
 | `--base <ref>` | What to branch from, for a new branch |
 | `--path <dir>` | Where to put the worktree. Default `../{repo}.wt/{branch}` |
@@ -188,7 +188,7 @@ $ kobune rm -w feature-auth -f   # even with uncommitted changes
 
 Starts services, and whatever they depend on. Everything when none are named.
 
-| Flag | |
+| Flag | Description |
 | --- | --- |
 | `--build` | Rebuild images even when nothing Kobune can see has changed |
 
@@ -247,7 +247,7 @@ $ kobune logs web -f
 $ kobune logs -f dev          # a service with `tty`: type at it
 ```
 
-| Flag | |
+| Flag | Description |
 | --- | --- |
 | `-f, --follow` | Keep streaming |
 | `-n, --tail <n>` | Lines from the end |
@@ -269,7 +269,7 @@ agent, and `kobune logs -f` with no service named all get the plain stream
 they always did. `--no-input` turns it off for the times you want to watch
 without being able to type by accident.
 
-| | |
+| Input | What it does |
 | --- | --- |
 | Ctrl-P Ctrl-Q | Detach. The service keeps running |
 | Anything else | Goes to the program, Ctrl-C included |
@@ -563,7 +563,7 @@ $ kobune uninstall
 Remove all of this? [y/N]
 ```
 
-| Flag | |
+| Flag | Description |
 | --- | --- |
 | `-y, --yes` | Go ahead without asking. Required where there is no terminal |
 | `--dry-run` | Print the list and remove nothing |
@@ -609,7 +609,7 @@ expects it; the install script does this already.
 
 ## Environment variables that configure Kobune
 
-| | |
+| Variable | Description |
 | --- | --- |
 | `KOBUNE_HOME` | Where state, logs, the socket and the CA live. Default `~/.kobune` |
 | `KOBUNE_HTTP_PORT` | Proxy HTTP port. Default 80, falling back to 18080. A port named here is used as given |

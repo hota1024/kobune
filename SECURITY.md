@@ -23,7 +23,7 @@ You will be credited in the advisory unless you would rather not be.
 
 ## What is supported
 
-| | |
+| Build | Support |
 | --- | --- |
 | `nightly` | The rolling build of `main`. **The only thing that receives fixes.** |
 | Anything older | Not supported. There are no releases yet |
