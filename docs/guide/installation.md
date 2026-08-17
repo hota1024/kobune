@@ -34,7 +34,7 @@ yet is a version that holds still.
 
 ## Requirements
 
-| | |
+| Requirement | Notes |
 | --- | --- |
 | **A container runtime** | Docker, OrbStack or colima — or Apple Container on macOS 26+ |
 | **macOS** | Fully supported. Linux works for the core, minus launchd socket activation |

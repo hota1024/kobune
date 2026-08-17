@@ -33,7 +33,7 @@ fish が受け付けない `export` 行を渡されることはありません�
 
 ## 必要なもの
 
-| | |
+| 必要なもの | 補足 |
 | --- | --- |
 | **コンテナランタイム** | Docker / OrbStack / colima のいずれか。または macOS 26 以降の Apple Container |
 | **macOS** | 全機能に対応しています。Linux でも中核機能は動作しますが、launchd socket activation は利用できません |
