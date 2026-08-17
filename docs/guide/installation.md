@@ -48,7 +48,7 @@ The desktop app is optional and needs a little more; see
 Read it before you run it — [`install.sh`](https://minato.1024.works/install.sh)
 is about 250 lines of POSIX shell and does nothing surprising. Two settings:
 
-| | |
+| Variable | Description |
 | --- | --- |
 | `KOBUNE_INSTALL_DIR` | where the binaries go, `~/.local/bin` by default |
 | `KOBUNE_NO_COMPLETIONS` | set to anything to skip the completion scripts |
@@ -121,7 +121,7 @@ a shell pipeline.
 
 The same archives the script downloads:
 
-| | |
+| Machine | Archive |
 | --- | --- |
 | Apple Silicon | `kobune-aarch64-apple-darwin.tar.gz` |
 | Intel Mac | `kobune-x86_64-apple-darwin.tar.gz` |

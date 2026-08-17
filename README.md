@@ -169,7 +169,7 @@ $ cd docs && pnpm install && pnpm dev
 
 ## Roadmap
 
-| | |
+| Milestone | What landed |
 | --- | --- |
 | M0 ✅ | Docker and Apple Container runtimes, `new` / `up` / `down` / `rm` / `ls` / `status` / `url` |
 | M1 ✅ | DNS, reverse proxy, TLS, `doctor` / `setup`, launchd socket activation |
@@ -247,7 +247,7 @@ $ shasum -a 256 -c kobune-aarch64-apple-darwin.tar.gz.sha256
 $ tar xzf kobune-aarch64-apple-darwin.tar.gz
 ```
 
-| | |
+| Machine | Archive |
 | --- | --- |
 | Apple Silicon | `kobune-aarch64-apple-darwin.tar.gz` |
 | Intel Mac | `kobune-x86_64-apple-darwin.tar.gz` |

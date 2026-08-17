@@ -47,7 +47,7 @@ fish が受け付けない `export` 行を渡されることはありません�
 実行する前に中身を読んでください。[`install.sh`](https://minato.1024.works/install.sh)
 は POSIX シェルで約 260 行、意外なことは何もしていません。設定は 2 つです。
 
-| | |
+| 変数 | 説明 |
 | --- | --- |
 | `KOBUNE_INSTALL_DIR` | バイナリの配置先。既定は `~/.local/bin` |
 | `KOBUNE_NO_COMPLETIONS` | 何か値を設定すると補完スクリプトを書き込みません |
@@ -118,7 +118,7 @@ fish で `export PATH` を渡されると、そのまま設定ファイルに貼
 
 スクリプトが取得するのと同じアーカイブです。
 
-| | |
+| マシン | アーカイブ |
 | --- | --- |
 | Apple Silicon | `kobune-aarch64-apple-darwin.tar.gz` |
 | Intel Mac | `kobune-x86_64-apple-darwin.tar.gz` |
