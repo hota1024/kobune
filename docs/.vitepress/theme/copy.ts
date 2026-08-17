@@ -32,7 +32,7 @@ export const COPY = {
   en: {
     banner: {
       text: 'Nightly build — not a release, and not stable yet.',
-      link: '/guide/installation',
+      link: '/guide/installation#nightly',
       linkText: 'What that means',
     },
     heading: 'A session, from nothing to two previews',
@@ -50,7 +50,7 @@ export const COPY = {
   ja: {
     banner: {
       text: 'nightly ビルドです。リリース版ではなく、まだ安定していません。',
-      link: '/ja/guide/installation',
+      link: '/ja/guide/installation#nightly',
       linkText: '詳しく',
     },
     heading: '何もない状態から 2 つのプレビューまで',

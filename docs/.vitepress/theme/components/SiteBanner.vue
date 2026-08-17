@@ -7,9 +7,13 @@
  * no other way to learn that, and the documentation's own rule is to say
  * what does not work before somebody finds out.
  *
- * It has a fixed height, and `--vp-layout-top-height` is set to match. The
- * default theme offsets its sticky nav and sidebar by that variable, so a
- * bar that is taller than it says sits over the top of them.
+ * It is fixed, and `--vp-layout-top-height` is set to what it measures.
+ *
+ * That pairing is the theme's contract, not a choice: `VPNav` is
+ * `position: fixed; top: var(--vp-layout-top-height)`, so the room above the
+ * nav is reserved whether or not anything is still in it. Left in the normal
+ * flow the bar scrolls away and leaves that reserved strip empty, which is a
+ * band of nothing sitting above the nav for the rest of the page.
  */
 import { computed } from 'vue'
 import { useData } from 'vitepress'
@@ -30,7 +34,10 @@ const banner = computed(() => copyFor(lang.value).banner)
 
 <style scoped>
 .kb-banner {
-  position: relative;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: var(--vp-z-index-layout-top);
   display: flex;
   align-items: center;
