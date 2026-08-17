@@ -53,7 +53,7 @@ yaml-rust2 = "0.11"
 indexmap = { version = "2", features = ["serde"] }
 # Terminal traffic is bytes, and the wire format is one JSON document per
 # line. Base64 is what carries the one inside the other.
-base64 = "0.22"
+base64 = "0.23"
 humantime-serde = "1"
 humantime = "2"
 
