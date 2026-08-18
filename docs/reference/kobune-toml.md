@@ -1,7 +1,7 @@
 # `kobune.toml`
 
 Lives at the repository root and is committed. Every worktree reads the same
-one.
+one, and two other files may be merged over it — see [Layers](#layers).
 
 ```toml
 [project]
@@ -27,6 +27,90 @@ scope = "project"
 expose = false
 volumes = ["pgdata:/var/lib/postgresql/data"]
 ```
+
+## Layers
+
+Three files are read in turn and merged, later ones winning.
+
+| Layer | File | Committed | Holds |
+| --- | --- | --- | --- |
+| **global** | `~/.kobune/config.toml` | No — your machine | What is true of this computer |
+| **project** | `kobune.toml` at the repository root | Yes | The project itself |
+| **local** | `kobune.local.toml` beside it | No — gitignored | This clone alone |
+
+Only `kobune.toml` is required. The other two are missing on most machines, and
+that is not a failure.
+
+**Tables merge, everything else replaces.** A layer can name
+`[services.web] port` without restating the image beside it. An array is
+replaced whole rather than appended to, because appending would leave no way to
+take an entry out of `volumes`.
+
+### The machine layer
+
+This is what "one machine runs Docker, another runs Apple Container" is for.
+
+```toml
+# ~/.kobune/config.toml
+[runtime]
+default = "apple"
+```
+
+Written once, it covers every project on that machine, and no project's
+`kobune.toml` has to know about it. A project that names a runtime of its own
+still wins, since the committed file is the more specific of the two.
+
+### The local layer
+
+**`kobune.local.toml` belongs to the clone, not to the worktree.** It sits
+beside the main worktree's `kobune.toml`, and every worktree of that checkout
+reads that one file. `git worktree add` carries only tracked files, so a copy
+inside a worktree would never appear there in the first place.
+
+This is where the layers here part company with the
+[environment's](../guide/environment-variables), whose innermost layer is
+per-worktree. Worktrees of one repository share a container runtime whether
+they like it or not, so there is nothing here for a worktree to differ about.
+
+`kobune init` adds it to `.gitignore`, along with `.kobune/env.local`, since
+either one committed defeats its own purpose. On a repository that predates
+this, add them by hand:
+
+```
+kobune.local.toml
+.kobune/env.local
+```
+
+Nothing is appended where git already covers the name — through a pattern of
+yours, through `.git/info/exclude`, or through your global ignore file — so
+running `kobune init --force` again does not grow the block.
+
+### Where a value came from
+
+The merged result is in no file you can open, so the layers are worth being
+able to see:
+
+```console
+$ kobune config show
+╭ config ──────────────────────────────────────────╮
+│ LAYER    FILE                                    │
+│ global   ~/.kobune/config.toml          read     │
+│ project  ~/src/myapp/kobune.toml        read     │
+│ local    ~/src/myapp/kobune.local.toml  read     │
+│                                                  │
+│ keys one layer took from another                 │
+│ KEY                LAYER  VALUE  OVER            │
+│ runtime.default    local  apple  global, project │
+│ services.web.port  local  4000   project         │
+╰──────────────────────────────────────────────────╯
+```
+
+See [`kobune config show`](./cli#configuration).
+
+Validation happens once, against the merge: a layer that sets `expose = true`
+is fine on its own and wrong beside a layer that took the port away. Such a
+message names the files it merged, since the line it describes appears in none
+of them.
 
 ## `[project]`
 
@@ -67,7 +151,8 @@ starts.
 | --- | --- | --- | --- |
 | `default` | string | `"docker"` | `"docker"` or `"apple"` |
 
-See [Runtimes](../guide/runtimes).
+See [Runtimes](../guide/runtimes). Where the answer differs from machine to
+machine, put it in [the machine layer](#the-machine-layer) rather than here.
 
 ## `[services.<name>]`
 

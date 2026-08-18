@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use kobune_core::config::CONFIG_FILE;
-use kobune_core::{Repository, naming};
+use kobune_core::config::{CONFIG_FILE, LOCAL_CONFIG_FILE};
+use kobune_core::{Repository, env, git, naming};
 
 #[derive(Debug)]
 pub struct InitOutcome {
@@ -22,6 +22,133 @@ pub struct InitOutcome {
     pub dropped: Vec<(String, String)>,
     /// Files compose read environments from, now `carry`.
     pub carried: Vec<String>,
+    /// What became of `.gitignore`.
+    pub ignore: Ignore,
+}
+
+/// What `init` did about the files that must not be committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ignore {
+    /// Not a git repository, so there is nothing to ignore anything.
+    NoRepository,
+    /// Git's rules already cover every entry, by whatever route.
+    AlreadyCovered,
+    /// These were written to `path`, which was created if `created`.
+    Added {
+        path: PathBuf,
+        entries: Vec<String>,
+        created: bool,
+    },
+    /// The file could not be written.
+    ///
+    /// **Reported, never fatal.** The configuration file is what was
+    /// asked for and it is already on disk; failing the command over the
+    /// convenience beside it would be the wrong way round.
+    Failed(String),
+}
+
+/// The files Kobune writes or reads that belong to one machine.
+///
+/// **`.kobune/env` is deliberately absent.** The project's environment
+/// layer is meant to be committed, so ignoring the directory would take it
+/// along with the two files that should not be.
+///
+/// Joined with `/` rather than through `Path`: a gitignore pattern is
+/// matched against a path git spells with forward slashes, on every
+/// platform.
+fn never_commit() -> [String; 2] {
+    [
+        LOCAL_CONFIG_FILE.to_string(),
+        format!("{}/{}", env::ENV_DIR, env::WORKSPACE_ENV_FILE),
+    ]
+}
+
+/// The line that says why the block underneath is there.
+const IGNORE_HEADING: &str = "# kobune: yours, not the project's";
+
+/// Adds ignore rules for what must not be committed.
+///
+/// Only what git does not already cover, so running `init --force` twice
+/// does not append the block twice, and a repository that ignores
+/// `*.local.toml` already is left alone.
+fn ensure_ignored(root: &Path) -> Ignore {
+    let path = root.join(".gitignore");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Ignore::Failed(err.to_string()),
+    };
+
+    let written = existing.as_deref().unwrap_or_default();
+
+    let missing: Vec<String> = never_commit()
+        .into_iter()
+        .filter(|entry| !git::is_ignored(root, entry) && !is_unignored(written, entry))
+        .collect();
+
+    if missing.is_empty() {
+        return Ignore::AlreadyCovered;
+    }
+
+    let created = existing.is_none();
+    let mut out = existing.unwrap_or_default();
+
+    // A file somebody wrote by hand is being appended to, so leave its
+    // last line ending the way it did and put a blank line between their
+    // block and this one.
+    if !out.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    out.push_str(IGNORE_HEADING);
+    out.push('\n');
+    for entry in &missing {
+        out.push_str(entry);
+        out.push('\n');
+    }
+
+    match std::fs::write(&path, out) {
+        Ok(()) => Ignore::Added {
+            path,
+            entries: missing,
+            created,
+        },
+        Err(err) => Ignore::Failed(err.to_string()),
+    }
+}
+
+/// Whether `.gitignore` deliberately un-ignores `entry`.
+///
+/// **"Is it ignored" is not "is there no rule about it".** A repository
+/// ending in `!kobune.local.toml` has somebody's decision in it — a shared
+/// override they chose to commit, or one they are debugging — and
+/// `check-ignore` reports the path as not ignored, which is exactly what
+/// it should say. Appending the plain entry below that line would reverse
+/// the decision silently, because the last matching pattern wins.
+///
+/// Only the exact name, and only in this file. A negation by pattern is
+/// somebody being clever, and guessing at what a pattern meant is worse
+/// than leaving their file alone.
+fn is_unignored(gitignore: &str, entry: &str) -> bool {
+    gitignore
+        .lines()
+        .map(str::trim)
+        .any(|line| line.strip_prefix('!').is_some_and(|rest| rest == entry))
+}
+
+/// Where the configuration goes, and whether git is there at all.
+///
+/// Outside a repository the current directory still gets a `kobune.toml` —
+/// running `kobune init` in a fresh directory is a reasonable thing to do —
+/// but there is nothing for a `.gitignore` to be for.
+fn destination(cwd: &Path) -> (PathBuf, bool) {
+    match Repository::discover(cwd) {
+        Ok(repo) => (repo.main_root, true),
+        Err(_) => (cwd.to_path_buf(), false),
+    }
 }
 
 /// Converts a compose file rather than writing the template.
@@ -33,10 +160,7 @@ pub fn from_compose(
     explicit: Option<&Path>,
     force: bool,
 ) -> anyhow::Result<InitOutcome> {
-    let root = match Repository::discover(cwd) {
-        Ok(repo) => repo.main_root,
-        Err(_) => cwd.to_path_buf(),
-    };
+    let (root, in_repository) = destination(cwd);
 
     let path = match explicit {
         Some(named) => {
@@ -89,16 +213,22 @@ pub fn from_compose(
             .map(|entry| (entry.service, entry.key))
             .collect(),
         carried: converted.carried,
+        ignore: ignore_for(&root, in_repository),
     })
+}
+
+/// The ignore step, where there is a repository for it to mean anything.
+fn ignore_for(root: &Path, in_repository: bool) -> Ignore {
+    match in_repository {
+        true => ensure_ignored(root),
+        false => Ignore::NoRepository,
+    }
 }
 
 pub fn run(cwd: &Path, force: bool) -> anyhow::Result<InitOutcome> {
     // It goes at the repository root. Run from inside a worktree, it
     // still lands in the main one.
-    let root = match Repository::discover(cwd) {
-        Ok(repo) => repo.main_root,
-        Err(_) => cwd.to_path_buf(),
-    };
+    let (root, in_repository) = destination(cwd);
 
     let path = root.join(CONFIG_FILE);
     if path.exists() && !force {
@@ -117,6 +247,7 @@ pub fn run(cwd: &Path, force: bool) -> anyhow::Result<InitOutcome> {
         from: None,
         dropped: Vec::new(),
         carried: Vec::new(),
+        ignore: ignore_for(&root, in_repository),
     })
 }
 
@@ -236,5 +367,178 @@ mod tests {
         assert!(err.to_string().contains("--force"), "got: {err}");
 
         run(dir.path(), true).expect("--force overwrites");
+    }
+
+    /// A repository with nothing in it, which is what `init` meets.
+    ///
+    /// **The developer's own ignore rules are switched off in it.**
+    /// `ensure_ignored` asks `git check-ignore`, which consults
+    /// `core.excludesFile` — and `*.local.toml` or `*.local.*` is a common
+    /// entry in a personal global ignore. Without this the fixture is
+    /// whatever machine it runs on, and these tests fail for exactly the
+    /// people who keep a tidy one. Repository config outranks both the
+    /// global and system files, so `/dev/null` here is the whole of it.
+    fn repository() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .status()
+                .expect("git runs")
+                .success();
+            assert!(ok, "git {}", args.join(" "));
+        };
+
+        git(&["init", "--quiet"]);
+        git(&["config", "core.excludesFile", "/dev/null"]);
+
+        dir
+    }
+
+    fn gitignore(root: &Path) -> String {
+        std::fs::read_to_string(root.join(".gitignore")).expect("was written")
+    }
+
+    #[test]
+    fn writes_a_gitignore_for_what_must_not_be_committed() {
+        let dir = repository();
+        let outcome = run(dir.path(), false).expect("writes it");
+
+        let Ignore::Added {
+            entries, created, ..
+        } = &outcome.ignore
+        else {
+            panic!("expected an addition, got {:?}", outcome.ignore);
+        };
+
+        assert!(created, "there was no .gitignore to start with");
+        assert_eq!(entries, &["kobune.local.toml", ".kobune/env.local"]);
+
+        let text = gitignore(dir.path());
+        assert!(text.contains("kobune.local.toml"), "got:\n{text}");
+        assert!(text.contains(".kobune/env.local"), "got:\n{text}");
+        assert!(
+            !text.contains("\n.kobune/env\n"),
+            "the project layer is committed, so it must survive:\n{text}"
+        );
+    }
+
+    #[test]
+    fn appends_without_disturbing_what_was_there() {
+        let dir = repository();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules\n/dist\n").expect("writes");
+
+        run(dir.path(), false).expect("writes it");
+
+        let text = gitignore(dir.path());
+        assert!(text.starts_with("node_modules\n/dist\n"), "got:\n{text}");
+        assert!(text.contains("kobune.local.toml"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_file_with_no_trailing_newline_is_still_appended_to() {
+        // Without the fix-up, the entry would land on the end of somebody
+        // else's line and ignore neither of them.
+        let dir = repository();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules").expect("writes");
+
+        run(dir.path(), false).expect("writes it");
+
+        let text = gitignore(dir.path());
+        assert!(text.contains("\nnode_modules\n") || text.starts_with("node_modules\n"));
+        assert!(
+            text.lines().any(|line| line == "kobune.local.toml"),
+            "the entry is a line of its own:\n{text}"
+        );
+    }
+
+    #[test]
+    fn running_it_twice_does_not_append_twice() {
+        // `init --force` is a thing people run, and a block that grew
+        // every time would be found later, in a diff, and wondered at.
+        let dir = repository();
+
+        run(dir.path(), false).expect("writes it");
+        let second = run(dir.path(), true).expect("--force overwrites");
+
+        assert_eq!(second.ignore, Ignore::AlreadyCovered);
+        assert_eq!(
+            gitignore(dir.path()).matches("kobune.local.toml").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_pattern_that_already_covers_it_is_left_alone() {
+        // Asked of git rather than matched by hand, so a rule that covers
+        // the name some other way counts.
+        let dir = repository();
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            "*.local.toml\n.kobune/env.local\n",
+        )
+        .expect("writes");
+
+        let outcome = run(dir.path(), false).expect("writes it");
+
+        assert_eq!(outcome.ignore, Ignore::AlreadyCovered);
+        assert_eq!(gitignore(dir.path()), "*.local.toml\n.kobune/env.local\n");
+    }
+
+    #[test]
+    fn only_what_is_missing_is_added() {
+        let dir = repository();
+        std::fs::write(dir.path().join(".gitignore"), ".kobune/env.local\n").expect("writes");
+
+        let outcome = run(dir.path(), false).expect("writes it");
+
+        let Ignore::Added { entries, .. } = &outcome.ignore else {
+            panic!("expected an addition, got {:?}", outcome.ignore);
+        };
+        assert_eq!(entries, &["kobune.local.toml"]);
+        assert_eq!(
+            gitignore(dir.path()).matches(".kobune/env.local").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_deliberate_negation_is_not_reversed() {
+        // `!kobune.local.toml` is somebody's decision. Appending the plain
+        // entry below it would undo that silently, since the last matching
+        // pattern wins — and `git status` would stop showing them a file
+        // they meant to track.
+        let dir = repository();
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            "node_modules\n!kobune.local.toml\n",
+        )
+        .expect("writes");
+
+        let outcome = run(dir.path(), false).expect("writes it");
+
+        // The other entry is still added; only the negated one is left be.
+        let Ignore::Added { entries, .. } = &outcome.ignore else {
+            panic!("expected an addition, got {:?}", outcome.ignore);
+        };
+        assert_eq!(entries, &[".kobune/env.local"]);
+
+        let text = gitignore(dir.path());
+        assert!(
+            !text.lines().any(|line| line == "kobune.local.toml"),
+            "the negation stands:\n{text}"
+        );
+    }
+
+    #[test]
+    fn outside_a_repository_there_is_nothing_to_ignore() {
+        // `kobune init` in a fresh directory still writes the config.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outcome = run(dir.path(), false).expect("writes it");
+
+        assert_eq!(outcome.ignore, Ignore::NoRepository);
+        assert!(!dir.path().join(".gitignore").exists());
     }
 }

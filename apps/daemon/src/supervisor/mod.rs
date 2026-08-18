@@ -40,6 +40,7 @@ use crate::tunnel::TunnelHandle;
 use self::environment::env_values;
 use self::lifecycle::{settle_readiness, validate_service_names};
 
+mod configuration;
 mod diagnostics;
 mod environment;
 mod idling;
@@ -208,6 +209,7 @@ impl Supervisor {
                 value,
             } => self.env_set(target, scope, key, value).await,
             Request::EnvUnset { target, scope, key } => self.env_unset(target, scope, key).await,
+            Request::ConfigShow { target, all } => self.config_show(target, all).await,
             Request::TunnelEnable {
                 target,
                 provider,
@@ -249,7 +251,7 @@ impl Supervisor {
 
         self.store
             .update(|state| {
-                let context = resolve::resolve_project(target, state)?;
+                let context = resolve::resolve_project(target, state, self.paths.root())?;
                 context.resolve_workspace(target, state)
             })
             .map_err(ApiError::from)
@@ -261,7 +263,7 @@ impl Supervisor {
         let _guard = self.state_lock.lock().await;
 
         self.store
-            .update(|state| resolve::resolve_project(target, state))
+            .update(|state| resolve::resolve_project(target, state, self.paths.root()))
             .map_err(ApiError::from)
     }
 
@@ -653,20 +655,25 @@ impl Supervisor {
         project: &str,
         workspace: &str,
     ) -> Result<(KobuneConfig, WorkspaceRecord), ApiError> {
-        let record = {
+        // The project's root comes out of the same read as the workspace:
+        // the configuration is searched from the worktree, but its
+        // gitignored layer is anchored on the main worktree, which
+        // `git worktree add` never copies into one.
+        let (root, record) = {
             let _guard = self.state_lock.lock().await;
             let state = self.store.load().map_err(ApiError::from)?;
 
             state
                 .project(project)
-                .and_then(|p| p.workspace(workspace))
-                .cloned()
+                .and_then(|p| p.workspace(workspace).map(|w| (p.root.clone(), w.clone())))
                 .ok_or_else(|| {
                     ApiError::not_found(format!("workspace `{workspace}` is not registered"))
                 })?
         };
 
-        let (_, config) = KobuneConfig::find(&record.path).map_err(ApiError::from)?;
+        let config = KobuneConfig::resolve(&record.path, &root, self.paths.root())
+            .map_err(ApiError::from)?;
+
         Ok((config, record))
     }
 
@@ -695,7 +702,11 @@ impl Supervisor {
                 })?
         };
 
-        let (_, config) = KobuneConfig::find(&root).map_err(ApiError::from)?;
+        // The state store records the main worktree, so this root is both
+        // where the search starts and what the local layer hangs off.
+        let config =
+            KobuneConfig::resolve(&root, &root, self.paths.root()).map_err(ApiError::from)?;
+
         Ok(config)
     }
 

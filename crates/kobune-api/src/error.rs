@@ -121,6 +121,11 @@ impl From<kobune_core::Error> for ApiError {
             E::ConfigParse { .. } | E::ConfigInvalid(_) => {
                 Self::new(ErrorCode::InvalidConfig, message)
             }
+            // The message already names the files it merged. The hint
+            // says how to see which of them set what, because a merged
+            // document is not something anybody can open and read.
+            E::ConfigMerged { .. } => Self::new(ErrorCode::InvalidConfig, message)
+                .with_hint("run `kobune config show` to see which layer sets what"),
             E::ConfigRead { .. } => Self::new(ErrorCode::InvalidConfig, message),
             E::NotAGitRepository(_) => Self::new(ErrorCode::NotAGitRepository, message)
                 .with_hint("run this inside a git repository"),

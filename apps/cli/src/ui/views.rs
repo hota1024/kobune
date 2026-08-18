@@ -9,8 +9,8 @@
 use std::path::Path;
 
 use kobune_api::{
-    Check, Diagnostics, EnvInfo, Pong, ServiceInfo, TunnelAccess, TunnelInfo, TunnelState,
-    Unsettled, UnsettledReason, WorkspaceInfo,
+    Check, ConfigInfo, Diagnostics, EnvInfo, Pong, ServiceInfo, TunnelAccess, TunnelInfo,
+    TunnelState, Unsettled, UnsettledReason, WorkspaceInfo,
 };
 use ratatui::text::{Line, Span};
 
@@ -655,6 +655,89 @@ pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
     panel
 }
 
+/// `kobune config show`: the layers in the order they were applied, and
+/// what each of them settled.
+///
+/// **The paths are shown whether or not there was a file at them.** The
+/// question this command answers is nearly always "why is my override not
+/// applying", and the answer is nearly always that the file is somewhere
+/// else — which a listing of only what was read cannot say.
+pub fn config(info: &ConfigInfo, decor: Decor) -> Panel {
+    let mut layers = Grid::new().header(vec!["LAYER".into(), "FILE".into(), "".into()]);
+
+    for layer in &info.layers {
+        let (note, style) = match layer.loaded {
+            true => ("read", theme::good()),
+            // Not a failure: two of the three layers are meant to be
+            // missing most of the time.
+            false => ("not found", theme::muted()),
+        };
+
+        layers.push(vec![
+            Line::styled(layer.layer.label(), theme::subject()),
+            Line::styled(display_path(&layer.path), theme::muted()),
+            Line::styled(note, style),
+        ]);
+    }
+
+    let mut panel = Panel::new(decor, "config").grid(layers);
+
+    // **Under the layers, not above them.** The layers are the evidence
+    // and this is the verdict, and a verdict printed before its evidence
+    // reads as the listing having failed rather than the merge.
+    if let Some(problem) = &info.problem {
+        // Worded for the missing-file case too: two of the three paths
+        // above are routinely not read at all, and "the files above were
+        // read" is untrue exactly when the project file is the missing one.
+        panel = panel
+            .lines(warning_block(problem))
+            .line(note("what the layers above merge to is what failed"));
+    }
+
+    // `--all` fills in `values`; without it only the contested keys come
+    // back, which is the question the command exists to answer.
+    let (rows, caption) = match info.all {
+        true => (&info.values, "every key, and the layer that settled it"),
+        false => (&info.overrides, "keys one layer took from another"),
+    };
+
+    if rows.is_empty() {
+        // Said in words. An empty table under the layers reads as a
+        // listing that broke, rather than as nothing to report.
+        //
+        // Not when something already failed: "every value comes from one
+        // layer alone" beneath a warning reads as reassurance, and there
+        // is nothing here to be reassured about.
+        if info.problem.is_some() {
+            return panel;
+        }
+
+        return panel.line(note("every value comes from one layer alone"));
+    }
+
+    let mut values = Grid::new()
+        .caption(Span::styled(caption, theme::muted()))
+        .header(vec![
+            "KEY".into(),
+            "LAYER".into(),
+            "VALUE".into(),
+            "OVER".into(),
+        ]);
+
+    for row in rows {
+        let overridden: Vec<&str> = row.overridden.iter().map(|layer| layer.label()).collect();
+
+        values.push(vec![
+            Line::styled(row.key.clone(), theme::subject()),
+            Line::styled(row.layer.label(), theme::muted()),
+            Line::raw(row.value.clone()),
+            Line::styled(overridden.join(", "), theme::muted()),
+        ]);
+    }
+
+    panel.grid(values)
+}
+
 /// `kobune tunnel status`, and where `enable` and `disable` leave things.
 pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
     let state = Span::styled(info.state.label(), tunnel_style(info.state));
@@ -1036,6 +1119,20 @@ pub fn warning(text: &str) -> Line<'static> {
         Span::styled("! ", theme::warn()),
         Span::styled(text.to_string(), theme::warn()),
     ])
+}
+
+/// A warning that arrived as more than one line.
+///
+/// **Only the first carries the `!`.** A message its formatter split — a
+/// `toml` error puts the field on one line and the table it was in on the
+/// next — is one complaint, and a marker per line would present it as
+/// several.
+fn warning_block(text: &str) -> Vec<Line<'static>> {
+    let mut parts = text.lines();
+    let mut out = vec![warning(parts.next().unwrap_or_default())];
+
+    out.extend(parts.map(|part| Line::raw(format!("  {part}"))));
+    out
 }
 
 /// `› run this` — the same shape wherever the CLI suggests a command.
@@ -2144,5 +2241,156 @@ mod tests {
         for status in [CheckStatus::Ok, CheckStatus::Warn, CheckStatus::Fail] {
             assert!(!status.symbol().is_empty());
         }
+    }
+
+    fn layers(local_loaded: bool) -> Vec<kobune_api::ConfigLayerInfo> {
+        vec![
+            kobune_api::ConfigLayerInfo {
+                layer: kobune_core::ConfigLayer::Global,
+                path: PathBuf::from("/home/someone/.kobune/config.toml"),
+                loaded: true,
+            },
+            kobune_api::ConfigLayerInfo {
+                layer: kobune_core::ConfigLayer::Project,
+                path: PathBuf::from("/repo/kobune.toml"),
+                loaded: true,
+            },
+            kobune_api::ConfigLayerInfo {
+                layer: kobune_core::ConfigLayer::Local,
+                path: PathBuf::from("/repo/kobune.local.toml"),
+                loaded: local_loaded,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_layers_are_listed_in_the_order_they_are_applied() {
+        let text = render(&config(
+            &ConfigInfo {
+                layers: layers(true),
+                overrides: vec![],
+                values: vec![],
+                all: false,
+                problem: None,
+            },
+            Decor::PLAIN,
+        ));
+
+        let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("got:\n{text}"));
+        assert!(at("global") < at("project"), "got:\n{text}");
+        assert!(at("project") < at("local"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_layer_with_no_file_still_shows_the_path_it_looked_at() {
+        // "My override is not applying" is nearly always "the file is
+        // somewhere else", which only the path can answer.
+        let text = render(&config(
+            &ConfigInfo {
+                layers: layers(false),
+                overrides: vec![],
+                values: vec![],
+                all: false,
+                problem: None,
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("kobune.local.toml"), "got:\n{text}");
+        assert!(text.contains("not found"), "got:\n{text}");
+    }
+
+    #[test]
+    fn an_overridden_key_names_the_layers_it_beat() {
+        let text = render(&config(
+            &ConfigInfo {
+                layers: layers(true),
+                overrides: vec![kobune_api::ConfigValueInfo {
+                    key: "runtime.default".into(),
+                    value: "apple".into(),
+                    layer: kobune_core::ConfigLayer::Local,
+                    overridden: vec![kobune_core::ConfigLayer::Project],
+                }],
+                values: vec![],
+                all: false,
+                problem: None,
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("runtime.default"), "got:\n{text}");
+        assert!(text.contains("apple"), "got:\n{text}");
+        assert!(text.contains("project"), "got:\n{text}");
+    }
+
+    #[test]
+    fn nothing_contested_is_said_rather_than_left_blank() {
+        // An empty table under the layers reads as a listing that broke.
+        let text = render(&config(
+            &ConfigInfo {
+                layers: layers(false),
+                overrides: vec![],
+                values: vec![],
+                all: false,
+                problem: None,
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("one layer alone"), "got:\n{text}");
+    }
+
+    #[test]
+    fn all_is_stated_rather_than_read_off_an_empty_list() {
+        // `--all` against a configuration with nothing in `origins` used
+        // to fall through to the contested-keys wording, which answers a
+        // question nobody asked.
+        let text = render(&config(
+            &ConfigInfo {
+                layers: layers(true),
+                overrides: vec![],
+                values: vec![],
+                all: true,
+                problem: None,
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(
+            !text.contains("one layer took from another"),
+            "got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_merge_that_will_not_load_still_lists_its_layers() {
+        // The case this command exists for. Failing here would leave the
+        // person with the same message they already had and nothing to
+        // read it against.
+        let text = render(&config(
+            &ConfigInfo {
+                layers: layers(true),
+                overrides: vec![],
+                values: vec![],
+                all: false,
+                problem: Some("unknown field `defalut`, expected `default`\nin `runtime`".into()),
+            },
+            Decor::PLAIN,
+        ));
+
+        assert!(text.contains("defalut"), "got:\n{text}");
+        assert!(text.contains("kobune.local.toml"), "got:\n{text}");
+        assert!(
+            !text.contains("one layer alone"),
+            "no reassurance under a warning:\n{text}"
+        );
+
+        // One complaint, so one marker. A `!` per line would present a
+        // message its formatter split as several separate problems.
+        assert_eq!(
+            text.lines().filter(|line| line.contains('!')).count(),
+            1,
+            "got:\n{text}"
+        );
     }
 }

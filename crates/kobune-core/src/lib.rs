@@ -18,7 +18,10 @@ pub mod service;
 pub mod state;
 pub mod terminal;
 
-pub use config::{HealthCheck, KobuneConfig, RuntimeSection, ServiceConfig, ServiceScope};
+pub use config::{
+    ConfigLayer, ConfigOrigin, ConfigReport, ConfigSource, HealthCheck, KobuneConfig,
+    RuntimeSection, ServiceConfig, ServiceScope,
+};
 pub use env::{EnvEntry, EnvLayers, EnvScope, SecretRef};
 pub use error::{Error, Result};
 pub use git::Repository;

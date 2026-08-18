@@ -237,6 +237,30 @@ pub fn is_tracked(worktree: &Path, relative: &str) -> bool {
     git(worktree, &["ls-files", "--error-unmatch", "--", relative]).is_ok()
 }
 
+/// Whether git's ignore rules already cover `relative`.
+///
+/// **Asked of git rather than read off `.gitignore`.** The name may be
+/// covered by a pattern, by `.git/info/exclude`, or by the user's global
+/// ignore file, and an entry appended underneath one of those is noise in
+/// somebody's diff for nothing.
+///
+/// `--no-index` asks about the rules alone. Without it a path that is
+/// already tracked reads as not ignored, which is true of what git will do
+/// and not an answer to whether a rule for it exists — and adding a second
+/// rule would not untrack it either.
+///
+/// Not a [`Result`]: `check-ignore` exits 1 for "no rule covers this",
+/// which is an answer rather than a failure, and so is being outside a
+/// repository. Both come back as false, which is what a caller deciding
+/// whether to write a rule wants from either.
+pub fn is_ignored(worktree: &Path, relative: &str) -> bool {
+    Command::new("git")
+        .current_dir(worktree)
+        .args(["check-ignore", "--quiet", "--no-index", "--", relative])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .current_dir(dir)

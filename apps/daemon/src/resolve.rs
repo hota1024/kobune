@@ -26,17 +26,15 @@ pub struct Resolved {
 /// Finding the workspace is [`resolve_workspace`]'s job. Creating
 /// operations act on a workspace that does not exist yet, hence the two
 /// steps.
-pub fn resolve_project(target: &Target, state: &mut State) -> Result<ProjectContext> {
+///
+/// `home` is `$KOBUNE_HOME`, which holds the machine-wide layer. The three
+/// layers and how they are anchored are [`KobuneConfig::resolve`]'s
+/// business; what matters here is that the main worktree is passed along,
+/// because that is where the gitignored layer lives.
+pub fn resolve_project(target: &Target, state: &mut State, home: &Path) -> Result<ProjectContext> {
     let repo = Repository::discover(&target.cwd)?;
 
-    // A worktree carries the same kobune.toml, so searching from there is
-    // enough. Failing that, look in the main worktree too — right after a
-    // worktree is created, for instance.
-    let (_config_path, config) = match KobuneConfig::find(&repo.root) {
-        Ok(found) => found,
-        Err(Error::ConfigNotFound(_)) => KobuneConfig::find(&repo.main_root)?,
-        Err(err) => return Err(err),
-    };
+    let config = KobuneConfig::resolve(&repo.root, &repo.main_root, home)?;
 
     let project = config.project.name.clone();
     state.upsert_project(&project, &repo.main_root)?;

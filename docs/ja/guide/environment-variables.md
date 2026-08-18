@@ -408,4 +408,5 @@ postgres://db:5432/app
 ```
 
 書式は 1 行につき `KEY=value` で、`#` から始まる行はコメントです。
-`.kobune/env.local` は `.gitignore` に追加してください。
+`.kobune/env.local` は `.gitignore` に入れるファイルで、`kobune init` が追加
+します。

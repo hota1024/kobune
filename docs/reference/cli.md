@@ -40,6 +40,12 @@ $ kobune init
 $ kobune init --force    # overwrite an existing file
 ```
 
+It also adds `kobune.local.toml` and `.kobune/env.local` to `.gitignore`,
+creating the file if there is none. Both belong to one machine, and either
+one committed defeats its own purpose. Nothing is appended where git already
+covers the name, so a second run does not grow the block, and `--force` is
+about `kobune.toml` alone.
+
 #### Converting a compose file
 
 ```console
@@ -392,6 +398,49 @@ send you to edit `.kobune/env` for a value the service overrides.
 
 `--scope` defaults to `workspace`.
 
+## Configuration
+
+```console
+$ kobune config show [--all]
+```
+
+Three files make up the configuration, read in turn and merged, later ones
+winning: `~/.kobune/config.toml`, the project's `kobune.toml`, and
+`kobune.local.toml` beside it. The result is in no file you can open, which is
+what this is for.
+
+```console
+$ kobune config show
+╭ config ───────────────────────────────────────────╮
+│ LAYER    FILE                                     │
+│ global   ~/.kobune/config.toml          read      │
+│ project  ~/src/myapp/kobune.toml        read      │
+│ local    ~/src/myapp/kobune.local.toml  not found │
+│                                                   │
+│ › every value comes from one layer alone          │
+╰───────────────────────────────────────────────────╯
+```
+
+**A layer with no file is still listed, with the path it was looked for at.**
+"My override is not applying" is usually "the file is somewhere else", and only
+the path can say so. Two of the three are meant to be missing most of the time,
+so `not found` is not a fault.
+
+Below the layers come the keys more than one layer had an opinion about, by
+their dotted path, with the layer that won and the ones it beat. `--all` lists
+every key instead; without it a configuration of any size would bury the four
+that are contested.
+
+**It keeps working when the configuration does not.** Where the merge is not a
+usable configuration — a misspelled key, or two layers that contradict each
+other — every other command stops with that message and nothing else. This one
+lists the files it read and says which layer set what, with the message
+underneath, since that is the state the question is usually being asked from.
+A file that is not TOML at all still fails here, because the error already
+names it and there is no merged document to explain.
+
+See [Layers](./kobune-toml#layers) for what each file is for.
+
 ## The tunnel
 
 ```console
@@ -611,7 +660,7 @@ expects it; the install script does this already.
 
 | Variable | Description |
 | --- | --- |
-| `KOBUNE_HOME` | Where state, logs, the socket and the CA live. Default `~/.kobune` |
+| `KOBUNE_HOME` | Where state, logs, the socket, the CA and `config.toml` live. Default `~/.kobune` |
 | `KOBUNE_HTTP_PORT` | Proxy HTTP port. Default 80, falling back to 18080. A port named here is used as given |
 | `KOBUNE_HTTPS_PORT` | Proxy HTTPS port. Default 443, falling back to 18443. A port named here is used as given |
 | `KOBUNE_DNS_PORT` | DNS port. Default 53 |

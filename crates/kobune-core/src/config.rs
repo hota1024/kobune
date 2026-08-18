@@ -15,6 +15,15 @@ use crate::naming;
 /// The name of the configuration file.
 pub const CONFIG_FILE: &str = "kobune.toml";
 
+/// The machine-wide configuration, directly under `$KOBUNE_HOME`.
+///
+/// For what is true of this computer rather than of the project: which
+/// container runtime is installed on it, most of all.
+pub const GLOBAL_CONFIG_FILE: &str = "config.toml";
+
+/// The per-clone override, beside [`CONFIG_FILE`]. Gitignored.
+pub const LOCAL_CONFIG_FILE: &str = "kobune.local.toml";
+
 /// Where the worktree's source is mounted inside the container.
 pub const MOUNT_TARGET: &str = "/workspace";
 
@@ -67,6 +76,216 @@ const RESERVED_MOUNTS: [(&str, &str, &str); 2] = [
 
 /// The default when `idle_timeout` is omitted.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Where a piece of configuration was read from.
+///
+/// Declaration order is precedence: later layers override earlier ones,
+/// the same way [`crate::EnvScope`] works.
+///
+/// **[`Self::Local`] is not [`crate::EnvScope::Workspace`].** The
+/// environment's innermost layer is per-worktree, because `.kobune/env.local`
+/// is written into each one. This one is per-*clone*: `kobune.local.toml`
+/// lives in the main worktree and every worktree of that checkout reads it.
+/// Worktrees of one repository share a container runtime whether they like
+/// it or not, so there is nothing here for a worktree to differ about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigLayer {
+    /// `config.toml` under `$KOBUNE_HOME`. This machine, every project.
+    Global,
+    /// `kobune.toml` at the repository root. Committed, so everyone gets it.
+    Project,
+    /// `kobune.local.toml` beside it. Gitignored, so only this clone.
+    Local,
+}
+
+impl ConfigLayer {
+    /// The layers in the order they are applied.
+    pub const ORDER: [ConfigLayer; 3] = [Self::Global, Self::Project, Self::Local];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Project => "project",
+            Self::Local => "local",
+        }
+    }
+
+    /// The file this layer is read from.
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::Global => GLOBAL_CONFIG_FILE,
+            Self::Project => CONFIG_FILE,
+            Self::Local => LOCAL_CONFIG_FILE,
+        }
+    }
+}
+
+/// One layer, and whether there was a file to read.
+#[derive(Debug, Clone)]
+pub struct ConfigSource {
+    pub layer: ConfigLayer,
+    pub path: PathBuf,
+    /// Whether the file was there.
+    ///
+    /// **Absent layers are reported rather than dropped.** "My override is
+    /// not applying" is nearly always "the file is not where I think it
+    /// is", and a listing that showed only what was read could not answer
+    /// that question.
+    pub loaded: bool,
+}
+
+/// Which layer settled one key, and what it beat.
+#[derive(Debug, Clone)]
+pub struct ConfigOrigin {
+    /// The layer whose value won.
+    pub layer: ConfigLayer,
+    /// The layers it overrode, in the order they were applied. Empty when
+    /// only one layer had an opinion.
+    pub overridden: Vec<ConfigLayer>,
+    /// The winning value, rendered for display.
+    pub value: String,
+}
+
+/// What the layers are, and what they came to.
+///
+/// **Separate from the configuration itself, and obtainable without one.**
+/// The moment this is most worth asking for is the moment the merge does
+/// not load at all, so [`KobuneConfig::inspect`] reports that as
+/// [`Self::problem`] rather than as an error — a command that explains a
+/// configuration is no use if a broken configuration is what stops it.
+#[derive(Debug, Clone)]
+pub struct ConfigReport {
+    /// Every layer, in the order applied, whether or not it was read.
+    pub sources: Vec<ConfigSource>,
+
+    /// Which layer settled each key, by dotted path (`runtime.default`).
+    ///
+    /// Filled in either way: it comes from the merge, which happens before
+    /// anything asks whether the result is a configuration.
+    pub origins: BTreeMap<String, ConfigOrigin>,
+
+    /// Why the merge is not a usable configuration, when it is not.
+    pub problem: Option<String>,
+}
+
+impl ConfigReport {
+    /// The files that were actually read.
+    pub fn loaded(&self) -> impl Iterator<Item = &ConfigSource> {
+        self.sources.iter().filter(|source| source.loaded)
+    }
+
+    /// The keys some layer took from another.
+    ///
+    /// What `kobune config show` leads with: a key only one layer sets is
+    /// not a question anybody has.
+    pub fn overrides(&self) -> impl Iterator<Item = (&String, &ConfigOrigin)> {
+        self.origins
+            .iter()
+            .filter(|(_, origin)| !origin.overridden.is_empty())
+    }
+}
+
+/// The three files, merged, before anyone asks what they mean.
+struct Layered {
+    sources: Vec<ConfigSource>,
+    origins: BTreeMap<String, ConfigOrigin>,
+    merged: toml::Table,
+    /// Where the search for `kobune.toml` began.
+    ///
+    /// Kept for the error when it found none, which names the directory
+    /// rather than the file — there is no file to name.
+    start: PathBuf,
+    /// The one loaded layer's text, when exactly one was loaded.
+    ///
+    /// For its span. See [`Self::settle`].
+    only_text: Option<String>,
+    /// Whether a `kobune.toml` was found at all.
+    ///
+    /// **Not an error until something asks what the layers mean.** The
+    /// three paths are still worth reporting when the project file is the
+    /// missing one: "it is not where you think" is the case `config show`
+    /// exists for, and it cannot answer it by failing the same way every
+    /// other command already did.
+    found_project: bool,
+}
+
+impl Layered {
+    /// The files that were read, for a message that has to name them.
+    fn files(&self) -> Vec<PathBuf> {
+        self.sources
+            .iter()
+            .filter(|source| source.loaded)
+            .map(|source| source.path.clone())
+            .collect()
+    }
+
+    /// The merged document as a configuration, validated.
+    ///
+    /// **Consumes the merge.** Every daemon operation resolves a
+    /// configuration, so a clone here would be one copy of the whole
+    /// document per `up`, `status` or `exec`. [`KobuneConfig::inspect`]
+    /// takes the layers off it first and hands the rest over.
+    fn settle(self) -> Result<KobuneConfig> {
+        if !self.found_project {
+            return Err(Error::ConfigNotFound(self.start));
+        }
+
+        let files = self.files();
+
+        let config: KobuneConfig =
+            toml::Value::Table(self.merged)
+                .try_into()
+                .map_err(|source: toml::de::Error| {
+                    // **A merged document has no line numbers**, so this error
+                    // says which files it came from and nothing about where.
+                    // With one layer there is a file to point at, and that is
+                    // very nearly every project: re-reading it through
+                    // `from_str` costs a parse on a path that has already
+                    // failed, and buys back `at line 7, column 1` with the
+                    // offending line under a caret.
+                    //
+                    // The configuration itself still comes from the merge, so
+                    // there is one answer to what a project is — only the
+                    // message improves.
+                    match &self.only_text {
+                        Some(text) => match toml::from_str::<KobuneConfig>(text) {
+                            Err(spanned) => Error::ConfigParse {
+                                path: files.first().cloned().unwrap_or_default(),
+                                source: spanned,
+                            },
+                            // It parsed alone but not merged, which cannot
+                            // happen with one layer. Report what actually
+                            // failed rather than inventing a success.
+                            Ok(_) => Error::ConfigMerged {
+                                files: files.clone(),
+                                source: Box::new(source),
+                            },
+                        },
+                        None => Error::ConfigMerged {
+                            files: files.clone(),
+                            source: Box::new(source),
+                        },
+                    }
+                })?;
+
+        // **Validated once, against the merged result**, which is the only
+        // thing that has to make sense: a layer setting `expose = true` is
+        // fine on its own and wrong beside a layer that removed the port.
+        //
+        // Which is also why the files are named. Without them the message
+        // describes a line that appears in none of them.
+        config.validate().map_err(|err| match err {
+            Error::ConfigInvalid(message) if files.len() > 1 => Error::ConfigInvalid(format!(
+                "{message}. This is the merge of {}",
+                describe_files(&files)
+            )),
+            other => other,
+        })?;
+
+        Ok(config)
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -332,36 +551,273 @@ impl From<HealthCheck> for String {
     }
 }
 
-impl KobuneConfig {
-    /// Searches upwards from `start` for `kobune.toml`.
-    ///
-    /// Returns the path found along with the parsed configuration.
-    pub fn find(start: &Path) -> Result<(PathBuf, Self)> {
-        let mut dir = Some(start);
-        while let Some(current) = dir {
-            let candidate = current.join(CONFIG_FILE);
-            if candidate.is_file() {
-                let config = Self::load(&candidate)?;
-                return Ok((candidate, config));
-            }
-            dir = current.parent();
+/// Searches upwards from `start` for `kobune.toml`.
+fn find_file(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(current) = dir {
+        let candidate = current.join(CONFIG_FILE);
+        if candidate.is_file() {
+            return Some(candidate);
         }
-        Err(Error::ConfigNotFound(start.to_path_buf()))
+        dir = current.parent();
+    }
+    None
+}
+
+/// Reads one layer. A file that is not there is not an error.
+///
+/// The text comes back with the table so that a failure on a single-layer
+/// merge can be re-reported against the file it came from — see
+/// [`Layered::settle`].
+fn read_layer(path: &Path) -> Result<Option<(toml::Table, String)>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::ConfigRead {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    match toml::from_str(&text) {
+        Ok(table) => Ok(Some((table, text))),
+        Err(source) => Err(Error::ConfigParse {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+/// Names the files a merged configuration came from.
+pub(crate) fn describe_files(files: &[PathBuf]) -> String {
+    files
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// A value as it should read in a listing.
+///
+/// Strings lose their quotes — the column is already labelled as a value,
+/// and `"apple"` in a table of values reads as a quoting mistake.
+fn render_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Merges `overlay` onto `base`, recording what `layer` settled.
+///
+/// **Tables merge, everything else replaces.** A table is a namespace, so
+/// merging one is what lets a layer say `[runtime] default` without
+/// restating every service below it. An array is a single value: appending
+/// would leave no way to remove an entry, and the arrays here (`volumes`,
+/// `depends_on`, `carry`) are short enough to restate.
+///
+/// Done on [`toml::Value`] rather than on `KobuneConfig` itself, for two
+/// reasons that both come from the schema. `[project] name` is required, so
+/// an overlay could not be deserialized on its own — a file that only sets
+/// `[runtime] default` would have to restate the project's name. And most
+/// of [`ServiceConfig`] carries `#[serde(default)]`, so "not mentioned" and
+/// "set to the default" arrive indistinguishable: an overlay silent about
+/// `tty` would deserialize identically to one saying `tty = false`, and
+/// would turn a service's terminal off behind its owner's back.
+fn merge_into(
+    base: &mut toml::Table,
+    overlay: toml::Table,
+    layer: ConfigLayer,
+    prefix: &str,
+    origins: &mut BTreeMap<String, ConfigOrigin>,
+) {
+    for (key, incoming) in overlay {
+        let path = match prefix.is_empty() {
+            true => key.clone(),
+            false => format!("{prefix}.{key}"),
+        };
+
+        match (base.get_mut(&key), incoming) {
+            (Some(toml::Value::Table(existing)), toml::Value::Table(incoming)) => {
+                merge_into(existing, incoming, layer, &path, origins);
+            }
+
+            // A table no lower layer had, or one displacing a scalar.
+            // Walked all the same, so that a service introduced here is
+            // attributed key by key like any other.
+            (_, toml::Value::Table(incoming)) => {
+                // At `path` as well as under it: what a table displaces
+                // here is a scalar, whose own origin is the entry at
+                // `path`, and nothing below will overwrite it.
+                origins.remove(&path);
+                forget(origins, &path);
+
+                let mut fresh = toml::Table::new();
+                merge_into(&mut fresh, incoming, layer, &path, origins);
+                base.insert(key, toml::Value::Table(fresh));
+            }
+
+            (_, incoming) => {
+                forget(origins, &path);
+                record_origin(origins, path, layer, &incoming);
+                base.insert(key, incoming);
+            }
+        }
+    }
+}
+
+/// Drops what was recorded at `path`, and anything that was under it.
+///
+/// **A layer may change a key's shape, not just its value.** A scalar
+/// replacing a table takes every leaf beneath it out of the document, and
+/// a table replacing a scalar takes that scalar; origins left behind would
+/// have `config show` list keys the merge does not contain — in the one
+/// command whose job is to say what it does.
+///
+/// Only what is *under* `path`. The entry at `path` itself belongs to
+/// whoever is replacing it: a scalar hands it to [`record_origin`], which
+/// needs it to say what the new value overrode, and a table has to drop it
+/// outright because nothing below will.
+fn forget(origins: &mut BTreeMap<String, ConfigOrigin>, path: &str) {
+    let under = format!("{path}.");
+    origins.retain(|key, _| !key.starts_with(&under));
+}
+
+/// Notes that `layer` settled `path`, keeping whatever it displaced.
+fn record_origin(
+    origins: &mut BTreeMap<String, ConfigOrigin>,
+    path: String,
+    layer: ConfigLayer,
+    value: &toml::Value,
+) {
+    let overridden = match origins.remove(&path) {
+        Some(previous) => {
+            let mut chain = previous.overridden;
+            chain.push(previous.layer);
+            chain
+        }
+        None => Vec::new(),
+    };
+
+    origins.insert(
+        path,
+        ConfigOrigin {
+            layer,
+            overridden,
+            value: render_value(value),
+        },
+    );
+}
+
+/// Reads the three layers and merges them.
+///
+/// `start` is where the search for `kobune.toml` begins, `main_root` is the
+/// repository's main worktree, and `home` is `$KOBUNE_HOME`.
+///
+/// **The local layer is anchored on `main_root`, not beside whichever
+/// `kobune.toml` was found.** `kobune.toml` is committed, so every worktree
+/// holds a copy and the search finds that one; `kobune.local.toml` is
+/// gitignored, so `git worktree add` never brings it along. Looking for it
+/// beside the file that was found would mean an override that applied in
+/// the main checkout and silently nowhere else — which is the one failure
+/// this is most likely to be blamed for.
+fn layer_files(start: &Path, main_root: &Path, home: &Path) -> Result<Layered> {
+    // The main worktree is tried second so that a worktree created before
+    // its branch had a `kobune.toml` still resolves.
+    //
+    // Finding none is not an error here: the layer is reported as absent,
+    // with the path it would have been at, and `settle` is what turns that
+    // into `ConfigNotFound`. Reporting where it was looked for is the
+    // whole of what `config show` has to say in that case.
+    let found = find_file(start).or_else(|| find_file(main_root));
+    let found_project = found.is_some();
+    let project_path = found.unwrap_or_else(|| main_root.join(CONFIG_FILE));
+
+    let layout = [
+        (ConfigLayer::Global, home.join(GLOBAL_CONFIG_FILE)),
+        (ConfigLayer::Project, project_path),
+        (ConfigLayer::Local, main_root.join(LOCAL_CONFIG_FILE)),
+    ];
+
+    let mut merged = toml::Table::new();
+    let mut origins = BTreeMap::new();
+    let mut sources = Vec::with_capacity(layout.len());
+
+    let mut only_text = None;
+
+    for (layer, path) in layout {
+        match read_layer(&path)? {
+            Some((table, text)) => {
+                merge_into(&mut merged, table, layer, "", &mut origins);
+
+                // Kept only while exactly one layer has been read. Two and
+                // the merged document is on no disk, so there is no line
+                // to point at and nothing worth holding the text for.
+                only_text = match sources.iter().any(|source: &ConfigSource| source.loaded) {
+                    true => None,
+                    false => Some(text),
+                };
+
+                sources.push(ConfigSource {
+                    layer,
+                    path,
+                    loaded: true,
+                });
+            }
+            None => sources.push(ConfigSource {
+                layer,
+                path,
+                loaded: false,
+            }),
+        }
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).map_err(|source| Error::ConfigRead {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    Ok(Layered {
+        sources,
+        origins,
+        merged,
+        only_text,
+        start: start.to_path_buf(),
+        found_project,
+    })
+}
 
-        let config: Self = toml::from_str(&text).map_err(|source| Error::ConfigParse {
-            path: path.to_path_buf(),
-            source,
-        })?;
+impl KobuneConfig {
+    /// The three layers, merged into one configuration.
+    ///
+    /// See [`layer_files`] for where each of them is looked for.
+    pub fn resolve(start: &Path, main_root: &Path, home: &Path) -> Result<Self> {
+        layer_files(start, main_root, home)?.settle()
+    }
 
-        config.validate()?;
-        Ok(config)
+    /// The same, reporting what the layers are rather than what they mean.
+    ///
+    /// **A merge that is not a configuration comes back as
+    /// [`ConfigReport::problem`], not as an error.** This is what answers
+    /// "where did that value come from", and the question is at its most
+    /// urgent when the answer is "from a combination that does not load" —
+    /// so the layers have to survive the failure that prompted the asking.
+    ///
+    /// A file that is not TOML at all still fails here. That error already
+    /// names the one file at fault, which is the whole of what a person
+    /// needs; there is no merged document to explain yet.
+    pub fn inspect(start: &Path, main_root: &Path, home: &Path) -> Result<ConfigReport> {
+        let layered = layer_files(start, main_root, home)?;
+
+        // Taken off before `settle` consumes the rest, so neither is
+        // cloned: the layers are what survives the failure, and the merged
+        // document is what fails.
+        let sources = layered.sources.clone();
+        let origins = layered.origins.clone();
+        let problem = layered.settle().err().map(|err| err.to_string());
+
+        Ok(ConfigReport {
+            sources,
+            origins,
+            problem,
+        })
     }
 
     /// The URL suffix. `{name}.localhost` when `[project] domain` is unset.
@@ -1590,5 +2046,506 @@ mod tests {
     fn health_check_rejects_unknown_scheme() {
         assert!("ftp://x".parse::<HealthCheck>().is_err());
         assert!("localhost:3000".parse::<HealthCheck>().is_err());
+    }
+
+    /// A repository and a `$KOBUNE_HOME`, each layer written or not.
+    ///
+    /// The main worktree and the directory the search starts from are
+    /// separate arguments because that difference is the whole point of
+    /// the local layer: a worktree is not under the main checkout.
+    struct Layout {
+        home: tempfile::TempDir,
+        repo: tempfile::TempDir,
+    }
+
+    impl Layout {
+        fn new() -> Self {
+            Self {
+                home: tempfile::tempdir().expect("tempdir"),
+                repo: tempfile::tempdir().expect("tempdir"),
+            }
+        }
+
+        fn write(self, layer: ConfigLayer, text: &str) -> Self {
+            let path = match layer {
+                ConfigLayer::Global => self.home.path().join(GLOBAL_CONFIG_FILE),
+                ConfigLayer::Project => self.repo.path().join(CONFIG_FILE),
+                ConfigLayer::Local => self.repo.path().join(LOCAL_CONFIG_FILE),
+            };
+
+            std::fs::write(path, text).expect("writes");
+            self
+        }
+
+        /// Resolves as the main checkout would.
+        fn resolve(&self) -> Result<KobuneConfig> {
+            KobuneConfig::resolve(self.repo.path(), self.repo.path(), self.home.path())
+        }
+
+        /// The layers, which survive a merge that will not load.
+        fn inspect(&self) -> Result<ConfigReport> {
+            KobuneConfig::inspect(self.repo.path(), self.repo.path(), self.home.path())
+        }
+    }
+
+    /// The committed layer every case starts from.
+    const COMMITTED: &str = r#"
+        [project]
+        name = "myapp"
+
+        [runtime]
+        default = "docker"
+
+        [services.web]
+        image = "node:22"
+        port = 3000
+        tty = true
+        volumes = ["node-modules@workspace:/workspace/node_modules"]
+    "#;
+
+    #[test]
+    fn a_project_on_its_own_still_resolves() {
+        // The two other layers are meant to be missing most of the time.
+        let layout = Layout::new().write(ConfigLayer::Project, COMMITTED);
+        let config = layout.resolve().expect("is valid");
+        let report = layout.inspect().expect("is valid");
+
+        assert_eq!(config.runtime.default, "docker");
+        assert_eq!(report.loaded().count(), 1);
+        assert_eq!(report.overrides().count(), 0, "nothing was contested");
+        assert_eq!(report.problem, None);
+
+        let absent: Vec<ConfigLayer> = report
+            .sources
+            .iter()
+            .filter(|source| !source.loaded)
+            .map(|source| source.layer)
+            .collect();
+
+        assert_eq!(
+            absent,
+            vec![ConfigLayer::Global, ConfigLayer::Local],
+            "a layer with no file is still reported, with the path it looked at"
+        );
+    }
+
+    #[test]
+    fn the_machine_layer_sets_a_runtime_without_restating_the_project() {
+        // The case the whole thing exists for: this computer runs Apple
+        // Container, and says so once for every project on it.
+        let layout = Layout::new()
+            .write(ConfigLayer::Global, "[runtime]\ndefault = \"apple\"\n")
+            .write(ConfigLayer::Project, COMMITTED);
+
+        let config = layout.resolve().expect("is valid");
+
+        assert_eq!(
+            config.runtime.default, "docker",
+            "the committed file is more specific than the machine"
+        );
+        assert_eq!(config.project.name, "myapp");
+    }
+
+    #[test]
+    fn the_local_layer_wins_and_says_what_it_beat() {
+        let layout = Layout::new()
+            .write(ConfigLayer::Global, "[runtime]\ndefault = \"apple\"\n")
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "[runtime]\ndefault = \"apple\"\n");
+
+        let config = layout.resolve().expect("is valid");
+        assert_eq!(config.runtime.default, "apple");
+
+        let report = layout.inspect().expect("is valid");
+        let origin = &report.origins["runtime.default"];
+        assert_eq!(origin.layer, ConfigLayer::Local);
+        assert_eq!(
+            origin.overridden,
+            vec![ConfigLayer::Global, ConfigLayer::Project],
+            "both losers are named, in the order they were applied"
+        );
+        assert_eq!(origin.value, "apple", "rendered without its quotes");
+    }
+
+    #[test]
+    fn a_layer_reaches_one_key_without_disturbing_its_neighbours() {
+        // Tables merge. Without that, naming `services.web` to change its
+        // port would drop the image, the terminal and the volume with it —
+        // which is the failure that makes an overlay worse than useless.
+        let layout = Layout::new().write(ConfigLayer::Project, COMMITTED).write(
+            ConfigLayer::Local,
+            "[services.web]\nport = 4000\n[services.db]\nimage = \"postgres:16\"\n",
+        );
+
+        let config = layout.resolve().expect("is valid");
+        let web = config.service("web").expect("survives the merge");
+
+        assert_eq!(web.port, Some(4000));
+        assert_eq!(web.image.as_deref(), Some("node:22"));
+        assert!(web.tty, "a bool the overlay never mentioned stays as set");
+        assert_eq!(
+            web.volumes,
+            vec!["node-modules@workspace:/workspace/node_modules"],
+            "and so does an array"
+        );
+
+        assert!(
+            config.services.contains_key("db"),
+            "a service the overlay introduces is added, not rejected"
+        );
+        assert_eq!(
+            layout.inspect().expect("is valid").origins["services.db.image"].layer,
+            ConfigLayer::Local,
+            "and is attributed key by key like any other"
+        );
+    }
+
+    #[test]
+    fn an_array_replaces_rather_than_appends() {
+        // Appending would leave no way to remove an entry, and these
+        // arrays are short enough to restate.
+        let layout = Layout::new().write(ConfigLayer::Project, COMMITTED).write(
+            ConfigLayer::Local,
+            "[services.web]\nvolumes = [\"./certs:/certs:ro\"]\n",
+        );
+
+        let config = layout.resolve().expect("is valid");
+
+        assert_eq!(config.services["web"].volumes, vec!["./certs:/certs:ro"]);
+    }
+
+    #[test]
+    fn the_merged_result_is_what_gets_validated() {
+        // Each file is valid TOML and neither is wrong on its own. Only
+        // the merge is, and the message has to name both files, because
+        // the document it describes is on neither of them.
+        let layout = Layout::new()
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "[services.web]\nbuild = \"./web\"\n");
+
+        let err = layout.resolve().unwrap_err().to_string();
+
+        assert!(err.contains("mutually exclusive"), "{err}");
+        assert!(err.contains(CONFIG_FILE), "name the committed file: {err}");
+        assert!(err.contains(LOCAL_CONFIG_FILE), "and the local one: {err}");
+    }
+
+    #[test]
+    fn a_typo_in_a_layer_is_still_caught() {
+        // `deny_unknown_fields` has to survive the merge, or the overlay
+        // becomes the one place a misspelling goes unnoticed.
+        let layout = Layout::new()
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "[runtime]\ndefalut = \"apple\"\n");
+
+        let err = layout.resolve().unwrap_err().to_string();
+
+        assert!(err.contains("defalut"), "name the key: {err}");
+        assert!(
+            err.contains(LOCAL_CONFIG_FILE),
+            "and the file it came from: {err}"
+        );
+    }
+
+    #[test]
+    fn a_typo_in_the_only_file_still_says_which_line() {
+        // The merged document has no line numbers, and nearly every
+        // project has one layer. Losing `at line N` there would mean
+        // searching a long `kobune.toml` by eye for a misspelled key.
+        let layout = Layout::new().write(
+            ConfigLayer::Project,
+            "[project]\nname = \"myapp\"\n\n[services.web]\nimage = \"x\"\ndefalut = \"oops\"\n",
+        );
+
+        let err = layout.resolve().unwrap_err().to_string();
+
+        assert!(err.contains("defalut"), "{err}");
+        assert!(err.contains("line 6"), "point at the line: {err}");
+    }
+
+    #[test]
+    fn a_typo_across_layers_names_the_files_instead() {
+        // Two layers and the document is on no disk, so there is no line
+        // to point at — the files it merged are what there is to say.
+        let layout = Layout::new()
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "[runtime]\ndefalut = \"apple\"\n");
+
+        let err = layout.resolve().unwrap_err().to_string();
+
+        assert!(err.contains("defalut"), "{err}");
+        assert!(err.contains(CONFIG_FILE), "{err}");
+        assert!(err.contains(LOCAL_CONFIG_FILE), "{err}");
+    }
+
+    #[test]
+    fn malformed_toml_names_the_layer_it_is_in() {
+        let layout = Layout::new()
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "this is not toml\n");
+
+        let err = layout.resolve().unwrap_err().to_string();
+        assert!(err.contains(LOCAL_CONFIG_FILE), "{err}");
+    }
+
+    #[test]
+    fn the_local_layer_is_anchored_on_the_main_worktree() {
+        // The one that decides whether any of this works. `kobune.toml` is
+        // committed, so a worktree holds a copy and the upward search stops
+        // there; `kobune.local.toml` is gitignored, so `git worktree add`
+        // never brings one. Looked for beside the file that was found, the
+        // override would apply in the main checkout and silently nowhere
+        // else.
+        let layout = Layout::new()
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "[runtime]\ndefault = \"apple\"\n");
+
+        // A worktree as `kobune new` places one: a sibling of the main
+        // checkout, carrying its own committed copy and nothing untracked.
+        let worktree = tempfile::tempdir().expect("tempdir");
+        std::fs::write(worktree.path().join(CONFIG_FILE), COMMITTED).expect("writes");
+
+        let config = KobuneConfig::resolve(worktree.path(), layout.repo.path(), layout.home.path())
+            .expect("is valid");
+
+        assert_eq!(
+            config.runtime.default, "apple",
+            "the worktree reads the override its main checkout holds"
+        );
+    }
+
+    #[test]
+    fn a_worktree_without_a_committed_file_falls_back_to_the_main_one() {
+        // Right after `git worktree add` on a branch that predates the
+        // project's kobune.toml.
+        let layout = Layout::new().write(ConfigLayer::Project, COMMITTED);
+        let worktree = tempfile::tempdir().expect("tempdir");
+
+        let config = KobuneConfig::resolve(worktree.path(), layout.repo.path(), layout.home.path())
+            .expect("is valid");
+
+        assert_eq!(config.project.name, "myapp");
+    }
+
+    #[test]
+    fn no_project_file_anywhere_is_the_error_it_always_was() {
+        let layout = Layout::new().write(ConfigLayer::Global, "[runtime]\ndefault = \"apple\"\n");
+
+        assert!(
+            matches!(layout.resolve(), Err(Error::ConfigNotFound(_))),
+            "a machine layer alone is not a project"
+        );
+    }
+
+    #[test]
+    fn merging_keeps_the_order_the_services_were_declared_in() {
+        // **`toml::Table` is a `BTreeMap` unless `preserve_order` is on**,
+        // and merging through one sorted every project's services
+        // alphabetically — with no overlay file present, because the merge
+        // is now how the single committed file is read too. `services` is
+        // an `IndexMap` precisely so declaration order survives:
+        // `startup_order` walks it, and `KOBUNE_SERVICE` is "the first one
+        // declared". Deliberately not alphabetical, so a regression shows.
+        let layout = Layout::new().write(
+            ConfigLayer::Project,
+            r#"
+            [project]
+            name = "myapp"
+            [services.web]
+            image = "x"
+            [services.api]
+            image = "x"
+            [services.db]
+            image = "x"
+        "#,
+        );
+
+        let config = layout.resolve().expect("is valid");
+
+        assert_eq!(
+            config.services.keys().collect::<Vec<_>>(),
+            vec!["web", "api", "db"]
+        );
+        assert_eq!(config.startup_order(), vec!["web", "api", "db"]);
+    }
+
+    #[test]
+    fn an_overlay_does_not_reorder_what_it_does_not_mention() {
+        // Adding a service puts it last, rather than wherever its name
+        // happens to sort.
+        let layout = Layout::new()
+            .write(
+                ConfigLayer::Project,
+                r#"
+                [project]
+                name = "myapp"
+                [services.web]
+                image = "x"
+                [services.api]
+                image = "x"
+            "#,
+            )
+            .write(
+                ConfigLayer::Local,
+                "[services.web]
+port = 4000
+[services.aaa]
+image = \"x\"
+",
+            );
+
+        let config = layout.resolve().expect("is valid");
+
+        assert_eq!(
+            config.services.keys().collect::<Vec<_>>(),
+            vec!["web", "api", "aaa"]
+        );
+    }
+
+    #[test]
+    fn a_layer_that_changes_a_keys_shape_takes_the_old_origins_with_it() {
+        // A layer may replace a table with a scalar, or the other way
+        // round. Origins left behind would have `config show` list keys
+        // the merged document does not contain — in the one command whose
+        // job is to say what it does contain.
+        let layout = Layout::new()
+            .write(ConfigLayer::Global, "[runtime]\ndefault = \"apple\"\n")
+            .write(ConfigLayer::Project, COMMITTED)
+            // Mistyped: `runtime` as a string, not a table.
+            .write(ConfigLayer::Local, "runtime = \"apple\"\n");
+
+        let report = layout.inspect().expect("the layers are still readable");
+
+        assert!(
+            !report.origins.contains_key("runtime.default"),
+            "the table it replaced is gone from the document, so from the report: {:?}",
+            report.origins.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(report.origins["runtime"].layer, ConfigLayer::Local);
+    }
+
+    #[test]
+    fn a_table_displacing_a_scalar_forgets_that_scalar() {
+        // The same the other way round, which nothing below the table
+        // would otherwise overwrite.
+        let layout = Layout::new()
+            .write(ConfigLayer::Global, "runtime = \"apple\"\n")
+            .write(ConfigLayer::Project, COMMITTED);
+
+        let report = layout.inspect().expect("the layers are still readable");
+
+        assert!(
+            !report.origins.contains_key("runtime"),
+            "the scalar is not in the merged document: {:?}",
+            report.origins.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            report.origins["runtime.default"].layer,
+            ConfigLayer::Project
+        );
+    }
+
+    #[test]
+    fn the_layers_survive_a_merge_that_will_not_load() {
+        // The whole reason `inspect` is not `resolve`. Somebody asks where
+        // a value came from *because* the configuration stopped loading,
+        // and an answer that failed alongside it would leave them with the
+        // same message and nothing to read it against.
+        let layout = Layout::new()
+            .write(ConfigLayer::Global, "[runtime]\ndefault = \"apple\"\n")
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "[runtime]\ndefalut = \"apple\"\n");
+
+        assert!(layout.resolve().is_err(), "it really does not load");
+
+        let report = layout.inspect().expect("the layers are still readable");
+
+        assert_eq!(report.loaded().count(), 3, "all three are still named");
+        assert!(
+            report
+                .problem
+                .as_deref()
+                .is_some_and(|why| why.contains("defalut")),
+            "and the reason travels with them: {:?}",
+            report.problem
+        );
+        assert_eq!(
+            report.origins["runtime.default"].layer,
+            ConfigLayer::Project,
+            "what did merge is still attributed"
+        );
+    }
+
+    #[test]
+    fn a_merge_that_only_fails_validation_keeps_its_layers_too() {
+        // Both files are valid TOML and each is fine alone. Only the
+        // combination is wrong, which is the case with no file to open.
+        let layout = Layout::new()
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "[services.web]\nbuild = \"./web\"\n");
+
+        let report = layout.inspect().expect("the layers are still readable");
+
+        assert!(
+            report
+                .problem
+                .as_deref()
+                .is_some_and(|why| why.contains("mutually exclusive")),
+            "{:?}",
+            report.problem
+        );
+        assert_eq!(
+            report.origins["services.web.build"].layer,
+            ConfigLayer::Local,
+            "which points straight at the layer that did it"
+        );
+    }
+
+    #[test]
+    fn the_layers_are_reported_when_the_project_file_is_the_missing_one() {
+        // The case the command is sold on — "my file is not where I think
+        // it is" — and the one it used to answer with the same
+        // `ConfigNotFound` every other command already gave.
+        let layout = Layout::new().write(ConfigLayer::Global, "[runtime]\ndefault = \"apple\"\n");
+
+        assert!(
+            matches!(layout.resolve(), Err(Error::ConfigNotFound(_))),
+            "resolving still fails, for every command that needs a config"
+        );
+
+        let report = layout.inspect().expect("the layers are still readable");
+
+        let project = report
+            .sources
+            .iter()
+            .find(|source| source.layer == ConfigLayer::Project)
+            .expect("the layer is listed even with no file behind it");
+
+        assert!(!project.loaded);
+        assert!(
+            project.path.ends_with(CONFIG_FILE),
+            "with the path it was looked for at: {}",
+            project.path.display()
+        );
+        assert!(
+            report
+                .problem
+                .as_deref()
+                .is_some_and(|why| why.contains("no kobune.toml")),
+            "{:?}",
+            report.problem
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_toml_still_fails_inspection() {
+        // There is no merged document to explain yet, and the error names
+        // the one file at fault, which is the whole of what is needed.
+        let layout = Layout::new()
+            .write(ConfigLayer::Project, COMMITTED)
+            .write(ConfigLayer::Local, "this is not toml\n");
+
+        let err = layout.inspect().unwrap_err().to_string();
+        assert!(err.contains(LOCAL_CONFIG_FILE), "{err}");
     }
 }
