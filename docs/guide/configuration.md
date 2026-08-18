@@ -1,7 +1,9 @@
 # Configuration
 
 Everything lives in `kobune.toml` at the repository root. It is committed, and
-every worktree reads the same one.
+every worktree reads the same one. Two more files may be merged over it where a
+machine or a clone has to differ; [The other two
+layers](#the-other-two-layers) is about those.
 
 For an exhaustive list of keys, see the
 [`kobune.toml` reference](../reference/kobune-toml). This page is about the
@@ -214,7 +216,18 @@ starts faster than building, and it is the shorter path to a working
 environment; reach for `build` when you need system packages or a toolchain
 that an off-the-shelf image does not carry.
 
-## What is not supported yet
+## The other two layers
 
-- **`kobune.local.toml`** — per-worktree overrides. Environment variable layers
-  cover most of what it was for.
+`kobune.toml` is the middle of three files, and the other two are absent on
+most checkouts. `~/.kobune/config.toml` is read before it and holds what is
+true of the computer rather than of the project — `[runtime] default = "apple"`
+on the Mac that runs Apple Container, with no project having to know about it.
+`kobune.local.toml`, beside `kobune.toml`, is read after it and is the same
+thing for one clone.
+
+Tables merge and everything else replaces, so either one can set
+`[services.web] port` without restating the image beside it. What they came to
+is in no file you can open, so
+[`kobune config show`](../reference/cli#configuration) is how to see it.
+
+[Layers](../reference/kobune-toml#layers) has the whole of it.

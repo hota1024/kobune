@@ -1,6 +1,6 @@
 # Environment variables
 
-Three layers, resolved last-wins, plus a set Kobune injects underneath all of
+Four layers, resolved last-wins, plus a set Kobune injects underneath all of
 them.
 
 ## The layers
@@ -8,23 +8,39 @@ them.
 | Layer | Where | Committed? |
 | --- | --- | --- |
 | **global** | `~/.kobune/env` | No — your machine |
-| **project** | `env` in `kobune.toml`, and `.kobune/env` | Yes |
+| **project** | `.kobune/env` | Yes |
+| **service** | `env` in `[services.<name>]` | Yes |
 | **workspace** | `.kobune/env.local` | No — gitignore it |
 
-Later wins. A workspace value beats a project value beats a global one.
+Later wins. A workspace value beats a service value beats a project value beats
+a global one.
 
 ```console
 $ kobune env ls
-╭ environment ────────────────────────────────────╮
-│ KEY           SCOPE      VALUE                  │
-│ DATABASE_URL  project    postgres://db:5432/app │
-│ LOG_LEVEL     workspace  debug                  │
-│ API_KEY       global     ****                   │
-╰─────────────────────────────────────────────────╯
+│ KEY           SCOPE      VALUE
+│ DATABASE_URL  project    po••••••••••••••••••••
+│ GITHUB_TOKEN  global     gh••••••••••••••••••
+│ …
+│ LOG_LEVEL     workspace  de•••
 ```
 
-**The layer is always shown**, because with three of them the hardest bug is a
+**The layer is always shown**, because with four of them the hardest bug is a
 value winning from somewhere you were not looking.
+
+**The value is not**, unless you ask for it. Anything you set is masked down to
+its first two characters, so a listing can be read over a shoulder or pasted
+into an issue; `kobune env ls --reveal` prints them in full. What Kobune
+injects is exempt, because those are its own and hold no secrets — and checking
+a URL is common enough that hiding it would only be in the way.
+
+**`service` appears only when a service is named.** A listing of no particular
+service is what every service shares, and folding one service's own variables
+into that would present them as everyone's — so they show up under
+`kobune env ls --service web` and nowhere else. It is a layer of its own rather
+than part of `project` because `project` would send you to `.kobune/env` to
+change a value that a service overrides, having just told you that you were
+looking in the right place. `kobune env set` cannot write to it either; that
+one is edited in `kobune.toml`.
 
 ## Setting them
 

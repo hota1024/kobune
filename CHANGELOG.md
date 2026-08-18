@@ -109,6 +109,16 @@ less accurately.
 
 ### Fixed
 
+- **The documented install URL resolves again.** The documentation site moved
+  to `kobune.1024.works` after the rename and `minato.1024.works` stopped
+  existing, and nothing in the repository followed — so
+  `curl -fsSL https://minato.1024.works/install.sh | sh`, the first command in
+  the README and on the home page alike, failed to resolve a host rather than
+  installing anything. Every reference moved with it, the ones outside the
+  documentation included: the header of the `kobune.toml` that `kobune init`
+  writes, the body of each nightly release, and the two messages `install.sh`
+  prints itself
+
 - **The mouse and the alternate screen reach a Docker service after all.**
   The modes were to be found by reading the container's log back, and that
   can never work: Docker holds everything after the last newline until the
@@ -266,8 +276,7 @@ less accurately.
   `minato uninstall` before the new binary is installed — after this the
   launchd job, the trusted certificate, `~/.minato` and every running container
   carry names nothing can find, and the old daemon goes on holding ports 80,
-  443 and 53. The documentation is still served from `minato.1024.works`; that
-  moves separately
+  443 and 53. The documentation followed later, to `kobune.1024.works`.
 - **A tunnel hostname is one label**: `web-feat-1-myapp.example.com`, where it
   was `web-feat-1.myapp.example.com`. Cloudflare's Universal SSL covers the
   apex and first-level subdomains only, so the old two-level hostname had no

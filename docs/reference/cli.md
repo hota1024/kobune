@@ -489,12 +489,17 @@ unloaded: launchd keeps the ports, and the next request through one of them
 starts the daemon again. `restart` is what brings it straight back without
 waiting for that request.
 
+`kobune ping` is the shortest way to ask whether one is answering. It prints
+what `daemon status` prints without the socket line, and starts a daemon if
+there is none — so a `pong` says the daemon is up and speaking a protocol this
+CLI knows, not that it already was.
+
 `restart` is for the one case that does not fix itself: a daemon left running
 from an older build. It answers every command happily and speaks a protocol the
 new CLI does not, which reads as
 
 ```
-error: the daemon speaks protocol 3, which this kobune (protocol 5) cannot
+error: the daemon speaks protocol 6, which this kobune (protocol 7) cannot
 talk to. Restart it with `kobune daemon restart`
 ```
 
@@ -666,5 +671,6 @@ expects it; the install script does this already.
 | `KOBUNE_DNS_PORT` | DNS port. Default 53 |
 | `KOBUNE_CLOUDFLARED` | A `cloudflared` binary somewhere neither `PATH` nor the usual install prefixes reach |
 | `KOBUNE_CONTAINER` | The same, for Apple Container's `container` |
+| `KOBUNE_DAEMON` | The `kobuned` to start, for when it is not sitting beside the `kobune` being run |
 | `KOBUNE_LOG` | Log filter for the daemon, e.g. `debug` |
 | `KOBUNE_NO_UPDATE_CHECK` | Set to anything to stop the update check, both the daily one and `--version`'s |

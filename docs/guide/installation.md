@@ -1,7 +1,7 @@
 # Installation
 
 ```console
-$ curl -fsSL https://minato.1024.works/install.sh | sh
+$ curl -fsSL https://kobune.1024.works/install.sh | sh
 ```
 
 That picks the archive for your machine, checks it against its published
@@ -45,16 +45,17 @@ The desktop app is optional and needs a little more; see
 
 ## The install script
 
-Read it before you run it — [`install.sh`](https://minato.1024.works/install.sh)
-is about 700 lines of POSIX shell and does nothing surprising. Two settings:
+Read it before you run it — [`install.sh`](https://kobune.1024.works/install.sh)
+is about 700 lines of POSIX shell and does nothing surprising. Three settings:
 
 | Variable | Description |
 | --- | --- |
 | `KOBUNE_INSTALL_DIR` | where the binaries go, `~/.local/bin` by default |
+| `KOBUNE_CHANNEL` | which release tag to fetch, `nightly` by default — and today the only one there is |
 | `KOBUNE_NO_COMPLETIONS` | set to anything to skip the completion scripts |
 
 ```console
-$ curl -fsSL https://minato.1024.works/install.sh | KOBUNE_INSTALL_DIR=/usr/local/bin sh
+$ curl -fsSL https://kobune.1024.works/install.sh | KOBUNE_INSTALL_DIR=/usr/local/bin sh
 ```
 
 ### The PATH line
@@ -388,15 +389,15 @@ There are three differences worth knowing before you choose it — see
 
 ```console
 $ kobune daemon start
-╭ kobuned ───────────────────────────────╮
-│ running                                │
-│                                        │
-│ version   0.1.0                        │
-│ protocol  1                            │
-│ runtime   docker 29.4.0                │
-│ uptime    0s                           │
-│ socket    ~/.kobune/kobuned.sock       │
-╰────────────────────────────────────────╯
+╭ kobuned ─────────────────────────────╮
+│ running                              │
+│                                      │
+│ version   0.1.0 (9b2f09b)            │
+│ protocol  7                          │
+│ runtime   docker 29.4.0, apple 1.2.1 │
+│ uptime    0s                         │
+│ socket    ~/.kobune/kobuned.sock     │
+╰──────────────────────────────────────╯
 ```
 
 You rarely need to do this by hand; any command starts the daemon if it is not

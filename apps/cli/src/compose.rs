@@ -399,7 +399,7 @@ fn render(project: &str, carried: &[String], blocks: &[String]) -> String {
     let mut out = String::new();
 
     out.push_str("# Converted from compose by `kobune init --from-compose`.\n");
-    out.push_str("# Every key: https://minato.1024.works/reference/kobune-toml\n");
+    out.push_str("# Every key: https://kobune.1024.works/reference/kobune-toml\n");
     out.push_str("#\n");
     out.push_str("# Read the TODOs before the first `kobune up`. They are the\n");
     out.push_str("# decisions compose had no way to express.\n\n");

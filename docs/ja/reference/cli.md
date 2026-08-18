@@ -491,12 +491,17 @@ launchd 経由になります。これが 80/443 番ポートを保持したま�
 保持し続け、次のリクエストで daemon が起動し直します。そのリクエストを待たずに
 戻すのが `restart` です。
 
+`kobune ping` は、daemon が応答するかどうかを確かめるいちばん短い方法です。
+`daemon status` から socket の行を除いたものを表示します。停止していれば起動
+するため、応答が返ったことは、いま起動していてこの CLI が扱えるプロトコルを
+話している、という意味です。元から起動していたことまでは意味しません。
+
 `restart` があるのは、自動では解消しない唯一のケースのためです。古いビルドの
 まま動き続けている daemon がそれにあたります。コマンドには普通に応答しますが、
 新しい CLI が話すプロトコルとは食い違い、次のように表示されます。
 
 ```
-error: the daemon speaks protocol 3, which this kobune (protocol 5) cannot
+error: the daemon speaks protocol 6, which this kobune (protocol 7) cannot
 talk to. Restart it with `kobune daemon restart`
 ```
 
@@ -665,5 +670,6 @@ $ kobune completions <bash|zsh|fish|elvish|powershell>
 | `KOBUNE_DNS_PORT` | DNS のポート。既定値 53 |
 | `KOBUNE_CLOUDFLARED` | `PATH` にも主要なインストール先にも無い `cloudflared` のパス |
 | `KOBUNE_CONTAINER` | Apple Container の `container` について同じもの |
+| `KOBUNE_DAEMON` | 起動する `kobuned` のパス。実行中の `kobune` の隣に無い場合に使います |
 | `KOBUNE_LOG` | daemon のログフィルタ。例: `debug` |
 | `KOBUNE_NO_UPDATE_CHECK` | 何か値を設定すると更新チェックをしません（1 日 1 回のものと `--version` のもの、どちらも） |

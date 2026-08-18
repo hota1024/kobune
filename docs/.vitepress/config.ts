@@ -21,7 +21,7 @@ const CURRENT = '0.1'
 const BRAND = '#00B4DB'
 
 /** Where the site is served. The sitemap and the social card need it spelled out. */
-const HOSTNAME = 'https://minato.1024.works'
+const HOSTNAME = 'https://kobune.1024.works'
 
 /**
  * Where each locale lives.

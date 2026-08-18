@@ -16,7 +16,7 @@ by design.
 > change tomorrow with nothing to read but the commit that changed it.
 
 ```console
-$ curl -fsSL https://minato.1024.works/install.sh | sh
+$ curl -fsSL https://kobune.1024.works/install.sh | sh
 ```
 
 ```console
@@ -162,7 +162,7 @@ host and never on macOS.
 
 ## Documentation
 
-<https://minato.1024.works> — in English and Japanese, covering installation,
+<https://kobune.1024.works> — in English and Japanese, covering installation,
 configuration, everyday use, the runtimes, tunnels, tutorials, and a CLI and
 `kobune.toml` reference. The source is in [`docs/`](docs/).
 
@@ -225,7 +225,7 @@ One at a time — they share a Docker daemon. Without one they say so and skip.
 ### A prebuilt binary
 
 ```console
-$ curl -fsSL https://minato.1024.works/install.sh | sh
+$ curl -fsSL https://kobune.1024.works/install.sh | sh
 ```
 
 Picks the archive for the machine, checks it against its `.sha256`, installs

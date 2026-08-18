@@ -155,8 +155,12 @@ The schema is Kobune's own and comes first. Docker is one backend among
 several, and compose is an implementation detail generated internally. That way
 Firecracker support does not mean redesigning the format.
 
-It sits at the project root — the main worktree — and is committed.
-Worktree-specific overrides go in `kobune.local.toml`, which is gitignored.
+It sits at the project root — the main worktree — and is committed. It is the
+middle of three layers, read in turn and merged with the later winning:
+`~/.kobune/config.toml` under it for what is true of the machine, and
+`kobune.local.toml` beside it, over it, for what is true of the clone. Both are
+gitignored, and neither is per-worktree — `git worktree add` carries tracked
+files alone, so a copy inside a worktree would never appear there.
 
 ```toml
 [project]
@@ -803,14 +807,16 @@ visible until M1 pins the URLs.
 
 ## 8. Environment variables
 
-### Three layers
+### Four layers
 
-Later wins.
+Later wins. The service layer is only in play when a listing names a service;
+without one, `env ls` is what every service shares.
 
 ```
-1. global     ~/.kobune/env                     every project
-2. project    env in kobune.toml + .kobune/env  committed
-3. workspace  .kobune/env.local                 gitignored, per worktree
+1. global     ~/.kobune/env             every project
+2. project    .kobune/env               committed
+3. service    env in [services.<name>]  committed, per service
+4. workspace  .kobune/env.local         gitignored, per worktree
 ```
 
 ### Secrets
@@ -1192,8 +1198,8 @@ not using TypeScript.
    (`stopped` / `starting` / `ready` / `idle`), updated continuously
 2. **A detail pane** — URLs to copy or open, and start and stop buttons
 3. **A log viewer** — tailing across services, filterable
-4. **An environment editor** — showing which of the three layers each value came
-   from, with secrets masked
+4. **An environment editor** — showing which layer each value came from, with
+   secrets masked
 5. **doctor** — the DNS resolver, certificates and port checks, with one-click
    fixes
 
@@ -1477,7 +1483,7 @@ to the first question would quietly break resolution through the second.
 
 | Item | Why | When |
 | --- | --- | --- |
-| `kobune.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Undecided |
+| `kobune.local.toml` overrides | Environment variables cover most of what it was for, so it waits for demand | Landed, as one of three layers rather than as an override file. `~/.kobune/config.toml` came with it, since "this machine runs Apple Container" was the demand that arrived, and `kobune config show` came with both — a merge nothing can open is not one anybody can debug |
 
 ### What ships, and what does not
 

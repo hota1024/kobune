@@ -34,7 +34,7 @@ With no `kobune.toml`, `kobune init` writes a starter one.
 
 `kobune.toml` sits at the repository root and every worktree reads the same
 one. **The full reference is
-<https://minato.1024.works/reference/kobune-toml>** — read it before writing
+<https://kobune.1024.works/reference/kobune-toml>** — read it before writing
 one rather than guessing at key names.
 
 Two more files may be merged over it, later ones winning:
@@ -233,7 +233,7 @@ kobune env set API_KEY=xxx  # the workspace layer by default: this worktree only
 kobune env set DEBUG=1 --scope project   # the whole repository
 ```
 
-Do not write `.env` directly. There are three layers, and editing one by hand
+Do not write `.env` directly. There are four layers, and editing one by hand
 leaves it unclear which is winning.
 
 **A change needs `kobune down && kobune up`.** Containers that are already
