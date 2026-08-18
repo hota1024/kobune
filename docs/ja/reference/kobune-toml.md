@@ -1,7 +1,8 @@
 # `kobune.toml`
 
 リポジトリルートに配置し、リポジトリで管理します。すべての worktree が同じ
-内容を参照します。
+内容を参照します。このファイルには、さらに 2 つのファイルを重ねられます。
+[層](#層) を参照してください。
 
 ```toml
 [project]
@@ -27,6 +28,91 @@ scope = "project"
 expose = false
 volumes = ["pgdata:/var/lib/postgresql/data"]
 ```
+
+## 層
+
+3 つのファイルを順に読み込んで統合します。後のものが優先されます。
+
+| 層 | ファイル | 管理 | 内容 |
+| --- | --- | --- | --- |
+| **global** | `~/.kobune/config.toml` | 対象外（マシン固有） | そのマシンについて言えること |
+| **project** | リポジトリルートの `kobune.toml` | リポジトリで管理 | プロジェクトそのもの |
+| **local** | その隣の `kobune.local.toml` | 対象外（gitignore） | そのクローンだけの設定 |
+
+必須なのは `kobune.toml` だけです。残りの 2 つは無いのが普通で、無いことは
+エラーではありません。
+
+**テーブルは統合し、それ以外は置き換えます。** そのため、`[services.web]` の
+`port` だけを指定して、隣にある `image` はそのまま残せます。配列は追記ではなく
+丸ごと置き換えます。追記にすると `volumes` から項目を取り除く手段が無くなる
+ためです。
+
+### マシンの層
+
+「このマシンでは Docker、あのマシンでは Apple Container」という使い分けは、
+この層のためにあります。
+
+```toml
+# ~/.kobune/config.toml
+[runtime]
+default = "apple"
+```
+
+一度書けば、そのマシン上のすべてのプロジェクトに適用されます。個々の
+`kobune.toml` はこの存在を知る必要がありません。プロジェクト側でランタイムを
+指定している場合はそちらが優先されます。リポジトリで管理しているファイルの
+ほうが限定的だからです。
+
+### クローンの層
+
+**`kobune.local.toml` はクローンに属します。worktree ではありません。** メインの
+worktree にある `kobune.toml` の隣に置き、そのチェックアウトのすべての worktree
+がこの 1 つのファイルを読みます。`git worktree add` が持っていくのは追跡対象の
+ファイルだけなので、worktree の中に置いても、そもそもそこには現れません。
+
+環境変数の層とはこの点が異なります。[環境変数](../guide/environment-variables)
+のいちばん内側の層は worktree ごとですが、こちらは違います。1 つのリポジトリの
+worktree はいずれにせよ同じランタイムを共有するため、worktree ごとに変える余地
+がないからです。
+
+`kobune init` が `.kobune/env.local` とあわせて `.gitignore` に追加します。
+どちらもコミットされた時点で目的そのものが失われるためです。それ以前から
+あるリポジトリでは、手動で追加してください。
+
+```
+kobune.local.toml
+.kobune/env.local
+```
+
+git が既にその名前を対象にしている場合は何も追記しません。独自のパターン、
+`.git/info/exclude`、グローバルの ignore ファイルのいずれでも同じです。
+そのため `kobune init --force` を再実行しても記述は増えません。
+
+### 値の出どころを確認する
+
+統合した結果はどのファイルにも存在しないため、層を確認できるようにしてあります。
+
+```console
+$ kobune config show
+╭ config ──────────────────────────────────────────╮
+│ LAYER    FILE                                    │
+│ global   ~/.kobune/config.toml          read     │
+│ project  ~/src/myapp/kobune.toml        read     │
+│ local    ~/src/myapp/kobune.local.toml  read     │
+│                                                  │
+│ keys one layer took from another                 │
+│ KEY                LAYER  VALUE  OVER            │
+│ runtime.default    local  apple  global, project │
+│ services.web.port  local  4000   project         │
+╰──────────────────────────────────────────────────╯
+```
+
+[`kobune config show`](./cli#設定) を参照してください。
+
+検証は統合後の結果に対して 1 回だけ行います。`expose = true` を設定する層は
+それ単体では正しく、ポートを取り除いた層と組み合わさると誤りになるためです。
+このときのメッセージは統合元のファイル名を列挙します。問題の行はそのどれにも
+書かれていないからです。
 
 ## `[project]`
 
@@ -66,7 +152,8 @@ carry = [".env", "apps/api/.dev.vars"]
 | --- | --- | --- | --- |
 | `default` | string | `"docker"` | `"docker"` または `"apple"` |
 
-[ランタイム](../guide/runtimes) を参照してください。
+[ランタイム](../guide/runtimes) を参照してください。マシンごとに答えが変わる
+場合は、ここではなく [マシンの層](#マシンの層) に書いてください。
 
 ## `[services.<name>]`
 

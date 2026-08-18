@@ -171,7 +171,9 @@ default = "docker"   # or "apple"
 ```
 
 Per project, so different repositories can use different backends. See
-[Runtimes](./runtimes) for what changes when you switch.
+[Runtimes](./runtimes) for what changes when you switch, and
+[Choosing per machine](./runtimes#choosing-per-machine) where the answer is not
+the same on every computer that clones the repository.
 
 ## The URL suffix
 

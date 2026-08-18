@@ -406,5 +406,5 @@ into whatever read it.
 .kobune/env.local          workspace, gitignored
 ```
 
-Plain `KEY=value`, one per line, `#` for comments. Add `.kobune/env.local` to
-`.gitignore`.
+Plain `KEY=value`, one per line, `#` for comments. `.kobune/env.local` belongs
+in `.gitignore`, where `kobune init` puts it.

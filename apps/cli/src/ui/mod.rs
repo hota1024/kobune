@@ -23,7 +23,7 @@ mod views;
 
 use std::path::Path;
 
-use kobune_api::{Diagnostics, EnvInfo, Pong, TunnelInfo, WorkspaceInfo};
+use kobune_api::{ConfigInfo, Diagnostics, EnvInfo, Pong, TunnelInfo, WorkspaceInfo};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -131,6 +131,11 @@ pub fn env(entries: &[EnvInfo]) {
 /// Why a value is shown as written, in words.
 pub use views::{unsettled_reason, unsettled_remedy};
 
+/// `config show`.
+pub fn config(info: &ConfigInfo) {
+    Surface::stdout().print(|decor| views::config(info, decor));
+}
+
 /// `tunnel status`, `tunnel enable`, `tunnel disable`.
 pub fn tunnel(info: &TunnelInfo) {
     Surface::stdout().print(|decor| views::tunnel(info, decor));
@@ -180,6 +185,13 @@ pub fn hint(text: &str, command: &str) -> Line<'static> {
 /// A remark of the CLI's own, with no command attached.
 pub fn note(text: &str) -> Line<'static> {
     views::note(text)
+}
+
+/// The same, for something that went wrong without failing the command.
+///
+/// It carries `!` as well as the colour, so the shape survives `NO_COLOR`.
+pub fn warning(text: &str) -> Line<'static> {
+    views::warning(text)
 }
 
 /// A follow-up step: the state of the machine, and the command that
@@ -237,22 +249,56 @@ pub fn value(text: &str) {
 /// An error, always with its hint when there is one.
 ///
 /// On stderr, so `$(kobune url web)` never picks it up.
+///
+/// **A message that arrives with newlines in it keeps them.** `toml`
+/// reports an unknown field over two lines and the socket-length check
+/// writes its remedy on one of its own, and a [`Line`] renders none of
+/// them — so the last word of one ran straight into the first of the next
+/// (`expected \`default\`in \`runtime\``). Continuations are indented to
+/// the depth the hint uses, so the whole thing reads as one message.
 pub fn error(message: &str, hint: Option<&str>) {
-    let mut lines = vec![Line::from(vec![
-        Span::styled("✗ ", theme::bad()),
-        Span::styled("error", theme::bad()),
-        Span::styled(": ", theme::muted()),
-        Span::raw(message.to_string()),
-    ])];
+    let lines = error_lines(message, hint);
+    Surface::stderr().print(|_| Loose(lines.clone()));
+}
 
-    if let Some(hint) = hint {
-        lines.push(Line::from(vec![
-            Span::styled("  hint: ", theme::muted()),
-            Span::raw(hint.to_string()),
-        ]));
+/// The lines [`error`] prints. Separate so they can be asserted on.
+fn error_lines(message: &str, hint: Option<&str>) -> Vec<Line<'static>> {
+    /// A first line with `lead` in front of it, and the rest indented.
+    fn block(lead: Vec<Span<'static>>, text: &str, indent: &str, out: &mut Vec<Line<'static>>) {
+        // `lines()` yields nothing at all for an empty string, which would
+        // drop the lead-in with it — an error with no `✗` on it.
+        let mut parts = text.lines();
+
+        let mut head = lead;
+        head.push(Span::raw(parts.next().unwrap_or_default().to_string()));
+
+        out.push(Line::from(head));
+        out.extend(parts.map(|part| Line::raw(format!("{indent}{part}"))));
     }
 
-    Surface::stderr().print(|_| Loose(lines.clone()));
+    let mut lines = Vec::new();
+
+    block(
+        vec![
+            Span::styled("✗ ", theme::bad()),
+            Span::styled("error", theme::bad()),
+            Span::styled(": ", theme::muted()),
+        ],
+        message,
+        "  ",
+        &mut lines,
+    );
+
+    if let Some(hint) = hint {
+        block(
+            vec![Span::styled("  hint: ", theme::muted())],
+            hint,
+            "        ",
+            &mut lines,
+        );
+    }
+
+    lines
 }
 
 /// A note that stands on its own, with no panel around it.
@@ -337,6 +383,40 @@ mod tests {
         let text = render(&view);
         assert!(text.contains("cannot reach the daemon"), "got:\n{text}");
         assert!(text.contains("kobune daemon start"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_multi_line_message_keeps_its_line_breaks() {
+        // A `Line` renders no newline of its own, so a message carrying
+        // one used to come out with the last word of one line run into the
+        // first of the next: "expected `default`in `runtime`".
+        let text = render(&Loose(error_lines(
+            "unknown field `defalut`, expected `default`\nin `runtime`",
+            Some("run `kobune config show`\nto see which layer sets what"),
+        )));
+
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4, "got:\n{text}");
+        assert!(lines[0].starts_with("✗ error: unknown field"), "{text}");
+        assert_eq!(lines[1], "  in `runtime`");
+        assert_eq!(lines[2], "  hint: run `kobune config show`");
+        assert_eq!(lines[3], "        to see which layer sets what");
+    }
+
+    #[test]
+    fn a_single_line_message_is_unchanged() {
+        let text = render(&Loose(error_lines("nope", Some("try again"))));
+
+        assert_eq!(text, "✗ error: nope\n  hint: try again\n");
+    }
+
+    #[test]
+    fn an_empty_message_still_looks_like_an_error() {
+        // `lines()` yields nothing for an empty string, which would take
+        // the ✗ with it.
+        let text = render(&Loose(error_lines("", None)));
+
+        assert!(text.starts_with("✗ error:"), "got:\n{text}");
     }
 
     #[test]

@@ -37,6 +37,13 @@ one. **The full reference is
 <https://minato.1024.works/reference/kobune-toml>** — read it before writing
 one rather than guessing at key names.
 
+Two more files may be merged over it, later ones winning:
+`~/.kobune/config.toml` for what is true of the machine, and
+`kobune.local.toml` beside `kobune.toml` for what is true of one clone. Both
+are absent on most checkouts. **`kobune config show` says which layer settled
+each value** — reach for it before concluding that `kobune.toml` says
+something it does not, because the merged result is in no file you can read.
+
 ### There is no `kobune.toml` yet
 
 **Look for a compose file first**, before writing anything:
@@ -50,6 +57,9 @@ It converts what maps, leaves `TODO` comments where compose could not say
 what Kobune needs, and names every key it had no equivalent for. **Read the
 TODOs before the first `kobune up`** — that is the whole of what it could not
 decide for you.
+
+Either form also adds `kobune.local.toml` and `.kobune/env.local` to
+`.gitignore`, so there is nothing to do about those by hand.
 
 Deriving the same file by hand from a compose file you can see is slower and
 gets the service URLs wrong, which is the one mistake that still starts.
@@ -336,7 +346,10 @@ Removes the worktree and its environment. The branch stays.
    shares. When a `${...}` will not settle the listing still arrives: that
    value is shown as written and carries `unsettled` in `--json`, with the
    name it refers to and why
-4. `kobune doctor` — problems with the environment. **The fix is in `fix`**
+4. `kobune config show` — where a setting came from, when the behaviour does
+   not match what `kobune.toml` says. Two other files can be merged over it,
+   and neither is in the repository
+5. `kobune doctor` — problems with the environment. **The fix is in `fix`**
 
 ### Common symptoms
 

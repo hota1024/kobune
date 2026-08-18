@@ -7,18 +7,48 @@ pub enum Error {
     #[error("no kobune.toml found: searched upwards from {0}")]
     ConfigNotFound(PathBuf),
 
-    #[error("cannot read kobune.toml ({path}): {source}")]
+    /// One of the configuration files could not be read.
+    ///
+    /// **Names no file in the sentence**, because three of them can land
+    /// here: `config.toml` under `$KOBUNE_HOME` and `kobune.local.toml`
+    /// as readily as `kobune.toml`. Saying "kobune.toml" and then giving
+    /// another path in brackets sends the reader to open the file that is
+    /// fine.
+    #[error("cannot read the configuration ({path}): {source}")]
     ConfigRead {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("invalid syntax in kobune.toml ({path}): {source}")]
+    /// One of the configuration files is not valid TOML. Same three.
+    #[error("invalid syntax in {path}: {source}")]
     ConfigParse {
         path: PathBuf,
         #[source]
         source: toml::de::Error,
+    },
+
+    /// A merge of valid TOML files that is not a valid configuration.
+    ///
+    /// Names the files rather than the one line at fault: the merged
+    /// document exists nowhere on disk, so a message about `runtime.defalut`
+    /// would otherwise send someone searching a file that does not have it.
+    #[error(
+        "invalid configuration in {}: {source}",
+        crate::config::describe_files(files)
+    )]
+    ConfigMerged {
+        files: Vec<PathBuf>,
+        /// Boxed to keep this variant off the widest one.
+        ///
+        /// `toml::de::Error` is 96 bytes, and a second variant carrying
+        /// one takes the whole enum past the size at which every
+        /// `Result<_, Error>` in the workspace starts being complained
+        /// about. Every caller of this is on a path that has already
+        /// failed, so the indirection costs nothing that matters.
+        #[source]
+        source: Box<toml::de::Error>,
     },
 
     /// Syntactically valid but semantically inconsistent configuration.

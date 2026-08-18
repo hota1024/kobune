@@ -15,7 +15,7 @@ use crate::response::Response;
 ///
 /// Bumped on every breaking change. Clients compare it during the initial
 /// [`Request::Ping`] and ask for a daemon restart on mismatch.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

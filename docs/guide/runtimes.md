@@ -121,6 +121,28 @@ Apple Container is worth it for a lighter-weight VM per container with no
 Docker Desktop running, if your services reach each other through
 `KOBUNE_HOST_*` and you do not need worktrees isolated from one another.
 
+## Choosing per machine
+
+The line above is committed, so it says the same thing on every machine that
+clones the repository. Where that is the wrong answer — this laptop has Docker
+Desktop, that one runs Apple Container — say so in `~/.kobune/config.toml`
+instead, which belongs to the machine and is read before `kobune.toml`:
+
+```toml
+# ~/.kobune/config.toml
+[runtime]
+default = "apple"
+```
+
+That covers every project on that machine at once. Leave `[runtime]` out of
+`kobune.toml` altogether and this is what decides; leave it in and it wins,
+because the committed file is the more specific of the two.
+
+For one clone rather than one machine, `kobune.local.toml` beside `kobune.toml`
+does the same job and is read last. Both are described under
+[Layers](../reference/kobune-toml#layers), and `kobune config show` says which
+of them a value came from.
+
 ## Firecracker
 
 Planned, and not usable yet. It needs KVM, so it runs on a Linux host and

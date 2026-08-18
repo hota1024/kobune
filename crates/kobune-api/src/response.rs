@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use kobune_core::{ServiceScope, ServiceState};
+use kobune_core::{ConfigLayer, ServiceScope, ServiceState};
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostics::Diagnostics;
@@ -42,6 +42,9 @@ pub enum Response {
         /// judge `kobune exec web -- pnpm test` by exit status alone.
         exit_code: i32,
     },
+    /// Which configuration layers were read, and what each settled.
+    Config(ConfigInfo),
+
     /// The state of the Cloudflare Tunnel.
     Tunnel(TunnelInfo),
 
@@ -352,6 +355,72 @@ pub struct EnvInfo {
     /// value is what the container would be given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsettled: Option<Unsettled>,
+}
+
+/// What `config show` found: the layers, and which of them settled what.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigInfo {
+    /// Every layer, in the order it is applied. Layers with no file are
+    /// included — "the override is not applying" is usually "the file is
+    /// not where you think", and only a listing that shows the paths it
+    /// looked at can say so.
+    pub layers: Vec<ConfigLayerInfo>,
+
+    /// The keys more than one layer had an opinion about.
+    ///
+    /// Separate from `values` because this is the question being asked. A
+    /// key only one layer sets is not a mystery to anybody.
+    pub overrides: Vec<ConfigValueInfo>,
+
+    /// Every key, with the layer that settled it. Filled in on request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<ConfigValueInfo>,
+
+    /// Whether `values` is what was asked for.
+    ///
+    /// **Stated rather than inferred from `values` being empty.** A
+    /// configuration with nothing to report would otherwise have `--all`
+    /// silently fall back to the contested-keys wording, which is an
+    /// answer to a question nobody asked.
+    #[serde(default)]
+    pub all: bool,
+
+    /// Why the merged result is not a usable configuration, when it is not.
+    ///
+    /// **Reported here rather than as an error**, because this is the one
+    /// command that has to keep working when the configuration does not.
+    /// Everything above still describes what was read; what it came to is
+    /// what failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+/// One layer, and the file it was read from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigLayerInfo {
+    pub layer: ConfigLayer,
+
+    /// Where it was looked for, whether or not anything was there.
+    pub path: PathBuf,
+
+    pub loaded: bool,
+}
+
+/// One key, and where its value came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigValueInfo {
+    /// The dotted path — `runtime.default`, `services.web.image`.
+    pub key: String,
+
+    /// The value that won, rendered for display.
+    pub value: String,
+
+    /// The layer it came from.
+    pub layer: ConfigLayer,
+
+    /// The layers it overrode, earliest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overridden: Vec<ConfigLayer>,
 }
 
 /// Why a value could not be expanded.

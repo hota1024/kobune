@@ -224,6 +224,19 @@ pub enum Request {
         key: String,
     },
 
+    /// Reports which configuration layers were read, and what each set.
+    ///
+    /// Resolved the same way every other operation resolves it, rather
+    /// than by a second code path that reads the files its own way — the
+    /// point of the command is to say what actually happened, and an
+    /// answer assembled separately could disagree with it.
+    ConfigShow {
+        target: Target,
+        /// Report every key, not only the contested ones.
+        #[serde(default)]
+        all: bool,
+    },
+
     /// Sets the tunnel up and starts it.
     TunnelEnable {
         target: Target,

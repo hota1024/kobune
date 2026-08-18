@@ -119,6 +119,28 @@ Apple Container が適しているのは、Docker Desktop を常駐させずコ�
 軽量な VM を使いたい場合で、かつサービス間通信を `KOBUNE_HOST_*` で記述でき、
 worktree 間のネットワーク分離が不要なケースです。
 
+## マシンごとに使い分ける
+
+上記の設定はリポジトリで管理するため、クローンしたどのマシンでも同じ内容に
+なります。「このノート PC には Docker Desktop があり、あちらは Apple Container
+を使う」という場合は、代わりに `~/.kobune/config.toml` に書きます。これはマシン
+に属するファイルで、`kobune.toml` より先に読み込まれます。
+
+```toml
+# ~/.kobune/config.toml
+[runtime]
+default = "apple"
+```
+
+これでそのマシン上のすべてのプロジェクトをまとめて設定できます。`kobune.toml`
+から `[runtime]` を省けばこちらの指定が使われ、書いてあればそちらが優先され
+ます。リポジトリで管理しているファイルのほうが限定的だからです。
+
+マシン単位ではなくクローン単位で変えたい場合は、`kobune.toml` の隣に置く
+`kobune.local.toml` が同じ役割を果たし、いちばん最後に読み込まれます。どちらも
+[層](../reference/kobune-toml#層) で説明しています。値がどの層から来たかは
+`kobune config show` で確認できます。
+
 ## Firecracker
 
 対応予定ですが、まだ使えません。KVM を必要とするため動作するのは Linux ホスト

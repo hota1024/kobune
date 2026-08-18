@@ -235,6 +235,12 @@ enum Command {
         command: EnvCommand,
     },
 
+    /// Inspect the configuration layers
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
     /// Install the Skill for agents
     Skill {
         #[command(subcommand)]
@@ -382,6 +388,21 @@ enum EnvCommand {
 
         #[arg(long, default_value = "workspace")]
         scope: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCommand {
+    /// Show which layers were read, in order, and what each one set
+    ///
+    /// The three files are read in turn and merged, later ones winning:
+    /// `config.toml` under $KOBUNE_HOME, then the project's `kobune.toml`,
+    /// then `kobune.local.toml` beside it. The result exists nowhere on
+    /// disk, so this is how to see what it came to.
+    Show {
+        /// List every key, not only the ones a later layer took over
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -900,6 +921,7 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
                     .iter()
                     .map(|(service, key)| serde_json::json!({ "service": service, "key": key }))
                     .collect::<Vec<_>>(),
+                "ignored": ignored_as_json(&outcome.ignore),
             }));
         } else {
             let mut fields = vec![
@@ -911,13 +933,35 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
                 fields.push(("converted from", from.display().to_string()));
             }
 
-            let next = if outcome.from.is_some() {
+            // Said because it is a second file being written, in a place
+            // the user did not name. A `.gitignore` that grew a block
+            // nobody was told about is the sort of thing found later, in
+            // a diff, and wondered at.
+            if let init::Ignore::Added { entries, .. } = &outcome.ignore {
+                fields.push(("gitignored", entries.join(", ")));
+            }
+
+            let mut next = if outcome.from.is_some() {
                 vec![ui::note(
                     "read the TODOs in it before the first `kobune up`",
                 )]
             } else {
                 vec![ui::hint("bring the environment up with", "kobune up")]
             };
+
+            // The configuration is written either way, so this is a
+            // remark rather than a failure — but leaving it unsaid would
+            // let somebody commit the file it was meant to keep back.
+            if let init::Ignore::Failed(reason) = &outcome.ignore {
+                // "update", not "write": the failure may have been the
+                // read — an unreadable `.gitignore`, or a directory by
+                // that name — and "could not write (Is a directory)" sends
+                // someone to check permissions they already have.
+                next.push(ui::warning(&format!(
+                    "could not update .gitignore ({reason}). Add \
+                     kobune.local.toml and .kobune/env.local to it by hand"
+                )));
+            }
 
             ui::done("init", &fields, next);
 
@@ -1197,6 +1241,9 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             workdir: workdir.clone(),
         },
         Command::Env { command } => build_env_request(command, target)?,
+        Command::Config { command } => match command {
+            ConfigCommand::Show { all } => Request::ConfigShow { target, all: *all },
+        },
         Command::Tunnel { command } => match command {
             TunnelCommand::Enable {
                 provider,
@@ -1823,6 +1870,32 @@ fn handle_skill(
     }
 }
 
+/// What `init` did about `.gitignore`, for `--json`.
+///
+/// A tagged object rather than a bare list of entries: "nothing was added"
+/// is four different facts here, and an agent deciding whether to tell
+/// somebody to check their `.gitignore` needs to know which.
+fn ignored_as_json(ignore: &init::Ignore) -> serde_json::Value {
+    match ignore {
+        init::Ignore::NoRepository => serde_json::json!({ "state": "no_repository" }),
+        init::Ignore::AlreadyCovered => serde_json::json!({ "state": "already_covered" }),
+        init::Ignore::Added {
+            path,
+            entries,
+            created,
+        } => serde_json::json!({
+            "state": "added",
+            "path": path,
+            "entries": entries,
+            "created": created,
+        }),
+        init::Ignore::Failed(reason) => serde_json::json!({
+            "state": "failed",
+            "reason": reason,
+        }),
+    }
+}
+
 /// Squeezes an exit code into a process exit code.
 ///
 /// A death by signal comes through negative. Rounding that to 0 would read
@@ -1923,6 +1996,7 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
             }
         }
         Response::Workspace { workspace } => ui::workspace(workspace),
+        Response::Config(config) => ui::config(config),
         Response::Tunnel(tunnel) => ui::tunnel(tunnel),
         // logs has already printed its lines; exec speaks through its
         // exit code. `uninstall` presents its own two halves — the plan
