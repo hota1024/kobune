@@ -2,7 +2,7 @@
 #
 # Installs Kobune.
 #
-#   curl -fsSL https://minato.1024.works/install.sh | sh
+#   curl -fsSL https://kobune.1024.works/install.sh | sh
 #
 # POSIX sh on purpose. The reader's shell does not matter — this is piped
 # into `sh` — but the shell they *use* does, so completions and the PATH
@@ -215,7 +215,7 @@ detect_target() {
             case "$arch" in
                 x86_64) printf 'x86_64-unknown-linux-gnu' ;;
                 aarch64 | arm64)
-                    die "there is no Linux arm64 build yet. Build from source: https://minato.1024.works/guide/installation"
+                    die "there is no Linux arm64 build yet. Build from source: https://kobune.1024.works/guide/installation"
                     ;;
                 *) die "unsupported architecture: $arch" ;;
             esac
@@ -716,4 +716,4 @@ say "  kobune doctor         # what is missing"
 say "  kobune setup          # the privileged one-off steps, asked one at a time"
 say "  kobune init           # in a repository"
 say ""
-say "https://minato.1024.works"
+say "https://kobune.1024.works"

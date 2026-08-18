@@ -147,7 +147,7 @@ jobs:
             "changes without notice." \
             "" \
             "\`\`\`console" \
-            "\$ curl -fsSL https://minato.1024.works/install.sh | sh" \
+            "\$ curl -fsSL https://kobune.1024.works/install.sh | sh" \
             "\`\`\`" \
             "" \
             "That picks the right archive, checks it against its \`.sha256\`," \

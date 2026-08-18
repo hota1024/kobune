@@ -1,7 +1,7 @@
 # インストール
 
 ```console
-$ curl -fsSL https://minato.1024.works/install.sh | sh
+$ curl -fsSL https://kobune.1024.works/install.sh | sh
 ```
 
 環境に合ったアーカイブを選び、公開されている `.sha256` と照合し、`kobune` と
@@ -44,16 +44,17 @@ fish が受け付けない `export` 行を渡されることはありません�
 
 ## インストールスクリプト
 
-実行する前に中身を読んでください。[`install.sh`](https://minato.1024.works/install.sh)
-は POSIX シェルで約 700 行、意外なことは何もしていません。設定は 2 つです。
+実行する前に中身を読んでください。[`install.sh`](https://kobune.1024.works/install.sh)
+は POSIX シェルで約 700 行、意外なことは何もしていません。設定は 3 つです。
 
 | 変数 | 説明 |
 | --- | --- |
 | `KOBUNE_INSTALL_DIR` | バイナリの配置先。既定は `~/.local/bin` |
+| `KOBUNE_CHANNEL` | 取得するリリースタグ。既定は `nightly` で、現状これしかありません |
 | `KOBUNE_NO_COMPLETIONS` | 何か値を設定すると補完スクリプトを書き込みません |
 
 ```console
-$ curl -fsSL https://minato.1024.works/install.sh | KOBUNE_INSTALL_DIR=/usr/local/bin sh
+$ curl -fsSL https://kobune.1024.works/install.sh | KOBUNE_INSTALL_DIR=/usr/local/bin sh
 ```
 
 ### PATH の設定
@@ -384,15 +385,15 @@ default = "apple"
 
 ```console
 $ kobune daemon start
-╭ kobuned ───────────────────────────────╮
-│ running                                │
-│                                        │
-│ version   0.1.0                        │
-│ protocol  1                            │
-│ runtime   docker 29.4.0                │
-│ uptime    0s                           │
-│ socket    ~/.kobune/kobuned.sock       │
-╰────────────────────────────────────────╯
+╭ kobuned ─────────────────────────────╮
+│ running                              │
+│                                      │
+│ version   0.1.0 (9b2f09b)            │
+│ protocol  7                          │
+│ runtime   docker 29.4.0, apple 1.2.1 │
+│ uptime    0s                         │
+│ socket    ~/.kobune/kobuned.sock     │
+╰──────────────────────────────────────╯
 ```
 
 通常は手動で実行する必要はありません。いずれのコマンドも、daemon が停止して

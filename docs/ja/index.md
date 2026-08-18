@@ -12,7 +12,7 @@ hero:
       text: Kobune とは
       link: /ja/guide/
   install:
-    command: "curl -fsSL https://minato.1024.works/install.sh | sh"
+    command: "curl -fsSL https://kobune.1024.works/install.sh | sh"
     copy: コピー
     copied: コピーしました
 

@@ -36,7 +36,7 @@ docs/
 `pnpm sync` runs before `dev` and before `build`, and fills `public/`:
 
 - `install.sh` from the repository root, so
-  <https://minato.1024.works/install.sh> is the script the README tells
+  <https://kobune.1024.works/install.sh> is the script the README tells
   people to pipe into a shell.
 - `assets/logo/` as `public/logo/`, which is where the nav logo, the
   favicon and the home page hero come from. `assets/README.md` says which
@@ -80,8 +80,8 @@ so a panel cannot come out one column short of its own border.
 `theme/copy.ts` holds everything the theme says in both languages — the bar
 above the nav and the demo's captions — shaped like `TEXT` in `config.ts`. The
 rest sits in `hero:`, `specs:` and `notes:` in the two `index.md` files.
-`scripts/check.mjs` skips frontmatter and does not read TypeScript, so both
-are held to the house style by hand.
+`.claude/skills/prose/scripts/check.mjs` skips frontmatter and does not read
+TypeScript, so both are held to the house style by hand.
 
 ## What agents read
 
@@ -106,9 +106,9 @@ rather than `/guide/index.md`, which leaves its own `./installation` links
 resolving a directory too high.
 
 A fourth thing is not the plugin's: a heading given an explicit id with
-`{#…}` keeps the syntax in the copied Markdown, and `scripts/check.mjs`
-cannot resolve a link to one either. Both are reasons to let a heading make
-its own anchor.
+`{#…}` keeps the syntax in the copied Markdown, and the prose checker cannot
+resolve a link to one either. Both are reasons to let a heading make its own
+anchor.
 
 Every English page also carries a hidden `Are you an LLM? …` div pointing at
 its `.md`. It stays out of the local search index. `injectLLMHint: false`
@@ -140,7 +140,7 @@ edited.
 
 ## Deployment
 
-Cloudflare Pages, at <https://minato.1024.works>. Pushing to `main` deploys;
+Cloudflare Pages, at <https://kobune.1024.works>. Pushing to `main` deploys;
 a pull request gets its own preview URL, which is the reason the docs are
 hosted here — prose is reviewed by reading it, not by reading its diff.
 
@@ -169,7 +169,7 @@ Already done, and recorded here for whoever has to do it again.
    Cloudflare.
 3. Add it to the repository as `CLOUDFLARE_API_TOKEN`, alongside
    `CLOUDFLARE_ACCOUNT_ID`.
-4. Point the Pages project's custom domain at `minato.1024.works`. The zone
+4. Point the Pages project's custom domain at `kobune.1024.works`. The zone
    is on Cloudflare, so the DNS record and the certificate are handled for
    you.
 

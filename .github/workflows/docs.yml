@@ -1,7 +1,7 @@
 name: Documentation
 
 # `install.sh` is in the list because the site serves it: `prebuild` copies
-# it into `public/`, and https://minato.1024.works/install.sh is the URL the
+# it into `public/`, and https://kobune.1024.works/install.sh is the URL the
 # README tells people to pipe into a shell. Left out, a fix to the script
 # alone would never be deployed and the old one would go on being installed.
 #

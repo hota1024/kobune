@@ -103,7 +103,7 @@ const card = `<svg width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${H
       ${heading(400, 272, 96, 'Kobune')}
       <text x="400" y="336" font-size="34" fill="${MUTED}">A development environment</text>
       <text x="400" y="382" font-size="34" fill="${MUTED}">manager for git worktrees</text>
-      <text x="400" y="462" font-size="26" fill="${BRAND}">minato.1024.works</text>
+      <text x="400" y="462" font-size="26" fill="${BRAND}">kobune.1024.works</text>
     </g>
   </g>
 

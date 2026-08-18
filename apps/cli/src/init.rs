@@ -263,7 +263,7 @@ fn project_name_from(root: &Path) -> String {
 
 fn template(project: &str) -> String {
     format!(
-        r#"# Every key: https://minato.1024.works/reference/kobune-toml
+        r#"# Every key: https://kobune.1024.works/reference/kobune-toml
 
 [project]
 name = "{project}"

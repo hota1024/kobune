@@ -1,31 +1,46 @@
 # 環境変数
 
-3 つの層を後勝ちで解決します。さらにその下に、Kobune が自動的に注入する変数が
+4 つの層を後勝ちで解決します。さらにその下に、Kobune が自動的に注入する変数が
 あります。
 
-## 3 つの層
+## 4 つの層
 
 | 層 | 保存先 | コミット対象 |
 | --- | --- | --- |
 | **global** | `~/.kobune/env` | 対象外。マシン固有の設定 |
-| **project** | `kobune.toml` の `env` と `.kobune/env` | 対象 |
+| **project** | `.kobune/env` | 対象 |
+| **service** | `[services.<name>]` の `env` | 対象 |
 | **workspace** | `.kobune/env.local` | 対象外。gitignore に追加する |
 
-後に定義された層が優先されます。workspace が project より優先され、project が
-global より優先されます。
+後に定義された層が優先されます。workspace が service より、service が project
+より、project が global より優先されます。
 
 ```console
 $ kobune env ls
-╭ environment ────────────────────────────────────╮
-│ KEY           SCOPE      VALUE                  │
-│ DATABASE_URL  project    postgres://db:5432/app │
-│ LOG_LEVEL     workspace  debug                  │
-│ API_KEY       global     ****                   │
-╰─────────────────────────────────────────────────╯
+│ KEY           SCOPE      VALUE
+│ DATABASE_URL  project    po••••••••••••••••••••
+│ GITHUB_TOKEN  global     gh••••••••••••••••••
+│ …
+│ LOG_LEVEL     workspace  de•••
 ```
 
-**定義元の層は常に併記されます。** 層が 3 つあるため、意図しない層の値が
+**定義元の層は常に併記されます。** 層が 4 つあるため、意図しない層の値が
 優先されている状況が最も特定しにくいためです。
+
+**値のほうは、指定しない限り伏せられます。** 自分で設定した値は先頭 2 文字を
+残してマスクされるため、画面を横から見られても、そのまま issue に貼っても
+問題ありません。全体を表示するには `kobune env ls --reveal` を使います。
+Kobune が注入する変数は対象外です。Kobune 自身の値で秘密を含まず、URL の確認は
+頻度が高いため、伏せても邪魔になるだけだからです。
+
+**`service` はサービスを指定したときにだけ現れます。** サービスを指定しない
+一覧は、すべてのサービスが共有する値です。特定のサービスだけが持つ変数をそこに
+混ぜると、全体の値として見えてしまいます。そのため
+`kobune env ls --service web` のときにだけ現れます。`project` と分けてあるのは、
+`project` と表示すると `.kobune/env` を編集しに行かせてしまうからです。その値は
+サービス側で上書きされており、しかも一覧が「正しい場所を見ている」と伝えた
+直後になります。`kobune env set` からも書けません。この層は `kobune.toml` で
+編集します。
 
 ## 値を設定する
 
