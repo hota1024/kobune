@@ -22,7 +22,7 @@ use crate::ui::panel::{Grid, Panel};
 use crate::ui::theme::Decor;
 use crate::ui::{Cursor, Framed, View, progress, theme, views};
 
-use super::app::{App, Focus, Logs, Overlay};
+use super::app::{App, Focus, Logs, Measured, Overlay};
 use super::text::{fit, pad};
 
 /// Narrower than this and the names are gone, however little room the
@@ -126,7 +126,7 @@ fn panes(app: &App, frame: &mut Frame, body: Rect) {
     ])
     .areas(body);
 
-    frame.render_widget(list(app, width), left);
+    frame.render_widget(list(app, width, left.height), left);
 
     // Down the middle of the gap, so there is a space either side of it.
     if gap.width == 3 {
@@ -157,6 +157,29 @@ fn panes(app: &App, frame: &mut Frame, body: Rect) {
             right,
         );
     }
+}
+
+/// The first row to draw, so that the cursor is on screen.
+///
+/// **A list longer than the pane used to draw its first rows and stop.**
+/// The cursor went off the bottom with no mark anywhere on screen, and
+/// the next `u` started a workspace nobody could see was selected —
+/// which is the case the whole dashboard is for, since running several
+/// worktrees at once is the premise.
+///
+/// The cursor is kept near the middle rather than scrolled by the least
+/// that would do: there is no previous offset to scroll from — the
+/// drawing holds no state — and a rule that depends on one cannot be a
+/// pure function of what is on screen. Clamped at both ends, so the
+/// first and last pages are full.
+fn window(selected: usize, total: usize, rows: usize) -> usize {
+    if rows == 0 || total <= rows {
+        return 0;
+    }
+
+    selected
+        .saturating_sub(rows.saturating_sub(1) / 2)
+        .min(total - rows)
 }
 
 /// How wide the list may be.
@@ -206,9 +229,7 @@ fn counts(workspace: &kobune_api::WorkspaceInfo) -> (String, ratatui::style::Sty
 /// Hand-built rather than [`views::workspaces`]: that one is a table of
 /// everything, printed once, and has no notion of a row somebody is
 /// standing on.
-fn list(app: &App, width: u16) -> Rows {
-    let mut lines = vec![Line::styled("workspaces", theme::heading())];
-
+fn list(app: &App, width: u16, height: u16) -> Rows {
     let selected = app.selected_index();
     let count_width = app
         .workspaces()
@@ -217,11 +238,34 @@ fn list(app: &App, width: u16) -> Rows {
         .max()
         .unwrap_or(0);
 
+    // The heading takes one of them.
+    let rows = usize::from(height).saturating_sub(1);
+    let total = app.workspaces().len();
+    let first = window(selected.unwrap_or(0), total, rows);
+
+    // Says where in the list this is, and only when there is a rest of
+    // the list to be somewhere in.
+    let mut heading = vec![Span::styled("workspaces", theme::heading())];
+    if rows > 0 && total > rows {
+        heading.push(Span::styled(
+            format!("  {}/{total}", selected.unwrap_or(0) + 1),
+            theme::secondary(),
+        ));
+    }
+
+    let mut lines = vec![Line::from(heading)];
+
     // What is left for the name once the marker, the gap and the count
     // have had theirs.
     let room = usize::from(width).saturating_sub(4 + count_width);
 
-    for (index, workspace) in app.workspaces().iter().enumerate() {
+    for (index, workspace) in app
+        .workspaces()
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(rows.max(1))
+    {
         let here = Some(index) == selected;
         let (count, count_style) = counts(workspace);
 
@@ -439,10 +483,38 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 
 /// The rows an overlay may take.
 ///
-/// The screen, less the frame it floats inside and its own. The state
-/// pages by this, so it is worked out here with the rest of the layout.
-pub(super) fn overlay_rows(height: u16) -> u16 {
+/// The screen, less the frame it floats inside and its own.
+fn overlay_rows(height: u16) -> u16 {
     height.saturating_sub(4).max(1)
+}
+
+/// The parts of the layout the state has to know, measured where the
+/// layout is.
+///
+/// Scrolling is why all of these exist: a row is only a row once there
+/// is a width to wrap to, a page is only a page once there is a height,
+/// and how far a thing scrolls is how much of it there is less how much
+/// of it shows. Guessing any of them from the other side is how `G` came
+/// to leave the key list unscrollable.
+///
+/// The overlay is built twice a frame, here and to draw it. These are
+/// panels of a dozen lines; measuring them costs less than keeping two
+/// answers in step would.
+pub(super) fn measure(app: &App, width: u16, height: u16) -> Measured {
+    let (log_columns, log_rows) = log_viewport(width, height, app.logs_are_full());
+
+    let overlay_content = app.overlay().map_or(0, |showing| {
+        let panel = overlay_panel(showing);
+        let inner = panel.preferred_width().min(width.saturating_sub(2)).max(1);
+        panel.height(inner).max(1)
+    });
+
+    Measured {
+        log_columns,
+        log_rows,
+        overlay_rows: overlay_rows(height),
+        overlay_content,
+    }
 }
 
 /// Whatever is drawn over the dashboard.
@@ -452,8 +524,8 @@ pub(super) fn overlay_rows(height: u16) -> u16 {
 /// through — `kobune doctor` on a machine with something wrong is taller
 /// than the screen, and an overlay that lost its bottom would be the
 /// thing this pass set out to stop doing.
-fn overlay(app: &App, showing: &Overlay, frame: &mut Frame) {
-    let panel = match showing {
+fn overlay_panel(showing: &Overlay) -> Panel {
+    match showing {
         Overlay::Keys => keys_panel(),
         Overlay::Waiting(what) => message(
             "please wait",
@@ -468,7 +540,11 @@ fn overlay(app: &App, showing: &Overlay, frame: &mut Frame) {
             format!("could not read {what}: {reason}"),
             theme::bad(),
         ),
-    };
+    }
+}
+
+fn overlay(app: &App, showing: &Overlay, frame: &mut Frame) {
+    let panel = overlay_panel(showing);
 
     let screen = frame.area();
     if screen.width < 8 || screen.height < 4 {
@@ -677,7 +753,11 @@ mod tests {
 
     /// What would reach a terminal that cannot show colour, which is what
     /// the assertions are about.
-    fn screen(app: &App, width: u16, height: u16) -> String {
+    /// Measures the layout and then draws it, which is the order the
+    /// loop does it in — the scroll bounds come from the measurement.
+    fn screen(app: &mut App, width: u16, height: u16) -> String {
+        app.resize(measure(app, width, height));
+
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("opens");
         terminal.draw(|frame| draw(app, frame)).expect("draws");
 
@@ -687,7 +767,7 @@ mod tests {
     #[test]
     fn both_panes_are_there() {
         let text = screen(
-            &App::new(listing(), Path::new("/repo.wt/feat-1"), None),
+            &mut App::new(listing(), Path::new("/repo.wt/feat-1"), None),
             90,
             20,
         );
@@ -707,12 +787,70 @@ mod tests {
     #[test]
     fn the_cursor_is_visible() {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
-        assert!(screen(&app, 90, 20).contains("▸ feat-1"), "on the first");
+        assert!(
+            screen(&mut app, 90, 20).contains("▸ feat-1"),
+            "on the first"
+        );
 
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("▸ feat-2"), "got:\n{text}");
         assert_eq!(text.matches('▸').count(), 1, "one cursor only:\n{text}");
+    }
+
+    #[test]
+    fn a_list_longer_than_the_pane_keeps_its_cursor_on_screen() {
+        // It used to draw the first rows and stop: the cursor went off
+        // the bottom with no mark anywhere, and the next `u` started a
+        // workspace nobody could see was selected.
+        let many: Vec<WorkspaceInfo> = (0..30)
+            .map(|n| {
+                workspace(
+                    &format!("feat-{n}"),
+                    vec![service("web", ServiceState::Ready)],
+                )
+            })
+            .collect();
+
+        let mut app = App::new(many, Path::new("/nowhere"), None);
+        for _ in 0..29 {
+            app.on_key(press(KeyCode::Down));
+        }
+
+        let text = screen(&mut app, 90, 24);
+        assert_eq!(app.selected().expect("selected").display_name(), "feat-29");
+        assert!(text.contains("▸ feat-29"), "the cursor is drawn:\n{text}");
+        assert!(
+            text.contains("30/30"),
+            "and says where in the list:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_list_that_fits_says_nothing_about_where_it_is() {
+        // The count is for finding your way through a list too long to
+        // see, and there is no way to lose in a list of two.
+        let text = screen(
+            &mut App::new(listing(), Path::new("/repo.wt/feat-1"), None),
+            90,
+            24,
+        );
+
+        let heading = text
+            .lines()
+            .find(|line| line.contains("workspaces"))
+            .expect("the heading is drawn");
+
+        // The row carries the right-hand pane too; the count would sit
+        // immediately after the word.
+        assert!(
+            heading.contains("workspaces  "),
+            "no count after it: {heading:?}"
+        );
+        assert!(
+            !heading.contains("workspaces  1/"),
+            "a list of two cannot be lost in: {heading:?}"
+        );
     }
 
     #[test]
@@ -720,7 +858,7 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("feature/feat-2"), "got:\n{text}");
         assert!(!text.contains("feature/feat-1"), "got:\n{text}");
     }
@@ -728,7 +866,7 @@ mod tests {
     #[test]
     fn the_keys_are_always_on_screen() {
         let text = screen(
-            &App::new(listing(), Path::new("/repo.wt/feat-1"), None),
+            &mut App::new(listing(), Path::new("/repo.wt/feat-1"), None),
             90,
             20,
         );
@@ -743,10 +881,10 @@ mod tests {
         // worth the room depends on the pane: `G` means nothing in a
         // list of workspaces, and `u` means nothing while reading a log.
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
-        assert!(screen(&app, 90, 20).contains(" up"));
+        assert!(screen(&mut app, 90, 20).contains(" up"));
 
         app.on_key(press(KeyCode::Char('l')));
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
 
         assert!(text.contains("scroll"), "got:\n{text}");
         assert!(text.contains("tail"), "got:\n{text}");
@@ -757,7 +895,7 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("starting feat-1"), "got:\n{text}");
 
         app.on_event(&kobune_api::Event::Step {
@@ -766,7 +904,7 @@ mod tests {
             status: kobune_api::StepStatus::Started,
         });
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("pulling node:22-alpine"), "got:\n{text}");
     }
 
@@ -775,7 +913,7 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.went_wrong("cannot reach the daemon".into());
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("✗ cannot reach the daemon"), "got:\n{text}");
     }
 
@@ -784,7 +922,7 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("keys"), "got:\n{text}");
         assert!(text.contains("switch between the panes"), "got:\n{text}");
     }
@@ -797,14 +935,14 @@ mod tests {
         app.on_key(press(KeyCode::Char('?')));
 
         // Ten rows of screen, fifteen keys to list.
-        let text = screen(&app, 90, 10);
+        let text = screen(&mut app, 90, 10);
         assert!(text.contains("↓"), "it says there is more: \n{text}");
         assert!(!text.contains("leave"), "the last row is not on yet");
 
         for _ in 0..20 {
             app.on_key(press(KeyCode::Down));
         }
-        let text = screen(&app, 90, 10);
+        let text = screen(&mut app, 90, 10);
 
         assert!(text.contains("leave"), "scrolled to it: \n{text}");
         assert!(text.contains("↑"), "and says where it came from");
@@ -818,7 +956,7 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('?')));
 
-        let text = screen(&app, 100, 24);
+        let text = screen(&mut app, 100, 24);
         assert!(
             text.contains("start — one service, or the whole workspace"),
             "cut off:\n{text}"
@@ -832,7 +970,7 @@ mod tests {
     #[test]
     fn an_empty_listing_says_what_to_do_about_it() {
         let text = screen(
-            &App::new(Vec::new(), Path::new("/repo.wt/feat-1"), None),
+            &mut App::new(Vec::new(), Path::new("/repo.wt/feat-1"), None),
             90,
             20,
         );
@@ -847,7 +985,7 @@ mod tests {
         app.on_key(press(KeyCode::Char('l')));
         app.on_log(Some("web".into()), "ready on :3000".into());
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("logs: feat-1"), "got:\n{text}");
         assert!(text.contains("following"), "got:\n{text}");
         assert!(text.contains("ready on :3000"), "got:\n{text}");
@@ -861,7 +999,7 @@ mod tests {
         app.on_key(press(KeyCode::Char('L')));
         app.on_log(Some("web".into()), "ready on :3000".into());
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("ready on :3000"), "got:\n{text}");
         assert!(!text.contains("workspaces"), "got:\n{text}");
     }
@@ -876,7 +1014,7 @@ mod tests {
             "\u{1b}[32m[info]\u{1b}[39m GET /ok \u{1b}[1m200\u{1b}[22m".into(),
         );
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("[info] GET /ok 200"), "got:\n{text}");
         assert!(!text.contains('\u{1b}'), "got:\n{text}");
         assert!(!text.contains("[32m"), "got:\n{text}");
@@ -895,7 +1033,7 @@ mod tests {
         app.on_key(press(KeyCode::Up));
         app.on_key(press(KeyCode::Up));
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("paused"), "got:\n{text}");
         assert!(text.contains("2 below"), "got:\n{text}");
         assert!(!text.contains("following"), "got:\n{text}");
@@ -910,7 +1048,7 @@ mod tests {
         app.on_key(press(KeyCode::Char('l')));
         app.on_log(Some("web".into()), "only mine".into());
 
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
         assert!(text.contains("logs: feat-1 / web"), "got:\n{text}");
 
         let row = text
@@ -926,7 +1064,7 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
 
-        assert!(screen(&app, 90, 20).contains("waiting for output"));
+        assert!(screen(&mut app, 90, 20).contains("waiting for output"));
     }
 
     #[test]
@@ -935,13 +1073,13 @@ mod tests {
         // acts on a service nobody can see is selected.
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         assert_eq!(
-            screen(&app, 90, 20).matches('▸').count(),
+            screen(&mut app, 90, 20).matches('▸').count(),
             1,
             "only the workspace cursor to begin with"
         );
 
         app.on_key(press(KeyCode::Tab));
-        let text = screen(&app, 90, 20);
+        let text = screen(&mut app, 90, 20);
 
         assert_eq!(
             text.matches('▸').count(),
@@ -961,15 +1099,15 @@ mod tests {
         // subtraction overflow in a layout at some point.
         for (width, height) in [(80, 24), (40, 10), (20, 6), (10, 3), (4, 2), (1, 1)] {
             let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
-            screen(&app, width, height);
+            screen(&mut app, width, height);
 
             // And with the pane that takes its rows from everything else.
             app.on_key(press(KeyCode::Char('l')));
             app.on_log(Some("web".into()), "a line".into());
-            screen(&app, width, height);
+            screen(&mut app, width, height);
 
             app.on_key(press(KeyCode::Char('L')));
-            screen(&app, width, height);
+            screen(&mut app, width, height);
         }
     }
 
@@ -981,7 +1119,7 @@ mod tests {
         );
 
         let text = screen(
-            &App::new(vec![long], Path::new("/repo.wt/feat-1"), None),
+            &mut App::new(vec![long], Path::new("/repo.wt/feat-1"), None),
             60,
             12,
         );

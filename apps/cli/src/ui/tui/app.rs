@@ -34,6 +34,19 @@ const MAX_SERVICE_COLUMN: usize = 14;
 /// The space between that column and the text.
 const SERVICE_GAP: u16 = 2;
 
+/// The layout, as the drawing last worked it out.
+///
+/// Handed to the state rather than guessed at by it: how far a thing
+/// scrolls depends on how much of it there is and how much of it shows,
+/// and only the drawing knows either.
+#[derive(Debug, Clone, Copy)]
+pub struct Measured {
+    pub log_columns: u16,
+    pub log_rows: u16,
+    pub overlay_rows: u16,
+    pub overlay_content: u16,
+}
+
 /// Which pane the keys are talking to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -225,8 +238,13 @@ impl Logs {
     }
 
     /// The pane's size, as it was last drawn.
+    ///
+    /// The offset is re-clamped against it: a window that grew, or one
+    /// that widened so that lines re-wrapped into fewer rows, leaves the
+    /// view scrolled past a bottom that has moved up to meet it.
     fn resize(&mut self, columns: u16, rows: u16) {
         self.viewport = Viewport { columns, rows };
+        self.scrolled = self.scrolled.min(self.scrolled_max());
     }
 
     /// How wide the service column is, or zero when there is none.
@@ -409,8 +427,10 @@ pub struct App {
     overlay: Option<Overlay>,
     /// How far the overlay has been scrolled, in rows.
     overlay_scroll: usize,
-    /// How tall an overlay may be drawn, as it was last laid out.
+    /// How tall an overlay may be drawn, and how tall the one on screen
+    /// is, as they were last laid out.
     overlay_rows: u16,
+    overlay_content: u16,
     /// Advanced by the loop while there is activity, and read by the
     /// spinner.
     frame: usize,
@@ -442,6 +462,7 @@ impl App {
             overlay: None,
             overlay_scroll: 0,
             overlay_rows: 20,
+            overlay_content: 0,
             frame: 0,
             done: false,
         }
@@ -672,12 +693,18 @@ impl App {
     /// Told rather than assumed: a row is only a row once there is a
     /// width to wrap to, and a page is only a page once there is a
     /// height.
-    pub fn resize(&mut self, log_columns: u16, log_rows: u16, overlay_rows: u16) {
+    pub fn resize(&mut self, measured: Measured) {
         if let Some(logs) = &mut self.logs {
-            logs.resize(log_columns, log_rows);
+            logs.resize(measured.log_columns, measured.log_rows);
         }
 
-        self.overlay_rows = overlay_rows;
+        self.overlay_rows = measured.overlay_rows;
+        self.overlay_content = measured.overlay_content;
+
+        // A window that grew leaves a scroll offset pointing past what
+        // there now is to scroll: the log pane said `paused · 15 below`
+        // with the whole buffer on screen and nothing below it.
+        self.overlay_scroll = self.overlay_scroll.min(self.overlay_scrolled_max());
     }
 
     /// The one way in for a key.
@@ -874,8 +901,22 @@ impl App {
         isize::try_from(self.overlay_rows).unwrap_or(1).max(1)
     }
 
+    /// As far back as an overlay goes: far enough to put its last row at
+    /// the bottom of the box, and no further.
+    fn overlay_scrolled_max(&self) -> usize {
+        usize::from(self.overlay_content.saturating_sub(self.overlay_rows))
+    }
+
+    /// **Clamped, which is the whole of it.** `G` asks to scroll by
+    /// [`isize::MAX`], and without a bound that saturates the offset to
+    /// a number no amount of pressing `↑` will come back from — the box
+    /// drew correctly, because the drawing clamps, and the keys were
+    /// dead. [`Logs::scroll`] had the bound; this did not.
     fn scroll_overlay(&mut self, rows: isize) -> Option<Action> {
-        self.overlay_scroll = self.overlay_scroll.saturating_add_signed(rows);
+        self.overlay_scroll = self
+            .overlay_scroll
+            .saturating_add_signed(rows)
+            .min(self.overlay_scrolled_max());
         None
     }
 
@@ -1455,6 +1496,16 @@ mod tests {
         assert_eq!(app.focus(), Focus::Workspaces);
     }
 
+    /// A log pane of this size, and an overlay with room to spare.
+    fn pane(columns: u16, rows: u16) -> Measured {
+        Measured {
+            log_columns: columns,
+            log_rows: rows,
+            overlay_rows: 20,
+            overlay_content: 0,
+        }
+    }
+
     /// What the box on top is about, or nothing.
     fn showing(app: &App) -> Option<&'static str> {
         app.overlay().map(Overlay::kind)
@@ -1492,6 +1543,13 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('?')));
 
+        // Taller than the box it is in, or there is nothing to scroll.
+        app.resize(Measured {
+            overlay_rows: 6,
+            overlay_content: 30,
+            ..pane(80, 10)
+        });
+
         app.on_key(press(KeyCode::Down));
         app.on_key(press(KeyCode::Down));
 
@@ -1501,6 +1559,68 @@ mod tests {
             "feat-1",
             "the cursor behind it did not move"
         );
+    }
+
+    #[test]
+    fn the_end_of_an_overlay_is_somewhere_it_can_come_back_from() {
+        // `G` asks to scroll by `isize::MAX`. Unclamped that saturated
+        // the offset to a number no amount of pressing `↑` returned
+        // from, and the box drew correctly the whole time because the
+        // drawing does its own clamping.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('?')));
+        app.resize(Measured {
+            overlay_rows: 6,
+            overlay_content: 30,
+            ..pane(80, 10)
+        });
+
+        app.on_key(press(KeyCode::Char('G')));
+        assert_eq!(app.overlay_scroll(), 24, "the last row at the bottom");
+
+        app.on_key(press(KeyCode::Up));
+        assert_eq!(app.overlay_scroll(), 23, "and one press comes back");
+    }
+
+    #[test]
+    fn a_window_that_grew_lets_an_overlay_stop_scrolling() {
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('?')));
+        app.resize(Measured {
+            overlay_rows: 6,
+            overlay_content: 30,
+            ..pane(80, 10)
+        });
+        app.on_key(press(KeyCode::Char('G')));
+
+        app.resize(Measured {
+            overlay_rows: 40,
+            overlay_content: 30,
+            ..pane(80, 10)
+        });
+
+        assert_eq!(app.overlay_scroll(), 0, "all of it is on screen now");
+    }
+
+    #[test]
+    fn a_log_pane_that_grew_starts_following_again() {
+        // It said `paused · 15 below` with the whole buffer on screen
+        // and nothing below it.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('l')));
+        app.resize(pane(80, 5));
+
+        for n in 0..20 {
+            app.on_log(None, format!("line {n}"));
+        }
+        app.on_key(press(KeyCode::Char('g')));
+        assert!(!app.logs().expect("open").following());
+
+        app.resize(pane(80, 40));
+
+        let logs = app.logs().expect("open");
+        assert_eq!(logs.behind(), 0);
+        assert!(logs.following(), "nothing is below it any more");
     }
 
     #[test]
@@ -1852,7 +1972,7 @@ mod tests {
     fn scrolling_stops_following_and_g_starts_again() {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
-        app.resize(80, 10, 20);
+        app.resize(pane(80, 10));
 
         for n in 0..50 {
             app.on_log(Some("web".into()), format!("line {n}"));
@@ -1878,7 +1998,7 @@ mod tests {
         // assertion, a URL.
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
-        app.resize(20, 10, 20);
+        app.resize(pane(20, 10));
 
         app.on_log(None, "0123456789012345678901234567890123456789".into());
 
@@ -1900,7 +2020,7 @@ mod tests {
         // Otherwise the second row reads as a line nobody wrote.
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
-        app.resize(20, 10, 20);
+        app.resize(pane(20, 10));
 
         app.on_log(Some("web".into()), "a".repeat(30));
 
@@ -1923,7 +2043,7 @@ mod tests {
         // page that was not a screenful would be a page in name only.
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
-        app.resize(80, 30, 20);
+        app.resize(pane(80, 30));
 
         for n in 0..200 {
             app.on_log(None, format!("line {n}"));
@@ -1938,7 +2058,7 @@ mod tests {
         // Past that and the pane would be scrolled into blank space.
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
-        app.resize(80, 10, 20);
+        app.resize(pane(80, 10));
 
         for n in 0..25 {
             app.on_log(None, format!("line {n}"));

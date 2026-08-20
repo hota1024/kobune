@@ -98,9 +98,7 @@ async fn drive(
         // The pane the log rows scroll inside, before anything is drawn
         // in it or any key is read about it.
         if let Ok(window) = terminal.size() {
-            let (columns, rows) =
-                draw::log_viewport(window.width, window.height, state.logs_are_full());
-            state.resize(columns, rows, draw::overlay_rows(window.height));
+            state.resize(draw::measure(&state, window.width, window.height));
         }
 
         terminal
