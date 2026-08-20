@@ -870,12 +870,12 @@ impl App {
         };
 
         let Some(service) = service else {
-            self.went_wrong("no service here has a URL to show".to_string());
+            self.went_wrong("nothing here has an address to show".to_string());
             return None;
         };
 
         if service.access().is_none() {
-            self.went_wrong(format!("{} has no URL to show", service.name));
+            self.went_wrong(format!("{} has no address to show", service.name));
             return None;
         }
 
@@ -1061,29 +1061,33 @@ impl App {
 
     /// `o`: the way into whatever the cursor is on.
     ///
-    /// In the workspace pane that is the first service with a URL, which
-    /// is nearly always the one somebody wanted. A service with no way in
-    /// — a database — has nothing to open, and saying so beats opening
-    /// something else.
+    /// In the workspace pane that is the first service with a way in,
+    /// which is nearly always the one somebody wanted. A service with
+    /// none — a database — has nothing to open, and saying so beats
+    /// opening something else.
+    ///
+    /// **[`ServiceInfo::access`], not `url`.** That is what the pane
+    /// beside this draws as a link, so reading the field underneath it
+    /// meant refusing to open an address that was on the screen at the
+    /// time: without a proxy a service has only its `endpoint`, and
+    /// `http://127.0.0.1:5173` is a perfectly good thing to open.
+    /// [`Self::show_code`] already asked the right question, so `o` and
+    /// `Q` disagreed about the same service.
     fn open(&mut self) -> Option<Action> {
         let url = match self.selected_service() {
-            Some(service) => match service.url.clone() {
+            Some(service) => match service.access() {
                 Some(url) => url,
                 None => {
-                    self.went_wrong(format!("{} has no URL to open", service.name));
+                    self.went_wrong(format!("{} has nowhere to open", service.name));
                     return None;
                 }
             },
             None => {
                 let workspace = self.selected()?;
-                match workspace
-                    .services
-                    .iter()
-                    .find_map(|service| service.url.clone())
-                {
+                match workspace.services.iter().find_map(ServiceInfo::access) {
                     Some(url) => url,
                     None => {
-                        self.went_wrong("no service here has a URL to open".to_string());
+                        self.went_wrong("nothing here has anywhere to open".to_string());
                         return None;
                     }
                 }
@@ -2218,6 +2222,55 @@ mod tests {
             app.on_key(press(KeyCode::Char('o'))),
             Some(Action::Open("https://api.example.localhost".into()))
         );
+    }
+
+    #[test]
+    fn open_takes_the_address_the_pane_beside_it_is_showing() {
+        // Without a proxy a service has only its endpoint, and that is
+        // what `views::access` draws as a link. Reading `url` underneath
+        // it meant refusing to open something on the screen.
+        let mut app = App::new(
+            vec![workspace(
+                "feat-1",
+                vec![ServiceInfo {
+                    url: None,
+                    endpoint: Some("127.0.0.1:5173".into()),
+                    ..service("web", ServiceState::Ready)
+                }],
+            )],
+            Path::new("/repo.wt/feat-1"),
+            None,
+        );
+
+        assert_eq!(
+            app.on_key(press(KeyCode::Char('o'))),
+            Some(Action::Open("http://127.0.0.1:5173".into()))
+        );
+    }
+
+    #[test]
+    fn open_and_the_code_agree_about_the_same_service() {
+        // `Q` asked `access()` and `o` read `url`, so one of them showed
+        // an address the other said did not exist.
+        let mut app = App::new(
+            vec![workspace(
+                "feat-1",
+                vec![ServiceInfo {
+                    url: None,
+                    endpoint: Some("127.0.0.1:5173".into()),
+                    ..service("web", ServiceState::Ready)
+                }],
+            )],
+            Path::new("/repo.wt/feat-1"),
+            None,
+        );
+
+        assert!(app.on_key(press(KeyCode::Char('o'))).is_some());
+        assert!(app.trouble().is_none());
+
+        app.on_key(press(KeyCode::Char('Q')));
+        assert_eq!(showing(&app), Some("code"));
+        assert!(app.trouble().is_none());
     }
 
     #[test]

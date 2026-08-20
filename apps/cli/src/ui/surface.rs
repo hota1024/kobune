@@ -266,7 +266,13 @@ pub fn window() -> Option<kobune_api::Window> {
     }
 }
 
-fn no_color() -> bool {
+/// Whether the reader has asked for no colour.
+///
+/// Read here and by the full-screen mode. Colour reaching the terminal
+/// is crossterm's business either way — it honours this on its own — but
+/// a view that has to *say* it is drawing without colour has to be told,
+/// which is [`Decor::styled`].
+pub(super) fn no_color() -> bool {
     // https://no-color.org: set to anything at all, and nothing coloured.
     std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
 }

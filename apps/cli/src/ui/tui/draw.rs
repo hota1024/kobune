@@ -25,6 +25,23 @@ use crate::ui::{Cursor, Framed, View, progress, theme, views};
 use super::app::{App, Focus, Logs, Measured, Overlay};
 use super::text::{fit, pad};
 
+/// A view's decoration, with the reader's `NO_COLOR` in it.
+///
+/// The colours themselves never needed this — crossterm drops them on
+/// its own. What did is the one view that has to *say* it: a QR code
+/// drawn without colour is at the mercy of the terminal's own
+/// foreground, and on a dark theme that is an inverted code a camera
+/// refuses. `views::url` adds that line when `styled` is false, and the
+/// dashboard was handing it a literal `Decor::FRAMED` that said true
+/// whatever the reader had asked for.
+fn decor(base: Decor) -> Decor {
+    if crate::ui::surface::no_color() {
+        base.unstyled()
+    } else {
+        base
+    }
+}
+
 /// Narrower than this and the names are gone, however little room the
 /// window leaves.
 const MIN_LIST_WIDTH: u16 = 18;
@@ -78,7 +95,7 @@ pub fn draw(app: &App, frame: &mut Frame) {
         if app.workspaces().is_empty() {
             // The panel `kobune ls` prints when there is nothing yet,
             // which already says what to do about it.
-            frame.render_widget(Framed(&views::workspaces(&[], Decor::BARE)), above);
+            frame.render_widget(Framed(&views::workspaces(&[], decor(Decor::BARE))), above);
         } else {
             panes(app, frame, above);
         }
@@ -153,7 +170,7 @@ fn panes(app: &App, frame: &mut Frame, body: Rect) {
 
         // The whole reason the views were written the way they were.
         frame.render_widget(
-            Framed(&views::workspace(workspace, cursor, Decor::BARE)),
+            Framed(&views::workspace(workspace, cursor, decor(Decor::BARE))),
             right,
         );
     }
@@ -390,47 +407,59 @@ fn log_heading(app: &App, logs: &Logs, width: u16) -> Line<'static> {
     ])
 }
 
-/// What is happening, or what went wrong, on the one line there is for it.
+/// What is happening, and what went wrong, on the one line there is for
+/// both.
+///
+/// **A failure outlives the step that produced it.** An `up` across
+/// several services carries on for a minute after one of them dies, and
+/// this used to return inside the `activity` branch without ever reading
+/// `trouble` — so the reason sat in the state, asserted on by a test,
+/// and nowhere on the screen. The spinner stays in front of it to say
+/// that the rest is still running.
 fn activity_line(app: &App) -> Line<'static> {
-    if let Some(activity) = app.activity() {
-        let spinner = progress::SPINNER[(app.frame() / 2) % progress::SPINNER.len()];
+    let spinner = app.activity().map(|_| {
+        let frame = progress::SPINNER[(app.frame() / 2) % progress::SPINNER.len()];
+        Span::styled(format!("{frame} "), theme::warn())
+    });
 
-        // The newest step is the one being waited on; the label of the
-        // operation itself stands in until the daemon has named one.
-        let mut spans = vec![Span::styled(format!("{spinner} "), theme::warn())];
+    let mut spans: Vec<Span<'static>> = spinner.into_iter().collect();
 
-        match activity.steps.last() {
-            Some(step) => {
-                spans.push(Span::styled(step.label.clone(), theme::subject()));
-
-                if let Some(detail) = &step.detail {
-                    spans.push(Span::styled(format!(" · {detail}"), theme::secondary()));
-                }
-
-                if activity.steps.len() > 1 {
-                    spans.push(Span::styled(
-                        format!("  (+{} more)", activity.steps.len() - 1),
-                        theme::secondary(),
-                    ));
-                }
-            }
-            None => spans.push(Span::styled(activity.label.clone(), theme::subject())),
-        }
-
-        return Line::from(spans);
-    }
-
-    match app.trouble() {
+    if let Some(trouble) = app.trouble() {
         // The mark the CLI puts on anything that went wrong, so a reason
         // read here and the same reason read after `kobune up` do not
         // look like two different kinds of thing. It carries the ✗ as
         // well as the colour, for a terminal showing neither.
-        Some(trouble) => Line::from(vec![
-            Span::styled("✗ ", theme::bad()),
-            Span::raw(trouble.to_string()),
-        ]),
-        None => Line::default(),
+        spans.push(Span::styled("✗ ", theme::bad()));
+        spans.push(Span::raw(trouble.to_string()));
+
+        return Line::from(spans);
     }
+
+    let Some(activity) = app.activity() else {
+        return Line::default();
+    };
+
+    // The newest step is the one being waited on; the label of the
+    // operation itself stands in until the daemon has named one.
+    match activity.steps.last() {
+        Some(step) => {
+            spans.push(Span::styled(step.label.clone(), theme::subject()));
+
+            if let Some(detail) = &step.detail {
+                spans.push(Span::styled(format!(" · {detail}"), theme::secondary()));
+            }
+
+            if activity.steps.len() > 1 {
+                spans.push(Span::styled(
+                    format!("  (+{} more)", activity.steps.len() - 1),
+                    theme::secondary(),
+                ));
+            }
+        }
+        None => spans.push(Span::styled(activity.label.clone(), theme::subject())),
+    }
+
+    Line::from(spans)
 }
 
 /// The keys worth naming, for the pane the keys are going to.
@@ -532,9 +561,11 @@ fn overlay_panel(showing: &Overlay) -> Panel {
             format!("reading {what}…"),
             theme::secondary(),
         ),
-        Overlay::Checks(report) => views::diagnostics(report, Decor::FRAMED),
-        Overlay::Env { entries, service } => views::env(entries, service.as_deref(), Decor::FRAMED),
-        Overlay::Code(service) => views::url(service, Decor::FRAMED),
+        Overlay::Checks(report) => views::diagnostics(report, decor(Decor::FRAMED)),
+        Overlay::Env { entries, service } => {
+            views::env(entries, service.as_deref(), decor(Decor::FRAMED))
+        }
+        Overlay::Code(service) => views::url(service, decor(Decor::FRAMED)),
         Overlay::Failed { what, reason } => message(
             "nothing to show",
             format!("could not read {what}: {reason}"),
@@ -591,7 +622,7 @@ fn mark(frame: &mut Frame, area: Rect, y: u16, arrow: &'static str) {
 
 /// A box with one thing to say in it.
 fn message(title: &'static str, text: String, style: ratatui::style::Style) -> Panel {
-    Panel::new(Decor::FRAMED, title).line(Span::styled(text, style))
+    Panel::new(decor(Decor::FRAMED), title).line(Span::styled(text, style))
 }
 
 /// The key list, as a panel like every other overlay.
@@ -622,7 +653,7 @@ fn keys_panel() -> Panel {
         ]);
     }
 
-    Panel::new(Decor::FRAMED, "keys").grid(grid)
+    Panel::new(decor(Decor::FRAMED), "keys").grid(grid)
 }
 
 /// A window onto a view taller than the room it is given.
@@ -906,6 +937,30 @@ mod tests {
 
         let text = screen(&mut app, 90, 20);
         assert!(text.contains("pulling node:22-alpine"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_step_that_failed_says_why_while_the_rest_carries_on() {
+        // An `up` across several services runs for another minute after
+        // one of them dies. The reason used to be in the state, asserted
+        // on by a test, and nowhere on the screen.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('u')));
+
+        app.on_event(&kobune_api::Event::Step {
+            id: "web".into(),
+            label: "starting web".into(),
+            status: kobune_api::StepStatus::Failed {
+                reason: "port 3000 is in use".into(),
+            },
+        });
+
+        let text = screen(&mut app, 90, 20);
+        assert!(
+            text.contains("✗ starting web: port 3000 is in use"),
+            "got:\n{text}"
+        );
+        assert!(app.activity().is_some(), "and it is still running");
     }
 
     #[test]
