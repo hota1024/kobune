@@ -492,11 +492,7 @@ async fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             if cli.json {
-                if let Some(api_error) = as_api_error(&err) {
-                    output::print_error_json(api_error);
-                } else {
-                    output::print_error_json(&kobune_api::ApiError::internal(err.to_string()));
-                }
+                output::print_error_json(&as_json_error(&err));
             } else {
                 ui::error(&err.to_string(), hint_for(&err));
             }
@@ -901,6 +897,15 @@ enum CliError {
     #[error("{message}")]
     Unprivileged { message: String, hint: String },
 
+    /// The command cannot be answered the way it was asked to be.
+    ///
+    /// Its own kind for the reason the two below are theirs: what to do
+    /// next is not what went wrong. `kobune tui --json` asks a screen
+    /// for a document, and the way forward is the command that returns
+    /// one.
+    #[error("{message}")]
+    Refused { message: String, hint: String },
+
     /// The stop did not take, so the restart met the daemon it meant to
     /// replace.
     ///
@@ -911,10 +916,29 @@ enum CliError {
     DidNotStop { message: String, hint: String },
 }
 
-fn as_api_error(err: &CliError) -> Option<&kobune_api::ApiError> {
-    match err {
-        CliError::Client(ClientError::Api(api)) => Some(api),
-        _ => None,
+/// The failure as the one document `--json` answers with.
+///
+/// The daemon's own errors come through unchanged, hint and all. What is
+/// built here is everything else — **and it keeps its hint**, which the
+/// JSON path used to drop: `ApiError::internal(err.to_string())` carried
+/// the message and nothing else, so an agent reading `--json` was told
+/// what went wrong and never what to do about it.
+fn as_json_error(err: &CliError) -> kobune_api::ApiError {
+    if let CliError::Client(ClientError::Api(api)) = err {
+        return api.clone();
+    }
+
+    let code = match err {
+        // Asked for in a way it cannot be given.
+        CliError::Refused { .. } => kobune_api::ErrorCode::Unsupported,
+        _ => kobune_api::ErrorCode::Internal,
+    };
+
+    let error = kobune_api::ApiError::new(code, err.to_string());
+
+    match hint_for(err) {
+        Some(hint) => error.with_hint(hint),
+        None => error,
     }
 }
 
@@ -922,14 +946,19 @@ fn hint_for(err: &CliError) -> Option<&str> {
     match err {
         CliError::Client(client) => client.hint(),
         CliError::Local(_) => None,
-        CliError::Unprivileged { hint, .. } | CliError::DidNotStop { hint, .. } => Some(hint),
+        CliError::Refused { hint, .. }
+        | CliError::Unprivileged { hint, .. }
+        | CliError::DidNotStop { hint, .. } => Some(hint),
     }
 }
 
 fn exit_code_for(err: &CliError) -> i32 {
     match err {
         CliError::Client(client) => client.exit_code(),
-        CliError::Local(_) | CliError::Unprivileged { .. } | CliError::DidNotStop { .. } => 1,
+        CliError::Local(_)
+        | CliError::Refused { .. }
+        | CliError::Unprivileged { .. }
+        | CliError::DidNotStop { .. } => 1,
     }
 }
 
@@ -1049,6 +1078,20 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     // The dashboard is not one request and one answer, so it takes the
     // client and runs its own loop.
     if matches!(cli.command, Command::Tui) {
+        // **`--json` is answered, not ignored.** Every other command
+        // honours it, and an agent that adds it to everything was being
+        // handed a full screen it has no way to read or leave. Bare
+        // `kobune` never sees this — a flag is an argument, and that
+        // path takes none — so it is only ever the flag asked for by
+        // name that lands here.
+        if cli.json {
+            return Err(CliError::Refused {
+                message: "the dashboard is a screen, so there is nothing to answer with"
+                    .to_string(),
+                hint: "kobune status --json is the same environment, as a document".to_string(),
+            });
+        }
+
         ui::dashboard(client, cwd, cli.workspace.as_deref()).await?;
         return Ok(ExitCode::SUCCESS);
     }

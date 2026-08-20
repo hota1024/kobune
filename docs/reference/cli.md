@@ -218,7 +218,9 @@ it from is the point of having a daemon at all.
 
 **It needs a terminal.** Piped, redirected, under `TERM=dumb` or with `--json`,
 `kobune` on its own prints the help it always has. Asked for by name,
-`kobune tui` says it needs a terminal rather than printing something else.
+`kobune tui` says what is wrong instead: that it needs a terminal, or — under
+`--json` — that a screen has no document to return, and that
+`kobune status --json` is the same environment as one.
 
 ## Workspaces
 

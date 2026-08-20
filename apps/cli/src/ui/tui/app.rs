@@ -792,7 +792,8 @@ impl App {
             KeyCode::Home | KeyCode::Char('g') => self.move_by(isize::MIN),
             KeyCode::End | KeyCode::Char('G') => self.move_by(isize::MAX),
 
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => self.switch_pane(),
+            KeyCode::Tab | KeyCode::Right => self.switch_pane(true),
+            KeyCode::BackTab | KeyCode::Left => self.switch_pane(false),
 
             KeyCode::Char('r') => return Some(Action::Ask(Command::Refresh)),
             KeyCode::Char('u') => return self.operate(true),
@@ -1128,38 +1129,72 @@ impl App {
         Some(Action::Open(url))
     }
 
-    /// Round the panes that are on screen, in the order they are drawn.
+    /// The panes that are on screen, in the order they are drawn.
+    fn panes(&self) -> Vec<Focus> {
+        let mut panes = vec![Focus::Workspaces];
+
+        if self
+            .selected()
+            .is_some_and(|workspace| !workspace.services.is_empty())
+        {
+            panes.push(Focus::Services);
+        }
+
+        if self.logs.is_some() {
+            panes.push(Focus::Logs);
+        }
+
+        panes
+    }
+
+    /// Round those panes, forwards or back.
+    ///
+    /// **Both ways.** `←`, `→` and shift-tab all called one forward-only
+    /// cycle, so `←` moved the cursor rightwards and shift-tab — whose
+    /// whole convention is "the previous one" — went forward. The key
+    /// list the dashboard ships advertises `tab / ← →`.
     ///
     /// A pane that is not there is stepped over rather than focused: a
     /// cursor in an empty services column, or in a log pane nobody
     /// opened, would be a cursor with nothing under it.
-    fn switch_pane(&mut self) {
+    fn switch_pane(&mut self, forward: bool) {
         // Full screen, there is one pane and it already has the keys.
         if self.logs_are_full() {
             return;
         }
 
-        let has_services = self
-            .selected()
-            .is_some_and(|workspace| !workspace.services.is_empty());
+        let panes = self.panes();
+        if panes.len() < 2 {
+            return;
+        }
 
-        match self.focus {
-            Focus::Workspaces if has_services => {
+        let at = panes
+            .iter()
+            .position(|pane| *pane == self.focus)
+            .unwrap_or(0);
+        let step = if forward { 1 } else { panes.len() - 1 };
+
+        self.focus_pane(panes[(at + step) % panes.len()]);
+    }
+
+    /// Moves the keys to a pane, and the services cursor with them.
+    ///
+    /// The services cursor exists exactly while `u` means one service
+    /// rather than all of them, which is why the log pane leaves it
+    /// where it is: the row stays marked, dimmed, and stays the target.
+    fn focus_pane(&mut self, pane: Focus) {
+        match pane {
+            Focus::Workspaces => self.selected_service = None,
+            Focus::Services => {
                 self.selected_service = self
                     .selected()
                     .and_then(|workspace| workspace.services.first())
                     .map(|service| service.name.clone());
-                self.focus = Focus::Services;
             }
-            Focus::Workspaces | Focus::Services if self.logs.is_some() => {
-                self.focus = Focus::Logs;
-            }
-            Focus::Workspaces => {}
-            Focus::Services | Focus::Logs => {
-                self.selected_service = None;
-                self.focus = Focus::Workspaces;
-            }
+            Focus::Logs => {}
         }
+
+        self.focus = pane;
     }
 
     /// A screenful, in whichever pane the keys are in.
@@ -2202,6 +2237,44 @@ mod tests {
         ));
         assert!(app.logs_are_full());
         assert_eq!(app.focus(), Focus::Logs);
+    }
+
+    #[test]
+    fn the_pane_cycle_goes_both_ways() {
+        // `←`, `→` and shift-tab all called one forward-only cycle, so
+        // `←` moved the cursor rightwards and shift-tab went forward.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('l')));
+        app.on_key(press(KeyCode::Tab));
+        assert_eq!(app.focus(), Focus::Workspaces);
+
+        app.on_key(press(KeyCode::Left));
+        assert_eq!(app.focus(), Focus::Logs, "back round to the last");
+
+        app.on_key(press(KeyCode::BackTab));
+        assert_eq!(app.focus(), Focus::Services);
+
+        app.on_key(press(KeyCode::Right));
+        assert_eq!(app.focus(), Focus::Logs, "and forward again");
+    }
+
+    #[test]
+    fn leaving_the_services_pane_forwards_keeps_the_cursor_it_acts_on() {
+        // Into the logs the services cursor stays where it is — it is
+        // still what `u` means — and into the workspaces it does not.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('l')));
+        app.on_key(press(KeyCode::Tab));
+        app.on_key(press(KeyCode::Tab));
+        assert_eq!(app.focus(), Focus::Services);
+
+        app.on_key(press(KeyCode::Tab));
+        assert_eq!(app.focus(), Focus::Logs);
+        assert!(app.selected_service().is_some(), "still the target");
+
+        app.on_key(press(KeyCode::Tab));
+        assert_eq!(app.focus(), Focus::Workspaces);
+        assert!(app.selected_service().is_none());
     }
 
     #[test]
