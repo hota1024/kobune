@@ -240,12 +240,7 @@ pub fn workspaces(list: &[WorkspaceInfo], decor: Decor) -> Panel {
     let mut grid = Grid::new().header(header);
 
     for workspace in list {
-        let running = workspace
-            .services
-            .iter()
-            .filter(|service| service.state.is_running())
-            .count();
-        let total = workspace.services.len();
+        let (count, count_style) = running_count(workspace);
 
         let mut row: Vec<Line<'static>> = Vec::new();
         if show_project {
@@ -253,7 +248,7 @@ pub fn workspaces(list: &[WorkspaceInfo], decor: Decor) -> Panel {
         }
         row.extend([
             Line::styled(workspace.display_name().to_string(), theme::subject()),
-            Line::styled(format!("{running}/{total}"), running_style(running, total)),
+            Line::styled(count, count_style),
             Line::styled(workspace.branch.clone(), theme::secondary()),
         ]);
 
@@ -1231,14 +1226,29 @@ fn access(service: &ServiceInfo) -> Line<'static> {
     }
 }
 
-fn running_style(running: usize, total: usize) -> ratatui::style::Style {
-    if total == 0 || running == 0 {
+/// `3/3`, and how it should read.
+///
+/// One rule, because two places show this badge — the table `kobune ls`
+/// prints and the list down the side of the dashboard — and what "partly
+/// up" looks like has to be the same in both or they disagree about the
+/// same workspace.
+pub fn running_count(workspace: &WorkspaceInfo) -> (String, ratatui::style::Style) {
+    let running = workspace
+        .services
+        .iter()
+        .filter(|service| service.state.is_running())
+        .count();
+    let total = workspace.services.len();
+
+    let style = if total == 0 || running == 0 {
         theme::secondary()
     } else if running == total {
         theme::good()
     } else {
         theme::warn()
-    }
+    };
+
+    (format!("{running}/{total}"), style)
 }
 
 /// What to say under "reachable from the internet", if anything.

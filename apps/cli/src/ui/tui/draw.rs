@@ -210,7 +210,7 @@ fn list_width(app: &App, available: u16) -> u16 {
         .iter()
         .map(|workspace| {
             let name = workspace.display_name().width();
-            let count = counts(workspace).0.width();
+            let count = views::running_count(workspace).0.width();
             // The marker, the name, the gap, the count.
             u16::try_from(2 + name + 2 + count).unwrap_or(u16::MAX)
         })
@@ -219,26 +219,6 @@ fn list_width(app: &App, available: u16) -> u16 {
 
     let ceiling = (available / 3).max(MIN_LIST_WIDTH);
     wanted.clamp(MIN_LIST_WIDTH, ceiling).min(available)
-}
-
-/// `3/3`, and how it should read.
-fn counts(workspace: &kobune_api::WorkspaceInfo) -> (String, ratatui::style::Style) {
-    let running = workspace
-        .services
-        .iter()
-        .filter(|service| service.state.is_running())
-        .count();
-    let total = workspace.services.len();
-
-    let style = if total == 0 || running == 0 {
-        theme::secondary()
-    } else if running == total {
-        theme::good()
-    } else {
-        theme::warn()
-    };
-
-    (format!("{running}/{total}"), style)
 }
 
 /// The selectable list.
@@ -251,7 +231,7 @@ fn list(app: &App, width: u16, height: u16) -> Rows {
     let count_width = app
         .workspaces()
         .iter()
-        .map(|workspace| counts(workspace).0.width())
+        .map(|workspace| views::running_count(workspace).0.width())
         .max()
         .unwrap_or(0);
 
@@ -284,7 +264,7 @@ fn list(app: &App, width: u16, height: u16) -> Rows {
         .take(rows.max(1))
     {
         let here = Some(index) == selected;
-        let (count, count_style) = counts(workspace);
+        let (count, count_style) = views::running_count(workspace);
 
         // The marker dims when the keys have moved to the other pane, so
         // there is never a question of which cursor `u` is about to act
@@ -558,7 +538,7 @@ fn overlay_panel(showing: &Overlay) -> Panel {
         Overlay::Keys => keys_panel(),
         Overlay::Waiting(what) => message(
             "please wait",
-            format!("reading {what}…"),
+            format!("reading {}…", what.label()),
             theme::secondary(),
         ),
         Overlay::Checks(report) => views::diagnostics(report, decor(Decor::FRAMED)),
@@ -568,7 +548,7 @@ fn overlay_panel(showing: &Overlay) -> Panel {
         Overlay::Code(service) => views::url(service, decor(Decor::FRAMED)),
         Overlay::Failed { what, reason } => message(
             "nothing to show",
-            format!("could not read {what}: {reason}"),
+            format!("could not read {}: {reason}", what.label()),
             theme::bad(),
         ),
     }

@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr as _;
 use crate::ui::theme;
 
 use super::ansi;
-use super::daemon::Command;
+use super::daemon::{Command, Inspect};
 use super::text::{fit, pad};
 
 /// How many log lines are kept.
@@ -65,8 +65,8 @@ pub enum Focus {
 pub enum Overlay {
     /// The key list, which asks the daemon nothing.
     Keys,
-    /// A request is out. Named, so the box says what it is waiting for.
-    Waiting(&'static str),
+    /// A request is out, and this is which.
+    Waiting(Inspect),
     /// `kobune doctor`.
     Checks(Box<kobune_api::Diagnostics>),
     /// `kobune env ls`, masked as the printed one masks.
@@ -77,7 +77,7 @@ pub enum Overlay {
     /// A service's URL, as a code to photograph.
     Code(Box<ServiceInfo>),
     /// The request came back with nothing to show.
-    Failed { what: &'static str, reason: String },
+    Failed { what: Inspect, reason: String },
 }
 
 impl Overlay {
@@ -95,7 +95,7 @@ impl Overlay {
             Self::Code(_) => "code",
             Self::Checks(_) => "the checks",
             Self::Env { .. } => "the environment",
-            Self::Waiting(what) | Self::Failed { what, .. } => what,
+            Self::Waiting(what) | Self::Failed { what, .. } => what.label(),
         }
     }
 
@@ -121,11 +121,32 @@ pub struct Subject {
 }
 
 /// One line a service wrote.
+///
+/// The escape sequences are read once, here, rather than every time the
+/// line is looked at: `rows` alone used to re-parse and re-wrap the
+/// whole buffer on every arrow key, and `push` did two full scans of it
+/// per incoming line. A dev server writing a thousand lines a second
+/// made that millions of them.
 #[derive(Debug, Clone)]
 pub struct LogLine {
     /// Which service wrote it, where the daemon said.
     pub service: Option<String>,
-    pub line: String,
+    /// What it looks like, read out of the escape sequences once. The
+    /// string it was read from is not kept: nothing needs it again, and
+    /// two thousand of them is two thousand allocations to hold.
+    parsed: Line<'static>,
+    /// How tall it is at the width it was last counted for.
+    rows: usize,
+}
+
+impl LogLine {
+    fn new(service: Option<String>, line: &str) -> Self {
+        Self {
+            service,
+            parsed: ansi::line(line),
+            rows: 1,
+        }
+    }
 }
 
 /// The log pane's contents.
@@ -136,6 +157,15 @@ pub struct Logs {
     /// used to arrive here under the new workspace's name.
     stream: u64,
     lines: VecDeque<LogLine>,
+    /// The service column, which only grows.
+    ///
+    /// A column that narrowed as old lines fell off the front would
+    /// shift every line on screen sideways, and finding out that it
+    /// could have narrowed means walking the buffer.
+    column: usize,
+    /// How tall the whole buffer is at the current width, kept as it
+    /// goes rather than counted again on every keypress.
+    total_rows: usize,
     /// Rows between the newest row and the bottom of the view. Zero is
     /// following.
     ///
@@ -176,6 +206,8 @@ impl Logs {
         Self {
             subject,
             stream,
+            column: 0,
+            total_rows: 0,
             lines: VecDeque::new(),
             scrolled: 0,
             viewport: Viewport::default(),
@@ -248,29 +280,34 @@ impl Logs {
     /// that widened so that lines re-wrapped into fewer rows, leaves the
     /// view scrolled past a bottom that has moved up to meet it.
     fn resize(&mut self, columns: u16, rows: u16) {
+        let rewrapped = self.viewport.columns != columns;
         self.viewport = Viewport { columns, rows };
+
+        if rewrapped {
+            self.recount();
+        }
+
         self.scrolled = self.scrolled.min(self.scrolled_max());
     }
 
     /// How wide the service column is, or zero when there is none.
-    ///
-    /// Measured over the whole buffer rather than over what is on screen:
-    /// a column that changed width as the view scrolled would make every
-    /// line appear to shift sideways.
     fn column_width(&self) -> usize {
-        // Following one service, its name written down the side of its
-        // own output says nothing.
-        if self.subject.service.is_some() {
-            return 0;
-        }
+        self.column
+    }
 
-        self.lines
-            .iter()
-            .filter_map(|line| line.service.as_deref())
-            .map(str::width)
-            .max()
-            .unwrap_or(0)
-            .min(MAX_SERVICE_COLUMN)
+    /// Counts the whole buffer again, and every line in it.
+    ///
+    /// For the two things that change every line's height at once: the
+    /// pane's width, and the column widening in front of it.
+    fn recount(&mut self) {
+        let column = self.column;
+        let width = self.wrap_width();
+
+        self.total_rows = 0;
+        for line in &mut self.lines {
+            line.rows = rows_of(line, width, column).len();
+            self.total_rows += line.rows;
+        }
     }
 
     /// The room a line's own text has, once the column has had its share.
@@ -288,45 +325,50 @@ impl Logs {
     /// How far back the view may go: far enough to put the oldest row at
     /// the top of the pane, and no further.
     fn scrolled_max(&self) -> usize {
-        let column = self.column_width();
-        let width = self.wrap_width();
-
-        let total: usize = self
-            .lines
-            .iter()
-            .map(|line| rows_of(line, width, column).len())
-            .sum();
-
-        total.saturating_sub(usize::from(self.viewport.rows))
+        self.total_rows
+            .saturating_sub(usize::from(self.viewport.rows))
     }
 
-    fn push(&mut self, line: LogLine) {
-        // Only matters while somebody is reading further up. Following,
-        // the view is the tail whatever arrives, and wrapping every line
-        // to find out how tall it is would be work for nothing.
-        let holding = self.scrolled > 0;
-        let width = self.wrap_width();
-        let column = self.column_width();
-
+    fn push(&mut self, mut line: LogLine) {
         let mut dropped = 0;
         if self.lines.len() >= MAX_LOG_LINES
             && let Some(oldest) = self.lines.pop_front()
-            && holding
         {
-            dropped = rows_of(&oldest, width, column).len();
+            dropped = oldest.rows;
+            self.total_rows -= oldest.rows;
         }
 
-        let added = if holding {
-            rows_of(&line, width, column).len()
-        } else {
-            0
-        };
+        // A name wider than the column has been seen: every line's
+        // height changes with it, so the buffer is counted again. At
+        // most `MAX_SERVICE_COLUMN` times in a pane's life.
+        let widened = self.subject.service.is_none()
+            && line
+                .service
+                .as_deref()
+                .map(str::width)
+                .is_some_and(|width| width.min(MAX_SERVICE_COLUMN) > self.column);
 
+        if widened {
+            self.column = line
+                .service
+                .as_deref()
+                .map_or(0, str::width)
+                .min(MAX_SERVICE_COLUMN);
+        }
+
+        line.rows = rows_of(&line, self.wrap_width(), self.column).len();
+        let added = line.rows;
+
+        self.total_rows += added;
         self.lines.push_back(line);
+
+        if widened {
+            self.recount();
+        }
 
         // Scrolled up, the view stays on the rows it was showing rather
         // than sliding as new ones arrive underneath.
-        if holding {
+        if self.scrolled > 0 {
             self.scrolled = self.scrolled.saturating_add(added).saturating_sub(dropped);
         }
     }
@@ -347,7 +389,7 @@ impl Logs {
 /// under it, so a wrapped line reads as one line rather than as one line
 /// and an unlabelled one.
 fn rows_of(entry: &LogLine, width: u16, column: usize) -> Vec<Line<'static>> {
-    let wrapped = crate::ui::panel::wrap(&[ansi::line(&entry.line)], width);
+    let wrapped = crate::ui::panel::wrap(std::slice::from_ref(&entry.parsed), width);
 
     if column == 0 {
         return wrapped;
@@ -778,8 +820,8 @@ impl App {
             }
 
             KeyCode::Char('?') => self.show(Overlay::Keys),
-            KeyCode::Char('c') => return self.inspect(Overlay::Waiting("the checks")),
-            KeyCode::Char('e') => return self.inspect(Overlay::Waiting("the environment")),
+            KeyCode::Char('c') => return self.inspect(Inspect::Checks),
+            KeyCode::Char('e') => return self.inspect(Inspect::Env),
             KeyCode::Char('Q') => return self.show_code(),
 
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
@@ -824,12 +866,8 @@ impl App {
         self.overlay_scroll = 0;
     }
 
-    /// One of the two overlays that has to be fetched first.
-    fn inspect(&mut self, waiting: Overlay) -> Option<Action> {
-        let Overlay::Waiting(what) = waiting else {
-            return None;
-        };
-
+    /// One of the overlays that has to be fetched first.
+    fn inspect(&mut self, what: Inspect) -> Option<Action> {
         if self
             .overlay
             .as_ref()
@@ -848,9 +886,10 @@ impl App {
         self.overlay = Some(Overlay::Waiting(what));
         self.overlay_scroll = 0;
 
-        Some(Action::Ask(match what {
-            "the checks" => Command::Checks { path },
-            _ => Command::Env { path, service },
+        Some(Action::Ask(Command::Inspect {
+            what,
+            path,
+            service,
         }))
     }
 
@@ -1022,7 +1061,7 @@ impl App {
         if let Some(logs) = &mut self.logs
             && logs.stream == stream
         {
-            logs.push(LogLine { service, line });
+            logs.push(LogLine::new(service, &line));
         }
     }
 
@@ -1734,8 +1773,10 @@ mod tests {
 
         assert_eq!(
             app.on_key(press(KeyCode::Char('c'))),
-            Some(Action::Ask(Command::Checks {
+            Some(Action::Ask(Command::Inspect {
+                what: Inspect::Checks,
                 path: PathBuf::from("/repo.wt/feat-1"),
+                service: None,
             }))
         );
 
@@ -1751,7 +1792,8 @@ mod tests {
 
         assert_eq!(
             app.on_key(press(KeyCode::Char('e'))),
-            Some(Action::Ask(Command::Env {
+            Some(Action::Ask(Command::Inspect {
+                what: Inspect::Env,
                 path: PathBuf::from("/repo.wt/feat-1"),
                 service: Some("web".to_string()),
             }))
@@ -1767,7 +1809,7 @@ mod tests {
         app.on_key(press(KeyCode::Esc));
 
         app.inspected(Overlay::Failed {
-            what: "the checks",
+            what: Inspect::Checks,
             reason: "no daemon".into(),
         });
 
@@ -1780,7 +1822,7 @@ mod tests {
         app.on_key(press(KeyCode::Char('c')));
 
         app.inspected(Overlay::Failed {
-            what: "the checks",
+            what: Inspect::Checks,
             reason: "no daemon".into(),
         });
 
@@ -2179,6 +2221,77 @@ mod tests {
         let after = app.logs().expect("open").rows();
 
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn the_height_of_the_buffer_is_kept_as_it_goes() {
+        // It used to be counted from scratch on every keypress, which
+        // meant re-parsing and re-wrapping two thousand lines to answer
+        // one press of ↑. Kept incrementally it can drift instead, so
+        // this holds it against the long way round.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('l')));
+        app.resize(pane(30, 5));
+
+        for n in 0..40 {
+            // Some of them wrap, some of them do not.
+            say(&mut app, Some("web".into()), "x".repeat(n));
+        }
+
+        let logs = app.logs().expect("open");
+        let counted: usize = logs
+            .lines
+            .iter()
+            .map(|line| rows_of(line, logs.wrap_width(), logs.column_width()).len())
+            .sum();
+
+        assert_eq!(logs.total_rows, counted);
+        assert_eq!(logs.scrolled_max(), counted - 5);
+    }
+
+    #[test]
+    fn a_wider_service_name_counts_the_buffer_again() {
+        // The column is in front of every line, so widening it changes
+        // how much room every line has and how tall each one is.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('l')));
+        app.resize(pane(24, 5));
+
+        for _ in 0..10 {
+            say(&mut app, Some("web".into()), "y".repeat(30));
+        }
+        let narrow = app.logs().expect("open").total_rows;
+
+        say(&mut app, Some("a-long-service".into()), "y".repeat(30));
+
+        let logs = app.logs().expect("open");
+        let counted: usize = logs
+            .lines
+            .iter()
+            .map(|line| rows_of(line, logs.wrap_width(), logs.column_width()).len())
+            .sum();
+
+        assert!(logs.column_width() > 3, "the column grew");
+        assert_eq!(logs.total_rows, counted, "and every line was counted again");
+        assert!(logs.total_rows > narrow, "less room, so more rows");
+    }
+
+    #[test]
+    fn the_column_does_not_narrow_as_lines_fall_off() {
+        // It would shift every line on screen sideways, and finding out
+        // that it could have narrowed means walking the buffer.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('l')));
+        app.resize(pane(80, 10));
+
+        say(&mut app, Some("a-long-service".into()), "once".into());
+        let wide = app.logs().expect("open").column_width();
+
+        for _ in 0..MAX_LOG_LINES {
+            say(&mut app, Some("web".into()), "after".into());
+        }
+
+        assert_eq!(app.logs().expect("open").column_width(), wide);
     }
 
     #[test]

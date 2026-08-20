@@ -65,13 +65,37 @@ pub enum Command {
     },
     /// Stop following, and tell the daemon so.
     StopFollowing,
-    /// `kobune doctor`, for the overlay.
-    Checks { path: PathBuf },
-    /// `kobune env ls`, for the overlay.
-    Env {
+    /// One of the reads an overlay shows.
+    Inspect {
+        what: Inspect,
         path: PathBuf,
         service: Option<String>,
     },
+}
+
+/// Which read an overlay is waiting on.
+///
+/// **A type rather than the words on the box.** It used to be the label
+/// itself — `match what { "the checks" => …, _ => Env }` — with the
+/// wrong branch as the default, so rewording the message would have sent
+/// `c` off to fetch an environment listing, and nothing would have said
+/// so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inspect {
+    /// `kobune doctor`.
+    Checks,
+    /// `kobune env ls`.
+    Env,
+}
+
+impl Inspect {
+    /// What the box says while it waits, and what a failure names.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Checks => "the checks",
+            Self::Env => "the environment",
+        }
+    }
 }
 
 /// What comes back.
@@ -109,9 +133,9 @@ pub enum Update {
         entries: Vec<EnvInfo>,
         service: Option<String>,
     },
-    /// One of those two could not be answered.
+    /// One of those reads could not be answered.
     InspectionFailed {
-        what: &'static str,
+        what: Inspect,
         reason: String,
     },
 }
@@ -206,7 +230,7 @@ async fn run(
                 // A read, and a quick one, but on a connection of its
                 // own all the same: the polling one is busy every three
                 // seconds and this is somebody waiting on a keypress.
-                Some(command @ (Command::Checks { .. } | Command::Env { .. })) => {
+                Some(command @ Command::Inspect { .. }) => {
                     tokio::spawn(inspect(client.clone(), command, updates.clone()));
                 }
                 // Its own connection, and its own task: the ticker keeps
@@ -396,27 +420,28 @@ async fn follow(
 
 /// Answers one of the overlays.
 async fn inspect(client: Client, command: Command, updates: UnboundedSender<Update>) {
-    let (request, what) = match command {
-        Command::Checks { path } => (
-            Request::Doctor {
-                target: Target::new(path),
-            },
-            "the checks",
-        ),
-        Command::Env { path, service } => (
-            Request::EnvList {
-                target: Target::new(path),
-                // **Masked.** These are the values §8's secret
-                // references resolved out of 1Password and the Keychain,
-                // and a dashboard is a screen somebody else can be
-                // standing behind. `kobune env ls --reveal` is a
-                // deliberate act and stays one.
-                reveal: false,
-                service,
-            },
-            "the environment",
-        ),
-        _ => return,
+    let Command::Inspect {
+        what,
+        path,
+        service,
+    } = command
+    else {
+        return;
+    };
+
+    let target = Target::new(path);
+    let request = match what {
+        Inspect::Checks => Request::Doctor { target },
+        Inspect::Env => Request::EnvList {
+            target,
+            // **Masked.** These are the values §8's secret references
+            // resolved out of 1Password and the Keychain, and a
+            // dashboard is a screen somebody else can be standing
+            // behind. `kobune env ls --reveal` is a deliberate act and
+            // stays one.
+            reveal: false,
+            service,
+        },
     };
 
     let failed = |reason: String| Update::InspectionFailed { what, reason };
@@ -459,8 +484,7 @@ async fn operate(client: Client, command: Command, updates: UnboundedSender<Upda
         Command::Refresh
         | Command::Follow { .. }
         | Command::StopFollowing
-        | Command::Checks { .. }
-        | Command::Env { .. } => return,
+        | Command::Inspect { .. } => return,
     };
 
     let mut connection = match client.connect().await {
