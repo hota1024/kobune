@@ -69,7 +69,14 @@ pub async fn run(client: Client, cwd: PathBuf, workspace: Option<&str>) -> Resul
     }
 
     let (commands, updates) = daemon::spawn(client, cwd, connection);
-    let keys = watch_keys();
+    let keys = watch_terminal();
+
+    // **Before `try_init`, so that it runs after.** ratatui installs a
+    // hook of its own that calls `restore` and then whatever was there
+    // before it — and `restore` does not show the cursor. Without this,
+    // any panic leaves a shell prompt with nothing visible to type at
+    // for the rest of the session.
+    show_cursor_on_panic();
 
     let mut terminal = ratatui::try_init()
         .map_err(|err| CliError::Local(format!("cannot take the terminal: {err}")))?;
@@ -92,7 +99,7 @@ async fn drive(
     mut state: App,
     commands: &tokio::sync::mpsc::UnboundedSender<daemon::Command>,
     mut updates: UnboundedReceiver<Update>,
-    mut keys: UnboundedReceiver<KeyEvent>,
+    mut keys: UnboundedReceiver<Input>,
 ) -> Result<(), CliError> {
     loop {
         // The pane the log rows scroll inside, before anything is drawn
@@ -110,15 +117,18 @@ async fn drive(
         }
 
         tokio::select! {
-            key = keys.recv() => match key {
-                Some(key) => match state.on_key(key) {
+            input = keys.recv() => match input {
+                Some(Input::Key(key)) => match state.on_key(key) {
                     Some(Action::Ask(command)) => {
                         let _ = commands.send(command);
                     }
                     Some(Action::Open(url)) => open(&url, &mut state),
                     None => {}
                 },
-                // The keyboard is gone, which is not something to keep
+                // Measured and drawn at the top of the next turn, which
+                // is all a resize needs.
+                Some(Input::Resized) => {}
+                // The terminal is gone, which is not something to keep
                 // drawing through.
                 None => return Ok(()),
             },
@@ -171,8 +181,12 @@ fn apply(state: &mut App, update: Update) {
         Update::Event(event) => state.on_event(&event),
         Update::Settled(outcome) => state.settled(outcome),
         Update::Trouble(message) => state.went_wrong(message),
-        Update::Log { service, line } => state.on_log(service, line),
-        Update::LogEnded(reason) => state.log_ended(reason),
+        Update::Log {
+            stream,
+            service,
+            line,
+        } => state.on_log(stream, service, line),
+        Update::LogEnded { stream, reason } => state.log_ended(stream, reason),
         Update::Checks(report) => state.inspected(Overlay::Checks(report)),
         Update::Env { entries, service } => state.inspected(Overlay::Env { entries, service }),
         Update::InspectionFailed { what, reason } => {
@@ -199,42 +213,66 @@ async fn listing(
     }
 }
 
-/// Keys, off a thread of their own.
+/// Something from the terminal that the loop has to wake for.
+enum Input {
+    Key(KeyEvent),
+    /// The window changed shape. Nothing to act on — the loop measures
+    /// and draws at the top of every turn — but it has to be woken to
+    /// get there.
+    Resized,
+}
+
+/// What the terminal produces, off a thread of its own.
 ///
-/// crossterm reads them by blocking, and the copy ratatui carries is
-/// built without `event-stream`, so there is no future to await. A thread
-/// and a channel is what `attach` does with the same problem.
+/// crossterm reads it by blocking, and the copy ratatui carries is built
+/// without `event-stream`, so there is no future to await. A thread and a
+/// channel is what `attach` does with the same problem.
 ///
-/// Nothing joins it. It is blocked on the keyboard when the dashboard
-/// closes, and the process is on its way out.
-fn watch_keys() -> UnboundedReceiver<KeyEvent> {
+/// **A resize is one of the things sent.** It used to be swallowed on
+/// the grounds that the loop redraws on anything, which was not true:
+/// the loop wakes for a key, a daemon update, or the spinner tick, and
+/// with nothing running the next of those is the three-second listing
+/// refresh. Dragging the corner left a frame drawn to the old geometry —
+/// the wrong log wrap width, the wrong scroll bounds — sitting there.
+///
+/// Nothing joins the thread. It is blocked on the terminal when the
+/// dashboard closes, and the process is on its way out.
+fn watch_terminal() -> UnboundedReceiver<Input> {
     let (sender, receiver) = unbounded_channel();
 
     std::thread::Builder::new()
-        .name("kobune-keys".to_string())
+        .name("kobune-terminal".to_string())
         .spawn(move || {
             loop {
-                match ratatui::crossterm::event::read() {
-                    // A resize needs no key: the loop redraws on
-                    // anything, and the terminal reads its own size.
-                    Ok(TermEvent::Resize(..)) => {
-                        if sender.is_closed() {
-                            return;
-                        }
-                    }
-                    Ok(TermEvent::Key(key)) => {
-                        if sender.send(key).is_err() {
-                            return;
-                        }
-                    }
-                    Ok(_) => {}
+                let input = match ratatui::crossterm::event::read() {
+                    Ok(TermEvent::Key(key)) => Input::Key(key),
+                    Ok(TermEvent::Resize(..)) => Input::Resized,
+                    Ok(_) => continue,
                     Err(_) => return,
+                };
+
+                if sender.send(input).is_err() {
+                    return;
                 }
             }
         })
         .expect("spawns the thread");
 
     receiver
+}
+
+/// Shows the cursor again if the process panics.
+///
+/// `ratatui::restore` puts the terminal back but leaves the cursor
+/// hidden — the normal exit path calls `show_cursor` by hand for exactly
+/// that reason, and the panic path had nothing.
+fn show_cursor_on_panic() {
+    let previous = std::panic::take_hook();
+
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::cursor::Show);
+        previous(info);
+    }));
 }
 
 /// Hands a URL to the browser.

@@ -131,6 +131,10 @@ pub struct LogLine {
 /// The log pane's contents.
 pub struct Logs {
     pub subject: Subject,
+    /// Which stream fills it. Lines from any other are dropped: asking
+    /// the old one to stop does not stop it at once, and its last lines
+    /// used to arrive here under the new workspace's name.
+    stream: u64,
     lines: VecDeque<LogLine>,
     /// Rows between the newest row and the bottom of the view. Zero is
     /// following.
@@ -168,9 +172,10 @@ impl Default for Viewport {
 }
 
 impl Logs {
-    fn new(subject: Subject) -> Self {
+    fn new(subject: Subject, stream: u64) -> Self {
         Self {
             subject,
+            stream,
             lines: VecDeque::new(),
             scrolled: 0,
             viewport: Viewport::default(),
@@ -425,6 +430,9 @@ pub struct App {
     /// Whether the log pane has the screen to itself.
     logs_full: bool,
     overlay: Option<Overlay>,
+    /// How many times a log pane has been pointed somewhere. It names
+    /// the stream that is allowed to write into the one open now.
+    next_stream: u64,
     /// How far the overlay has been scrolled, in rows.
     overlay_scroll: usize,
     /// How tall an overlay may be drawn, and how tall the one on screen
@@ -460,6 +468,7 @@ impl App {
             logs: None,
             logs_full: false,
             overlay: None,
+            next_stream: 0,
             overlay_scroll: 0,
             overlay_rows: 20,
             overlay_content: 0,
@@ -963,12 +972,16 @@ impl App {
     }
 
     fn open_logs(&mut self, subject: Subject) -> Action {
+        self.next_stream = self.next_stream.wrapping_add(1);
+        let stream = self.next_stream;
+
         let command = Command::Follow {
+            stream,
             path: subject.path.clone(),
             services: subject.service.iter().cloned().collect(),
         };
 
-        self.logs = Some(Logs::new(subject));
+        self.logs = Some(Logs::new(subject, stream));
         self.focus = Focus::Logs;
 
         Action::Ask(command)
@@ -999,15 +1012,33 @@ impl App {
     }
 
     /// One line off the stream.
-    pub fn on_log(&mut self, service: Option<String>, line: String) {
-        if let Some(logs) = &mut self.logs {
+    ///
+    /// From the stream this pane asked for, and no other. `l` somewhere
+    /// else only *asks* the last one to stop, and it goes on sending
+    /// until its request comes back — under the new workspace's name,
+    /// where those lines were never written.
+    pub fn on_log(&mut self, stream: u64, service: Option<String>, line: String) {
+        if let Some(logs) = &mut self.logs
+            && logs.stream == stream
+        {
             logs.push(LogLine { service, line });
         }
     }
 
+    /// The stream the pane is listening to.
+    ///
+    /// For the tests, which stand in for the daemon and have to send
+    /// what the pane will accept.
+    #[cfg(test)]
+    pub fn log_stream(&self) -> u64 {
+        self.logs.as_ref().map_or(0, |logs| logs.stream)
+    }
+
     /// The stream stopped without being asked to.
-    pub fn log_ended(&mut self, reason: Option<String>) {
-        if let Some(logs) = &mut self.logs {
+    pub fn log_ended(&mut self, stream: u64, reason: Option<String>) {
+        if let Some(logs) = &mut self.logs
+            && logs.stream == stream
+        {
             logs.ended = Some(match reason {
                 Some(reason) => format!("ended: {reason}"),
                 None => "ended".to_string(),
@@ -1500,6 +1531,13 @@ mod tests {
         assert_eq!(app.focus(), Focus::Workspaces);
     }
 
+    /// A line arriving from the stream the pane is following, which is
+    /// what the daemon side sends.
+    fn say(app: &mut App, service: Option<String>, line: String) {
+        let stream = app.log_stream();
+        app.on_log(stream, service, line);
+    }
+
     /// A log pane of this size, and an overlay with room to spare.
     fn pane(columns: u16, rows: u16) -> Measured {
         Measured {
@@ -1615,7 +1653,7 @@ mod tests {
         app.resize(pane(80, 5));
 
         for n in 0..20 {
-            app.on_log(None, format!("line {n}"));
+            say(&mut app, None, format!("line {n}"));
         }
         app.on_key(press(KeyCode::Char('g')));
         assert!(!app.logs().expect("open").following());
@@ -1900,6 +1938,7 @@ mod tests {
         assert_eq!(
             app.on_key(press(KeyCode::Char('l'))),
             Some(Action::Ask(Command::Follow {
+                stream: app.log_stream(),
                 path: PathBuf::from("/repo.wt/feat-1"),
                 services: Vec::new(),
             })),
@@ -1918,6 +1957,7 @@ mod tests {
         assert_eq!(
             app.on_key(press(KeyCode::Char('l'))),
             Some(Action::Ask(Command::Follow {
+                stream: app.log_stream(),
                 path: PathBuf::from("/repo.wt/feat-1"),
                 services: vec!["web".to_string()],
             }))
@@ -1965,6 +2005,7 @@ mod tests {
         assert_eq!(
             app.on_key(press(KeyCode::Char('l'))),
             Some(Action::Ask(Command::Follow {
+                stream: app.log_stream(),
                 path: PathBuf::from("/repo.wt/feat-2"),
                 services: Vec::new(),
             }))
@@ -1979,7 +2020,7 @@ mod tests {
         app.resize(pane(80, 10));
 
         for n in 0..50 {
-            app.on_log(Some("web".into()), format!("line {n}"));
+            say(&mut app, Some("web".into()), format!("line {n}"));
         }
         assert!(app.logs().expect("open").following());
 
@@ -2004,7 +2045,11 @@ mod tests {
         app.on_key(press(KeyCode::Char('l')));
         app.resize(pane(20, 10));
 
-        app.on_log(None, "0123456789012345678901234567890123456789".into());
+        say(
+            &mut app,
+            None,
+            "0123456789012345678901234567890123456789".into(),
+        );
 
         let rows = app.logs().expect("open").rows();
         let text: String = rows
@@ -2026,7 +2071,7 @@ mod tests {
         app.on_key(press(KeyCode::Char('l')));
         app.resize(pane(20, 10));
 
-        app.on_log(Some("web".into()), "a".repeat(30));
+        say(&mut app, Some("web".into()), "a".repeat(30));
 
         // Twenty columns, less the three the column takes and the two
         // beside it: fifteen a row, so thirty is two of them.
@@ -2050,7 +2095,7 @@ mod tests {
         app.resize(pane(80, 30));
 
         for n in 0..200 {
-            app.on_log(None, format!("line {n}"));
+            say(&mut app, None, format!("line {n}"));
         }
 
         app.on_key(press(KeyCode::PageUp));
@@ -2065,7 +2110,7 @@ mod tests {
         app.resize(pane(80, 10));
 
         for n in 0..25 {
-            app.on_log(None, format!("line {n}"));
+            say(&mut app, None, format!("line {n}"));
         }
 
         app.on_key(press(KeyCode::Char('g')));
@@ -2086,14 +2131,14 @@ mod tests {
         app.on_key(press(KeyCode::Char('l')));
 
         for n in 0..20 {
-            app.on_log(None, format!("line {n}"));
+            say(&mut app, None, format!("line {n}"));
         }
         app.on_key(press(KeyCode::Up));
 
         let before = app.logs().expect("open").rows();
 
         for n in 20..30 {
-            app.on_log(None, format!("line {n}"));
+            say(&mut app, None, format!("line {n}"));
         }
 
         let after = app.logs().expect("open").rows();
@@ -2109,7 +2154,7 @@ mod tests {
         app.on_key(press(KeyCode::Char('l')));
 
         for n in 0..(MAX_LOG_LINES + 500) {
-            app.on_log(None, format!("line {n}"));
+            say(&mut app, None, format!("line {n}"));
         }
 
         let logs = app.logs().expect("open");
@@ -2186,12 +2231,60 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
 
-        app.log_ended(Some("the daemon went away".into()));
+        app.log_ended(app.log_stream(), Some("the daemon went away".into()));
 
         assert_eq!(
             app.logs().expect("open").ended.as_deref(),
             Some("ended: the daemon went away")
         );
+    }
+
+    #[test]
+    fn a_stream_that_has_been_left_cannot_write_into_the_pane() {
+        // Stopping one only *asks* it to stop, so it goes on sending
+        // until its request comes back. Those lines were arriving in the
+        // pane that had already moved on, under the new workspace's name.
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('l')));
+        let left_behind = app.log_stream();
+
+        say(&mut app, None, "from feat-1".into());
+
+        // Somewhere else, which is a stream of its own.
+        app.on_key(press(KeyCode::Tab));
+        app.on_key(press(KeyCode::Down));
+        app.on_key(press(KeyCode::Char('l')));
+        assert_ne!(app.log_stream(), left_behind);
+
+        app.on_log(left_behind, None, "still in flight".into());
+        say(&mut app, None, "from feat-2".into());
+
+        let text: String = app
+            .logs()
+            .expect("open")
+            .rows()
+            .iter()
+            .flat_map(|row| row.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+
+        assert!(text.contains("from feat-2"), "got: {text:?}");
+        assert!(!text.contains("still in flight"), "got: {text:?}");
+        assert!(!text.contains("from feat-1"), "got: {text:?}");
+    }
+
+    #[test]
+    fn a_stream_that_has_been_left_cannot_report_its_own_end() {
+        let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
+        app.on_key(press(KeyCode::Char('l')));
+        let left_behind = app.log_stream();
+
+        app.on_key(press(KeyCode::Tab));
+        app.on_key(press(KeyCode::Down));
+        app.on_key(press(KeyCode::Char('l')));
+
+        app.log_ended(left_behind, Some("the old one gave up".into()));
+
+        assert_eq!(app.logs().expect("open").ended, None);
     }
 
     #[test]

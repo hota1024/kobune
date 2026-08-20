@@ -732,6 +732,13 @@ impl Widget for Rows {
 mod tests {
     use super::*;
 
+    /// A line arriving from the stream the pane is following, which is
+    /// what the daemon side sends.
+    fn say(app: &mut App, service: Option<String>, line: String) {
+        let stream = app.log_stream();
+        app.on_log(stream, service, line);
+    }
+
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
@@ -1038,7 +1045,7 @@ mod tests {
     fn the_log_pane_shows_what_it_is_following_and_what_it_said() {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
-        app.on_log(Some("web".into()), "ready on :3000".into());
+        say(&mut app, Some("web".into()), "ready on :3000".into());
 
         let text = screen(&mut app, 90, 20);
         assert!(text.contains("logs: feat-1"), "got:\n{text}");
@@ -1052,7 +1059,7 @@ mod tests {
     fn a_full_screen_of_logs_has_nothing_else_on_it() {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('L')));
-        app.on_log(Some("web".into()), "ready on :3000".into());
+        say(&mut app, Some("web".into()), "ready on :3000".into());
 
         let text = screen(&mut app, 90, 20);
         assert!(text.contains("ready on :3000"), "got:\n{text}");
@@ -1064,7 +1071,8 @@ mod tests {
         // Every line of a real dev server's output looks like this.
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Char('l')));
-        app.on_log(
+        say(
+            &mut app,
             Some("api".into()),
             "\u{1b}[32m[info]\u{1b}[39m GET /ok \u{1b}[1m200\u{1b}[22m".into(),
         );
@@ -1083,7 +1091,7 @@ mod tests {
         app.on_key(press(KeyCode::Char('l')));
 
         for n in 0..40 {
-            app.on_log(None, format!("line {n}"));
+            say(&mut app, None, format!("line {n}"));
         }
         app.on_key(press(KeyCode::Up));
         app.on_key(press(KeyCode::Up));
@@ -1101,7 +1109,7 @@ mod tests {
         let mut app = App::new(listing(), Path::new("/repo.wt/feat-1"), None);
         app.on_key(press(KeyCode::Tab));
         app.on_key(press(KeyCode::Char('l')));
-        app.on_log(Some("web".into()), "only mine".into());
+        say(&mut app, Some("web".into()), "only mine".into());
 
         let text = screen(&mut app, 90, 20);
         assert!(text.contains("logs: feat-1 / web"), "got:\n{text}");
@@ -1158,7 +1166,7 @@ mod tests {
 
             // And with the pane that takes its rows from everything else.
             app.on_key(press(KeyCode::Char('l')));
-            app.on_log(Some("web".into()), "a line".into());
+            say(&mut app, Some("web".into()), "a line".into());
             screen(&mut app, width, height);
 
             app.on_key(press(KeyCode::Char('L')));

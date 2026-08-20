@@ -51,7 +51,15 @@ pub enum Command {
     ///
     /// Replaces whatever was being followed. Only one stream runs at a
     /// time, because there is one pane to put it in.
+    ///
+    /// `stream` is the pane's own count of how many times it has been
+    /// pointed somewhere, and comes back on every line. Stopping a
+    /// stream only *asks* it to stop, so the old one goes on sending for
+    /// as long as its `call_until` takes to return — and those lines
+    /// were landing in the pane that had already moved on, under the new
+    /// workspace's name.
     Follow {
+        stream: u64,
         path: PathBuf,
         services: Vec<String>,
     },
@@ -78,6 +86,9 @@ pub enum Update {
     Trouble(String),
     /// One line from the stream being followed.
     Log {
+        /// Which pane asked for it. A line from a stream that has been
+        /// pointed elsewhere since is dropped.
+        stream: u64,
         /// Which service wrote it, where the daemon said. `kobune` for a
         /// line about the stream rather than from it.
         service: Option<String>,
@@ -87,7 +98,10 @@ pub enum Update {
     ///
     /// Not sent for a stream that was asked to stop: closing the pane is
     /// not news to the person who closed it.
-    LogEnded(Option<String>),
+    LogEnded {
+        stream: u64,
+        reason: Option<String>,
+    },
     /// What `doctor` found.
     Checks(Box<Diagnostics>),
     /// What `env ls` listed.
@@ -131,7 +145,20 @@ async fn run(
 ) {
     let mut polling = Some(polling);
     let mut following: Option<Following> = None;
+
+    // **When to stop trying, not how long to sleep for.** The back-off
+    // used to be a `sleep` in the arm that noticed the failure, and a
+    // `select!` arm runs to completion — so with the daemon down the
+    // loop spent five seconds at a time not reading the command channel,
+    // and every key pressed in that window queued up unanswered.
+    let mut quiet_until: Option<tokio::time::Instant> = None;
+
     let mut ticker = tokio::time::interval(REFRESH_INTERVAL);
+
+    // A tick that arrives late does not make the next one arrive early:
+    // the default would fire the missed ticks back to back the moment a
+    // slow refresh returned.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     // The first tick fires at once, and the listing it would fetch has
     // just been fetched — that is what opened the screen.
@@ -140,14 +167,22 @@ async fn run(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                refresh(&client, &cwd, &mut polling, &updates).await;
+                if quiet_until.is_none_or(|until| tokio::time::Instant::now() >= until) {
+                    quiet_until = refresh(&client, &cwd, &mut polling, &updates).await;
+                }
             }
 
             command = commands.recv() => match command {
+                // Asked for by hand, so it tries whatever the back-off
+                // says: somebody pressing `r` has decided to find out.
                 Some(Command::Refresh) => {
-                    refresh(&client, &cwd, &mut polling, &updates).await;
+                    quiet_until = refresh(&client, &cwd, &mut polling, &updates).await;
                 }
-                Some(Command::Follow { path, services }) => {
+                Some(Command::Follow {
+                    stream,
+                    path,
+                    services,
+                }) => {
                     // One pane, one stream. The old one is told to stop
                     // rather than dropped, so the daemon lets go of the
                     // runtime's log stream now instead of when its next
@@ -157,6 +192,7 @@ async fn run(
                     }
                     following = Some(Following::start(
                         client.clone(),
+                        stream,
                         path,
                         services,
                         updates.clone(),
@@ -192,20 +228,22 @@ async fn run(
 }
 
 /// Re-fetches the listing, reconnecting if the daemon went away.
+///
+/// Answers with when it is worth trying again, where it is not worth
+/// trying at once.
 async fn refresh(
     client: &Client,
     cwd: &Path,
     polling: &mut Option<Connection>,
     updates: &UnboundedSender<Update>,
-) {
+) -> Option<tokio::time::Instant> {
     let connection = match polling {
         Some(connection) => connection,
         None => match client.connect().await {
             Ok(connection) => polling.insert(connection),
             Err(err) => {
                 let _ = updates.send(Update::Trouble(err.to_string()));
-                tokio::time::sleep(RETRY_INTERVAL).await;
-                return;
+                return Some(tokio::time::Instant::now() + RETRY_INTERVAL);
             }
         },
     };
@@ -218,22 +256,27 @@ async fn refresh(
     match connection.request(request).await {
         Ok(Response::Workspaces { workspaces }) => {
             let _ = updates.send(Update::Listing(workspaces));
+            None
         }
         Ok(_) => {
             let _ = updates.send(Update::Trouble(
                 "the daemon answered `ls` with something else".to_string(),
             ));
+            None
         }
         Err(err) => {
             // A refused or broken connection is worth a fresh one; an
             // error the daemon itself returned is not, and throwing the
             // connection away for one would reconnect every three seconds
             // in a directory with no `kobune.toml` in it.
-            if !matches!(err, ClientError::Api(_)) {
+            let broken = !matches!(err, ClientError::Api(_));
+            if broken {
                 *polling = None;
             }
 
             let _ = updates.send(Update::Trouble(err.to_string()));
+
+            broken.then(|| tokio::time::Instant::now() + RETRY_INTERVAL)
         }
     }
 }
@@ -247,13 +290,14 @@ impl Following {
     /// Opens a stream and starts sending its lines back.
     fn start(
         client: Client,
+        stream: u64,
         path: PathBuf,
         services: Vec<String>,
         updates: UnboundedSender<Update>,
     ) -> Self {
         let (stop, stopped) = oneshot::channel();
 
-        tokio::spawn(follow(client, path, services, updates, stopped));
+        tokio::spawn(follow(client, stream, path, services, updates, stopped));
 
         Self { stop }
     }
@@ -272,6 +316,7 @@ impl Following {
 /// Follows a workspace's logs until it is asked not to.
 async fn follow(
     client: Client,
+    stream: u64,
     path: PathBuf,
     services: Vec<String>,
     updates: UnboundedSender<Update>,
@@ -280,7 +325,10 @@ async fn follow(
     let mut connection = match client.connect().await {
         Ok(connection) => connection,
         Err(err) => {
-            let _ = updates.send(Update::LogEnded(Some(err.to_string())));
+            let _ = updates.send(Update::LogEnded {
+                stream,
+                reason: Some(err.to_string()),
+            });
             return;
         }
     };
@@ -307,7 +355,11 @@ async fn follow(
             request,
             |event| match event {
                 Event::Output { service, line, .. } => {
-                    let _ = updates.send(Update::Log { service, line });
+                    let _ = updates.send(Update::Log {
+                        stream,
+                        service,
+                        line,
+                    });
                 }
                 // The daemon's own remark about the stream — a service
                 // whose logs it could not read. Under its own name, so it
@@ -317,6 +369,7 @@ async fn follow(
                     message,
                 } => {
                     let _ = updates.send(Update::Log {
+                        stream,
                         service: Some("kobune".to_string()),
                         line: message,
                     });
@@ -334,7 +387,10 @@ async fn follow(
         .await;
 
     if !asked_to_stop.load(Ordering::SeqCst) {
-        let _ = updates.send(Update::LogEnded(outcome.err().map(|err| err.to_string())));
+        let _ = updates.send(Update::LogEnded {
+            stream,
+            reason: outcome.err().map(|err| err.to_string()),
+        });
     }
 }
 
