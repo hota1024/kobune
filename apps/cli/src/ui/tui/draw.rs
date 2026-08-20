@@ -13,6 +13,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Widget};
 use unicode_width::UnicodeWidthStr as _;
@@ -38,8 +39,11 @@ const MIN_LOG_HEIGHT: u16 = 5;
 pub fn draw(app: &App, frame: &mut Frame) {
     let outer = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(theme::muted())
+        .border_style(theme::frame())
         .title(title(app))
+        // For the reason `Decor::block` gives: the title is drawn over
+        // the border and would otherwise be the colour of it.
+        .title_style(Style::new().fg(Color::Reset))
         .padding(Padding::horizontal(1));
 
     let inner = outer.inner(frame.area());
@@ -87,7 +91,7 @@ pub fn draw(app: &App, frame: &mut Frame) {
     frame.render_widget(
         Block::new()
             .borders(Borders::TOP)
-            .border_style(theme::muted()),
+            .border_style(theme::frame()),
         rule,
     );
     frame.render_widget(activity_line(app), activity);
@@ -103,7 +107,7 @@ fn title(app: &App) -> Line<'static> {
 
     let project = app.project();
     if !project.is_empty() {
-        spans.push(Span::styled(" ─ ", theme::muted()));
+        spans.push(Span::styled(" ─ ", theme::secondary()));
         spans.push(Span::styled(project.to_string(), theme::subject()));
     }
 
@@ -129,7 +133,7 @@ fn panes(app: &App, frame: &mut Frame, body: Rect) {
         frame.render_widget(
             Block::new()
                 .borders(Borders::LEFT)
-                .border_style(theme::muted()),
+                .border_style(theme::frame()),
             Rect {
                 x: gap.x + 1,
                 width: 1,
@@ -187,7 +191,7 @@ fn counts(workspace: &kobune_api::WorkspaceInfo) -> (String, ratatui::style::Sty
     let total = workspace.services.len();
 
     let style = if total == 0 || running == 0 {
-        theme::muted()
+        theme::secondary()
     } else if running == total {
         theme::good()
     } else {
@@ -226,7 +230,7 @@ fn list(app: &App, width: u16) -> Rows {
         // on.
         let marker = match (here, app.focus() == Focus::Workspaces) {
             (true, true) => Span::styled("▸ ", theme::good()),
-            (true, false) => Span::styled("▸ ", theme::muted()),
+            (true, false) => Span::styled("▸ ", theme::secondary()),
             (false, _) => Span::raw("  "),
         };
 
@@ -296,7 +300,7 @@ fn logs(app: &App, frame: &mut Frame, area: Rect) {
     if logs.is_empty() {
         // A pane that draws nothing looks like a pane that is broken.
         frame.render_widget(
-            Rows(vec![Line::styled("waiting for output", theme::muted())]),
+            Rows(vec![Line::styled("waiting for output", theme::secondary())]),
             body,
         );
         return;
@@ -328,7 +332,7 @@ fn log_heading(app: &App, logs: &Logs, width: u16) -> Line<'static> {
     let label = if app.focus() == Focus::Logs {
         theme::good()
     } else {
-        theme::muted()
+        theme::secondary()
     };
 
     let used = "logs: ".width() + subject.width() + status.width();
@@ -356,13 +360,13 @@ fn activity_line(app: &App) -> Line<'static> {
                 spans.push(Span::styled(step.label.clone(), theme::subject()));
 
                 if let Some(detail) = &step.detail {
-                    spans.push(Span::styled(format!(" · {detail}"), theme::muted()));
+                    spans.push(Span::styled(format!(" · {detail}"), theme::secondary()));
                 }
 
                 if activity.steps.len() > 1 {
                     spans.push(Span::styled(
                         format!("  (+{} more)", activity.steps.len() - 1),
-                        theme::muted(),
+                        theme::secondary(),
                     ));
                 }
             }
@@ -427,7 +431,7 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 
         spans.push(Span::styled((*key).to_string(), theme::command()));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled((*what).to_string(), theme::muted()));
+        spans.push(Span::styled((*what).to_string(), theme::secondary()));
     }
 
     Line::from(spans)
@@ -451,9 +455,11 @@ pub(super) fn overlay_rows(height: u16) -> u16 {
 fn overlay(app: &App, showing: &Overlay, frame: &mut Frame) {
     let panel = match showing {
         Overlay::Keys => keys_panel(),
-        Overlay::Waiting(what) => {
-            message("please wait", format!("reading {what}…"), theme::muted())
-        }
+        Overlay::Waiting(what) => message(
+            "please wait",
+            format!("reading {what}…"),
+            theme::secondary(),
+        ),
         Overlay::Checks(report) => views::diagnostics(report, Decor::FRAMED),
         Overlay::Env { entries, service } => views::env(entries, service.as_deref(), Decor::FRAMED),
         Overlay::Code(service) => views::url(service, Decor::FRAMED),
@@ -536,7 +542,7 @@ fn keys_panel() -> Panel {
     for (key, what) in rows {
         grid.push(vec![
             Line::styled(key, theme::command()),
-            Line::styled(what, theme::muted()),
+            Line::styled(what, theme::secondary()),
         ]);
     }
 

@@ -113,7 +113,7 @@ impl Progress {
                     state.end(id);
                     state.emit(step_line(
                         "-",
-                        theme::muted(),
+                        theme::secondary(),
                         label,
                         Some(format!(" ({reason})")),
                     ));
@@ -143,7 +143,7 @@ impl Progress {
             // State changes show up in the summary, not on the way there.
             Event::ServiceState { .. } => {}
             Event::Output { line, .. } => state.emit(Line::from(vec![
-                Span::styled("  │ ", theme::muted()),
+                Span::styled("  │ ", theme::secondary()),
                 Span::raw(line.clone()),
             ])),
             // Only an interactive `logs` produces these, and that runs
@@ -329,13 +329,13 @@ impl<B: Backend> State<B> {
                 }
 
                 if let Some(detail) = &step.detail {
-                    spans.push(Span::styled(format!(" · {detail}"), theme::muted()));
+                    spans.push(Span::styled(format!(" · {detail}"), theme::secondary()));
                 }
 
                 if self.running.len() > 1 {
                     spans.push(Span::styled(
                         format!("  (+{} more)", self.running.len() - 1),
-                        theme::muted(),
+                        theme::secondary(),
                     ));
                 }
 
@@ -376,7 +376,7 @@ fn transfer_spans(transfer: &Transfer) -> Vec<Span<'static>> {
     let Some(total) = transfer.total.filter(|total| *total > 0) else {
         return vec![Span::styled(
             format!("  {}", bytes(transfer.done)),
-            theme::muted(),
+            theme::secondary(),
         )];
     };
 
@@ -391,11 +391,11 @@ fn transfer_spans(transfer: &Transfer) -> Vec<Span<'static>> {
         Span::styled("█".repeat(filled as usize), theme::good()),
         Span::styled(
             "░".repeat(BAR_WIDTH.saturating_sub(filled) as usize),
-            theme::muted(),
+            theme::secondary(),
         ),
         Span::styled(
             format!(" {percent:>3}%  {}/{}", bytes(done), bytes(total)),
-            theme::muted(),
+            theme::secondary(),
         ),
     ]
 }
@@ -426,7 +426,7 @@ fn step_line(
     ];
 
     if let Some(suffix) = suffix {
-        spans.push(Span::styled(suffix, theme::muted()));
+        spans.push(Span::styled(suffix, theme::secondary()));
     }
 
     Line::from(spans)
@@ -624,7 +624,7 @@ mod tests {
     fn a_skipped_step_says_why() {
         let text = render(&Loose(step_line(
             "-",
-            theme::muted(),
+            theme::secondary(),
             "pulling node:22",
             Some(" (already present)".to_string()),
         )));

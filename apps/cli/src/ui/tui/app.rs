@@ -340,7 +340,7 @@ fn rows_of(entry: &LogLine, width: u16, column: usize) -> Vec<Line<'static>> {
             };
 
             let mut spans = vec![
-                Span::styled(pad(&fit(label, column), column), theme::muted()),
+                Span::styled(pad(&fit(label, column), column), theme::secondary()),
                 Span::raw(" ".repeat(usize::from(SERVICE_GAP))),
             ];
             spans.extend(row.spans);

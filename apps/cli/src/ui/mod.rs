@@ -231,14 +231,14 @@ pub fn step(reason: &str, command: &str) -> Line<'static> {
 /// one above it; a bare list would not say what it was a list of.
 pub fn note_lines(heading: &str, lines: &[String]) {
     let mut out = vec![Line::from(vec![
-        Span::styled("› ", theme::muted()),
+        Span::styled("› ", theme::secondary()),
         Span::styled(heading.to_string(), theme::subject()),
     ])];
 
     out.extend(lines.iter().map(|line| {
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(line.clone(), theme::muted()),
+            Span::styled(line.clone(), theme::secondary()),
         ])
     }));
 
@@ -302,7 +302,7 @@ fn error_lines(message: &str, hint: Option<&str>) -> Vec<Line<'static>> {
         vec![
             Span::styled("✗ ", theme::bad()),
             Span::styled("error", theme::bad()),
-            Span::styled(": ", theme::muted()),
+            Span::styled(": ", theme::secondary()),
         ],
         message,
         "  ",
@@ -311,7 +311,7 @@ fn error_lines(message: &str, hint: Option<&str>) -> Vec<Line<'static>> {
 
     if let Some(hint) = hint {
         block(
-            vec![Span::styled("  hint: ", theme::muted())],
+            vec![Span::styled("  hint: ", theme::secondary())],
             hint,
             "        ",
             &mut lines,
