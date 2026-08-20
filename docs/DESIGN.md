@@ -97,16 +97,18 @@ Two things follow from that split, and they are the reason for it.
 - **A pipe is not a terminal.** The same views drop their frame and their
   colour, and are given whatever width they ask for, so nothing that reaches a
   log, a `grep` or an agent is wrapped or truncated. `--json` is untouched
-- **`kobune` can grow a TUI without rewriting any of it.** The views never
-  reach for the screen and do not know whether they are being printed once or
-  repainted sixty times a second. A full-screen mode hands them a
-  `ratatui::Frame` instead of a one-shot buffer
+- **The full-screen mode is the same views.** They never reach for the screen
+  and do not know whether they are being printed once or repainted while
+  somebody watches, so the dashboard `kobune` opens with no arguments hands
+  them a `ratatui::Frame` instead of a one-shot buffer. `ui::Framed` is the
+  whole of the adapter, and the pane showing one workspace is
+  `views::workspace` — what `kobune status` prints — unchanged
 
-Long-running commands already use the second half of this: `up` and `new` hold
-the bottom line in an inline viewport for what is happening now, and let
-finished steps scroll into the history above it. That display is built from the
-event stream and nothing else — which is the same requirement the GUI is held
-to.
+Two commands lean on the second half of this without taking the screen: `up`
+and `new` hold the bottom line in an inline viewport for what is happening now,
+and let finished steps scroll into the history above it. That display is built
+from the event stream and nothing else — which is the same requirement the GUI
+is held to.
 
 ### Who may connect
 
@@ -1082,6 +1084,7 @@ Every command has `--json`, and the exit code plus structured output is all it
 takes. An agent never has to parse output written for people.
 
 ```
+kobune                            # the dashboard: every workspace, kept current
 kobune init                       # write kobune.toml, set up daemon/DNS/CA
 kobune doctor                     # check the DNS resolver, docker, certificates, ports
 
@@ -1109,6 +1112,60 @@ kobune tunnel status
 
 `kobune doctor` ranks high because the initial setup involves sudo and outside
 dependencies (Docker, cloudflared). On failure it says what to do about it.
+
+#### The dashboard polls, and there is nothing to add to the API for it (M9)
+
+`kobune` with no arguments is a screen rather than a printed answer, and what
+is on it has to keep up with a daemon that stops services on its own. The
+socket has no subscription and did not grow one: the listing is re-read every
+three seconds on a connection of its own, which is what the GUI already does
+(`apps/desktop/src/bridge.rs`) for the same reason and at the same interval.
+
+**A `Connection` handles one request at a time**, so an `up` runs on a second
+connection while the first keeps polling. Sharing one would mean the screen
+stopped being true for the whole minute somebody spent watching a start — the
+one minute it most needs to be true.
+
+The events that start arrives on are the same ones `kobune up` prints as
+steps. Nothing was added there either.
+
+A followed log is the third connection, on the same reasoning: it never
+returns, and sharing it with either of the other two would stop them for as
+long as somebody watched. Closing the pane **cancels** rather than dropping
+the connection, so the daemon lets go of the runtime's log stream at once —
+`l` is a key that gets pressed repeatedly, and one leaked follower per press
+adds up.
+
+#### The overlays cost a request and a key each (M9)
+
+`c`, `e` and `Q` show `kobune doctor`, `kobune env ls` and
+`kobune url --qr`. None of them is drawn twice: each is the `views`
+function the printed command uses, put in a frame through `ui::Framed`,
+so what is added is a request, a key and a box to float it in.
+
+That is what [§3's split](#the-cli-draws-rather-than-prints) was for, and
+it is the test of it — a second implementation of any of those three
+would have meant the split had not held.
+
+The box is a **window** onto the view rather than the view itself:
+`doctor` on a machine with something wrong is taller than the screen, and
+an overlay that lost its bottom would be the same defect as a log line
+that lost its tail.
+
+#### A log pane has to read the escape sequences, not print them (M9)
+
+`Event::Output` carries a line exactly as the program wrote it, which is what
+`kobune logs` wants: it goes to a terminal that understands it. A pane inside
+a drawn screen is not that terminal — a buffer writes escape sequences as
+text — and this is not an edge case. Every line of a real Turborepo or
+wrangler run carries them.
+
+Dropping them would have cost most of what makes a log skimmable, so
+`ui::tui::ansi` reads the one sequence that says how text looks and drops the
+rest. **Colour is the program's own choice**, so `38;5;n` and `38;2;r;g;b` are
+honoured as written rather than rounded to the sixteen `theme` restricts
+itself to — [§3's rule](#the-cli-draws-rather-than-prints) is about Kobune's
+palette, and this is not it.
 
 #### `state` is a string, and `reason` sits beside it (settled after M7)
 
@@ -1384,6 +1441,7 @@ published.
 | **M5** ✅ | Skills, `logs` / `exec` | An agent finishes the work without touching `docker` |
 | **M6** ✅ | The GUI: GPUI plus a tray | The menu bar shows the running workspaces and their URLs, and logs are readable |
 | **M7** ✅ | Apple Container made to work on real hardware; `doctor` and `ping` follow `[runtime] default`. Firecracker deferred — it needs a Linux host | Switching `[runtime] default` is all it takes |
+| **M9** ✅ | The full-screen dashboard: `kobune` with no arguments, drawn from the views the printed commands already used — the workspaces, a log pane, and `doctor` / `env` / the QR code over the top of them | Several worktrees are watched, started, stopped and read without leaving one screen |
 
 M1 is the minimum line worth shipping. M2 is where it becomes usable daily.
 

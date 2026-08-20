@@ -20,9 +20,26 @@ use super::theme::{self, Decor};
 /// Shown against a service with nowhere to go.
 const NO_ADDRESS: &str = "—";
 
+/// A row somebody's cursor is on.
+///
+/// Only the full-screen mode has one; a printed panel passes `None` and
+/// comes out exactly as it always did, without the column. It is a
+/// display concern rather than a second view, which is why it lives here
+/// and not in a copy of this function.
+#[derive(Debug, Clone, Copy)]
+pub struct Cursor<'a> {
+    pub service: &'a str,
+    /// Whether the keys are talking to this pane.
+    ///
+    /// A cursor in a pane that is not listening is still where the next
+    /// `u` will act, so it is dimmed rather than taken away — the same
+    /// thing being said about it as about the workspace list beside it.
+    pub active: bool,
+}
+
 /// One workspace in full: `kobune status`, and what `up`, `down` and `new`
 /// leave on the screen when they are done.
-pub fn workspace(info: &WorkspaceInfo, decor: Decor) -> Panel {
+pub fn workspace(info: &WorkspaceInfo, cursor: Option<Cursor<'_>>, decor: Decor) -> Panel {
     let mut panel = Panel::new(decor, title(info)).lines(vec![Line::from(vec![
         Span::styled(info.branch.clone(), theme::muted()),
         Span::styled("  ", theme::muted()),
@@ -35,11 +52,21 @@ pub fn workspace(info: &WorkspaceInfo, decor: Decor) -> Panel {
 
     let mut services = Grid::new();
     for service in &info.services {
-        services.push(vec![
+        let mut row = Vec::new();
+
+        // A column that only exists when there is a cursor to put in it,
+        // so nothing printed gains two spaces of indent it never had.
+        if let Some(cursor) = cursor {
+            row.push(cursor_marker(cursor, &service.name));
+        }
+
+        row.extend([
             service_name(service),
             Line::styled(service.state.label(), theme::service_state(&service.state)),
             access(service),
         ]);
+
+        services.push(row);
     }
     panel = panel.grid(services);
 
@@ -597,10 +624,25 @@ pub fn unsettled_remedy(unsettled: &Unsettled) -> Option<String> {
     }
 }
 
-pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
+/// `kobune env ls`: the variables, and where each one came from.
+///
+/// `service` is whose environment this is, where it is one service's.
+/// Without it two listings are structurally identical — which is why
+/// [`kobune_api::Response::Env`] carries the name — and a reader looking
+/// at a short list has no way to tell whether they asked the wrong
+/// question or the answer is simply short.
+pub fn env(entries: &[EnvInfo], service: Option<&str>, decor: Decor) -> Panel {
+    let title = match service {
+        Some(service) => Line::from(vec![
+            Span::raw("environment"),
+            Span::styled(" · ", theme::muted()),
+            Span::styled(service.to_string(), theme::subject()),
+        ]),
+        None => Line::raw("environment"),
+    };
+
     if entries.is_empty() {
-        return Panel::new(decor, "environment")
-            .line(Span::styled("nothing is defined", theme::muted()));
+        return Panel::new(decor, title).line(Span::styled("nothing is defined", theme::muted()));
     }
 
     let mut grid = Grid::new().header(vec!["KEY".into(), "SCOPE".into(), "VALUE".into()]);
@@ -627,7 +669,7 @@ pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
         ]);
     }
 
-    let mut panel = Panel::new(decor, "environment").grid(grid);
+    let mut panel = Panel::new(decor, title).grid(grid);
 
     // **Said with the listing, not instead of it.** The value at fault is
     // only findable by looking at the values, so the listing has to
@@ -1151,6 +1193,21 @@ fn title(info: &WorkspaceInfo) -> Line<'static> {
     ])
 }
 
+/// The mark against the row a cursor is on, or the space it occupies.
+fn cursor_marker(cursor: Cursor<'_>, service: &str) -> Line<'static> {
+    if cursor.service != service {
+        return Line::raw(" ");
+    }
+
+    let style = if cursor.active {
+        theme::good()
+    } else {
+        theme::muted()
+    };
+
+    Line::styled("▸", style)
+}
+
 fn service_name(service: &ServiceInfo) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -1275,7 +1332,7 @@ mod tests {
 
     #[test]
     fn a_workspace_names_itself_and_its_branch() {
-        let text = render(&workspace(&info(vec![]), Decor::PLAIN));
+        let text = render(&workspace(&info(vec![]), None, Decor::PLAIN));
 
         assert!(text.contains("myapp / feat-1"), "got:\n{text}");
         assert!(text.contains("feature/user-auth"), "got:\n{text}");
@@ -1288,6 +1345,7 @@ mod tests {
         let url = "https://web.feature-user-auth.myapp.localhost";
         let text = render(&workspace(
             &info(vec![service("web", ServiceState::Ready, Some(url))]),
+            None,
             Decor::FRAMED,
         ));
 
@@ -1299,6 +1357,7 @@ mod tests {
         // A blank there looks like something failed to be filled in.
         let text = render(&workspace(
             &info(vec![service("db", ServiceState::Ready, None)]),
+            None,
             Decor::PLAIN,
         ));
 
@@ -1315,6 +1374,7 @@ mod tests {
                 ServiceState::failed("port 3000 is in use"),
                 None,
             )]),
+            None,
             Decor::PLAIN,
         ));
 
@@ -1323,7 +1383,7 @@ mod tests {
 
     #[test]
     fn a_workspace_with_no_services_says_so_rather_than_showing_nothing() {
-        let text = render(&workspace(&info(vec![]), Decor::PLAIN));
+        let text = render(&workspace(&info(vec![]), None, Decor::PLAIN));
         assert!(text.contains("no services are defined"), "got:\n{text}");
     }
 
@@ -1789,7 +1849,7 @@ mod tests {
             },
         ];
 
-        let text = render(&env(&entries, Decor::PLAIN));
+        let text = render(&env(&entries, None, Decor::PLAIN));
 
         assert!(text.contains("injected"), "got:\n{text}");
         assert!(text.contains("workspace"), "got:\n{text}");
@@ -1826,7 +1886,7 @@ mod tests {
     fn a_listing_that_could_not_settle_still_lists() {
         // This is the tool for finding the value at fault, so it has to
         // arrive — saying so alongside, not instead of it.
-        let text = render(&env(&mixed_entries(), Decor::PLAIN));
+        let text = render(&env(&mixed_entries(), None, Decor::PLAIN));
 
         assert!(text.contains("API_URL"), "the listing arrives:\n{text}");
         assert!(
@@ -1843,7 +1903,7 @@ mod tests {
     fn only_the_value_at_fault_is_spoken_for() {
         // One bad reference used to put every other value under
         // suspicion, which left nothing to tell them apart by.
-        let text = render(&env(&mixed_entries(), Decor::PLAIN));
+        let text = render(&env(&mixed_entries(), None, Decor::PLAIN));
 
         assert!(
             text.contains("https://api.feat-1.myapp.localhost"),
@@ -1859,7 +1919,8 @@ mod tests {
     fn the_reason_survives_a_narrow_terminal() {
         // At its preferred width nothing wraps, so asserting there says
         // nothing about the 80 columns someone actually has.
-        let text = super::super::test_support::render_at(&env(&mixed_entries(), Decor::PLAIN), 40);
+        let text =
+            super::super::test_support::render_at(&env(&mixed_entries(), None, Decor::PLAIN), 40);
 
         assert!(text.contains("API_URL"), "got:\n{text}");
         assert!(text.contains("proxy"), "got:\n{text}");
@@ -1872,7 +1933,7 @@ mod tests {
         // The note is a line like any other, and `preferred_width` takes
         // the widest — so a sentence left whole would drag the frame away
         // from the three short columns the listing is made of.
-        let narrow = env(&mixed_entries(), Decor::PLAIN).preferred_width();
+        let narrow = env(&mixed_entries(), None, Decor::PLAIN).preferred_width();
 
         let mut chained = mixed_entries();
         chained[1].unsettled = Some(Unsettled {
@@ -1883,7 +1944,7 @@ mod tests {
         });
 
         assert!(
-            env(&chained, Decor::PLAIN).preferred_width() <= narrow + 8,
+            env(&chained, None, Decor::PLAIN).preferred_width() <= narrow + 8,
             "a reason should not decide the width of the listing"
         );
     }

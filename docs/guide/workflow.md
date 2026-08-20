@@ -55,9 +55,16 @@ made your worktree the wrong way.
 ## Seeing what is going on
 
 ```console
+$ kobune           # the dashboard: all of it at once, and it keeps up
 $ kobune ls        # every workspace, and how many services are up
 $ kobune status    # this workspace in detail: state, URLs, addresses
 ```
+
+`kobune` on its own opens a full screen and reads it again every few seconds,
+so what is on it is what is true now rather than what was true when you pressed
+return. `u` and `d` start and stop whatever the cursor is on, and `?` lists the
+rest of the keys — [The dashboard](../reference/cli#the-dashboard) has them
+all. The other two print once and exit, which is what a script wants.
 
 A service is in one of four states:
 
@@ -125,6 +132,12 @@ Output is undecorated, so it greps and pipes. stdout and stderr stay separate.
 
 With several services, lines are interleaved and each is tagged with the
 service it came from.
+
+The [dashboard](../reference/cli#the-dashboard) has a pane for the same thing:
+`l` follows whatever the cursor is on without leaving the states behind, and
+`L` gives it the whole screen. It keeps the last couple of thousand lines, so
+`kobune logs` is still what to reach for when you want all of them or want to
+pipe them somewhere.
 
 ### Interactive services
 

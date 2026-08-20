@@ -37,9 +37,9 @@ use super::theme;
 const VIEWPORT_HEIGHT: u16 = 1;
 
 /// Fast enough to look alive, slow enough to be invisible on a battery.
-const TICK: Duration = Duration::from_millis(120);
+pub(super) const TICK: Duration = Duration::from_millis(120);
 
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub(super) const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// How many cells the bar occupies.
 ///

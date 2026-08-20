@@ -125,6 +125,16 @@ impl Decor {
         borders: false,
         styled: false,
     };
+    /// For a view drawn inside a frame somebody else already drew.
+    ///
+    /// The full-screen mode is the caller: its panes have borders of
+    /// their own, and a second box inside the first says nothing. Not
+    /// [`Self::PLAIN`], which is the shape a pipe gets and drops the
+    /// colour with the frame — on a screen there is a terminal to show it.
+    pub const BARE: Self = Self {
+        borders: false,
+        styled: true,
+    };
 
     /// The same, with the colour dropped: `NO_COLOR` on a terminal that
     /// can otherwise take everything.

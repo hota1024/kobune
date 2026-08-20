@@ -8,8 +8,9 @@
 //!
 //! Nothing here reaches for the screen directly, and nothing knows whether
 //! it is being printed once or repainted sixty times a second. That is the
-//! part worth keeping: when `kobune` grows a full-screen mode, the views
-//! go into a [`ratatui::Frame`] unchanged.
+//! part worth keeping, and [`tui`] is what it was kept for: the
+//! full-screen mode puts the very same views into a [`ratatui::Frame`],
+//! through [`Framed`], with nothing changed.
 //!
 //! Machine-facing output — `--json`, and the container output `logs` and
 //! `exec` pass through — is not here. See [`crate::output`].
@@ -19,6 +20,7 @@ mod progress;
 mod qr;
 mod surface;
 mod theme;
+mod tui;
 mod views;
 
 use std::path::Path;
@@ -30,7 +32,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 pub use progress::Progress;
-pub use views::{SetupOutcome, SetupStep};
+pub use tui::run as dashboard;
+pub use views::{Cursor, SetupOutcome, SetupStep};
 
 use surface::Surface;
 pub use surface::window;
@@ -60,10 +63,27 @@ pub trait View {
     fn render(&self, area: Rect, buf: &mut Buffer);
 }
 
+/// A [`View`] as a [`Widget`], which is how the full-screen mode draws
+/// one.
+///
+/// This is the whole of what `docs/DESIGN.md` §3 was holding open. A
+/// [`ratatui::Frame`] hands out no buffer to draw into — only
+/// `render_widget`, which wants something owned — so the borrow is
+/// wrapped rather than the trait being implemented twice. The view is
+/// given an area instead of choosing its width, which is the half of
+/// [`View`] a full screen does not need.
+pub struct Framed<'a, V: View>(pub &'a V);
+
+impl<V: View> Widget for Framed<'_, V> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.0.render(area, buf);
+    }
+}
+
 /// The state of one workspace: `status`, and the tail of `up` / `down` /
 /// `new`.
 pub fn workspace(info: &WorkspaceInfo) {
-    Surface::stdout().print(|decor| views::workspace(info, decor));
+    Surface::stdout().print(|decor| views::workspace(info, None, decor));
 }
 
 /// `ls`.
@@ -124,8 +144,8 @@ pub fn setup_done(
 }
 
 /// `env ls`, and what `env set` / `env unset` leave behind.
-pub fn env(entries: &[EnvInfo]) {
-    Surface::stdout().print(|decor| views::env(entries, decor));
+pub fn env(entries: &[EnvInfo], service: Option<&str>) {
+    Surface::stdout().print(|decor| views::env(entries, service, decor));
 }
 
 /// Why a value is shown as written, in words.

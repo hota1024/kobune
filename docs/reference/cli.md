@@ -26,6 +26,7 @@ URL is. So `kobune status | grep web` reads the same as it always did.
 | `kobune url <service>`, `kobune env get` | One bare line, always. They exist to be substituted into other commands |
 | `kobune logs`, `kobune exec` | Passed through verbatim, stdout and stderr kept apart |
 | `kobune logs -f <service>` | With `tty`, the terminal is the service's — see [Typing at a service](#typing-at-a-service) |
+| `kobune` with no command | A full screen, where there is one to draw on — see [The dashboard](#the-dashboard) |
 
 ## Setting up
 
@@ -116,6 +117,108 @@ one.
 
 Anything declined, or anything whose command failed, is printed at the end to
 run by hand. A failed step is also a non-zero exit code; a declined one is not.
+
+## The dashboard
+
+`kobune` with nothing after it opens a full screen: the workspaces down the
+left, and the one under the cursor in full on the right. It reads the listing
+again every three seconds, which is the reason it exists — scale-to-zero stops
+services without being asked and another terminal can start them, so anything
+printed once is out of date within seconds.
+
+```console
+$ kobune                 # the workspace the current directory is in
+$ kobune tui -w feat-1   # a particular one
+```
+
+The cursor starts on the workspace the current directory belongs to, the same
+way every other command chooses what to act on.
+
+| Key | What it does |
+| --- | --- |
+| `↑` `↓`, `j` `k` | Move the cursor, or scroll the logs |
+| `tab`, `←` `→` | Move between the panes that are on screen |
+| `u` | Start what the cursor is on: one service where the services cursor is, the whole workspace otherwise |
+| `d` | Stop it, the same way |
+| `o` | Open the URL in a browser |
+| `l` | Follow the logs of what the cursor is on, in a pane below |
+| `L` | Give that pane the whole screen, and give it back |
+| `pg up`, `pg dn` | A screenful at a time |
+| `g`, `G` | The top, and the bottom |
+| `c` | Check the machine over, as `kobune doctor` does |
+| `e` | The environment variables, masked |
+| `Q` | The URL as a code to photograph |
+| `r` | Read the listing again now |
+| `?` | The keys |
+| `q`, `ctrl-c` | Leave |
+| `esc` | Back out one step: the overlay, then the full screen, then the log pane, then the dashboard |
+
+One start or stop runs at a time, and the bottom line carries its steps as they
+arrive — the same steps `kobune up` prints. The reason for a failure stays
+there until the next thing happens.
+
+### What the overlays show
+
+`c`, `e`, `Q` and `?` draw a box over the dashboard. Each is a view a
+printed command already had — `kobune doctor`, `kobune env ls`,
+`kobune url --qr` — so what is in the box is what that command prints, to
+the character.
+
+While one is up the arrow keys scroll it rather than moving the cursor
+behind it, and `↑` or `↓` appears on its edge when there is more of it
+than fits. The key that opened it closes it, `esc` closes it, and any
+other key closes it and then does what it always does. The one thing
+worse than an overlay you cannot scroll is one you cannot get out from
+behind.
+
+**`e` masks the values, and there is no key that unmasks them.** These are
+[secrets](../guide/environment-variables#secrets) resolved out of 1Password
+and the Keychain, and a dashboard is a screen somebody else can be standing
+behind. `kobune env ls --reveal` is a deliberate act and stays one.
+
+`Q` needs nothing from the daemon: the listing already carries the URL. It
+uses the tunnel URL when there is one, and says so when there is not,
+because a `.localhost` name resolves through this machine and nowhere
+else — the phone that just photographed it would get nothing.
+
+### The log pane
+
+`l` opens it on whatever the cursor is on — one service where the services
+cursor is, every service in the workspace otherwise — and a second `l` on the
+same thing closes it. It opens on the last 200 lines and follows from there.
+
+**It stays on what it was opened on.** Moving the cursor afterwards changes
+what the panes above show and leaves the logs alone, so two workspaces can be
+compared without losing the stream. Pressing `l` somewhere else moves it there.
+
+Scrolling up stops the pane following, and it says so: `paused` and how many
+rows have arrived underneath. `G` goes back to the newest row and starts
+following again. New lines never move what you are reading.
+
+A line wider than the pane is wrapped, not cut, and the rows after the first
+are indented under the service column so that one line still reads as one
+line. Nothing is lost to the edge of the window — a stack trace is exactly
+the sort of line that overflows.
+
+Colour comes through. A dev server's output is mostly escape sequences —
+Turborepo's prefixes, a status code in green — and they are read rather than
+printed, so the pane shows what a terminal would. What a terminal would *do* —
+move the cursor, clear the screen — is dropped, since the pane has neither.
+
+**Reading only.** Nothing typed reaches the service; `kobune logs -f` is what
+lends it your terminal, and the two are not the same thing. See
+[Typing at a service](#typing-at-a-service).
+
+The pane keeps 2000 lines. Past that the oldest go, which is why `kobune logs`
+exists for the times you want all of them.
+
+**Leaving stops nothing.** The services keep running, and so does a start or
+stop that had not finished. An environment outliving the terminal you looked at
+it from is the point of having a daemon at all.
+
+**It needs a terminal.** Piped, redirected, under `TERM=dumb` or with `--json`,
+`kobune` on its own prints the help it always has. Asked for by name,
+`kobune tui` says it needs a terminal rather than printing something else.
 
 ## Workspaces
 
