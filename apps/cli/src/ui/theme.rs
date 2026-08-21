@@ -7,6 +7,22 @@
 //! **The colours are the ANSI sixteen, never RGB.** Those are the ones a
 //! terminal theme is allowed to redefine; a hand-picked grey that reads
 //! well on black disappears on white.
+//!
+//! **And nothing a person reads is pushed down.** Secondary text was
+//! ANSI 8 — "bright black" — which is the colour a theme is most free to
+//! put wherever it likes, and what most dark themes do with it is sit it
+//! close to the background. Dimming the terminal's own foreground was
+//! tried next and came out too faint to read on an ordinary terminal.
+//!
+//! Both were the same mistake: there is no way to make text quieter that
+//! is safe on every terminal, because quieter is the direction the
+//! reader's own settings have already gone. So the hierarchy is built the
+//! other way — the things that matter are **pulled up**, with weight and
+//! with colour, and everything else is the plain foreground the reader
+//! chose. The loudest thing on a panel is a URL or a state; the quietest
+//! is ordinary text; nothing is a shade of the background.
+//!
+//! The frame is the one exception, and it is not text.
 
 use kobune_api::CheckStatus;
 use kobune_core::ServiceState;
@@ -14,8 +30,28 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding};
 
-/// Secondary text: labels, paths, the punctuation between fields.
-pub fn muted() -> Style {
+/// Text in a supporting role: labels, paths, the punctuation between
+/// fields, the sentence under a panel.
+///
+/// **Plain, deliberately** — see the note at the top of this file. It is
+/// named for the job it does rather than for how it looks, because how
+/// it looks is "however the reader has their terminal set", and that is
+/// the only setting guaranteed to be readable. What separates it from
+/// the things around it is that they are bold or coloured and it is not.
+///
+/// Kept as a call rather than dropped for [`ratatui::text::Span::raw`]:
+/// it is 70-odd places saying which text is which, and if this decision
+/// is ever revisited it is revisited here.
+pub fn secondary() -> Style {
+    Style::new()
+}
+
+/// The frame, and the rules inside it.
+///
+/// The one thing that may fade almost to nothing: it is decoration, the
+/// columns line up without it, and a border as legible as the text would
+/// compete with what it is drawn around. This is where ANSI 8 belongs.
+pub fn frame() -> Style {
     Style::new().fg(Color::DarkGray)
 }
 
@@ -24,11 +60,15 @@ pub fn subject() -> Style {
     Style::new().add_modifier(Modifier::BOLD)
 }
 
-/// A column heading.
+/// A column heading, and the caption over a block.
+///
+/// Weight, because a heading is structure and structure is worth
+/// finding. It comes out the same as [`subject`] today and is a separate
+/// name because it is a separate question — and because what tells a
+/// `WORKSPACE` from an `api` is that one is a column of capitals above
+/// the other, not the style either is drawn in.
 pub fn heading() -> Style {
-    Style::new()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::BOLD)
+    Style::new().add_modifier(Modifier::BOLD)
 }
 
 /// Somewhere to go: a URL, or an address worth copying.
@@ -84,9 +124,9 @@ pub fn service_state(state: &ServiceState) -> Style {
         // Idle is running, just untouched — worth telling apart from ready
         // at a glance, without looking like a problem.
         ServiceState::Idle => Style::new().fg(Color::Blue),
-        ServiceState::Stopped => muted(),
+        ServiceState::Stopped => secondary(),
         ServiceState::Failed { .. } => bad(),
-        ServiceState::Unknown => muted(),
+        ServiceState::Unknown => secondary(),
     }
 }
 
@@ -124,6 +164,16 @@ impl Decor {
     pub const PLAIN: Self = Self {
         borders: false,
         styled: false,
+    };
+    /// For a view drawn inside a frame somebody else already drew.
+    ///
+    /// The full-screen mode is the caller: its panes have borders of
+    /// their own, and a second box inside the first says nothing. Not
+    /// [`Self::PLAIN`], which is the shape a pipe gets and drops the
+    /// colour with the frame — on a screen there is a terminal to show it.
+    pub const BARE: Self = Self {
+        borders: false,
+        styled: true,
     };
 
     /// The same, with the colour dropped: `NO_COLOR` on a terminal that
@@ -168,8 +218,14 @@ impl Decor {
 
         Block::bordered()
             .title(padded)
+            // **The title does not inherit the border's colour.** ratatui
+            // draws the border first and the title over it, so a span
+            // that asks for weight and not for colour — which every one
+            // of these does — came out in whatever the border was. The
+            // panel's own name was the dimmest thing on it.
+            .title_style(Style::new().fg(Color::Reset))
             .border_type(BorderType::Rounded)
-            .border_style(muted())
+            .border_style(frame())
             .padding(Padding::horizontal(1))
     }
 }
@@ -177,6 +233,70 @@ impl Decor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_a_person_reads_is_painted_the_colour_a_theme_may_hide() {
+        // ANSI 8 is the colour a terminal theme is most free to put where
+        // it likes, and what most dark themes do with it is sit it close
+        // to the background. The frame may fade with it; text may not.
+        for style in [
+            secondary(),
+            heading(),
+            subject(),
+            link(),
+            command(),
+            good(),
+            warn(),
+            bad(),
+        ] {
+            assert_ne!(style.fg, Some(Color::DarkGray));
+        }
+
+        for state in [
+            ServiceState::Ready,
+            ServiceState::Starting,
+            ServiceState::Idle,
+            ServiceState::Stopped,
+            ServiceState::failed("x"),
+            ServiceState::Unknown,
+        ] {
+            assert_ne!(service_state(&state).fg, Some(Color::DarkGray));
+        }
+    }
+
+    #[test]
+    fn nothing_a_person_reads_is_made_quieter_than_plain() {
+        // Quieter is the direction the reader's own settings have
+        // already gone: ANSI 8 landed on the background, and dimming was
+        // too faint to read. The hierarchy is built by pulling the
+        // things that matter up instead.
+        for style in [secondary(), heading(), subject()] {
+            assert_eq!(style.fg, None, "the reader's own foreground");
+            assert!(!style.add_modifier.contains(Modifier::DIM));
+        }
+
+        assert_eq!(secondary(), Style::new(), "plain, and nothing else");
+    }
+
+    #[test]
+    fn what_matters_is_pulled_up_instead() {
+        // Which is the half of the bargain that makes the other half
+        // work: with nothing pushed down, a panel reads because its
+        // states, URLs and names are louder than the text around them.
+        assert!(subject().add_modifier.contains(Modifier::BOLD));
+        assert!(heading().add_modifier.contains(Modifier::BOLD));
+
+        for style in [link(), command(), good(), warn(), bad()] {
+            assert!(style.fg.is_some(), "carries a colour");
+        }
+    }
+
+    #[test]
+    fn the_frame_is_the_one_thing_allowed_to_fade() {
+        // It is decoration. The columns line up without it, and a border
+        // as legible as the text competes with what it is drawn around.
+        assert_eq!(frame().fg, Some(Color::DarkGray));
+    }
 
     #[test]
     fn every_service_state_has_a_shape_of_its_own() {

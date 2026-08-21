@@ -20,26 +20,53 @@ use super::theme::{self, Decor};
 /// Shown against a service with nowhere to go.
 const NO_ADDRESS: &str = "—";
 
+/// A row somebody's cursor is on.
+///
+/// Only the full-screen mode has one; a printed panel passes `None` and
+/// comes out exactly as it always did, without the column. It is a
+/// display concern rather than a second view, which is why it lives here
+/// and not in a copy of this function.
+#[derive(Debug, Clone, Copy)]
+pub struct Cursor<'a> {
+    pub service: &'a str,
+    /// Whether the keys are talking to this pane.
+    ///
+    /// A cursor in a pane that is not listening is still where the next
+    /// `u` will act, so it is dimmed rather than taken away — the same
+    /// thing being said about it as about the workspace list beside it.
+    pub active: bool,
+}
+
 /// One workspace in full: `kobune status`, and what `up`, `down` and `new`
 /// leave on the screen when they are done.
-pub fn workspace(info: &WorkspaceInfo, decor: Decor) -> Panel {
+pub fn workspace(info: &WorkspaceInfo, cursor: Option<Cursor<'_>>, decor: Decor) -> Panel {
     let mut panel = Panel::new(decor, title(info)).lines(vec![Line::from(vec![
-        Span::styled(info.branch.clone(), theme::muted()),
-        Span::styled("  ", theme::muted()),
-        Span::styled(display_path(&info.path), theme::muted()),
+        Span::styled(info.branch.clone(), theme::secondary()),
+        Span::styled("  ", theme::secondary()),
+        Span::styled(display_path(&info.path), theme::secondary()),
     ])]);
 
     if info.services.is_empty() {
-        return panel.line(Span::styled("no services are defined", theme::muted()));
+        return panel.line(Span::styled("no services are defined", theme::secondary()));
     }
 
     let mut services = Grid::new();
     for service in &info.services {
-        services.push(vec![
+        let mut row = Vec::new();
+
+        // A column that only exists when there is a cursor to put in it,
+        // so nothing printed gains two spaces of indent it never had.
+        if let Some(cursor) = cursor {
+            row.push(cursor_marker(cursor, &service.name));
+        }
+
+        row.extend([
             service_name(service),
             Line::styled(service.state.label(), theme::service_state(&service.state)),
             access(service),
         ]);
+
+        services.push(row);
     }
     panel = panel.grid(services);
 
@@ -196,7 +223,7 @@ fn with_code(panel: Panel, service: &ServiceInfo, decor: Decor) -> Panel {
 pub fn workspaces(list: &[WorkspaceInfo], decor: Decor) -> Panel {
     if list.is_empty() {
         return Panel::new(decor, "workspaces")
-            .line(Span::styled("none yet", theme::muted()))
+            .line(Span::styled("none yet", theme::secondary()))
             .line(hint("create one with", "kobune new <branch>"));
     }
 
@@ -213,21 +240,16 @@ pub fn workspaces(list: &[WorkspaceInfo], decor: Decor) -> Panel {
     let mut grid = Grid::new().header(header);
 
     for workspace in list {
-        let running = workspace
-            .services
-            .iter()
-            .filter(|service| service.state.is_running())
-            .count();
-        let total = workspace.services.len();
+        let (count, count_style) = running_count(workspace);
 
         let mut row: Vec<Line<'static>> = Vec::new();
         if show_project {
-            row.push(Line::styled(workspace.project.clone(), theme::muted()));
+            row.push(Line::styled(workspace.project.clone(), theme::secondary()));
         }
         row.extend([
             Line::styled(workspace.display_name().to_string(), theme::subject()),
-            Line::styled(format!("{running}/{total}"), running_style(running, total)),
-            Line::styled(workspace.branch.clone(), theme::muted()),
+            Line::styled(count, count_style),
+            Line::styled(workspace.branch.clone(), theme::secondary()),
         ]);
 
         grid.push(row);
@@ -243,7 +265,7 @@ pub fn diagnostics(diagnostics: &Diagnostics, decor: Decor) -> Panel {
         checks.push(vec![
             Line::styled(check.status.symbol(), theme::check_status(check.status)),
             Line::styled(check.title.clone(), theme::subject()),
-            Line::styled(check.detail.clone(), theme::muted()),
+            Line::styled(check.detail.clone(), theme::secondary()),
         ]);
     }
 
@@ -328,7 +350,7 @@ pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: 
 
     let mut panel = Panel::new(decor, "setup").line(Span::styled(
         "the URLs need the following. It requires root, so read each command first.",
-        theme::muted(),
+        theme::secondary(),
     ));
 
     for (index, step) in steps.iter().enumerate() {
@@ -338,7 +360,7 @@ pub fn setup(steps: &[SetupStep], undo: &[String], restart_needed: bool, decor: 
         ])];
 
         if let Some(note) = &step.note {
-            lines.push(Line::styled(format!("   {note}"), theme::muted()));
+            lines.push(Line::styled(format!("   {note}"), theme::secondary()));
         }
 
         for command in &step.commands {
@@ -384,7 +406,7 @@ fn restart_hint() -> Vec<Line<'static>> {
         hint("afterwards run", kobune_core::launchd::RESTART_COMMAND),
         Line::styled(
             "  it comes back as launchd's job, with the new settings",
-            theme::muted(),
+            theme::secondary(),
         ),
     ]
 }
@@ -406,11 +428,11 @@ pub fn setup_plan(steps: &[SetupStep], decor: Decor) -> Panel {
                     "they need"
                 }
             ),
-            theme::muted(),
+            theme::secondary(),
         ),
         Line::styled(
             "each one is shown before it is run, and nothing runs until you say so.",
-            theme::muted(),
+            theme::secondary(),
         ),
     ]);
 
@@ -436,7 +458,7 @@ pub fn setup_step_lines(number: usize, total: usize, step: &SetupStep) -> Vec<Li
     ])];
 
     if let Some(note) = &step.note {
-        lines.push(Line::styled(format!("  {note}"), theme::muted()));
+        lines.push(Line::styled(format!("  {note}"), theme::secondary()));
     }
 
     lines.extend(
@@ -452,7 +474,7 @@ pub fn setup_step_lines(number: usize, total: usize, step: &SetupStep) -> Vec<Li
 pub fn setup_outcome_line(outcome: SetupOutcome) -> Line<'static> {
     let (symbol, text, style) = match outcome {
         SetupOutcome::Ran => ("✓", "done", theme::good()),
-        SetupOutcome::Skipped => ("–", "skipped", theme::muted()),
+        SetupOutcome::Skipped => ("–", "skipped", theme::secondary()),
         SetupOutcome::Failed => ("✗", "failed", theme::bad()),
     };
 
@@ -488,7 +510,7 @@ pub fn setup_done(
     } else {
         panel.line(Span::styled(
             format!("{ran} of {} done", count(outcomes.len(), "step")),
-            theme::muted(),
+            theme::secondary(),
         ))
     };
 
@@ -514,7 +536,7 @@ pub fn setup_done(
                     },
                     match outcome {
                         SetupOutcome::Failed => theme::bad(),
-                        _ => theme::muted(),
+                        _ => theme::secondary(),
                     },
                 ),
                 Span::styled(step.description.clone(), theme::subject()),
@@ -597,10 +619,26 @@ pub fn unsettled_remedy(unsettled: &Unsettled) -> Option<String> {
     }
 }
 
-pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
+/// `kobune env ls`: the variables, and where each one came from.
+///
+/// `service` is whose environment this is, where it is one service's.
+/// Without it two listings are structurally identical — which is why
+/// [`kobune_api::Response::Env`] carries the name — and a reader looking
+/// at a short list has no way to tell whether they asked the wrong
+/// question or the answer is simply short.
+pub fn env(entries: &[EnvInfo], service: Option<&str>, decor: Decor) -> Panel {
+    let title = match service {
+        Some(service) => Line::from(vec![
+            Span::raw("environment"),
+            Span::styled(" · ", theme::secondary()),
+            Span::styled(service.to_string(), theme::subject()),
+        ]),
+        None => Line::raw("environment"),
+    };
+
     if entries.is_empty() {
-        return Panel::new(decor, "environment")
-            .line(Span::styled("nothing is defined", theme::muted()));
+        return Panel::new(decor, title)
+            .line(Span::styled("nothing is defined", theme::secondary()));
     }
 
     let mut grid = Grid::new().header(vec!["KEY".into(), "SCOPE".into(), "VALUE".into()]);
@@ -617,17 +655,17 @@ pub fn env(entries: &[EnvInfo], decor: Decor) -> Panel {
 
         // Where a secret comes from, never what it is.
         if let Some(source) = &entry.source {
-            value.push(Span::styled(format!(" → {source}"), theme::muted()));
+            value.push(Span::styled(format!(" → {source}"), theme::secondary()));
         }
 
         grid.push(vec![
             Line::styled(entry.key.clone(), theme::subject()),
-            Line::styled(entry.scope.label(), theme::muted()),
+            Line::styled(entry.scope.label(), theme::secondary()),
             Line::from(value),
         ]);
     }
 
-    let mut panel = Panel::new(decor, "environment").grid(grid);
+    let mut panel = Panel::new(decor, title).grid(grid);
 
     // **Said with the listing, not instead of it.** The value at fault is
     // only findable by looking at the values, so the listing has to
@@ -670,12 +708,12 @@ pub fn config(info: &ConfigInfo, decor: Decor) -> Panel {
             true => ("read", theme::good()),
             // Not a failure: two of the three layers are meant to be
             // missing most of the time.
-            false => ("not found", theme::muted()),
+            false => ("not found", theme::secondary()),
         };
 
         layers.push(vec![
             Line::styled(layer.layer.label(), theme::subject()),
-            Line::styled(display_path(&layer.path), theme::muted()),
+            Line::styled(display_path(&layer.path), theme::secondary()),
             Line::styled(note, style),
         ]);
     }
@@ -716,7 +754,7 @@ pub fn config(info: &ConfigInfo, decor: Decor) -> Panel {
     }
 
     let mut values = Grid::new()
-        .caption(Span::styled(caption, theme::muted()))
+        .caption(Span::styled(caption, theme::secondary()))
         .header(vec![
             "KEY".into(),
             "LAYER".into(),
@@ -729,9 +767,9 @@ pub fn config(info: &ConfigInfo, decor: Decor) -> Panel {
 
         values.push(vec![
             Line::styled(row.key.clone(), theme::subject()),
-            Line::styled(row.layer.label(), theme::muted()),
+            Line::styled(row.layer.label(), theme::secondary()),
             Line::raw(row.value.clone()),
-            Line::styled(overridden.join(", "), theme::muted()),
+            Line::styled(overridden.join(", "), theme::secondary()),
         ]);
     }
 
@@ -749,7 +787,7 @@ pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
     // some of them.
     let mut heading = vec![
         state,
-        Span::styled(format!("  {}", info.provider), theme::muted()),
+        Span::styled(format!("  {}", info.provider), theme::secondary()),
     ];
 
     if let Some(domain) = &info.domain {
@@ -760,7 +798,7 @@ pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
 
     if let Some(record) = &info.record {
         panel = panel.line(Line::from(vec![
-            Span::styled("DNS  ", theme::muted()),
+            Span::styled("DNS  ", theme::secondary()),
             Span::styled(record.clone(), theme::link()),
         ]));
     }
@@ -794,7 +832,7 @@ pub fn tunnel(info: &TunnelInfo, decor: Decor) -> Panel {
     if let Some(detail) = unguarded {
         panel = panel.lines(vec![
             warning("this environment is reachable from the internet."),
-            Line::styled(detail, theme::muted()),
+            Line::styled(detail, theme::secondary()),
         ]);
     }
 
@@ -817,7 +855,7 @@ pub fn daemon(pong: &Pong, socket: Option<&Path>, decor: Decor) -> Panel {
     let mut grid = Grid::new();
     let mut fact = |label: &str, value: String| {
         grid.push(vec![
-            Line::styled(label.to_string(), theme::muted()),
+            Line::styled(label.to_string(), theme::secondary()),
             Line::raw(value),
         ]);
     };
@@ -838,7 +876,7 @@ pub fn daemon(pong: &Pong, socket: Option<&Path>, decor: Decor) -> Panel {
 /// The daemon, when there is none.
 pub fn daemon_stopped(decor: Decor) -> Panel {
     Panel::new(decor, "kobuned")
-        .line(Span::styled("stopped", theme::muted()))
+        .line(Span::styled("stopped", theme::secondary()))
         .line(hint("start it with", "kobune daemon start"))
 }
 
@@ -855,7 +893,7 @@ pub fn done(
     let mut grid = Grid::new();
     for (label, value) in facts {
         grid.push(vec![
-            Line::styled(*label, theme::muted()),
+            Line::styled(*label, theme::secondary()),
             Line::raw(value.clone()),
         ]);
     }
@@ -887,7 +925,7 @@ pub fn uninstall_plan(
                     grid.push(vec![
                         Line::styled(
                             format!("{} / {}", project.name, workspace.label),
-                            theme::muted(),
+                            theme::secondary(),
                         ),
                         Line::styled(service.clone(), theme::subject()),
                     ]);
@@ -911,7 +949,7 @@ pub fn uninstall_plan(
         ));
         for volume in volumes {
             grid.push(vec![
-                Line::styled(volume.project.clone(), theme::muted()),
+                Line::styled(volume.project.clone(), theme::secondary()),
                 Line::styled(volume.name.clone(), theme::subject()),
             ]);
         }
@@ -932,7 +970,7 @@ pub fn uninstall_plan(
         for failure in storage_left {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {} ", failure.what), theme::subject()),
-                Span::styled(failure.reason.clone(), theme::muted()),
+                Span::styled(failure.reason.clone(), theme::secondary()),
             ]));
         }
         panel = panel.lines(lines);
@@ -943,7 +981,7 @@ pub fn uninstall_plan(
     if let Err(reason) = daemon {
         panel = panel.lines(vec![
             warning("the daemon's containers and storage are not in this list:"),
-            Line::styled(format!("  {reason}"), theme::muted()),
+            Line::styled(format!("  {reason}"), theme::secondary()),
         ]);
     }
 
@@ -951,7 +989,7 @@ pub fn uninstall_plan(
         let mut grid = Grid::new().caption(Span::styled("files:", theme::heading()));
         for removal in &plan.files {
             grid.push(vec![
-                Line::styled(removal.label, theme::muted()),
+                Line::styled(removal.label, theme::secondary()),
                 Line::raw(display_path(&removal.path)),
             ]);
         }
@@ -994,7 +1032,7 @@ pub fn uninstall_plan(
             tunnel
                 .notes
                 .iter()
-                .map(|note| Line::styled(format!("  {note}"), theme::muted())),
+                .map(|note| Line::styled(format!("  {note}"), theme::secondary())),
         );
         panel = panel.lines(lines);
     }
@@ -1016,7 +1054,7 @@ pub fn uninstall_plan(
         lines.extend(
             worktrees
                 .iter()
-                .map(|path| Line::styled(format!("  {}", display_path(path)), theme::muted())),
+                .map(|path| Line::styled(format!("  {}", display_path(path)), theme::secondary())),
         );
         panel = panel.lines(lines);
     }
@@ -1029,7 +1067,7 @@ pub fn uninstall_plan(
     {
         return panel.line(Span::styled(
             "nothing of Kobune's was found on this machine",
-            theme::muted(),
+            theme::secondary(),
         ));
     }
 
@@ -1043,7 +1081,7 @@ pub fn uninstall_plan(
         for failure in &report.stranded {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {} ", failure.project), theme::subject()),
-                Span::styled(failure.reason.clone(), theme::muted()),
+                Span::styled(failure.reason.clone(), theme::secondary()),
             ]));
         }
         panel = panel.lines(lines);
@@ -1074,7 +1112,7 @@ pub fn uninstall_done(
         lines.extend(
             failures
                 .iter()
-                .map(|failure| Line::styled(format!("  {failure}"), theme::muted())),
+                .map(|failure| Line::styled(format!("  {failure}"), theme::secondary())),
         );
         panel.lines(lines)
     };
@@ -1102,8 +1140,8 @@ pub fn uninstall_done(
 /// A remark of the CLI's own, set apart from the daemon's answer.
 pub fn note(text: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled("› ", theme::muted()),
-        Span::styled(text.to_string(), theme::muted()),
+        Span::styled("› ", theme::secondary()),
+        Span::styled(text.to_string(), theme::secondary()),
     ])
 }
 
@@ -1146,9 +1184,24 @@ pub fn hint(text: &str, command: &str) -> Line<'static> {
 fn title(info: &WorkspaceInfo) -> Line<'static> {
     Line::from(vec![
         Span::styled(info.project.clone(), theme::subject()),
-        Span::styled(" / ", theme::muted()),
+        Span::styled(" / ", theme::secondary()),
         Span::styled(info.display_name().to_string(), theme::subject()),
     ])
+}
+
+/// The mark against the row a cursor is on, or the space it occupies.
+fn cursor_marker(cursor: Cursor<'_>, service: &str) -> Line<'static> {
+    if cursor.service != service {
+        return Line::raw(" ");
+    }
+
+    let style = if cursor.active {
+        theme::good()
+    } else {
+        theme::secondary()
+    };
+
+    Line::styled("▸", style)
 }
 
 fn service_name(service: &ServiceInfo) -> Line<'static> {
@@ -1168,19 +1221,34 @@ fn service_name(service: &ServiceInfo) -> Line<'static> {
 fn access(service: &ServiceInfo) -> Line<'static> {
     match service.access() {
         Some(url) => Line::styled(url, theme::link()),
-        None if service.state.is_running() => Line::styled("internal only", theme::muted()),
-        None => Line::styled(NO_ADDRESS, theme::muted()),
+        None if service.state.is_running() => Line::styled("internal only", theme::secondary()),
+        None => Line::styled(NO_ADDRESS, theme::secondary()),
     }
 }
 
-fn running_style(running: usize, total: usize) -> ratatui::style::Style {
-    if total == 0 || running == 0 {
-        theme::muted()
+/// `3/3`, and how it should read.
+///
+/// One rule, because two places show this badge — the table `kobune ls`
+/// prints and the list down the side of the dashboard — and what "partly
+/// up" looks like has to be the same in both or they disagree about the
+/// same workspace.
+pub fn running_count(workspace: &WorkspaceInfo) -> (String, ratatui::style::Style) {
+    let running = workspace
+        .services
+        .iter()
+        .filter(|service| service.state.is_running())
+        .count();
+    let total = workspace.services.len();
+
+    let style = if total == 0 || running == 0 {
+        theme::secondary()
     } else if running == total {
         theme::good()
     } else {
         theme::warn()
-    }
+    };
+
+    (format!("{running}/{total}"), style)
 }
 
 /// What to say under "reachable from the internet", if anything.
@@ -1206,7 +1274,7 @@ fn tunnel_style(state: TunnelState) -> ratatui::style::Style {
         TunnelState::Running => theme::good(),
         TunnelState::NeedsLogin | TunnelState::Stopped => theme::warn(),
         TunnelState::NotInstalled => theme::bad(),
-        TunnelState::Disabled => theme::muted(),
+        TunnelState::Disabled => theme::secondary(),
     }
 }
 
@@ -1275,7 +1343,7 @@ mod tests {
 
     #[test]
     fn a_workspace_names_itself_and_its_branch() {
-        let text = render(&workspace(&info(vec![]), Decor::PLAIN));
+        let text = render(&workspace(&info(vec![]), None, Decor::PLAIN));
 
         assert!(text.contains("myapp / feat-1"), "got:\n{text}");
         assert!(text.contains("feature/user-auth"), "got:\n{text}");
@@ -1288,6 +1356,7 @@ mod tests {
         let url = "https://web.feature-user-auth.myapp.localhost";
         let text = render(&workspace(
             &info(vec![service("web", ServiceState::Ready, Some(url))]),
+            None,
             Decor::FRAMED,
         ));
 
@@ -1299,6 +1368,7 @@ mod tests {
         // A blank there looks like something failed to be filled in.
         let text = render(&workspace(
             &info(vec![service("db", ServiceState::Ready, None)]),
+            None,
             Decor::PLAIN,
         ));
 
@@ -1315,6 +1385,7 @@ mod tests {
                 ServiceState::failed("port 3000 is in use"),
                 None,
             )]),
+            None,
             Decor::PLAIN,
         ));
 
@@ -1323,7 +1394,7 @@ mod tests {
 
     #[test]
     fn a_workspace_with_no_services_says_so_rather_than_showing_nothing() {
-        let text = render(&workspace(&info(vec![]), Decor::PLAIN));
+        let text = render(&workspace(&info(vec![]), None, Decor::PLAIN));
         assert!(text.contains("no services are defined"), "got:\n{text}");
     }
 
@@ -1789,7 +1860,7 @@ mod tests {
             },
         ];
 
-        let text = render(&env(&entries, Decor::PLAIN));
+        let text = render(&env(&entries, None, Decor::PLAIN));
 
         assert!(text.contains("injected"), "got:\n{text}");
         assert!(text.contains("workspace"), "got:\n{text}");
@@ -1826,7 +1897,7 @@ mod tests {
     fn a_listing_that_could_not_settle_still_lists() {
         // This is the tool for finding the value at fault, so it has to
         // arrive — saying so alongside, not instead of it.
-        let text = render(&env(&mixed_entries(), Decor::PLAIN));
+        let text = render(&env(&mixed_entries(), None, Decor::PLAIN));
 
         assert!(text.contains("API_URL"), "the listing arrives:\n{text}");
         assert!(
@@ -1843,7 +1914,7 @@ mod tests {
     fn only_the_value_at_fault_is_spoken_for() {
         // One bad reference used to put every other value under
         // suspicion, which left nothing to tell them apart by.
-        let text = render(&env(&mixed_entries(), Decor::PLAIN));
+        let text = render(&env(&mixed_entries(), None, Decor::PLAIN));
 
         assert!(
             text.contains("https://api.feat-1.myapp.localhost"),
@@ -1859,7 +1930,8 @@ mod tests {
     fn the_reason_survives_a_narrow_terminal() {
         // At its preferred width nothing wraps, so asserting there says
         // nothing about the 80 columns someone actually has.
-        let text = super::super::test_support::render_at(&env(&mixed_entries(), Decor::PLAIN), 40);
+        let text =
+            super::super::test_support::render_at(&env(&mixed_entries(), None, Decor::PLAIN), 40);
 
         assert!(text.contains("API_URL"), "got:\n{text}");
         assert!(text.contains("proxy"), "got:\n{text}");
@@ -1872,7 +1944,7 @@ mod tests {
         // The note is a line like any other, and `preferred_width` takes
         // the widest — so a sentence left whole would drag the frame away
         // from the three short columns the listing is made of.
-        let narrow = env(&mixed_entries(), Decor::PLAIN).preferred_width();
+        let narrow = env(&mixed_entries(), None, Decor::PLAIN).preferred_width();
 
         let mut chained = mixed_entries();
         chained[1].unsettled = Some(Unsettled {
@@ -1883,7 +1955,7 @@ mod tests {
         });
 
         assert!(
-            env(&chained, Decor::PLAIN).preferred_width() <= narrow + 8,
+            env(&chained, None, Decor::PLAIN).preferred_width() <= narrow + 8,
             "a reason should not decide the width of the listing"
         );
     }

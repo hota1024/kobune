@@ -97,6 +97,21 @@ enum Command {
         dry_run: bool,
     },
 
+    /// Watch the workspaces, and work them, on a full screen
+    ///
+    /// This is what `kobune` on its own opens. The workspaces are down
+    /// the left and the one under the cursor is shown in full on the
+    /// right, re-read every few seconds — scale-to-zero stops services
+    /// without being asked, so a listing printed once is out of date
+    /// within seconds. `u` and `d` start and stop what the cursor is on,
+    /// `l` follows its logs in a pane below, `o` opens it in a browser,
+    /// `c` and `e` show the checks and the environment over the top, and
+    /// `?` lists the rest.
+    ///
+    /// It needs a terminal. With nothing to draw on — a pipe, `--json`,
+    /// `TERM=dumb` — `kobune` on its own prints the help instead.
+    Tui,
+
     /// List workspaces
     Ls {
         /// Cover every project
@@ -441,15 +456,15 @@ async fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
-            if let Some(group) = missing_subcommand(&err) {
+            if let Some(cli) = bare_invocation() {
+                cli
+            } else if let Some(group) = missing_subcommand(&err) {
                 return print_group_help(&group, wants_json());
-            }
-
-            if err.kind() == clap::error::ErrorKind::DisplayVersion {
+            } else if err.kind() == clap::error::ErrorKind::DisplayVersion {
                 return print_version(&err).await;
+            } else {
+                err.exit()
             }
-
-            err.exit()
         }
     };
 
@@ -477,11 +492,7 @@ async fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             if cli.json {
-                if let Some(api_error) = as_api_error(&err) {
-                    output::print_error_json(api_error);
-                } else {
-                    output::print_error_json(&kobune_api::ApiError::internal(err.to_string()));
-                }
+                output::print_error_json(&as_json_error(&err));
             } else {
                 ui::error(&err.to_string(), hint_for(&err));
             }
@@ -520,6 +531,32 @@ fn missing_subcommand(err: &clap::Error) -> Option<Vec<String>> {
             .map(str::to_string)
             .collect(),
     )
+}
+
+/// What `kobune`, with nothing after it at all, means.
+///
+/// The dashboard where there is a terminal to draw one on, and otherwise
+/// the help clap has always printed — a pipe, a CI log, `TERM=dumb`. Both
+/// halves of the terminal are asked about, through
+/// [`attach::is_a_terminal`]: keys are read from stdin, and a full screen
+/// is written to stdout.
+///
+/// **Read off the command line rather than off the parse failure.** The
+/// error clap raises for `kobune` on its own is a missing *argument*, and
+/// it raises the same one for `kobune skill` — which has a help of its
+/// own to print and must keep printing it. Nothing distinguishes the two
+/// but what was typed, and there is no [`Cli`] to ask, for the reason
+/// [`wants_json`] gives. One argument is the binary's own name.
+fn bare_invocation() -> Option<Cli> {
+    if std::env::args_os().len() != 1 || !attach::is_a_terminal() {
+        return None;
+    }
+
+    Some(Cli {
+        json: false,
+        workspace: None,
+        command: Command::Tui,
+    })
 }
 
 /// Prints a group's help, and gives back the code to leave with.
@@ -860,6 +897,15 @@ enum CliError {
     #[error("{message}")]
     Unprivileged { message: String, hint: String },
 
+    /// The command cannot be answered the way it was asked to be.
+    ///
+    /// Its own kind for the reason the two below are theirs: what to do
+    /// next is not what went wrong. `kobune tui --json` asks a screen
+    /// for a document, and the way forward is the command that returns
+    /// one.
+    #[error("{message}")]
+    Refused { message: String, hint: String },
+
     /// The stop did not take, so the restart met the daemon it meant to
     /// replace.
     ///
@@ -870,10 +916,29 @@ enum CliError {
     DidNotStop { message: String, hint: String },
 }
 
-fn as_api_error(err: &CliError) -> Option<&kobune_api::ApiError> {
-    match err {
-        CliError::Client(ClientError::Api(api)) => Some(api),
-        _ => None,
+/// The failure as the one document `--json` answers with.
+///
+/// The daemon's own errors come through unchanged, hint and all. What is
+/// built here is everything else — **and it keeps its hint**, which the
+/// JSON path used to drop: `ApiError::internal(err.to_string())` carried
+/// the message and nothing else, so an agent reading `--json` was told
+/// what went wrong and never what to do about it.
+fn as_json_error(err: &CliError) -> kobune_api::ApiError {
+    if let CliError::Client(ClientError::Api(api)) = err {
+        return api.clone();
+    }
+
+    let code = match err {
+        // Asked for in a way it cannot be given.
+        CliError::Refused { .. } => kobune_api::ErrorCode::Unsupported,
+        _ => kobune_api::ErrorCode::Internal,
+    };
+
+    let error = kobune_api::ApiError::new(code, err.to_string());
+
+    match hint_for(err) {
+        Some(hint) => error.with_hint(hint),
+        None => error,
     }
 }
 
@@ -881,14 +946,19 @@ fn hint_for(err: &CliError) -> Option<&str> {
     match err {
         CliError::Client(client) => client.hint(),
         CliError::Local(_) => None,
-        CliError::Unprivileged { hint, .. } | CliError::DidNotStop { hint, .. } => Some(hint),
+        CliError::Refused { hint, .. }
+        | CliError::Unprivileged { hint, .. }
+        | CliError::DidNotStop { hint, .. } => Some(hint),
     }
 }
 
 fn exit_code_for(err: &CliError) -> i32 {
     match err {
         CliError::Client(client) => client.exit_code(),
-        CliError::Local(_) | CliError::Unprivileged { .. } | CliError::DidNotStop { .. } => 1,
+        CliError::Local(_)
+        | CliError::Refused { .. }
+        | CliError::Unprivileged { .. }
+        | CliError::DidNotStop { .. } => 1,
     }
 }
 
@@ -1003,6 +1073,27 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
     // to ask before doing either.
     if let Command::Uninstall { yes, dry_run } = &cli.command {
         return handle_uninstall(cli, &client, *yes, *dry_run).await;
+    }
+
+    // The dashboard is not one request and one answer, so it takes the
+    // client and runs its own loop.
+    if matches!(cli.command, Command::Tui) {
+        // **`--json` is answered, not ignored.** Every other command
+        // honours it, and an agent that adds it to everything was being
+        // handed a full screen it has no way to read or leave. Bare
+        // `kobune` never sees this — a flag is an argument, and that
+        // path takes none — so it is only ever the flag asked for by
+        // name that lands here.
+        if cli.json {
+            return Err(CliError::Refused {
+                message: "the dashboard is a screen, so there is nothing to answer with"
+                    .to_string(),
+                hint: "kobune status --json is the same environment, as a document".to_string(),
+            });
+        }
+
+        ui::dashboard(client, cwd, cli.workspace.as_deref()).await?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     let target = Target::new(cwd).workspace(cli.workspace.clone());
@@ -1264,8 +1355,11 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
         | Command::Skill { .. }
         | Command::Completions { .. }
         | Command::Uninstall { .. }
-        | Command::Update { .. } => {
-            unreachable!("the commands that need no daemon are handled before this")
+        | Command::Update { .. }
+        // Not one request and one answer: it makes its own, for as long
+        // as it is open.
+        | Command::Tui => {
+            unreachable!("the commands that do not send one request are handled before this")
         }
     };
 
@@ -1977,8 +2071,8 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
         Response::Pong(pong) => ui::daemon(pong, None),
         Response::Workspaces { workspaces } => ui::workspaces(workspaces),
         Response::Diagnostics(diagnostics) => ui::diagnostics(diagnostics),
-        Response::Env { entries, .. } => {
-            ui::env(entries);
+        Response::Env { entries, service } => {
+            ui::env(entries, service.as_deref());
 
             // A change does not reach containers that are already
             // running. Left unsaid, that reads as "I set it and nothing
@@ -3461,6 +3555,27 @@ mod tests {
 
         // Everything else still gets it.
         assert!(wants_update_notice(&Command::Status));
+    }
+
+    #[test]
+    fn the_dashboard_can_also_be_asked_for_by_name() {
+        // `kobune` on its own is the way in, but it is a subcommand as
+        // well: it is what `--help` lists, what the completions carry,
+        // and the only way to say `-w`.
+        let cli = Cli::parse_from(["kobune", "tui", "-w", "feat-1"]);
+
+        assert!(matches!(cli.command, Command::Tui));
+        assert_eq!(cli.workspace.as_deref(), Some("feat-1"));
+    }
+
+    #[test]
+    fn the_dashboard_still_carries_both_notices() {
+        // They are printed after the alternate screen has been given
+        // back, which puts them where the shell prompt is about to be —
+        // and `kobune` on its own is now the most-run command there is,
+        // so leaving it out would be hiding them rather than tidying.
+        assert!(wants_update_notice(&Command::Tui));
+        assert!(wants_followup_notice(&Command::Tui));
     }
 
     #[test]

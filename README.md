@@ -42,6 +42,9 @@ $ kobune new feature/user-auth
   next request, so create as many worktrees as you like
 - **Reachable remotely** — share with a phone or an outside reviewer over
   Cloudflare Tunnel
+- **One screen for all of them** — `kobune` on its own draws every workspace
+  and keeps up as they start and stop, with `u` and `d` where the cursor is
+  and `l` for the logs, colour and all
 - **Usable by agents** — every command speaks `--json`, and
   `kobune skill install` drops in the Skill
 - **Interactive where it matters** — `tty = true` gives a service a terminal,
@@ -185,6 +188,7 @@ $ cd docs && pnpm install && pnpm dev
 | M6 ✅ | GUI: GPUI, living in the menu bar |
 | M7 ✅ | Apple Container verified on real hardware |
 | M8 | Firecracker, once there is a Linux host to develop it against |
+| M9 ✅ | The full-screen dashboard: `kobune` with no arguments, logs included |
 
 ## GUI
 

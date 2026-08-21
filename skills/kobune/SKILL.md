@@ -389,6 +389,8 @@ A `--json` error may carry a `hint`. **Read it — it says what to do next.**
 - Put a port in a URL (`localhost:3000` and friends)
 - Edit `.env` by hand
 - Leave `kobune logs -f` running
+- Run `kobune` with no arguments, or `kobune tui`. That is a full screen for a
+  person to watch, and it does not end on its own
 - Report "it's up" without checking
 - Read empty `curl -s` output as an empty response (it may be a certificate
   error)
