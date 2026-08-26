@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -21,9 +22,9 @@ use bollard::container::{
     StopContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::image::{BuildImageOptions, CreateImageOptions};
+use bollard::image::{BuildImageOptions, BuilderVersion, CreateImageOptions};
 use bollard::models::{
-    ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
+    BuildInfoAux, ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
 };
 use bollard::network::{ConnectNetworkOptions, CreateNetworkOptions, ListNetworksOptions};
 use bollard::volume::ListVolumesOptions;
@@ -165,6 +166,62 @@ fn exit_code_from(status: &str) -> Option<i64> {
     code.trim().parse().ok()
 }
 
+/// Why a build did not produce an image.
+///
+/// The two are answered differently: one is the build failing and is the
+/// caller's to report, the other is the daemon declining the builder that
+/// was asked for and is the caller's to work around.
+enum BuildFailure {
+    /// The build ran and did not succeed.
+    Failed(RuntimeError),
+    /// The daemon will not do a BuildKit build, and said so before starting
+    /// one.
+    NoBuildKit(String),
+}
+
+/// The BuildKit session id this daemon builds under.
+///
+/// **One for the process, deliberately.** `bollard` opens an upgraded
+/// connection to the daemon for each build's session and hands it to a task
+/// that nobody ever ends — so a fresh id per build costs a socket and a task
+/// per build, for as long as `kobuned` runs. Reusing one id makes the daemon
+/// replace the session bound to it, and the connection it replaces is
+/// closed. Measured over four builds: a fresh id each time walked the open
+/// descriptors 11 → 14, one id held at 11.
+///
+/// **Sharing it across builds at once is safe**, which is the thing worth
+/// checking before doing this: three concurrent builds under one id all
+/// produced their images. Nothing is carried over the session here — no
+/// registry credentials, no exporter writing back to the client — so what
+/// the session is being replaced under is an empty channel.
+///
+/// Per process rather than a constant, so two daemons on one machine — a
+/// test's and the user's — do not take each other's session away.
+fn session_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format!("kobune-{}", std::process::id()))
+}
+
+/// Whether an error is the daemon declining to use BuildKit at all.
+///
+/// Docker answers `/build?version=2` with a 400 when BuildKit is turned off
+/// or cannot be used on this platform, and does it before the build starts —
+/// which is what makes building again with the other builder safe.
+///
+/// **Mentioning BuildKit is not enough.** A build that got as far as running
+/// can fail with BuildKit all over the message: an unresolvable `# syntax=`
+/// frontend, a cache mount the daemon would not grant. Retrying those on a
+/// builder that understands even less of the Dockerfile replaces the real
+/// error with a worse one, so the wording has to say the builder was
+/// refused, not merely name it.
+fn is_buildkit_refusal(error: &str) -> bool {
+    const REFUSALS: [&str; 4] = ["not enabled", "not supported", "not available", "disabled"];
+
+    let error = error.to_lowercase();
+
+    error.contains("buildkit") && REFUSALS.iter().any(|phrase| error.contains(phrase))
+}
+
 pub struct DockerRuntime {
     docker: Docker,
     /// The services Kobune itself stopped. See [`DockerRuntime::stop`].
@@ -179,6 +236,13 @@ pub struct DockerRuntime {
     /// Shared rather than borrowed because the watcher outlives the call
     /// that started it: it runs for as long as the container does.
     terminals: Arc<Mutex<HashMap<String, Arc<Mutex<Modes>>>>>,
+    /// Set once a build has been refused for want of BuildKit. See
+    /// [`DockerRuntime::run_build`].
+    ///
+    /// **Only ever set, never cleared.** A daemon does not grow BuildKit
+    /// while it is running, and a daemon replaced under a running Kobune
+    /// is worth one restart.
+    no_buildkit: AtomicBool,
 }
 
 impl DockerRuntime {
@@ -203,6 +267,7 @@ impl DockerRuntime {
             asked_to_stop: Mutex::new(HashSet::new()),
             network_locks: Mutex::new(HashMap::new()),
             terminals: Arc::new(Mutex::new(HashMap::new())),
+            no_buildkit: AtomicBool::new(false),
         }
     }
 
@@ -310,6 +375,15 @@ impl DockerRuntime {
         Ok(name)
     }
 
+    /// Whether this daemon has already said it will not do a BuildKit build.
+    fn buildkit_ruled_out(&self) -> bool {
+        self.no_buildkit.load(Ordering::Relaxed)
+    }
+
+    fn rule_out_buildkit(&self) {
+        self.no_buildkit.store(true, Ordering::Relaxed);
+    }
+
     /// Builds the image unless that exact one is already here.
     ///
     /// The tag carries a fingerprint of the inputs, so an existing tag means
@@ -317,6 +391,9 @@ impl DockerRuntime {
     /// matters most for scale-to-zero: waking a stopped service goes through
     /// `prepare`, and a rebuild there would put a Docker build in the path of
     /// an incoming request.
+    ///
+    /// **BuildKit unless the daemon has none.** See
+    /// [`DockerRuntime::run_build`].
     async fn ensure_built(
         &self,
         build: &BuildSpec,
@@ -332,26 +409,102 @@ impl DockerRuntime {
 
         events.step_started("build", &label);
 
-        let pack = || -> std::io::Result<(Vec<u8>, String)> {
-            let mut context = pack_context(&build.context)?;
+        let pack = || -> Result<(Vec<u8>, String)> {
+            let packed = || -> std::io::Result<(Vec<u8>, String)> {
+                // Worked out before the packing rather than after, because
+                // `.dockerignore` has to be told which file not to leave out.
+                let inside = build
+                    .dockerfile
+                    .strip_prefix(&build.context)
+                    .ok()
+                    .map(|relative| relative.to_string_lossy().to_string());
 
-            // Docker names the Dockerfile by its path inside the tar. One
-            // in the context is named where it sits; one from elsewhere in
-            // the worktree is added under a reserved name.
-            match build.dockerfile.strip_prefix(&build.context) {
-                Ok(relative) => Ok((context, relative.to_string_lossy().to_string())),
-                Err(_) => {
-                    let packed = append_dockerfile(&mut context, &build.dockerfile)?;
-                    Ok((packed, DOCKERFILE_ENTRY.to_string()))
-                }
-            }
+                let dockerfile = match &inside {
+                    Some(path) => Dockerfile::Inside(path),
+                    None => Dockerfile::Outside(&build.dockerfile),
+                };
+
+                Ok((
+                    pack_context(&build.context, dockerfile)?,
+                    dockerfile.entry(),
+                ))
+            };
+
+            packed().map_err(|err| {
+                events.step_failed("build", &label, err.to_string());
+                RuntimeError::failed(format!("packing the build context for {}", build.tag), err)
+            })
         };
 
-        let (context, dockerfile) = pack().map_err(|err| {
-            events.step_failed("build", &label, err.to_string());
-            RuntimeError::failed(format!("packing the build context for {}", build.tag), err)
-        })?;
+        // **BuildKit first.** It is what `docker build` itself has used
+        // since Docker 23, so it is what the Dockerfiles people write
+        // assume: `RUN --mount=type=cache`, heredocs and a `# syntax=`
+        // frontend are all hard errors under the legacy builder — which is
+        // deprecated, and on its way out of the daemon altogether.
+        if !self.buildkit_ruled_out() {
+            let (context, dockerfile) = pack()?;
 
+            match self
+                .run_build(build, dockerfile, context, true, &label, events)
+                .await
+            {
+                Ok(()) => {
+                    events.step_done("build", &label);
+                    return Ok(());
+                }
+                Err(BuildFailure::Failed(err)) => return Err(err),
+                Err(BuildFailure::NoBuildKit(message)) => {
+                    // Asked once and remembered: every later build in this
+                    // daemon goes straight to the legacy builder rather
+                    // than packing a context to be refused again.
+                    self.rule_out_buildkit();
+                    tracing::info!(
+                        reason = %message,
+                        "this Docker daemon will not do a BuildKit build; using the legacy builder"
+                    );
+                }
+            }
+        }
+
+        let (context, dockerfile) = pack()?;
+
+        self.run_build(build, dockerfile, context, false, &label, events)
+            .await
+            .map_err(|failure| match failure {
+                BuildFailure::Failed(err) => err,
+                // Only a BuildKit attempt is ever read as a refusal.
+                BuildFailure::NoBuildKit(message) => {
+                    RuntimeError::failed(format!("building {}", build.tag), message)
+                }
+            })?;
+
+        events.step_done("build", &label);
+        Ok(())
+    }
+
+    /// One build, with one builder.
+    ///
+    /// The two builders differ in what they report, not in what they are
+    /// asked for. The legacy builder sends the text it would have printed,
+    /// a line per message. BuildKit sends the build *graph* — vertexes
+    /// starting, finishing and turning out to be cached, with output and
+    /// byte counters hanging off them — which [`crate::buildkit::Progress`]
+    /// turns back into lines.
+    ///
+    /// Both paths are live at once on purpose: a daemon that quietly
+    /// ignores `version=2` — anything older than API 1.39 — answers a
+    /// BuildKit request with legacy messages, and passing those through is
+    /// the difference between a build that looks ordinary and one that
+    /// looks hung.
+    async fn run_build(
+        &self,
+        build: &BuildSpec,
+        dockerfile: String,
+        context: Vec<u8>,
+        buildkit: bool,
+        label: &str,
+        events: &EventSink,
+    ) -> std::result::Result<(), BuildFailure> {
         let options = BuildImageOptions {
             dockerfile,
             t: build.tag.clone(),
@@ -364,6 +517,17 @@ impl DockerRuntime {
             // every failed build.
             rm: true,
             forcerm: true,
+            version: if buildkit {
+                BuilderVersion::BuilderBuildKit
+            } else {
+                BuilderVersion::BuilderV1
+            },
+            // **BuildKit needs somewhere to call back to.** The tar goes up
+            // with the request, but the frontend also asks the client for
+            // registry credentials over a gRPC session hung off `/session`,
+            // and the daemon refuses the build outright without an id to
+            // hang it on. See [`session_id`] for why every build uses one.
+            session: buildkit.then(|| session_id().to_string()),
             ..Default::default()
         };
 
@@ -373,22 +537,35 @@ impl DockerRuntime {
         // build was doing. Docker's own error is often just "exit code 3",
         // and the command that produced it is the part worth reading.
         let mut recent: VecDeque<String> = VecDeque::with_capacity(BUILD_CONTEXT_LINES);
+        let mut progress = crate::buildkit::Progress::new();
 
         while let Some(item) = stream.next().await {
             let failure = match item {
                 Ok(info) => {
-                    // Docker reports progress as the build output itself,
-                    // line by line, which is what someone watching a build
-                    // wants to see.
+                    let mut lines = Vec::new();
+
+                    // The legacy builder reports progress as the build
+                    // output itself, line by line, which is what someone
+                    // watching a build wants to see.
                     if let Some(line) = info.stream {
+                        lines.push(line);
+                    }
+
+                    if let Some(BuildInfoAux::BuildKit(status)) = &info.aux {
+                        lines.extend(progress.absorb(status));
+                    }
+
+                    for line in lines {
                         let line = line.trim_end();
-                        if !line.is_empty() {
-                            if recent.len() == BUILD_CONTEXT_LINES {
-                                recent.pop_front();
-                            }
-                            recent.push_back(line.to_string());
-                            events.step_progress("build", &label, line);
+                        if line.is_empty() {
+                            continue;
                         }
+
+                        if recent.len() == BUILD_CONTEXT_LINES {
+                            recent.pop_front();
+                        }
+                        recent.push_back(line.to_string());
+                        events.step_progress("build", label, line);
                     }
 
                     // A failing RUN can come back in-band rather than as a
@@ -402,17 +579,35 @@ impl DockerRuntime {
                 Err(err) => Some(err.to_string()),
             };
 
-            if let Some(error) = failure {
-                let message = with_recent_output(error.trim(), &recent);
-                events.step_failed("build", &label, message.clone());
-                return Err(RuntimeError::failed(
-                    format!("building {}", build.tag),
-                    message,
-                ));
+            let Some(error) = failure else {
+                continue;
+            };
+            let error = error.trim();
+
+            // **A refusal is not a failure.** A daemon with BuildKit turned
+            // off says so before the build starts, and the caller answers
+            // it by building again with the other builder. Once output has
+            // been produced the build was running, and whatever it says
+            // about BuildKit is the build's own to say.
+            if buildkit && recent.is_empty() && is_buildkit_refusal(error) {
+                return Err(BuildFailure::NoBuildKit(error.to_string()));
             }
+
+            // What the step that failed had printed, when BuildKit named
+            // one; otherwise the tail of the build as a whole, which is all
+            // the legacy builder can offer and all a silent step leaves.
+            let tail = progress
+                .failure_tail()
+                .unwrap_or_else(|| recent.iter().cloned().collect());
+
+            let message = with_recent_output(error, &tail);
+            events.step_failed("build", label, message.clone());
+            return Err(BuildFailure::Failed(RuntimeError::failed(
+                format!("building {}", build.tag),
+                message,
+            )));
         }
 
-        events.step_done("build", &label);
         Ok(())
     }
 
@@ -1855,12 +2050,17 @@ impl Runtime for DockerRuntime {
 /// "The command '/bin/sh -c npm ci' returned a non-zero code: 1" says which
 /// command failed and nothing about why. What npm printed is the answer, and
 /// it has already gone past as progress.
-fn with_recent_output(error: &str, recent: &VecDeque<String>) -> String {
-    if recent.is_empty() {
+///
+/// `lines` is what the caller decided is worth quoting — under BuildKit the
+/// step that failed, otherwise the tail of the build. **Which of the two it
+/// is matters**: stages run at the same time, so the last dozen lines of a
+/// build are not necessarily a dozen lines of the stage that failed.
+fn with_recent_output(error: &str, lines: &[String]) -> String {
+    if lines.is_empty() {
         return error.to_string();
     }
 
-    let output = recent
+    let output = lines
         .iter()
         .map(|line| format!("  {line}"))
         .collect::<Vec<_>>()
@@ -1869,35 +2069,144 @@ fn with_recent_output(error: &str, recent: &VecDeque<String>) -> String {
     format!("{error}\n\nthe build was doing:\n{output}")
 }
 
-/// Tars a build context for the Docker API.
+/// Tars a build context for the Docker API, less what `.dockerignore` says
+/// to leave out.
 ///
-/// The API takes the context as a tar stream, so the whole directory is read
-/// into memory. That is fine for the contexts this is aimed at — a
-/// Dockerfile and a lock file — and a `.dockerignore` keeps a `node_modules`
-/// out of it.
-fn pack_context(context: &Path) -> std::io::Result<Vec<u8>> {
+/// The API takes the context as a tar stream, so what is packed here is read
+/// into memory whole — which is the other reason the filtering matters. **No
+/// builder does it for us**: `docker build` reads the file on the client side
+/// and leaves the excluded paths out of what it uploads, and a
+/// `.dockerignore` that arrives *inside* the tar is one more file in the
+/// context. Kobune is the client here, so it reads it. See
+/// [`crate::dockerignore`].
+///
+/// `dockerfile` says where the Dockerfile is, which decides both what the
+/// patterns may not take out and whether one has to be added.
+fn pack_context(context: &Path, dockerfile: Dockerfile<'_>) -> std::io::Result<Vec<u8>> {
+    let ignore = crate::dockerignore::Ignore::for_context(context, dockerfile.inside())?;
+
     let mut builder = tar::Builder::new(Vec::new());
     builder.follow_symlinks(false);
-    builder.append_dir_all(".", context)?;
+    // `./`, which is what `append_dir_all` called the root. Every entry
+    // below it is named without the prefix; `tar` strips a leading `./`
+    // from a path it is given, so the two spellings are one name.
+    builder.append_dir("./", context)?;
+
+    pack_into(&mut builder, context, "", &ignore)?;
+
+    // **Before the archive is finished, not after.** A tar ends with two
+    // zero blocks and every reader stops there, so an entry written past
+    // them is bytes nobody looks at. Adding it to a second builder wrapped
+    // around the finished bytes — which is what this used to do — sent a
+    // context with no Dockerfile in it and failed the build with "cannot
+    // locate specified Dockerfile".
+    if let Dockerfile::Outside(path) = dockerfile {
+        let contents = std::fs::read(path)?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        builder.append_data(&mut header, DOCKERFILE_ENTRY, contents.as_slice())?;
+    }
+
     builder.into_inner()
 }
 
-/// Adds a Dockerfile that lives outside the context.
+/// Where the Dockerfile a build names actually is.
 ///
-/// `dockerfile` may point anywhere in the worktree, so one context can build
-/// several images. Docker names the Dockerfile by its path inside the tar,
-/// so an outside one has to be placed into it.
-fn append_dockerfile(context: &mut Vec<u8>, dockerfile: &Path) -> std::io::Result<Vec<u8>> {
-    let contents = std::fs::read(dockerfile)?;
+/// Docker names the Dockerfile by its path inside the tar, so the two cases
+/// are packed differently: one is already in the context under its own name,
+/// the other has to be put there under a reserved one.
+#[derive(Clone, Copy)]
+enum Dockerfile<'a> {
+    /// In the context, at this path relative to its root.
+    Inside(&'a str),
+    /// Elsewhere in the worktree. One context can build several images, so
+    /// `dockerfile` is free to point outside it.
+    Outside(&'a Path),
+}
 
-    let mut builder = tar::Builder::new(std::mem::take(context));
-    let mut header = tar::Header::new_gnu();
-    header.set_size(contents.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    builder.append_data(&mut header, DOCKERFILE_ENTRY, contents.as_slice())?;
+impl<'a> Dockerfile<'a> {
+    /// Its path within the context, when it has one.
+    ///
+    /// What [`crate::dockerignore`] is told not to leave out — an outside
+    /// one is added after the patterns have had their say, so there is
+    /// nothing to spare.
+    fn inside(self) -> Option<&'a str> {
+        match self {
+            Self::Inside(path) => Some(path),
+            Self::Outside(_) => None,
+        }
+    }
 
-    builder.into_inner()
+    /// The name the build asks the daemon for.
+    fn entry(self) -> String {
+        match self {
+            Self::Inside(path) => path.to_string(),
+            Self::Outside(_) => DOCKERFILE_ENTRY.to_string(),
+        }
+    }
+}
+
+/// Adds what is under `dir` and not left out, then does the same below it.
+///
+/// `prefix` is `dir` relative to the root of the context, empty at the top.
+fn pack_into(
+    builder: &mut tar::Builder<Vec<u8>>,
+    dir: &Path,
+    prefix: &str,
+    ignore: &crate::dockerignore::Ignore,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+
+    // `read_dir` hands back whatever order the filesystem keeps, which two
+    // machines holding the same files need not agree on. Sorting costs
+    // nothing at this size and makes one context pack to one tar.
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in entries {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let path = entry.path();
+        let kind = entry.file_type()?;
+
+        let relative = match prefix.is_empty() {
+            true => name.to_string(),
+            false => format!("{prefix}/{name}"),
+        };
+
+        let excluded = ignore.excludes(&relative);
+
+        // **A left-out directory is still walked when a `!` line names
+        // something inside it.** The directory stays out of the tar either
+        // way; skipping it whole would lose the exception.
+        if excluded && !(kind.is_dir() && ignore.may_hold_an_exception(&relative)) {
+            continue;
+        }
+
+        // **Only the three kinds git can carry.** `tar` refuses a socket
+        // outright, which used to take a whole build down over a Rails
+        // `tmp/sockets` or a database left running in the worktree.
+        //
+        // Docker's client skips sockets and packs fifos and device nodes;
+        // this skips all three, which is a difference worth being straight
+        // about. A context comes from a worktree, and git cannot store any
+        // of them — so one that is there was made by something running,
+        // and is a runtime artefact rather than a file a `COPY` wants.
+        // Packing them faithfully would also mean building the headers by
+        // hand: `tar`'s own path for a special file names the entry after
+        // its absolute location on disk.
+        if !excluded && (kind.is_file() || kind.is_dir() || kind.is_symlink()) {
+            builder.append_path_with_name(&path, &*relative)?;
+        }
+
+        // A symlink is packed as itself rather than followed, so only a
+        // real directory is descended into.
+        if kind.is_dir() {
+            pack_into(builder, &path, &relative, ignore)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// The workspace's own URLs, pointed at the host where the proxy is.
@@ -1938,6 +2247,331 @@ mod tests {
             }]),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_daemon_saying_it_has_no_buildkit_is_recognised() {
+        // The wordings Docker has used. A refusal arrives before the build
+        // starts, which is what makes building again safe.
+        for message in [
+            "buildkit is not enabled on daemon",
+            "buildkit not supported by daemon",
+            "BuildKit is disabled",
+            "buildkit is not available on this platform",
+        ] {
+            assert!(is_buildkit_refusal(message), "not recognised: {message}");
+        }
+    }
+
+    #[test]
+    fn a_build_that_ran_and_failed_is_not_a_refusal() {
+        // Retrying either of these on a builder that understands less of
+        // the Dockerfile would replace the real error with a worse one.
+        for message in [
+            "failed to solve: failed to load buildkit frontend: not found",
+            "buildkit cache mount could not be created: no space left on device",
+            "exit code: 1",
+        ] {
+            assert!(
+                !is_buildkit_refusal(message),
+                "read as a refusal: {message}"
+            );
+        }
+    }
+
+    /// How many descriptors this process holds.
+    ///
+    /// `/dev/fd` is a directory of them on both platforms the daemon runs
+    /// on, and counting it needs nothing outside the standard library.
+    #[cfg(unix)]
+    fn open_descriptors() -> usize {
+        std::fs::read_dir("/dev/fd")
+            .map(|dir| dir.count())
+            .unwrap_or(0)
+    }
+
+    /// **A BuildKit build must not cost a descriptor.**
+    ///
+    /// `bollard` opens an upgraded connection for a build's session and
+    /// hands it to a task nobody ends, so a session id per build leaked one
+    /// socket and one task per build for as long as `kobuned` ran — which
+    /// is for as long as the machine is on. One id per process makes the
+    /// daemon replace the session, and closes what it replaces.
+    ///
+    /// Measured rather than reasoned about, because nothing in the types
+    /// says which it is. Before the fix this walked 11 → 14.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs Docker"]
+    async fn a_build_does_not_leak_a_connection_to_the_daemon() {
+        let Ok(runtime) = DockerRuntime::connect() else {
+            eprintln!("skipped: no Docker daemon answered");
+            return;
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = EventSink::discard();
+        let mut settled = 0;
+
+        for round in 0..4 {
+            let dockerfile = dir.path().join("Dockerfile");
+            std::fs::write(
+                &dockerfile,
+                format!("FROM busybox:latest\nRUN echo {round}\n"),
+            )
+            .expect("writes");
+
+            let build = BuildSpec {
+                context: dir.path().to_path_buf(),
+                dockerfile,
+                tag: format!("kobune-leak-probe-{round}:latest"),
+                fingerprint: round.to_string(),
+                args: std::collections::BTreeMap::new(),
+            };
+
+            if runtime.ensure_built(&build, true, &events).await.is_err() {
+                eprintln!("skipped: the probe build did not run");
+                return;
+            }
+
+            // The first build opens what a first build opens — the client's
+            // own connection, the one session. Growth after that is the
+            // leak.
+            if round == 0 {
+                settled = open_descriptors();
+            }
+        }
+
+        let now = open_descriptors();
+
+        // Before the assertion, so a failure does not also leave four
+        // images behind for the next run to find.
+        for round in 0..4 {
+            let _ = runtime
+                .docker
+                .remove_image(&format!("kobune-leak-probe-{round}:latest"), None, None)
+                .await;
+        }
+
+        assert!(
+            now <= settled,
+            "three builds cost {} descriptors: {settled} → {now}",
+            now - settled
+        );
+    }
+
+    /// The names in a packed context, sorted.
+    fn packed(context: &Path, dockerfile: Dockerfile<'_>) -> Vec<String> {
+        let tar = pack_context(context, dockerfile).expect("packs");
+
+        let mut names: Vec<String> = tar::Archive::new(tar.as_slice())
+            .entries()
+            .expect("reads")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .path()
+                    .expect("a path")
+                    .display()
+                    .to_string()
+            })
+            .collect();
+
+        names.sort();
+        names
+    }
+
+    /// A context with a few files, a directory and a nested one.
+    fn a_context() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("Dockerfile"),
+            "FROM alpine
+",
+        )
+        .expect("writes");
+        std::fs::write(root.join("package.json"), "{}").expect("writes");
+        std::fs::write(root.join("debug.log"), "noise").expect("writes");
+        std::fs::create_dir(root.join("src")).expect("creates");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").expect("writes");
+        std::fs::create_dir_all(root.join("node_modules/react")).expect("creates");
+        std::fs::write(root.join("node_modules/react/index.js"), "//").expect("writes");
+
+        dir
+    }
+
+    #[test]
+    fn a_context_without_an_ignore_file_packs_what_it_always_did() {
+        // **The one that matters most.** Walking the context by hand
+        // replaced `append_dir_all`, and every build in the project goes
+        // through it. This is what says the replacement is a replacement.
+        let dir = a_context();
+
+        let mut expected = {
+            let mut builder = tar::Builder::new(Vec::new());
+            builder.follow_symlinks(false);
+            builder.append_dir_all(".", dir.path()).expect("packs");
+            let tar = builder.into_inner().expect("finishes");
+
+            tar::Archive::new(tar.as_slice())
+                .entries()
+                .expect("reads")
+                .map(|entry| {
+                    entry
+                        .expect("an entry")
+                        .path()
+                        .expect("a path")
+                        .display()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        };
+        expected.sort();
+
+        assert_eq!(
+            packed(dir.path(), Dockerfile::Inside("Dockerfile")),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_dockerfile_from_outside_the_context_is_in_the_tar() {
+        // **It was not, and nothing said so.** `into_inner` finishes the
+        // archive, and the Dockerfile used to be appended to a second
+        // builder wrapped around the finished bytes — past the two zero
+        // blocks every reader stops at. The tar was the right length and
+        // held nothing.
+        let dir = a_context();
+        let outside = tempfile::tempdir().expect("tempdir");
+        let dockerfile = outside.path().join("web.Dockerfile");
+        std::fs::write(&dockerfile, "FROM alpine\n").expect("writes");
+
+        let names = packed(dir.path(), Dockerfile::Outside(&dockerfile));
+
+        assert!(
+            names.contains(&DOCKERFILE_ENTRY.to_string()),
+            "the Dockerfile is not there: {names:?}"
+        );
+        assert!(names.contains(&"src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn a_dockerfile_from_outside_survives_an_ignore_file_that_names_everything() {
+        // It is added after the patterns have had their say, so there is
+        // nothing for them to take out.
+        let dir = a_context();
+        std::fs::write(dir.path().join(".dockerignore"), "*\n").expect("writes");
+
+        let outside = tempfile::tempdir().expect("tempdir");
+        let dockerfile = outside.path().join("web.Dockerfile");
+        std::fs::write(&dockerfile, "FROM alpine\n").expect("writes");
+
+        let names = packed(dir.path(), Dockerfile::Outside(&dockerfile));
+
+        assert!(names.contains(&DOCKERFILE_ENTRY.to_string()));
+        assert!(!names.contains(&"package.json".to_string()));
+    }
+
+    #[test]
+    fn an_ignore_file_keeps_what_it_names_out_of_the_context() {
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join(".dockerignore"),
+            "node_modules
+*.log
+",
+        )
+        .expect("writes");
+
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+
+        assert!(!names.iter().any(|name| name.contains("node_modules")));
+        assert!(!names.iter().any(|name| name.contains("debug.log")));
+        assert!(names.contains(&"src/main.rs".to_string()));
+        assert!(names.contains(&"Dockerfile".to_string()));
+    }
+
+    #[test]
+    fn the_dockerfile_survives_an_ignore_file_that_names_everything() {
+        // `*` with a few `!` lines is a common way to say "send almost
+        // nothing", and it names the Dockerfile along with the rest. A
+        // build that cannot find its own Dockerfile is no build.
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join(".dockerignore"),
+            "*
+!src
+",
+        )
+        .expect("writes");
+
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+
+        assert!(names.contains(&"Dockerfile".to_string()));
+        assert!(names.contains(&"src/main.rs".to_string()));
+        assert!(!names.contains(&"package.json".to_string()));
+    }
+
+    #[test]
+    fn an_exception_reaches_inside_a_directory_that_was_left_out() {
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join(".dockerignore"),
+            "node_modules\n!node_modules/react/index.js\n",
+        )
+        .expect("writes");
+
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+
+        assert!(names.contains(&"node_modules/react/index.js".to_string()));
+        // The directory itself stays out, as it does under `docker build`.
+        assert!(!names.contains(&"node_modules".to_string()));
+    }
+
+    #[test]
+    fn a_socket_in_the_context_does_not_take_the_build_down_with_it() {
+        // A Rails `tmp/sockets` or a database left running in the worktree
+        // used to fail the whole build: `tar` refuses to archive a socket.
+        let dir = a_context();
+        let socket = dir.path().join("app.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("binds");
+
+        // What it used to do, pinned so the reason for skipping is not
+        // rediscovered by someone tidying the walk.
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.follow_symlinks(false);
+        assert!(builder.append_dir_all(".", dir.path()).is_err());
+
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+
+        assert!(!names.iter().any(|name| name.contains("app.sock")));
+        assert!(names.contains(&"src/main.rs".to_string()));
+
+        drop(listener);
+    }
+
+    fn tail(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| line.to_string()).collect()
+    }
+
+    #[test]
+    fn an_error_with_nothing_behind_it_is_left_alone() {
+        assert_eq!(
+            with_recent_output("exit code: 1", &tail(&[])),
+            "exit code: 1"
+        );
+    }
+
+    #[test]
+    fn a_failure_quotes_what_the_build_had_printed() {
+        let message = with_recent_output("exit code: 1", &tail(&["#1 npm ci", "#1 ENOENT"]));
+
+        assert_eq!(
+            message,
+            "exit code: 1\n\nthe build was doing:\n  #1 npm ci\n  #1 ENOENT"
+        );
     }
 
     /// No service has been stopped by us, which is every case but one.

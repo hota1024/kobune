@@ -276,6 +276,24 @@ Dockerfile を変更したブランチには、その Dockerfile が示すイメ
 コンテキストは worktree の内側である必要があり、`build = "../.."` のような
 指定は、ビルドコンテキストとしてランタイムに渡す前に拒否されます。
 
+コンテキストのルートに置いた `.dockerignore` は適用されます。そこに書いた
+ものは送信されず、`COPY` からも見えません。`node_modules` を除外しておけば、
+ビルドがそのぶんの費用を払うことはありません。
+
+::: warning パターンはコンテキストのルートを起点とします
+ここが `.dockerignore` と `.gitignore` の分かれ目です。`node_modules` が指す
+のはコンテキスト直下の 1 つだけで、それ以外には当たりません。深さを問わず
+すべてを指すには `**/node_modules` と書きます。残りは想像どおりで、`*` は
+区切りで止まり、`**` は区切りをまたぎ、`!` の行は前の行が除外したものを
+戻します。
+:::
+
+ビルドは `docker build` 自身が使うのと同じ **BuildKit** で実行します。
+`RUN --mount=type=cache`、ヒアドキュメント、`# syntax=` によるフロントエンドの
+指定はいずれも利用できます。BuildKit を無効にしたデーモンでは旧ビルダーへ
+フォールバックし、これらは遅くなるのではなくエラーになります。
+`DOCKER_BUILDKIT=0` を付けた `docker build` と同じ失敗です。
+
 イメージには `kobune-{project}-{service}:{fingerprint}` というタグが付きます。
 fingerprint は Dockerfile と build_args から算出されます。ここから 2 つの
 挙動が導かれます。

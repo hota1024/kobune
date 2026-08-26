@@ -734,6 +734,94 @@ the Dockerfile, and a half-correct answer is worse than a stated limitation.
 `kobune up --build` forces a rebuild. `docker compose` draws the line in the
 same place.
 
+#### Which builder runs is not an implementation detail
+
+`docker build` has used BuildKit since Docker 23, so a Dockerfile written
+today assumes it. Kobune talks to the Docker API rather than to the CLI, and
+the API still defaults to the builder the CLI stopped using — under which
+`RUN --mount=type=cache`, heredocs and a `# syntax=` frontend are not slower
+or unoptimised but hard errors. A Dockerfile that builds on the command line
+failed through Kobune, which is the worst shape a difference can take. The old
+builder is deprecated as well, and the daemon says so on every build that uses
+it.
+
+**BuildKit is asked for first, and the answer is remembered.** A daemon that
+will not do a BuildKit build says so before the build starts, so nothing has
+happened yet that a second attempt would have to undo: the context is packed
+again and built with the old builder, and a flag on the runtime keeps every
+later build from asking a question already answered. Deciding from the
+daemon's version instead would mean being right about daemons nobody here has,
+and a daemon that has already answered is the better source.
+
+There is no setting for this. One answer is right per daemon and Kobune can
+see which, so a key would only be somewhere for it to be wrong.
+
+**BuildKit reports a graph where the old builder reported a transcript.** That
+one sent the text it would have printed, a line per message, and Kobune passed
+it straight through. BuildKit sends vertexes that start, finish or turn out to
+be cached, with output and byte counters hanging off them, and says nothing
+about how to draw any of it. `buildkit.rs` turns it back into lines, numbered
+the way `docker build` numbers its own: `#4 [2/2] RUN npm ci`.
+
+**The number is what keeps a failure readable.** BuildKit runs independent
+stages at the same time, so two `RUN`s print into one stream at once — and the
+dozen lines kept back for the error message can as easily be a dozen lines of
+the stage that was still going while the failing one scrolled past. The tail is
+narrowed to the vertex that reported the error, and widens again to everything
+when that vertex printed nothing of its own: a `COPY` of a missing file dies
+without a word.
+
+**It is not free.** `bollard`'s `buildkit` feature brings the gRPC stack the
+session runs over — `tonic`, `prost` and a dozen crates behind them — for a
+session that carries registry credentials and nothing else here. The other way
+was to shell out to `docker build`, which trades the dependency for a CLI that
+need not be installed beside a daemon Kobune can already reach over its socket,
+and for parsing output written to be read rather than consumed.
+
+#### The `.dockerignore` is Kobune's to read
+
+**Nothing else will read it.** The daemon has never done this filtering:
+`docker build` reads the file on the client side and leaves the excluded paths
+out of the tar it uploads, and one that arrives *inside* the tar is one more
+file in the context. Kobune is the client here, so `dockerignore.rs` is the
+client's half — read at the root of the context, and the walk that packs the
+tar skips what it names. Until it did, a repository that asked for its
+`node_modules` to be left out had it read into memory, sent, and picked up by
+`COPY . .`.
+
+The rules are close to `.gitignore` and not the same, which is what makes
+borrowing an implementation the wrong move. **A pattern is anchored to the root
+of the context**: `node_modules` names the one at the top and no other, where
+git would name every one at any depth. `ignore`, the crate that exists for
+this, implements git's reading — so reaching for it would have quietly changed
+what a repository's existing file means. The matcher here follows Docker's own
+`patternmatcher` instead: `*` stopping at a separator, `**` crossing them, `!`
+putting back what an earlier line took out, the last line to match deciding.
+Its tests are the cases that tell the two readings apart.
+
+Two details are load-bearing. **The Dockerfile survives the patterns**, because
+`*` followed by a few `!` lines is a common way to say "send almost nothing"
+and it names the Dockerfile along with everything else; Docker's client puts it
+back, and so does this. And **a directory that is left out is still walked when
+a `!` line names something inside it** — otherwise `node_modules` with
+`!node_modules/.bin` beside it would lose the exception. The directory itself
+stays out of the tar either way.
+
+Walking the context here rather than handing it to `tar::append_dir_all` also
+settled something nobody had connected to builds: `tar` refuses to archive a
+socket, so a Rails `tmp/sockets` or a database left running in the worktree
+failed the build outright. Sockets, fifos and device nodes are now all skipped.
+
+**Docker skips only the socket**, which was worth checking rather than
+assuming — a `docker build` over a context holding a fifo puts the fifo in the
+image. The wider rule is deliberate all the same: a context comes from a
+worktree, git cannot store any of the three, so one that is there was made by
+something running rather than committed by somebody. Packing them faithfully
+would also mean writing the tar headers by hand, because `tar`'s own path for
+a special file names the entry after its absolute location on disk. A test
+pins what the walk used to do, so the reason is not rediscovered by whoever
+tidies it next.
+
 #### A running container can be stale too (found while building this)
 
 `up` left a running container alone, on the grounds that starting something
@@ -1419,7 +1507,7 @@ published.
 | Async runtime | `tokio` |
 | CLI | `clap` (derive) |
 | Configuration | `serde`, `toml`, `figment` |
-| Docker API | `bollard` |
+| Docker API | `bollard`, with `buildkit` for the build session |
 | HTTP and proxying | `hyper`, `hyper-util`, `axum` (the management API) |
 | TLS | `rustls`, `rcgen` (the local CA) |
 | DNS | `hickory-server` |
