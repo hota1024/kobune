@@ -151,7 +151,7 @@ one-command way to tell a stale process from a bad edit, and the recovery.
 
 The obvious recovery for a stale process. `docs/DESIGN.md` §10 listed it; the
 CLI has no such command, and `--help` does not mention it. What works is
-`kobune down --service api && kobune up --service api`.
+`kobune down api && kobune up api`, the service named positionally.
 
 Fixed: removed from `DESIGN.md`, and `SKILL.md` says outright that there is
 no `kobune restart`, because an agent that has seen the design will try it.

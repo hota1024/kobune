@@ -1,8 +1,8 @@
 # `kobune.toml`
 
-リポジトリルートに配置し、リポジトリで管理します。すべての worktree が同じ
-内容を参照します。このファイルには、さらに 2 つのファイルを重ねられます。
-[層](#層) を参照してください。
+リポジトリルートに配置し、リポジトリで管理します。コミットされるため、各
+worktree が読むのはそのブランチにあるコピーです。さらに 2 つのファイルが、
+下と上から重なります。[層](#層) を参照してください。
 
 ```toml
 [project]
@@ -37,10 +37,16 @@ volumes = ["pgdata:/var/lib/postgresql/data"]
 | --- | --- | --- | --- |
 | **global** | `~/.kobune/config.toml` | 対象外（マシン固有） | そのマシンについて言えること |
 | **project** | リポジトリルートの `kobune.toml` | リポジトリで管理 | プロジェクトそのもの |
-| **local** | その隣の `kobune.local.toml` | 対象外（gitignore） | そのクローンだけの設定 |
+| **local** | main worktree の `kobune.local.toml` | 対象外（gitignore） | そのクローンだけの設定 |
 
 必須なのは `kobune.toml` だけです。残りの 2 つは無いのが普通で、無いことは
 エラーではありません。
+
+**`kobune.local.toml` は main worktree から読み込みます。** 手元の worktree が
+持つ `kobune.toml` の隣ではありません。gitignore の対象なので
+`git worktree add` では複製されません。見つかったファイルの隣を探す作りに
+すると、メインのチェックアウトでだけ効いて、他では黙って効かない上書きに
+なってしまいます。
 
 **テーブルは統合し、それ以外は置き換えます。** そのため、`[services.web]` の
 `port` だけを指定して、隣にある `image` はそのまま残せます。配列は追記ではなく

@@ -1026,7 +1026,7 @@ env_file = ".kobune/env.api"
 
 ### What M3 turned up
 
-- `kobune env ls` **says which layer each value came from**. With three layers,
+- `kobune env ls` **says which layer each value came from**. With four layers,
   not seeing that an unintended one is winning makes the cause impossible to
   find
 - Injected values are not masked. They are Kobune's own and hold no secrets, and
@@ -1173,30 +1173,50 @@ takes. An agent never has to parse output written for people.
 
 ```
 kobune                            # the dashboard: every workspace, kept current
-kobune init                       # write kobune.toml, set up daemon/DNS/CA
+kobune init [--from-compose]      # write kobune.toml, from a compose file where there is one
+kobune setup [-y] [--dry-run]     # the privileged half: DNS resolver, CA, ports
 kobune doctor                     # check the DNS resolver, docker, certificates, ports
 
-kobune new <branch> [--from main] # git worktree add, warm the environment, print URLs
-kobune rm <workspace> [--force]   # destroy the environment, git worktree remove
-kobune ls [--json]                # workspaces and their state
+kobune new <branch> [--base main] # git worktree add, warm the environment, print URLs
+kobune rm [-w <workspace>] [-f]   # destroy the environment, git worktree remove
+kobune ls [--all-projects]        # workspaces and their state
 
-kobune up [--service web]         # start explicitly
-kobune down [--all] [--service web]
-kobune status [--json]
+kobune up [service…] [--build]    # start explicitly; every service when named none
+kobune down [service…] [--all]
+kobune status
 
 kobune url [service] [--qr]       # one line named, the listing otherwise
-kobune open [service]             # open it in a browser
-kobune logs <service> [-f] [--tail N] [--since 5m]
-kobune exec <service> -- <cmd>
+kobune logs [service…] [-f] [-n N] [--no-input]
+kobune exec [--fresh] [-C dir] <service> -- <cmd>
 
 kobune env set KEY=VAL [--scope global|project|workspace]
-kobune env ls [--json] [--reveal]
-kobune env unset KEY
+kobune env unset KEY [--scope …]  # the same default: workspace
+kobune env ls [--reveal] [--service <name>]
+kobune env get KEY [--service <name>]
+kobune config show [--all]        # which layer settled each value
 
-kobune tunnel enable [--domain example.com] [--public]
+kobune tunnel enable [--provider quick] [--domain example.com] [--public]
 kobune tunnel disable
 kobune tunnel status
+
+kobune ping                       # does the daemon answer
+kobune daemon start|stop|restart|status
+kobune skill install|show         # put SKILL.md in front of an agent
+kobune update [--check]
+kobune uninstall [-y] [--dry-run]
+kobune completions <shell>
 ```
+
+**Services are named positionally** on `up`, `down` and `logs` — a list, and
+every service in the workspace when given none. `env ls` and `env get` are
+the two that take `--service` instead, because they answer a question about
+one container rather than acting on a set. **No service can be restarted in
+one command** — that is `kobune down api && kobune up api`. `daemon restart`
+is the daemon, not a service, and the resemblance has misled before.
+
+**`kobune open <service>` was sketched here and never built.** The home page's
+third step is the address itself rather than a command, for that reason
+(`docs/.vitepress/theme/components/HomeSteps.vue`).
 
 `kobune doctor` ranks high because the initial setup involves sudo and outside
 dependencies (Docker, cloudflared). On failure it says what to do about it.
