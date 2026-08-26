@@ -734,6 +734,50 @@ the Dockerfile, and a half-correct answer is worse than a stated limitation.
 `kobune up --build` forces a rebuild. `docker compose` draws the line in the
 same place.
 
+#### Which builder runs is not an implementation detail
+
+`docker build` has used BuildKit since Docker 23, so a Dockerfile written
+today assumes it. Kobune talks to the Docker API rather than to the CLI, and
+the API still defaults to the builder the CLI stopped using — under which
+`RUN --mount=type=cache`, heredocs and a `# syntax=` frontend are not slower
+or unoptimised but hard errors. A Dockerfile that builds on the command line
+failed through Kobune, which is the worst shape a difference can take. The old
+builder is deprecated as well, and the daemon says so on every build that uses
+it.
+
+**BuildKit is asked for first, and the answer is remembered.** A daemon that
+will not do a BuildKit build says so before the build starts, so nothing has
+happened yet that a second attempt would have to undo: the context is packed
+again and built with the old builder, and a flag on the runtime keeps every
+later build from asking a question already answered. Deciding from the
+daemon's version instead would mean being right about daemons nobody here has,
+and a daemon that has already answered is the better source.
+
+There is no setting for this. One answer is right per daemon and Kobune can
+see which, so a key would only be somewhere for it to be wrong.
+
+**BuildKit reports a graph where the old builder reported a transcript.** That
+one sent the text it would have printed, a line per message, and Kobune passed
+it straight through. BuildKit sends vertexes that start, finish or turn out to
+be cached, with output and byte counters hanging off them, and says nothing
+about how to draw any of it. `buildkit.rs` turns it back into lines, numbered
+the way `docker build` numbers its own: `#4 [2/2] RUN npm ci`.
+
+**The number is what keeps a failure readable.** BuildKit runs independent
+stages at the same time, so two `RUN`s print into one stream at once — and the
+dozen lines kept back for the error message can as easily be a dozen lines of
+the stage that was still going while the failing one scrolled past. The tail is
+narrowed to the vertex that reported the error, and widens again to everything
+when that vertex printed nothing of its own: a `COPY` of a missing file dies
+without a word.
+
+**It is not free.** `bollard`'s `buildkit` feature brings the gRPC stack the
+session runs over — `tonic`, `prost` and a dozen crates behind them — for a
+session that carries registry credentials and nothing else here. The other way
+was to shell out to `docker build`, which trades the dependency for a CLI that
+need not be installed beside a daemon Kobune can already reach over its socket,
+and for parsing output written to be read rather than consumed.
+
 #### A running container can be stale too (found while building this)
 
 `up` left a running container alone, on the grounds that starting something
@@ -1419,7 +1463,7 @@ published.
 | Async runtime | `tokio` |
 | CLI | `clap` (derive) |
 | Configuration | `serde`, `toml`, `figment` |
-| Docker API | `bollard` |
+| Docker API | `bollard`, with `buildkit` for the build session |
 | HTTP and proxying | `hyper`, `hyper-util`, `axum` (the management API) |
 | TLS | `rustls`, `rcgen` (the local CA) |
 | DNS | `hickory-server` |

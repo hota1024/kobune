@@ -175,6 +175,33 @@ impl Harness {
         all
     }
 
+    /// One `up`, whatever becomes of it, and everything it said.
+    ///
+    /// [`Harness::up_watching`] panics on a request that comes back an
+    /// error, which is what a test wants when failing is the bug. A test
+    /// *about* a failure needs the events either way.
+    pub async fn up_watching_outcome(
+        &self,
+    ) -> (
+        Result<kobune_api::Response, kobune_api::ApiError>,
+        Vec<kobune_api::Event>,
+    ) {
+        let (events, mut received) = EventSink::channel();
+        let (_keys, from_client) = tokio::sync::mpsc::unbounded_channel();
+
+        let outcome = self
+            .supervisor
+            .handle(self.up_request(), &events, from_client)
+            .await;
+
+        let mut all = Vec::new();
+        while let Ok(event) = received.try_recv() {
+            all.push(event);
+        }
+
+        (outcome, all)
+    }
+
     pub async fn down(&self) {
         self.request(Request::Down {
             target: self.target(),
@@ -301,6 +328,30 @@ impl Drop for Harness {
                 let _ = Command::new("docker")
                     .arg("rm")
                     .arg("-f")
+                    .args(&ids)
+                    .output();
+            }
+        }
+
+        // **Images too.** A built image is named for the project and
+        // tagged with a fingerprint of its inputs, and `ensure_built`
+        // skips a tag that is already here — so an image left behind by
+        // one run is a build the next run does not do, and a test about
+        // what a build says would find it had said nothing.
+        let reference = format!("reference=kobune-{}-*", self.project);
+
+        if let Ok(listed) = Command::new("docker")
+            .args(["images", "-q", "--filter", &reference])
+            .output()
+        {
+            let ids: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect();
+
+            if !ids.is_empty() {
+                let _ = Command::new("docker")
+                    .args(["rmi", "-f"])
                     .args(&ids)
                     .output();
             }

@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -21,9 +22,9 @@ use bollard::container::{
     StopContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::image::{BuildImageOptions, CreateImageOptions};
+use bollard::image::{BuildImageOptions, BuilderVersion, CreateImageOptions};
 use bollard::models::{
-    ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
+    BuildInfoAux, ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
 };
 use bollard::network::{ConnectNetworkOptions, CreateNetworkOptions, ListNetworksOptions};
 use bollard::volume::ListVolumesOptions;
@@ -165,6 +166,49 @@ fn exit_code_from(status: &str) -> Option<i64> {
     code.trim().parse().ok()
 }
 
+/// Why a build did not produce an image.
+///
+/// The two are answered differently: one is the build failing and is the
+/// caller's to report, the other is the daemon declining the builder that
+/// was asked for and is the caller's to work around.
+enum BuildFailure {
+    /// The build ran and did not succeed.
+    Failed(RuntimeError),
+    /// The daemon will not do a BuildKit build, and said so before starting
+    /// one.
+    NoBuildKit(String),
+}
+
+/// The next BuildKit session number.
+///
+/// The daemon keys live sessions by id, so two builds at once must not
+/// share one. Counting is enough: the id is only meaningful for as long as
+/// the build holding it runs.
+fn next_session() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Whether an error is the daemon declining to use BuildKit at all.
+///
+/// Docker answers `/build?version=2` with a 400 when BuildKit is turned off
+/// or cannot be used on this platform, and does it before the build starts —
+/// which is what makes building again with the other builder safe.
+///
+/// **Mentioning BuildKit is not enough.** A build that got as far as running
+/// can fail with BuildKit all over the message: an unresolvable `# syntax=`
+/// frontend, a cache mount the daemon would not grant. Retrying those on a
+/// builder that understands even less of the Dockerfile replaces the real
+/// error with a worse one, so the wording has to say the builder was
+/// refused, not merely name it.
+fn is_buildkit_refusal(error: &str) -> bool {
+    const REFUSALS: [&str; 4] = ["not enabled", "not supported", "not available", "disabled"];
+
+    let error = error.to_lowercase();
+
+    error.contains("buildkit") && REFUSALS.iter().any(|phrase| error.contains(phrase))
+}
+
 pub struct DockerRuntime {
     docker: Docker,
     /// The services Kobune itself stopped. See [`DockerRuntime::stop`].
@@ -179,6 +223,13 @@ pub struct DockerRuntime {
     /// Shared rather than borrowed because the watcher outlives the call
     /// that started it: it runs for as long as the container does.
     terminals: Arc<Mutex<HashMap<String, Arc<Mutex<Modes>>>>>,
+    /// Set once a build has been refused for want of BuildKit. See
+    /// [`DockerRuntime::run_build`].
+    ///
+    /// **Only ever set, never cleared.** A daemon does not grow BuildKit
+    /// while it is running, and a daemon replaced under a running Kobune
+    /// is worth one restart.
+    no_buildkit: AtomicBool,
 }
 
 impl DockerRuntime {
@@ -203,6 +254,7 @@ impl DockerRuntime {
             asked_to_stop: Mutex::new(HashSet::new()),
             network_locks: Mutex::new(HashMap::new()),
             terminals: Arc::new(Mutex::new(HashMap::new())),
+            no_buildkit: AtomicBool::new(false),
         }
     }
 
@@ -310,6 +362,15 @@ impl DockerRuntime {
         Ok(name)
     }
 
+    /// Whether this daemon has already said it will not do a BuildKit build.
+    fn buildkit_ruled_out(&self) -> bool {
+        self.no_buildkit.load(Ordering::Relaxed)
+    }
+
+    fn rule_out_buildkit(&self) {
+        self.no_buildkit.store(true, Ordering::Relaxed);
+    }
+
     /// Builds the image unless that exact one is already here.
     ///
     /// The tag carries a fingerprint of the inputs, so an existing tag means
@@ -317,6 +378,9 @@ impl DockerRuntime {
     /// matters most for scale-to-zero: waking a stopped service goes through
     /// `prepare`, and a rebuild there would put a Docker build in the path of
     /// an incoming request.
+    ///
+    /// **BuildKit unless the daemon has none.** See
+    /// [`DockerRuntime::run_build`].
     async fn ensure_built(
         &self,
         build: &BuildSpec,
@@ -332,26 +396,97 @@ impl DockerRuntime {
 
         events.step_started("build", &label);
 
-        let pack = || -> std::io::Result<(Vec<u8>, String)> {
-            let mut context = pack_context(&build.context)?;
+        let pack = || -> Result<(Vec<u8>, String)> {
+            let packed = || -> std::io::Result<(Vec<u8>, String)> {
+                let mut context = pack_context(&build.context)?;
 
-            // Docker names the Dockerfile by its path inside the tar. One
-            // in the context is named where it sits; one from elsewhere in
-            // the worktree is added under a reserved name.
-            match build.dockerfile.strip_prefix(&build.context) {
-                Ok(relative) => Ok((context, relative.to_string_lossy().to_string())),
-                Err(_) => {
-                    let packed = append_dockerfile(&mut context, &build.dockerfile)?;
-                    Ok((packed, DOCKERFILE_ENTRY.to_string()))
+                // Docker names the Dockerfile by its path inside the tar. One
+                // in the context is named where it sits; one from elsewhere in
+                // the worktree is added under a reserved name.
+                match build.dockerfile.strip_prefix(&build.context) {
+                    Ok(relative) => Ok((context, relative.to_string_lossy().to_string())),
+                    Err(_) => {
+                        let packed = append_dockerfile(&mut context, &build.dockerfile)?;
+                        Ok((packed, DOCKERFILE_ENTRY.to_string()))
+                    }
                 }
-            }
+            };
+
+            packed().map_err(|err| {
+                events.step_failed("build", &label, err.to_string());
+                RuntimeError::failed(format!("packing the build context for {}", build.tag), err)
+            })
         };
 
-        let (context, dockerfile) = pack().map_err(|err| {
-            events.step_failed("build", &label, err.to_string());
-            RuntimeError::failed(format!("packing the build context for {}", build.tag), err)
-        })?;
+        // **BuildKit first.** It is what `docker build` itself has used
+        // since Docker 23, so it is what the Dockerfiles people write
+        // assume: `RUN --mount=type=cache`, heredocs and a `# syntax=`
+        // frontend are all hard errors under the legacy builder — which is
+        // deprecated, and on its way out of the daemon altogether.
+        if !self.buildkit_ruled_out() {
+            let (context, dockerfile) = pack()?;
 
+            match self
+                .run_build(build, dockerfile, context, true, &label, events)
+                .await
+            {
+                Ok(()) => {
+                    events.step_done("build", &label);
+                    return Ok(());
+                }
+                Err(BuildFailure::Failed(err)) => return Err(err),
+                Err(BuildFailure::NoBuildKit(message)) => {
+                    // Asked once and remembered: every later build in this
+                    // daemon goes straight to the legacy builder rather
+                    // than packing a context to be refused again.
+                    self.rule_out_buildkit();
+                    tracing::info!(
+                        reason = %message,
+                        "this Docker daemon will not do a BuildKit build; using the legacy builder"
+                    );
+                }
+            }
+        }
+
+        let (context, dockerfile) = pack()?;
+
+        self.run_build(build, dockerfile, context, false, &label, events)
+            .await
+            .map_err(|failure| match failure {
+                BuildFailure::Failed(err) => err,
+                // Only a BuildKit attempt is ever read as a refusal.
+                BuildFailure::NoBuildKit(message) => {
+                    RuntimeError::failed(format!("building {}", build.tag), message)
+                }
+            })?;
+
+        events.step_done("build", &label);
+        Ok(())
+    }
+
+    /// One build, with one builder.
+    ///
+    /// The two builders differ in what they report, not in what they are
+    /// asked for. The legacy builder sends the text it would have printed,
+    /// a line per message. BuildKit sends the build *graph* — vertexes
+    /// starting, finishing and turning out to be cached, with output and
+    /// byte counters hanging off them — which [`crate::buildkit::Progress`]
+    /// turns back into lines.
+    ///
+    /// Both paths are live at once on purpose: a daemon that quietly
+    /// ignores `version=2` — anything older than API 1.39 — answers a
+    /// BuildKit request with legacy messages, and passing those through is
+    /// the difference between a build that looks ordinary and one that
+    /// looks hung.
+    async fn run_build(
+        &self,
+        build: &BuildSpec,
+        dockerfile: String,
+        context: Vec<u8>,
+        buildkit: bool,
+        label: &str,
+        events: &EventSink,
+    ) -> std::result::Result<(), BuildFailure> {
         let options = BuildImageOptions {
             dockerfile,
             t: build.tag.clone(),
@@ -364,6 +499,18 @@ impl DockerRuntime {
             // every failed build.
             rm: true,
             forcerm: true,
+            version: if buildkit {
+                BuilderVersion::BuilderBuildKit
+            } else {
+                BuilderVersion::BuilderV1
+            },
+            // **BuildKit needs somewhere to call back to.** The tar goes up
+            // with the request, but the frontend also asks the client for
+            // registry credentials over a gRPC session hung off `/session`,
+            // and the daemon refuses the build outright without an id to
+            // hang it on. Unique per build: the daemon keys live sessions
+            // by it.
+            session: buildkit.then(|| format!("kobune-{}-{}", std::process::id(), next_session())),
             ..Default::default()
         };
 
@@ -373,22 +520,35 @@ impl DockerRuntime {
         // build was doing. Docker's own error is often just "exit code 3",
         // and the command that produced it is the part worth reading.
         let mut recent: VecDeque<String> = VecDeque::with_capacity(BUILD_CONTEXT_LINES);
+        let mut progress = crate::buildkit::Progress::new();
 
         while let Some(item) = stream.next().await {
             let failure = match item {
                 Ok(info) => {
-                    // Docker reports progress as the build output itself,
-                    // line by line, which is what someone watching a build
-                    // wants to see.
+                    let mut lines = Vec::new();
+
+                    // The legacy builder reports progress as the build
+                    // output itself, line by line, which is what someone
+                    // watching a build wants to see.
                     if let Some(line) = info.stream {
+                        lines.push(line);
+                    }
+
+                    if let Some(BuildInfoAux::BuildKit(status)) = &info.aux {
+                        lines.extend(progress.absorb(status));
+                    }
+
+                    for line in lines {
                         let line = line.trim_end();
-                        if !line.is_empty() {
-                            if recent.len() == BUILD_CONTEXT_LINES {
-                                recent.pop_front();
-                            }
-                            recent.push_back(line.to_string());
-                            events.step_progress("build", &label, line);
+                        if line.is_empty() {
+                            continue;
                         }
+
+                        if recent.len() == BUILD_CONTEXT_LINES {
+                            recent.pop_front();
+                        }
+                        recent.push_back(line.to_string());
+                        events.step_progress("build", label, line);
                     }
 
                     // A failing RUN can come back in-band rather than as a
@@ -402,17 +562,28 @@ impl DockerRuntime {
                 Err(err) => Some(err.to_string()),
             };
 
-            if let Some(error) = failure {
-                let message = with_recent_output(error.trim(), &recent);
-                events.step_failed("build", &label, message.clone());
-                return Err(RuntimeError::failed(
-                    format!("building {}", build.tag),
-                    message,
-                ));
+            let Some(error) = failure else {
+                continue;
+            };
+            let error = error.trim();
+
+            // **A refusal is not a failure.** A daemon with BuildKit turned
+            // off says so before the build starts, and the caller answers
+            // it by building again with the other builder. Once output has
+            // been produced the build was running, and whatever it says
+            // about BuildKit is the build's own to say.
+            if buildkit && recent.is_empty() && is_buildkit_refusal(error) {
+                return Err(BuildFailure::NoBuildKit(error.to_string()));
             }
+
+            let message = with_recent_output(error, &recent, progress.failed().as_deref());
+            events.step_failed("build", label, message.clone());
+            return Err(BuildFailure::Failed(RuntimeError::failed(
+                format!("building {}", build.tag),
+                message,
+            )));
         }
 
-        events.step_done("build", &label);
         Ok(())
     }
 
@@ -1855,12 +2026,29 @@ impl Runtime for DockerRuntime {
 /// "The command '/bin/sh -c npm ci' returned a non-zero code: 1" says which
 /// command failed and nothing about why. What npm printed is the answer, and
 /// it has already gone past as progress.
-fn with_recent_output(error: &str, recent: &VecDeque<String>) -> String {
-    if recent.is_empty() {
+///
+/// `failed` is the `#3 ` prefix of the step that broke, when BuildKit has
+/// named one. **BuildKit runs independent stages at the same time**, so the
+/// last twelve lines of a build are not necessarily twelve lines of the
+/// stage that failed — they can as easily be the tail of one that was still
+/// going. Narrowing to the failing step is the difference between quoting
+/// the error and quoting its neighbour. Nothing is narrowed away if that
+/// leaves nothing to show.
+fn with_recent_output(error: &str, recent: &VecDeque<String>, failed: Option<&str>) -> String {
+    let mut lines: Vec<&String> = match failed {
+        Some(prefix) => recent.iter().filter(|l| l.starts_with(prefix)).collect(),
+        None => Vec::new(),
+    };
+
+    if lines.is_empty() {
+        lines = recent.iter().collect();
+    }
+
+    if lines.is_empty() {
         return error.to_string();
     }
 
-    let output = recent
+    let output = lines
         .iter()
         .map(|line| format!("  {line}"))
         .collect::<Vec<_>>()
@@ -1938,6 +2126,80 @@ mod tests {
             }]),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_daemon_saying_it_has_no_buildkit_is_recognised() {
+        // The wordings Docker has used. A refusal arrives before the build
+        // starts, which is what makes building again safe.
+        for message in [
+            "buildkit is not enabled on daemon",
+            "buildkit not supported by daemon",
+            "BuildKit is disabled",
+            "buildkit is not available on this platform",
+        ] {
+            assert!(is_buildkit_refusal(message), "not recognised: {message}");
+        }
+    }
+
+    #[test]
+    fn a_build_that_ran_and_failed_is_not_a_refusal() {
+        // Retrying either of these on a builder that understands less of
+        // the Dockerfile would replace the real error with a worse one.
+        for message in [
+            "failed to solve: failed to load buildkit frontend: not found",
+            "buildkit cache mount could not be created: no space left on device",
+            "exit code: 1",
+        ] {
+            assert!(
+                !is_buildkit_refusal(message),
+                "read as a refusal: {message}"
+            );
+        }
+    }
+
+    fn tail(lines: &[&str]) -> VecDeque<String> {
+        lines.iter().map(|line| line.to_string()).collect()
+    }
+
+    #[test]
+    fn an_error_with_nothing_behind_it_is_left_alone() {
+        assert_eq!(
+            with_recent_output("exit code: 1", &tail(&[]), None),
+            "exit code: 1"
+        );
+    }
+
+    #[test]
+    fn a_failure_quotes_what_the_build_had_printed() {
+        let message = with_recent_output("exit code: 1", &tail(&["#1 npm ci", "#1 ENOENT"]), None);
+
+        assert_eq!(
+            message,
+            "exit code: 1\n\nthe build was doing:\n  #1 npm ci\n  #1 ENOENT"
+        );
+    }
+
+    #[test]
+    fn a_failure_quotes_the_step_that_failed_rather_than_its_neighbour() {
+        // The reason this is not just the last few lines: BuildKit runs
+        // the two stages together, and #2 is still printing while #1 dies.
+        let message = with_recent_output(
+            "exit code: 1",
+            &tail(&["#1 ENOENT", "#2 compiling", "#2 compiling more"]),
+            Some("#1 "),
+        );
+
+        assert_eq!(message, "exit code: 1\n\nthe build was doing:\n  #1 ENOENT");
+    }
+
+    #[test]
+    fn a_failing_step_that_printed_nothing_falls_back_to_the_whole_tail() {
+        // `COPY` of a missing file fails without a word of its own. The
+        // neighbouring output is a poor answer, and no answer is worse.
+        let message = with_recent_output("not found", &tail(&["#2 compiling"]), Some("#1 "));
+
+        assert_eq!(message, "not found\n\nthe build was doing:\n  #2 compiling");
     }
 
     /// No service has been stopped by us, which is every case but one.

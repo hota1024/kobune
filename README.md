@@ -50,7 +50,8 @@ $ kobune new feature/user-auth
 - **Interactive where it matters** — `tty = true` gives a service a terminal,
   and `kobune logs -f` lends it yours: Turborepo's task switcher, colour and
   all
-- **Prebuilt or built** — pull an image, or point `build` at a Dockerfile
+- **Prebuilt or built** — pull an image, or point `build` at a Dockerfile,
+  built under BuildKit like `docker build` itself
 - **Your choice of virtualisation** — Docker and Apple Container behind one
   Runtime abstraction, switched with `[runtime] default`
 

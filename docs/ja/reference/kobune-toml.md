@@ -276,6 +276,12 @@ Dockerfile を変更したブランチには、その Dockerfile が示すイメ
 コンテキストは worktree の内側である必要があり、`build = "../.."` のような
 指定は、ビルドコンテキストとしてランタイムに渡す前に拒否されます。
 
+ビルドは `docker build` 自身が使うのと同じ **BuildKit** で実行します。
+`RUN --mount=type=cache`、ヒアドキュメント、`# syntax=` によるフロントエンドの
+指定はいずれも利用できます。BuildKit を無効にしたデーモンでは旧ビルダーへ
+フォールバックし、これらは遅くなるのではなくエラーになります。
+`DOCKER_BUILDKIT=0` を付けた `docker build` と同じ失敗です。
+
 イメージには `kobune-{project}-{service}:{fingerprint}` というタグが付きます。
 fingerprint は Dockerfile と build_args から算出されます。ここから 2 つの
 挙動が導かれます。

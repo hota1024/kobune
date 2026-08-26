@@ -111,7 +111,7 @@ hickory-server = "0.24"
 hickory-proto = "0.24"
 
 # Runtime
-bollard = "0.18"
+bollard = { version = "0.18", features = ["buildkit"] }
 
 # HTTP client, for the update check. rustls rather than the system TLS:
 # the proxy already depends on it, so nothing new is pulled in.

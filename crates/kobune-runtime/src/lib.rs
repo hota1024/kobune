@@ -6,6 +6,7 @@
 //! difference between Docker and Apple Container.
 
 pub mod apple;
+mod buildkit;
 pub mod docker;
 pub mod error;
 pub mod event;

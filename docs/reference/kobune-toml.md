@@ -277,6 +277,12 @@ that edits its Dockerfile gets the image that Dockerfile describes. It has to
 stay inside the worktree; `build = "../.."` is refused rather than handed to
 the runtime as a build context.
 
+Builds run under **BuildKit**, the builder `docker build` itself uses, so
+`RUN --mount=type=cache`, heredocs and a `# syntax=` frontend all work. A
+daemon with BuildKit turned off falls back to the old builder, where those are
+errors rather than slower — the same failure `docker build` gives under
+`DOCKER_BUILDKIT=0`.
+
 The image is tagged `kobune-{project}-{service}:{fingerprint}`, where the
 fingerprint covers the Dockerfile and the build args. Two consequences worth
 knowing:
