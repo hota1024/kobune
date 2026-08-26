@@ -169,6 +169,62 @@ CMD [\"httpd\", \"-f\", \"-p\", \"8000\", \"-h\", \"/tmp\"]
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs Docker"]
+async fn a_dockerfile_from_outside_the_context_builds() {
+    require_docker!();
+
+    // **One context, several images** is the layout `dockerfile` exists
+    // for, and it had never worked: the Dockerfile went into the tar after
+    // the end-of-archive marker, so the daemon was sent a context without
+    // one. Nothing but a real build says whether it is there.
+    let project = "kobune-build-outside";
+    let config = format!(
+        r#"
+[project]
+name = "{project}"
+
+[runtime]
+default = "docker"
+
+[services.web]
+build = "./web"
+dockerfile = "./docker/web.Dockerfile"
+port = 8000
+idle_timeout = "60s"
+"#
+    );
+
+    let harness = Harness::new(project, &config);
+    let root = &harness.root;
+
+    std::fs::create_dir_all(root.join("web")).expect("creates");
+    std::fs::create_dir_all(root.join("docker")).expect("creates");
+    std::fs::write(root.join("web/app.txt"), "the app").expect("writes");
+    std::fs::write(
+        root.join("docker/web.Dockerfile"),
+        "\
+FROM busybox:latest
+COPY app.txt /app.txt
+RUN echo ok > /tmp/index.html
+CMD [\"httpd\", \"-f\", \"-p\", \"8000\", \"-h\", \"/tmp\"]
+",
+    )
+    .expect("writes");
+
+    let events = harness.up_watching().await;
+
+    assert_eq!(
+        build_failure(&events),
+        None,
+        "the build failed; output was {:?}",
+        build_output(&events)
+    );
+
+    harness.wait_until_running(&["web"]).await;
+    harness.down().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker"]
 async fn a_failed_build_quotes_what_the_step_printed() {
     require_docker!();
 

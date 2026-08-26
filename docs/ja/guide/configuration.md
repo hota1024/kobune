@@ -205,8 +205,8 @@ command = "npm run dev"
 コンテキストはその worktree から取得するため、Dockerfile を変更したブランチ
 には、その Dockerfile が示すイメージが渡ります。ビルドには `docker build`
 自身が使うのと同じ BuildKit を使います。コマンドラインで通る Dockerfile は
-そのまま通り、キャッシュマウントも利用できます。同じ場所に置いた
-`.dockerignore` は適用され、そこに書いたものは送信されません。
+そのまま通り、キャッシュマウントも利用できます。ビルドコンテキストの
+ルートに置いた `.dockerignore` は適用され、そこに書いたものは送信されません。
 
 イメージには Dockerfile と build_args から算出した fingerprint がタグとして
 付きます。そのため、内容が同一の worktree 同士は 1 つのイメージを共有し、

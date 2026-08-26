@@ -125,6 +125,13 @@ impl Ignore {
     }
 
     pub(crate) fn parse(contents: &str) -> Self {
+        // **The byte-order mark a Windows editor leaves.** Without this the
+        // first pattern reads as `\u{feff}node_modules`, which matches
+        // nothing — and silently, since every later line still works.
+        // Docker's own reader trims it from the first line for the same
+        // reason.
+        let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
+
         let patterns: Vec<Pattern> = contents.lines().filter_map(Pattern::parse).collect();
 
         Self {
@@ -454,6 +461,14 @@ mod tests {
         // Trimmed to `# notes`, which is a pattern for a file of that name
         // rather than a comment. Docker reads it the same way.
         assert!(leaves_out("  # notes", "# notes"));
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_eat_the_first_pattern() {
+        let patterns = ignore("\u{feff}node_modules\n*.log\n");
+
+        assert!(patterns.excludes("node_modules"));
+        assert!(patterns.excludes("a.log"));
     }
 
     #[test]

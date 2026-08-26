@@ -810,10 +810,17 @@ stays out of the tar either way.
 Walking the context here rather than handing it to `tar::append_dir_all` also
 settled something nobody had connected to builds: `tar` refuses to archive a
 socket, so a Rails `tmp/sockets` or a database left running in the worktree
-failed the build outright. Sockets, fifos and device nodes are not files a
-`COPY` could have used, and Docker's client skips them for the same reason. A
-test pins what it used to do, so the reason is not rediscovered by whoever
-tidies the walk next.
+failed the build outright. Sockets, fifos and device nodes are now all skipped.
+
+**Docker skips only the socket**, which was worth checking rather than
+assuming — a `docker build` over a context holding a fifo puts the fifo in the
+image. The wider rule is deliberate all the same: a context comes from a
+worktree, git cannot store any of the three, so one that is there was made by
+something running rather than committed by somebody. Packing them faithfully
+would also mean writing the tar headers by hand, because `tar`'s own path for
+a special file names the entry after its absolute location on disk. A test
+pins what the walk used to do, so the reason is not rediscovered by whoever
+tidies it next.
 
 #### A running container can be stale too (found while building this)
 

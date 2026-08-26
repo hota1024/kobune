@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -179,14 +179,27 @@ enum BuildFailure {
     NoBuildKit(String),
 }
 
-/// The next BuildKit session number.
+/// The BuildKit session id this daemon builds under.
 ///
-/// The daemon keys live sessions by id, so two builds at once must not
-/// share one. Counting is enough: the id is only meaningful for as long as
-/// the build holding it runs.
-fn next_session() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
+/// **One for the process, deliberately.** `bollard` opens an upgraded
+/// connection to the daemon for each build's session and hands it to a task
+/// that nobody ever ends — so a fresh id per build costs a socket and a task
+/// per build, for as long as `kobuned` runs. Reusing one id makes the daemon
+/// replace the session bound to it, and the connection it replaces is
+/// closed. Measured over four builds: a fresh id each time walked the open
+/// descriptors 11 → 14, one id held at 11.
+///
+/// **Sharing it across builds at once is safe**, which is the thing worth
+/// checking before doing this: three concurrent builds under one id all
+/// produced their images. Nothing is carried over the session here — no
+/// registry credentials, no exporter writing back to the client — so what
+/// the session is being replaced under is an empty channel.
+///
+/// Per process rather than a constant, so two daemons on one machine — a
+/// test's and the user's — do not take each other's session away.
+fn session_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format!("kobune-{}", std::process::id()))
 }
 
 /// Whether an error is the daemon declining to use BuildKit at all.
@@ -398,10 +411,6 @@ impl DockerRuntime {
 
         let pack = || -> Result<(Vec<u8>, String)> {
             let packed = || -> std::io::Result<(Vec<u8>, String)> {
-                // Docker names the Dockerfile by its path inside the tar. One
-                // in the context is named where it sits; one from elsewhere in
-                // the worktree is added under a reserved name.
-                //
                 // Worked out before the packing rather than after, because
                 // `.dockerignore` has to be told which file not to leave out.
                 let inside = build
@@ -410,15 +419,15 @@ impl DockerRuntime {
                     .ok()
                     .map(|relative| relative.to_string_lossy().to_string());
 
-                let mut context = pack_context(&build.context, inside.as_deref())?;
+                let dockerfile = match &inside {
+                    Some(path) => Dockerfile::Inside(path),
+                    None => Dockerfile::Outside(&build.dockerfile),
+                };
 
-                match inside {
-                    Some(name) => Ok((context, name)),
-                    None => {
-                        let packed = append_dockerfile(&mut context, &build.dockerfile)?;
-                        Ok((packed, DOCKERFILE_ENTRY.to_string()))
-                    }
-                }
+                Ok((
+                    pack_context(&build.context, dockerfile)?,
+                    dockerfile.entry(),
+                ))
             };
 
             packed().map_err(|err| {
@@ -517,9 +526,8 @@ impl DockerRuntime {
             // with the request, but the frontend also asks the client for
             // registry credentials over a gRPC session hung off `/session`,
             // and the daemon refuses the build outright without an id to
-            // hang it on. Unique per build: the daemon keys live sessions
-            // by it.
-            session: buildkit.then(|| format!("kobune-{}-{}", std::process::id(), next_session())),
+            // hang it on. See [`session_id`] for why every build uses one.
+            session: buildkit.then(|| session_id().to_string()),
             ..Default::default()
         };
 
@@ -585,7 +593,14 @@ impl DockerRuntime {
                 return Err(BuildFailure::NoBuildKit(error.to_string()));
             }
 
-            let message = with_recent_output(error, &recent, progress.failed().as_deref());
+            // What the step that failed had printed, when BuildKit named
+            // one; otherwise the tail of the build as a whole, which is all
+            // the legacy builder can offer and all a silent step leaves.
+            let tail = progress
+                .failure_tail()
+                .unwrap_or_else(|| recent.iter().cloned().collect());
+
+            let message = with_recent_output(error, &tail);
             events.step_failed("build", label, message.clone());
             return Err(BuildFailure::Failed(RuntimeError::failed(
                 format!("building {}", build.tag),
@@ -2036,23 +2051,11 @@ impl Runtime for DockerRuntime {
 /// command failed and nothing about why. What npm printed is the answer, and
 /// it has already gone past as progress.
 ///
-/// `failed` is the `#3 ` prefix of the step that broke, when BuildKit has
-/// named one. **BuildKit runs independent stages at the same time**, so the
-/// last twelve lines of a build are not necessarily twelve lines of the
-/// stage that failed — they can as easily be the tail of one that was still
-/// going. Narrowing to the failing step is the difference between quoting
-/// the error and quoting its neighbour. Nothing is narrowed away if that
-/// leaves nothing to show.
-fn with_recent_output(error: &str, recent: &VecDeque<String>, failed: Option<&str>) -> String {
-    let mut lines: Vec<&String> = match failed {
-        Some(prefix) => recent.iter().filter(|l| l.starts_with(prefix)).collect(),
-        None => Vec::new(),
-    };
-
-    if lines.is_empty() {
-        lines = recent.iter().collect();
-    }
-
+/// `lines` is what the caller decided is worth quoting — under BuildKit the
+/// step that failed, otherwise the tail of the build. **Which of the two it
+/// is matters**: stages run at the same time, so the last dozen lines of a
+/// build are not necessarily a dozen lines of the stage that failed.
+fn with_recent_output(error: &str, lines: &[String]) -> String {
     if lines.is_empty() {
         return error.to_string();
     }
@@ -2077,10 +2080,10 @@ fn with_recent_output(error: &str, recent: &VecDeque<String>, failed: Option<&st
 /// context. Kobune is the client here, so it reads it. See
 /// [`crate::dockerignore`].
 ///
-/// `dockerfile` is the Dockerfile's path inside the context, when it is in
-/// there — it is put back if the patterns take it out.
-fn pack_context(context: &Path, dockerfile: Option<&str>) -> std::io::Result<Vec<u8>> {
-    let ignore = crate::dockerignore::Ignore::for_context(context, dockerfile)?;
+/// `dockerfile` says where the Dockerfile is, which decides both what the
+/// patterns may not take out and whether one has to be added.
+fn pack_context(context: &Path, dockerfile: Dockerfile<'_>) -> std::io::Result<Vec<u8>> {
+    let ignore = crate::dockerignore::Ignore::for_context(context, dockerfile.inside())?;
 
     let mut builder = tar::Builder::new(Vec::new());
     builder.follow_symlinks(false);
@@ -2091,7 +2094,57 @@ fn pack_context(context: &Path, dockerfile: Option<&str>) -> std::io::Result<Vec
 
     pack_into(&mut builder, context, "", &ignore)?;
 
+    // **Before the archive is finished, not after.** A tar ends with two
+    // zero blocks and every reader stops there, so an entry written past
+    // them is bytes nobody looks at. Adding it to a second builder wrapped
+    // around the finished bytes — which is what this used to do — sent a
+    // context with no Dockerfile in it and failed the build with "cannot
+    // locate specified Dockerfile".
+    if let Dockerfile::Outside(path) = dockerfile {
+        let contents = std::fs::read(path)?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        builder.append_data(&mut header, DOCKERFILE_ENTRY, contents.as_slice())?;
+    }
+
     builder.into_inner()
+}
+
+/// Where the Dockerfile a build names actually is.
+///
+/// Docker names the Dockerfile by its path inside the tar, so the two cases
+/// are packed differently: one is already in the context under its own name,
+/// the other has to be put there under a reserved one.
+#[derive(Clone, Copy)]
+enum Dockerfile<'a> {
+    /// In the context, at this path relative to its root.
+    Inside(&'a str),
+    /// Elsewhere in the worktree. One context can build several images, so
+    /// `dockerfile` is free to point outside it.
+    Outside(&'a Path),
+}
+
+impl<'a> Dockerfile<'a> {
+    /// Its path within the context, when it has one.
+    ///
+    /// What [`crate::dockerignore`] is told not to leave out — an outside
+    /// one is added after the patterns have had their say, so there is
+    /// nothing to spare.
+    fn inside(self) -> Option<&'a str> {
+        match self {
+            Self::Inside(path) => Some(path),
+            Self::Outside(_) => None,
+        }
+    }
+
+    /// The name the build asks the daemon for.
+    fn entry(self) -> String {
+        match self {
+            Self::Inside(path) => path.to_string(),
+            Self::Outside(_) => DOCKERFILE_ENTRY.to_string(),
+        }
+    }
 }
 
 /// Adds what is under `dir` and not left out, then does the same below it.
@@ -2130,11 +2183,18 @@ fn pack_into(
             continue;
         }
 
-        // **Only the three kinds a build can use.** `tar` refuses a socket
+        // **Only the three kinds git can carry.** `tar` refuses a socket
         // outright, which used to take a whole build down over a Rails
-        // `tmp/sockets` or a database left running in the worktree — and a
-        // socket is not something `COPY` could have done anything with.
-        // Docker's own client skips them for the same reason.
+        // `tmp/sockets` or a database left running in the worktree.
+        //
+        // Docker's client skips sockets and packs fifos and device nodes;
+        // this skips all three, which is a difference worth being straight
+        // about. A context comes from a worktree, and git cannot store any
+        // of them — so one that is there was made by something running,
+        // and is a runtime artefact rather than a file a `COPY` wants.
+        // Packing them faithfully would also mean building the headers by
+        // hand: `tar`'s own path for a special file names the entry after
+        // its absolute location on disk.
         if !excluded && (kind.is_file() || kind.is_dir() || kind.is_symlink()) {
             builder.append_path_with_name(&path, &*relative)?;
         }
@@ -2147,24 +2207,6 @@ fn pack_into(
     }
 
     Ok(())
-}
-
-/// Adds a Dockerfile that lives outside the context.
-///
-/// `dockerfile` may point anywhere in the worktree, so one context can build
-/// several images. Docker names the Dockerfile by its path inside the tar,
-/// so an outside one has to be placed into it.
-fn append_dockerfile(context: &mut Vec<u8>, dockerfile: &Path) -> std::io::Result<Vec<u8>> {
-    let contents = std::fs::read(dockerfile)?;
-
-    let mut builder = tar::Builder::new(std::mem::take(context));
-    let mut header = tar::Header::new_gnu();
-    header.set_size(contents.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    builder.append_data(&mut header, DOCKERFILE_ENTRY, contents.as_slice())?;
-
-    builder.into_inner()
 }
 
 /// The workspace's own URLs, pointed at the host where the proxy is.
@@ -2237,8 +2279,89 @@ mod tests {
         }
     }
 
+    /// How many descriptors this process holds.
+    ///
+    /// `/dev/fd` is a directory of them on both platforms the daemon runs
+    /// on, and counting it needs nothing outside the standard library.
+    #[cfg(unix)]
+    fn open_descriptors() -> usize {
+        std::fs::read_dir("/dev/fd")
+            .map(|dir| dir.count())
+            .unwrap_or(0)
+    }
+
+    /// **A BuildKit build must not cost a descriptor.**
+    ///
+    /// `bollard` opens an upgraded connection for a build's session and
+    /// hands it to a task nobody ends, so a session id per build leaked one
+    /// socket and one task per build for as long as `kobuned` ran — which
+    /// is for as long as the machine is on. One id per process makes the
+    /// daemon replace the session, and closes what it replaces.
+    ///
+    /// Measured rather than reasoned about, because nothing in the types
+    /// says which it is. Before the fix this walked 11 → 14.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs Docker"]
+    async fn a_build_does_not_leak_a_connection_to_the_daemon() {
+        let Ok(runtime) = DockerRuntime::connect() else {
+            eprintln!("skipped: no Docker daemon answered");
+            return;
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = EventSink::discard();
+        let mut settled = 0;
+
+        for round in 0..4 {
+            let dockerfile = dir.path().join("Dockerfile");
+            std::fs::write(
+                &dockerfile,
+                format!("FROM busybox:latest\nRUN echo {round}\n"),
+            )
+            .expect("writes");
+
+            let build = BuildSpec {
+                context: dir.path().to_path_buf(),
+                dockerfile,
+                tag: format!("kobune-leak-probe-{round}:latest"),
+                fingerprint: round.to_string(),
+                args: std::collections::BTreeMap::new(),
+            };
+
+            if runtime.ensure_built(&build, true, &events).await.is_err() {
+                eprintln!("skipped: the probe build did not run");
+                return;
+            }
+
+            // The first build opens what a first build opens — the client's
+            // own connection, the one session. Growth after that is the
+            // leak.
+            if round == 0 {
+                settled = open_descriptors();
+            }
+        }
+
+        let now = open_descriptors();
+
+        // Before the assertion, so a failure does not also leave four
+        // images behind for the next run to find.
+        for round in 0..4 {
+            let _ = runtime
+                .docker
+                .remove_image(&format!("kobune-leak-probe-{round}:latest"), None, None)
+                .await;
+        }
+
+        assert!(
+            now <= settled,
+            "three builds cost {} descriptors: {settled} → {now}",
+            now - settled
+        );
+    }
+
     /// The names in a packed context, sorted.
-    fn packed(context: &Path, dockerfile: Option<&str>) -> Vec<String> {
+    fn packed(context: &Path, dockerfile: Dockerfile<'_>) -> Vec<String> {
         let tar = pack_context(context, dockerfile).expect("packs");
 
         let mut names: Vec<String> = tar::Archive::new(tar.as_slice())
@@ -2307,7 +2430,48 @@ mod tests {
         };
         expected.sort();
 
-        assert_eq!(packed(dir.path(), Some("Dockerfile")), expected);
+        assert_eq!(
+            packed(dir.path(), Dockerfile::Inside("Dockerfile")),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_dockerfile_from_outside_the_context_is_in_the_tar() {
+        // **It was not, and nothing said so.** `into_inner` finishes the
+        // archive, and the Dockerfile used to be appended to a second
+        // builder wrapped around the finished bytes — past the two zero
+        // blocks every reader stops at. The tar was the right length and
+        // held nothing.
+        let dir = a_context();
+        let outside = tempfile::tempdir().expect("tempdir");
+        let dockerfile = outside.path().join("web.Dockerfile");
+        std::fs::write(&dockerfile, "FROM alpine\n").expect("writes");
+
+        let names = packed(dir.path(), Dockerfile::Outside(&dockerfile));
+
+        assert!(
+            names.contains(&DOCKERFILE_ENTRY.to_string()),
+            "the Dockerfile is not there: {names:?}"
+        );
+        assert!(names.contains(&"src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn a_dockerfile_from_outside_survives_an_ignore_file_that_names_everything() {
+        // It is added after the patterns have had their say, so there is
+        // nothing for them to take out.
+        let dir = a_context();
+        std::fs::write(dir.path().join(".dockerignore"), "*\n").expect("writes");
+
+        let outside = tempfile::tempdir().expect("tempdir");
+        let dockerfile = outside.path().join("web.Dockerfile");
+        std::fs::write(&dockerfile, "FROM alpine\n").expect("writes");
+
+        let names = packed(dir.path(), Dockerfile::Outside(&dockerfile));
+
+        assert!(names.contains(&DOCKERFILE_ENTRY.to_string()));
+        assert!(!names.contains(&"package.json".to_string()));
     }
 
     #[test]
@@ -2321,7 +2485,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Some("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
 
         assert!(!names.iter().any(|name| name.contains("node_modules")));
         assert!(!names.iter().any(|name| name.contains("debug.log")));
@@ -2343,7 +2507,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Some("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
 
         assert!(names.contains(&"Dockerfile".to_string()));
         assert!(names.contains(&"src/main.rs".to_string()));
@@ -2359,7 +2523,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Some("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
 
         assert!(names.contains(&"node_modules/react/index.js".to_string()));
         // The directory itself stays out, as it does under `docker build`.
@@ -2380,7 +2544,7 @@ mod tests {
         builder.follow_symlinks(false);
         assert!(builder.append_dir_all(".", dir.path()).is_err());
 
-        let names = packed(dir.path(), Some("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
 
         assert!(!names.iter().any(|name| name.contains("app.sock")));
         assert!(names.contains(&"src/main.rs".to_string()));
@@ -2388,48 +2552,26 @@ mod tests {
         drop(listener);
     }
 
-    fn tail(lines: &[&str]) -> VecDeque<String> {
+    fn tail(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|line| line.to_string()).collect()
     }
 
     #[test]
     fn an_error_with_nothing_behind_it_is_left_alone() {
         assert_eq!(
-            with_recent_output("exit code: 1", &tail(&[]), None),
+            with_recent_output("exit code: 1", &tail(&[])),
             "exit code: 1"
         );
     }
 
     #[test]
     fn a_failure_quotes_what_the_build_had_printed() {
-        let message = with_recent_output("exit code: 1", &tail(&["#1 npm ci", "#1 ENOENT"]), None);
+        let message = with_recent_output("exit code: 1", &tail(&["#1 npm ci", "#1 ENOENT"]));
 
         assert_eq!(
             message,
             "exit code: 1\n\nthe build was doing:\n  #1 npm ci\n  #1 ENOENT"
         );
-    }
-
-    #[test]
-    fn a_failure_quotes_the_step_that_failed_rather_than_its_neighbour() {
-        // The reason this is not just the last few lines: BuildKit runs
-        // the two stages together, and #2 is still printing while #1 dies.
-        let message = with_recent_output(
-            "exit code: 1",
-            &tail(&["#1 ENOENT", "#2 compiling", "#2 compiling more"]),
-            Some("#1 "),
-        );
-
-        assert_eq!(message, "exit code: 1\n\nthe build was doing:\n  #1 ENOENT");
-    }
-
-    #[test]
-    fn a_failing_step_that_printed_nothing_falls_back_to_the_whole_tail() {
-        // `COPY` of a missing file fails without a word of its own. The
-        // neighbouring output is a poor answer, and no answer is worse.
-        let message = with_recent_output("not found", &tail(&["#2 compiling"]), Some("#1 "));
-
-        assert_eq!(message, "not found\n\nthe build was doing:\n  #2 compiling");
     }
 
     /// No service has been stopped by us, which is every case but one.
