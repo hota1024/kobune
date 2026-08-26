@@ -203,7 +203,8 @@ command = "npm run dev"
 The context comes from the worktree, so a branch that edits its Dockerfile
 gets the image that Dockerfile describes. Builds run under BuildKit, the
 builder `docker build` itself uses, so a Dockerfile that works on the command
-line works here — cache mounts and all.
+line works here — cache mounts and all. A `.dockerignore` beside it is applied,
+so what it names is never sent.
 
 Images are tagged with a fingerprint of the Dockerfile and the build args, so
 two worktrees that agree share one image and a build is skipped when that exact

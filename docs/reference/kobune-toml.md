@@ -277,6 +277,18 @@ that edits its Dockerfile gets the image that Dockerfile describes. It has to
 stay inside the worktree; `build = "../.."` is refused rather than handed to
 the runtime as a build context.
 
+A `.dockerignore` at the root of the context is applied, so what it names is
+never sent and `COPY` never sees it. A `node_modules` left out this way costs
+the build nothing.
+
+::: warning Patterns are anchored to the root of the context
+This is where `.dockerignore` and `.gitignore` part company. `node_modules`
+names the one directory at the top of the context and no other, and
+`**/node_modules` is how you say every one at any depth. The rest reads as you
+would expect: `*` stops at a separator, `**` crosses them, and a `!` line puts
+back what an earlier line took out.
+:::
+
 Builds run under **BuildKit**, the builder `docker build` itself uses, so
 `RUN --mount=type=cache`, heredocs and a `# syntax=` frontend all work. A
 daemon with BuildKit turned off falls back to the old builder, where those are

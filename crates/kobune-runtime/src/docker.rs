@@ -398,14 +398,23 @@ impl DockerRuntime {
 
         let pack = || -> Result<(Vec<u8>, String)> {
             let packed = || -> std::io::Result<(Vec<u8>, String)> {
-                let mut context = pack_context(&build.context)?;
-
                 // Docker names the Dockerfile by its path inside the tar. One
                 // in the context is named where it sits; one from elsewhere in
                 // the worktree is added under a reserved name.
-                match build.dockerfile.strip_prefix(&build.context) {
-                    Ok(relative) => Ok((context, relative.to_string_lossy().to_string())),
-                    Err(_) => {
+                //
+                // Worked out before the packing rather than after, because
+                // `.dockerignore` has to be told which file not to leave out.
+                let inside = build
+                    .dockerfile
+                    .strip_prefix(&build.context)
+                    .ok()
+                    .map(|relative| relative.to_string_lossy().to_string());
+
+                let mut context = pack_context(&build.context, inside.as_deref())?;
+
+                match inside {
+                    Some(name) => Ok((context, name)),
+                    None => {
                         let packed = append_dockerfile(&mut context, &build.dockerfile)?;
                         Ok((packed, DOCKERFILE_ENTRY.to_string()))
                     }
@@ -2057,17 +2066,87 @@ fn with_recent_output(error: &str, recent: &VecDeque<String>, failed: Option<&st
     format!("{error}\n\nthe build was doing:\n{output}")
 }
 
-/// Tars a build context for the Docker API.
+/// Tars a build context for the Docker API, less what `.dockerignore` says
+/// to leave out.
 ///
-/// The API takes the context as a tar stream, so the whole directory is read
-/// into memory. That is fine for the contexts this is aimed at — a
-/// Dockerfile and a lock file — and a `.dockerignore` keeps a `node_modules`
-/// out of it.
-fn pack_context(context: &Path) -> std::io::Result<Vec<u8>> {
+/// The API takes the context as a tar stream, so what is packed here is read
+/// into memory whole — which is the other reason the filtering matters. **No
+/// builder does it for us**: `docker build` reads the file on the client side
+/// and leaves the excluded paths out of what it uploads, and a
+/// `.dockerignore` that arrives *inside* the tar is one more file in the
+/// context. Kobune is the client here, so it reads it. See
+/// [`crate::dockerignore`].
+///
+/// `dockerfile` is the Dockerfile's path inside the context, when it is in
+/// there — it is put back if the patterns take it out.
+fn pack_context(context: &Path, dockerfile: Option<&str>) -> std::io::Result<Vec<u8>> {
+    let ignore = crate::dockerignore::Ignore::for_context(context, dockerfile)?;
+
     let mut builder = tar::Builder::new(Vec::new());
     builder.follow_symlinks(false);
-    builder.append_dir_all(".", context)?;
+    // `./`, which is what `append_dir_all` called the root. Every entry
+    // below it is named without the prefix; `tar` strips a leading `./`
+    // from a path it is given, so the two spellings are one name.
+    builder.append_dir("./", context)?;
+
+    pack_into(&mut builder, context, "", &ignore)?;
+
     builder.into_inner()
+}
+
+/// Adds what is under `dir` and not left out, then does the same below it.
+///
+/// `prefix` is `dir` relative to the root of the context, empty at the top.
+fn pack_into(
+    builder: &mut tar::Builder<Vec<u8>>,
+    dir: &Path,
+    prefix: &str,
+    ignore: &crate::dockerignore::Ignore,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+
+    // `read_dir` hands back whatever order the filesystem keeps, which two
+    // machines holding the same files need not agree on. Sorting costs
+    // nothing at this size and makes one context pack to one tar.
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in entries {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let path = entry.path();
+        let kind = entry.file_type()?;
+
+        let relative = match prefix.is_empty() {
+            true => name.to_string(),
+            false => format!("{prefix}/{name}"),
+        };
+
+        let excluded = ignore.excludes(&relative);
+
+        // **A left-out directory is still walked when a `!` line names
+        // something inside it.** The directory stays out of the tar either
+        // way; skipping it whole would lose the exception.
+        if excluded && !(kind.is_dir() && ignore.may_hold_an_exception(&relative)) {
+            continue;
+        }
+
+        // **Only the three kinds a build can use.** `tar` refuses a socket
+        // outright, which used to take a whole build down over a Rails
+        // `tmp/sockets` or a database left running in the worktree — and a
+        // socket is not something `COPY` could have done anything with.
+        // Docker's own client skips them for the same reason.
+        if !excluded && (kind.is_file() || kind.is_dir() || kind.is_symlink()) {
+            builder.append_path_with_name(&path, &*relative)?;
+        }
+
+        // A symlink is packed as itself rather than followed, so only a
+        // real directory is descended into.
+        if kind.is_dir() {
+            pack_into(builder, &path, &relative, ignore)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Adds a Dockerfile that lives outside the context.
@@ -2156,6 +2235,157 @@ mod tests {
                 "read as a refusal: {message}"
             );
         }
+    }
+
+    /// The names in a packed context, sorted.
+    fn packed(context: &Path, dockerfile: Option<&str>) -> Vec<String> {
+        let tar = pack_context(context, dockerfile).expect("packs");
+
+        let mut names: Vec<String> = tar::Archive::new(tar.as_slice())
+            .entries()
+            .expect("reads")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .path()
+                    .expect("a path")
+                    .display()
+                    .to_string()
+            })
+            .collect();
+
+        names.sort();
+        names
+    }
+
+    /// A context with a few files, a directory and a nested one.
+    fn a_context() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("Dockerfile"),
+            "FROM alpine
+",
+        )
+        .expect("writes");
+        std::fs::write(root.join("package.json"), "{}").expect("writes");
+        std::fs::write(root.join("debug.log"), "noise").expect("writes");
+        std::fs::create_dir(root.join("src")).expect("creates");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").expect("writes");
+        std::fs::create_dir_all(root.join("node_modules/react")).expect("creates");
+        std::fs::write(root.join("node_modules/react/index.js"), "//").expect("writes");
+
+        dir
+    }
+
+    #[test]
+    fn a_context_without_an_ignore_file_packs_what_it_always_did() {
+        // **The one that matters most.** Walking the context by hand
+        // replaced `append_dir_all`, and every build in the project goes
+        // through it. This is what says the replacement is a replacement.
+        let dir = a_context();
+
+        let mut expected = {
+            let mut builder = tar::Builder::new(Vec::new());
+            builder.follow_symlinks(false);
+            builder.append_dir_all(".", dir.path()).expect("packs");
+            let tar = builder.into_inner().expect("finishes");
+
+            tar::Archive::new(tar.as_slice())
+                .entries()
+                .expect("reads")
+                .map(|entry| {
+                    entry
+                        .expect("an entry")
+                        .path()
+                        .expect("a path")
+                        .display()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        };
+        expected.sort();
+
+        assert_eq!(packed(dir.path(), Some("Dockerfile")), expected);
+    }
+
+    #[test]
+    fn an_ignore_file_keeps_what_it_names_out_of_the_context() {
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join(".dockerignore"),
+            "node_modules
+*.log
+",
+        )
+        .expect("writes");
+
+        let names = packed(dir.path(), Some("Dockerfile"));
+
+        assert!(!names.iter().any(|name| name.contains("node_modules")));
+        assert!(!names.iter().any(|name| name.contains("debug.log")));
+        assert!(names.contains(&"src/main.rs".to_string()));
+        assert!(names.contains(&"Dockerfile".to_string()));
+    }
+
+    #[test]
+    fn the_dockerfile_survives_an_ignore_file_that_names_everything() {
+        // `*` with a few `!` lines is a common way to say "send almost
+        // nothing", and it names the Dockerfile along with the rest. A
+        // build that cannot find its own Dockerfile is no build.
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join(".dockerignore"),
+            "*
+!src
+",
+        )
+        .expect("writes");
+
+        let names = packed(dir.path(), Some("Dockerfile"));
+
+        assert!(names.contains(&"Dockerfile".to_string()));
+        assert!(names.contains(&"src/main.rs".to_string()));
+        assert!(!names.contains(&"package.json".to_string()));
+    }
+
+    #[test]
+    fn an_exception_reaches_inside_a_directory_that_was_left_out() {
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join(".dockerignore"),
+            "node_modules\n!node_modules/react/index.js\n",
+        )
+        .expect("writes");
+
+        let names = packed(dir.path(), Some("Dockerfile"));
+
+        assert!(names.contains(&"node_modules/react/index.js".to_string()));
+        // The directory itself stays out, as it does under `docker build`.
+        assert!(!names.contains(&"node_modules".to_string()));
+    }
+
+    #[test]
+    fn a_socket_in_the_context_does_not_take_the_build_down_with_it() {
+        // A Rails `tmp/sockets` or a database left running in the worktree
+        // used to fail the whole build: `tar` refuses to archive a socket.
+        let dir = a_context();
+        let socket = dir.path().join("app.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("binds");
+
+        // What it used to do, pinned so the reason for skipping is not
+        // rediscovered by someone tidying the walk.
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.follow_symlinks(false);
+        assert!(builder.append_dir_all(".", dir.path()).is_err());
+
+        let names = packed(dir.path(), Some("Dockerfile"));
+
+        assert!(!names.iter().any(|name| name.contains("app.sock")));
+        assert!(names.contains(&"src/main.rs".to_string()));
+
+        drop(listener);
     }
 
     fn tail(lines: &[&str]) -> VecDeque<String> {

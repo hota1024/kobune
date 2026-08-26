@@ -778,6 +778,43 @@ was to shell out to `docker build`, which trades the dependency for a CLI that
 need not be installed beside a daemon Kobune can already reach over its socket,
 and for parsing output written to be read rather than consumed.
 
+#### The `.dockerignore` is Kobune's to read
+
+**Nothing else will read it.** The daemon has never done this filtering:
+`docker build` reads the file on the client side and leaves the excluded paths
+out of the tar it uploads, and one that arrives *inside* the tar is one more
+file in the context. Kobune is the client here, so `dockerignore.rs` is the
+client's half — read at the root of the context, and the walk that packs the
+tar skips what it names. Until it did, a repository that asked for its
+`node_modules` to be left out had it read into memory, sent, and picked up by
+`COPY . .`.
+
+The rules are close to `.gitignore` and not the same, which is what makes
+borrowing an implementation the wrong move. **A pattern is anchored to the root
+of the context**: `node_modules` names the one at the top and no other, where
+git would name every one at any depth. `ignore`, the crate that exists for
+this, implements git's reading — so reaching for it would have quietly changed
+what a repository's existing file means. The matcher here follows Docker's own
+`patternmatcher` instead: `*` stopping at a separator, `**` crossing them, `!`
+putting back what an earlier line took out, the last line to match deciding.
+Its tests are the cases that tell the two readings apart.
+
+Two details are load-bearing. **The Dockerfile survives the patterns**, because
+`*` followed by a few `!` lines is a common way to say "send almost nothing"
+and it names the Dockerfile along with everything else; Docker's client puts it
+back, and so does this. And **a directory that is left out is still walked when
+a `!` line names something inside it** — otherwise `node_modules` with
+`!node_modules/.bin` beside it would lose the exception. The directory itself
+stays out of the tar either way.
+
+Walking the context here rather than handing it to `tar::append_dir_all` also
+settled something nobody had connected to builds: `tar` refuses to archive a
+socket, so a Rails `tmp/sockets` or a database left running in the worktree
+failed the build outright. Sockets, fifos and device nodes are not files a
+`COPY` could have used, and Docker's client skips them for the same reason. A
+test pins what it used to do, so the reason is not rediscovered by whoever
+tidies the walk next.
+
 #### A running container can be stale too (found while building this)
 
 `up` left a running container alone, on the grounds that starting something

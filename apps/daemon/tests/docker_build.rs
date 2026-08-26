@@ -126,6 +126,49 @@ async fn the_build_says_which_step_it_is_on() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs Docker"]
+async fn a_dockerignore_keeps_what_it_names_out_of_the_context() {
+    require_docker!();
+
+    // **The Docker daemon does not do this filtering**, so a unit test can
+    // only say Kobune packed the right tar. Whether the build then sees
+    // what it should is this.
+    //
+    // `*` with a `!` line is also the shape that breaks a build if the
+    // Dockerfile is not put back: it names the Dockerfile along with
+    // everything else, and BuildKit reads the Dockerfile out of the tar.
+    let dockerfile = "\
+FROM busybox:latest
+COPY . /src
+RUN test ! -e /src/ignored.txt
+RUN test -e /src/kept.txt
+RUN echo ok > /tmp/index.html
+CMD [\"httpd\", \"-f\", \"-p\", \"8000\", \"-h\", \"/tmp\"]
+";
+
+    let project = "kobune-build-ignore";
+    let harness = Harness::new(project, &built_service(project));
+    let root = &harness.root;
+
+    std::fs::write(root.join("Dockerfile"), dockerfile).expect("writes");
+    std::fs::write(root.join(".dockerignore"), "*\n!kept.txt\n").expect("writes");
+    std::fs::write(root.join("kept.txt"), "kept").expect("writes");
+    std::fs::write(root.join("ignored.txt"), "ignored").expect("writes");
+
+    let events = harness.up_watching().await;
+
+    assert_eq!(
+        build_failure(&events),
+        None,
+        "the build failed; output was {:?}",
+        build_output(&events)
+    );
+
+    harness.wait_until_running(&["web"]).await;
+    harness.down().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker"]
 async fn a_failed_build_quotes_what_the_step_printed() {
     require_docker!();
 
