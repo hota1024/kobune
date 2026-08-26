@@ -99,7 +99,7 @@ pub async fn handle(
         }
         None => match wake(&host, &request, activator.as_ref()).await {
             Ok(endpoint) => (endpoint, true),
-            Err(response) => return response,
+            Err(response) => return *response,
         },
     };
 
@@ -130,11 +130,17 @@ pub async fn handle(
 ///
 /// How long to wait depends on the client: a browser gets the waiting page
 /// and reloads itself, everything else waits for readiness.
+///
+/// **The answer is boxed rather than returned flat.** A `Response` is a
+/// hundred and twenty-eight bytes, and a `Result` is as wide as its widest
+/// arm — so every wake that succeeded, which is nearly all of them, carried
+/// the failure's weight home with it. The allocation lands only where a
+/// response is being built, which is already allocating a body.
 async fn wake(
     host: &str,
     request: &Request<Incoming>,
     activator: &dyn Activator,
-) -> Result<SocketAddr, Response<ProxyBody>> {
+) -> Result<SocketAddr, Box<Response<ProxyBody>>> {
     let browser = wants_html(request);
     let wait = if browser { BROWSER_GRACE } else { CLIENT_WAIT };
 
@@ -143,7 +149,7 @@ async fn wake(
             activator.touch(host);
             Ok(endpoint)
         }
-        Activation::Starting => Err(if browser {
+        Activation::Starting => Err(Box::new(if browser {
             starting_page(host)
         } else {
             // Only reached once CLIENT_WAIT has run out.
@@ -155,19 +161,19 @@ async fn wake(
                     CLIENT_WAIT.as_secs()
                 ),
             )
-        }),
-        Activation::Unknown => Err(error_response(
+        })),
+        Activation::Unknown => Err(Box::new(error_response(
             StatusCode::NOT_FOUND,
             format!("Kobune: there is no environment behind `{host}`.\n"),
-        )),
-        Activation::Failed(reason) => Err(error_response(
+        ))),
+        Activation::Failed(reason) => Err(Box::new(error_response(
             StatusCode::BAD_GATEWAY,
             format!(
                 "Kobune: cannot start `{host}`.\n\
                  {reason}\n\
                  Run `kobune logs` for the details.\n"
             ),
-        )),
+        ))),
     }
 }
 
