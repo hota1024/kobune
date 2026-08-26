@@ -1,7 +1,8 @@
 # `kobune.toml`
 
-Lives at the repository root and is committed. Every worktree reads the same
-one, and two other files may be merged over it — see [Layers](#layers).
+Lives at the repository root and is committed, so each worktree reads the copy
+on its own branch. Two other files merge with it, one underneath and one over
+the top — see [Layers](#layers).
 
 ```toml
 [project]
@@ -36,10 +37,15 @@ Three files are read in turn and merged, later ones winning.
 | --- | --- | --- | --- |
 | **global** | `~/.kobune/config.toml` | No — your machine | What is true of this computer |
 | **project** | `kobune.toml` at the repository root | Yes | The project itself |
-| **local** | `kobune.local.toml` beside it | No — gitignored | This clone alone |
+| **local** | `kobune.local.toml` in the main worktree | No — gitignored | This clone alone |
 
 Only `kobune.toml` is required. The other two are missing on most machines, and
 that is not a failure.
+
+**`kobune.local.toml` is read from the main worktree**, not from beside the
+`kobune.toml` a worktree holds. It is gitignored, so `git worktree add` never
+carries it across; looking for it beside the file that was found would make it
+an override that applied in the main checkout and silently nowhere else.
 
 **Tables merge, everything else replaces.** A layer can name
 `[services.web] port` without restating the image beside it. An array is

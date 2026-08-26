@@ -1,11 +1,13 @@
 //! Environment variable layers, and reading and writing them.
 //!
-//! Three layers, later ones winning.
+//! Four layers, later ones winning, over a set Kobune injects underneath
+//! all of them.
 //!
 //! | Layer | Location | Intent |
 //! | --- | --- | --- |
 //! | global | `~/.kobune/env` | shared by every project |
 //! | project | `env` in `kobune.toml` and `.kobune/env` | committed |
+//! | service | `env` in `[services.<name>]` | committed, that service only |
 //! | workspace | `.kobune/env.local` | per-worktree, gitignored |
 //!
 //! **Keeps plaintext secrets out of the repository.** Values may hold a

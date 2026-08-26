@@ -24,7 +24,7 @@ use super::lifecycle::validate_service_names;
 impl Supervisor {
     /// Shows the environment, layer by layer.
     ///
-    /// **Each value says which layer defined it.** With three layers, not
+    /// **Each value says which layer defined it.** With four layers, not
     /// seeing that an unintended one is winning makes the cause impossible
     /// to find.
     pub(super) async fn env_list(

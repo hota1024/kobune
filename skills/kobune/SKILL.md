@@ -32,17 +32,26 @@ With no `kobune.toml`, `kobune init` writes a starter one.
 
 ## Configuration
 
-`kobune.toml` sits at the repository root and every worktree reads the same
-one. **The full reference is
+`kobune.toml` sits at the repository root and is committed, so each worktree
+reads the copy on its own branch — change it on a branch and you have changed
+that environment and no other. **The full reference is
 <https://kobune.1024.works/reference/kobune-toml>** — read it before writing
 one rather than guessing at key names.
 
-Two more files may be merged over it, later ones winning:
-`~/.kobune/config.toml` for what is true of the machine, and
-`kobune.local.toml` beside `kobune.toml` for what is true of one clone. Both
-are absent on most checkouts. **`kobune config show` says which layer settled
-each value** — reach for it before concluding that `kobune.toml` says
-something it does not, because the merged result is in no file you can read.
+Two more files merge with it, applied in this order and later winning:
+`~/.kobune/config.toml` for what is true of the machine, then `kobune.toml`,
+then `kobune.local.toml` for what is true of one clone. **The machine layer
+sits under the repository's file rather than over it** — a value written in
+`kobune.toml` beats it. Both are absent on most checkouts.
+
+**`kobune.local.toml` is read from the main worktree**, not from the one you
+are in. It is gitignored, so `git worktree add` never carries it across, and
+looking for it beside the `kobune.toml` in front of you would make it an
+override that applied in the main checkout and silently nowhere else.
+
+**`kobune config show` says which layer settled each value** — reach for it
+before concluding that `kobune.toml` says something it does not, because the
+merged result is in no file you can read.
 
 ### There is no `kobune.toml` yet
 
@@ -100,9 +109,15 @@ Worth knowing before you hit them:
 - Your worktree is mounted at `/workspace`. Anything a build writes under
   it lands in the repository on the host — point caches at
   `/var/cache/kobune`, which every service gets as `KOBUNE_CACHE_DIR` and
-  every worktree shares. **`env` values are not interpolated**, so write the
-  path out there; `$KOBUNE_CACHE_DIR` only expands in a `command` or a
-  start-up script
+  every worktree shares. **In an `env` value the braces are not optional**:
+  `${KOBUNE_CACHE_DIR}` is expanded, a bare `$KOBUNE_CACHE_DIR` is passed
+  through as written, and what that makes is a directory of that name inside
+  the worktree — the gigabyte in the repository this exists to prevent.
+  `kobune up` warns when a value does this, and names the fix
+- **Nothing at all expands in a `command`.** It is split into arguments and
+  run directly, so `$KOBUNE_CACHE_DIR` and `${KOBUNE_CACHE_DIR}` alike reach
+  the process as literal text. Write `sh -c '...'` and let the shell inside
+  the container do the expanding. `setup` is run the same way
 - `[project] carry = [".env"]` names the untracked files a new worktree
   needs. Without it `kobune new` produces an environment that cannot start
 - `setup` runs once before a service first starts — put `pnpm install`
@@ -176,8 +191,13 @@ you save it. Whether the **process** notices is up to what `command` starts.
 - anything else, `node server.js` included, is still running the old code
 
 ```bash
-kobune down --service api && kobune up --service api
+kobune down api && kobune up api
 ```
+
+**`up`, `down` and `logs` name services positionally**, not behind a
+`--service` flag. Name as many as you like; name none and they act on every
+service in the workspace. `kobune env ls` and `kobune env get` are the two
+commands that do take `--service`.
 
 **Check this before you doubt the edit.** A stale process answers exactly like
 a change that did not work — a 404 on the route you just added — and the next
@@ -229,12 +249,27 @@ real container has died, which is exactly when you need to look.
 
 ```bash
 kobune env ls               # shows which layer each value comes from
+kobune env ls --reveal      # unmask the values as well
 kobune env set API_KEY=xxx  # the workspace layer by default: this worktree only
 kobune env set DEBUG=1 --scope project   # the whole repository
 ```
 
-Do not write `.env` directly. There are four layers, and editing one by hand
-leaves it unclear which is winning.
+**A listing masks what you set.** Anything five characters or longer keeps
+its first two; anything shorter is bullets and nothing else. Reach for
+`--reveal` when you are checking a value rather than checking a layer — what
+Kobune injects is exempt and always readable, so a listing can look perfectly
+clear while hiding the one value you came for. **A secret stays a reference
+even under `--reveal`**: `op://…` is what the listing shows, and the value
+behind it is resolved when the container starts.
+
+Write through `kobune env` rather than editing the layers by hand. There are
+four — `~/.kobune/env`, `.kobune/env`, a service's own `env` in
+`kobune.toml`, and `.kobune/env.local` — and editing one directly leaves it
+unclear which is winning. **`env set` reaches three of them.** `--scope
+service` is refused, because a service's own `env` is written in
+`kobune.toml` under the service and nowhere else. **A project's own `.env` is
+none of the four**: that file belongs to the application, and
+`[project] carry` is what gets it into a new worktree.
 
 **A change needs `kobune down && kobune up`.** Containers that are already
 running do not pick it up.
@@ -333,22 +368,25 @@ Removes the worktree and its environment. The branch stays.
    kobune status --json | jq -r '.workspace.services[] | "\(.name) \(.state)"'
    ```
 
+   - `ready` → serving. Look elsewhere
    - `stopped` → reach for it, or run `kobune up`
    - `starting` → wait. The container is up but its `health` check is not
      answering, which is what a dev server still building looks like
    - `failed` → `reason`, beside the state, says why. A container that
      exited non-zero lands here, so this is what a start-up script that
      died looks like
+   - `unknown` → the runtime could not be asked at all. `kobune doctor`
 2. `kobune logs <service>` — errors from the app itself
-3. `kobune env ls --service <name>` — what that container is actually given,
-   and which layer each value came from. Check here before concluding a
-   variable is wrong; without `--service` you get only what every service
-   shares. When a `${...}` will not settle the listing still arrives: that
-   value is shown as written and carries `unsettled` in `--json`, with the
-   name it refers to and why
+3. `kobune env ls --service <name> --reveal` — what that container is
+   actually given, and which layer each value came from. Check here before
+   concluding a variable is wrong. Without `--service` you get only what
+   every service shares, and without `--reveal` the values are masked. When
+   a `${...}` will not settle the listing still arrives: that value is shown
+   as written and carries `unsettled` in `--json`, with the name it refers
+   to and why
 4. `kobune config show` — where a setting came from, when the behaviour does
-   not match what `kobune.toml` says. Two other files can be merged over it,
-   and neither is in the repository
+   not match what `kobune.toml` says. Two other files merge with it, one
+   underneath and one over the top, and neither is in the repository
 5. `kobune doctor` — problems with the environment. **The fix is in `fix`**
 
 ### Common symptoms
@@ -363,7 +401,7 @@ Removes the worktree and its environment. The branch stays.
 | `kobune exec` says the container is not running | It died. `kobune logs` for why, `kobune exec --fresh` to get inside anyway |
 | Startup never finishes | Watch it with `kobune logs -f` |
 | A config change does nothing | `kobune down && kobune up` |
-| A code change does nothing | The process is stale, not the file. `kobune down --service X && kobune up --service X` |
+| A code change does nothing | The process is stale, not the file. `kobune down X && kobune up X` |
 
 ## Reading the output
 
