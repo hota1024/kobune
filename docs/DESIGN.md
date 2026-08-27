@@ -865,7 +865,7 @@ minutes.
 the same story. `docker build` prints it and Kobune did not, so a
 `.dockerignore` that had quietly stopped covering a directory was invisible
 until a build failed for a reason that looked unrelated. It is reported as it
-is sent, and past 512 MiB it is called out — not refused, since a context that
+is sent, and past 512 MB it is called out — not refused, since a context that
 size works now, but a context that size is nearly always something nobody
 meant to send.
 
