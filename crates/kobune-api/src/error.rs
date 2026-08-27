@@ -106,7 +106,17 @@ impl ErrorCode {
 
     /// Whether retrying the same operation might succeed.
     pub fn is_retryable(self) -> bool {
-        matches!(self, Self::RuntimeUnavailable | Self::RuntimeFailed)
+        match self {
+            Self::RuntimeUnavailable | Self::RuntimeFailed => true,
+            Self::NotFound
+            | Self::AlreadyExists
+            | Self::ConfigNotFound
+            | Self::InvalidConfig
+            | Self::NotAGitRepository
+            | Self::Unsupported
+            | Self::Cancelled
+            | Self::Internal => false,
+        }
     }
 
     /// Whether this is the caller asking for something that is not there,
@@ -117,17 +127,22 @@ impl ErrorCode {
     /// an incident; logging it at the same level as a build that fell over
     /// makes `ERROR` the ordinary severity of the file and leaves nothing
     /// to search for.
+    /// **Exhaustive on purpose.** A `matches!` here would let a code added
+    /// later fall to the wrong side without anyone choosing it — quietly
+    /// becoming one more `ERROR` in the file this comment is about. Which
+    /// side a new code belongs on is a judgement, so it should not build
+    /// until someone has made it.
     pub fn is_the_callers(self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::NotFound
-                | Self::AlreadyExists
-                | Self::ConfigNotFound
-                | Self::InvalidConfig
-                | Self::NotAGitRepository
-                | Self::Unsupported
-                | Self::Cancelled
-        )
+            | Self::AlreadyExists
+            | Self::ConfigNotFound
+            | Self::InvalidConfig
+            | Self::NotAGitRepository
+            | Self::Unsupported
+            | Self::Cancelled => true,
+            Self::RuntimeUnavailable | Self::RuntimeFailed | Self::Internal => false,
+        }
     }
 }
 
