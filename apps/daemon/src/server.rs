@@ -342,7 +342,15 @@ async fn serve(
             // to look at again tomorrow, left nothing behind. The code
             // rather than the message alone, so a search can find every
             // failure of a kind without guessing at the wording.
-            tracing::error!(op, code = ?error.code, "{}", error.message);
+            //
+            // Asking for a service that is not there is an answer rather
+            // than an incident, and logging both at `ERROR` would leave
+            // the level meaning nothing. See [`ErrorCode::is_the_callers`].
+            if error.code.is_the_callers() {
+                tracing::warn!(op, code = ?error.code, "{}", error.message);
+            } else {
+                tracing::error!(op, code = ?error.code, "{}", error.message);
+            }
             ServerMessage::err(id, error)
         }
     };

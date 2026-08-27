@@ -379,6 +379,9 @@ mod tests {
     fn every_request_is_logged_under_the_name_it_travels_by() {
         let target = Target::new(PathBuf::from("/repo"));
 
+        // Every variant, because the drift this is here to catch is a
+        // variant added to one side and not the other — and six of nineteen
+        // would have caught it only by luck.
         for request in [
             Request::Ping,
             Request::Shutdown,
@@ -386,10 +389,77 @@ mod tests {
             Request::Doctor {
                 target: target.clone(),
             },
+            Request::Ls {
+                target: target.clone(),
+                all_projects: false,
+            },
+            Request::New {
+                target: target.clone(),
+                branch: "x".into(),
+                base: None,
+                path: None,
+                start: true,
+                rebuild: false,
+            },
+            Request::Rm {
+                target: target.clone(),
+                force: false,
+            },
             Request::Up {
                 target: target.clone(),
                 services: vec![],
                 rebuild: false,
+            },
+            Request::Down {
+                target: target.clone(),
+                services: vec![],
+                all: false,
+            },
+            Request::Status {
+                target: target.clone(),
+            },
+            Request::Logs {
+                target: target.clone(),
+                services: vec![],
+                follow: false,
+                tail: None,
+                attach: None,
+            },
+            Request::Exec {
+                target: target.clone(),
+                service: "web".into(),
+                command: vec![],
+                fresh: false,
+                workdir: None,
+            },
+            Request::EnvList {
+                target: target.clone(),
+                reveal: false,
+                service: None,
+            },
+            Request::EnvSet {
+                target: target.clone(),
+                scope: kobune_core::EnvScope::Workspace,
+                key: "K".into(),
+                value: "V".into(),
+            },
+            Request::EnvUnset {
+                target: target.clone(),
+                scope: kobune_core::EnvScope::Workspace,
+                key: "K".into(),
+            },
+            Request::ConfigShow {
+                target: target.clone(),
+                all: false,
+            },
+            Request::TunnelEnable {
+                target: target.clone(),
+                provider: None,
+                domain: None,
+                public: false,
+            },
+            Request::TunnelStatus {
+                target: target.clone(),
             },
             Request::TunnelDisable { target },
         ] {

@@ -701,7 +701,7 @@ mod tests {
         assert_eq!(bytes(1024 * 1024), "1.0 MB");
         assert_eq!(bytes(7_654_321), "7.2 MB");
         // A build context is what gets this far. `3420.5 MB` would not
-        // read as a mistake; `3.3 GB` does.
+        // read as a mistake; `3.1 GB` does.
         assert_eq!(bytes(3_342_664_218), "3.1 GB");
     }
 

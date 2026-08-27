@@ -607,6 +607,7 @@ impl DockerRuntime {
         // and the command that produced it is the part worth reading.
         let mut recent: VecDeque<String> = VecDeque::with_capacity(BUILD_CONTEXT_LINES);
         let mut progress = crate::buildkit::Progress::new();
+        let mut failed: Option<String> = None;
 
         while let Some(item) = stream.next().await {
             let failure = match item {
@@ -639,7 +640,17 @@ impl DockerRuntime {
 
                     // A failing RUN can come back in-band rather than as a
                     // stream error, so both paths have to be handled.
-                    info.error_detail.and_then(|detail| detail.message)
+                    //
+                    // **The message is optional and the failure is not.**
+                    // `bollard` turns a detail that carries one into a
+                    // stream error, so only the wordless kind reaches here
+                    // — and reading "no message" as "no failure" would
+                    // report a build that died as one that finished.
+                    info.error_detail.map(|detail| {
+                        detail.message.unwrap_or_else(|| {
+                            "the daemon reported a failure and did not say what it was".to_string()
+                        })
+                    })
                 }
                 // bollard folds an in-band failure into this, but its
                 // Display drops the message, leaving "Docker stream error"
@@ -653,62 +664,70 @@ impl DockerRuntime {
                 Err(err) => Some(crate::error::with_causes(&err)),
             };
 
-            let Some(error) = failure else {
-                continue;
-            };
-            let error = error.trim();
-
-            // **A refusal is not a failure.** A daemon with BuildKit turned
-            // off says so before the build starts, and the caller answers
-            // it by building again with the other builder. Once output has
-            // been produced the build was running, and whatever it says
-            // about BuildKit is the build's own to say.
-            if buildkit && recent.is_empty() && is_buildkit_refusal(error) {
-                return Err(BuildFailure::NoBuildKit(error.to_string()));
+            if let Some(error) = failure {
+                failed = Some(error.trim().to_string());
+                break;
             }
-
-            // **What the packer said, when it said anything.** A walk that
-            // dies half way ends the body early, and what comes back is
-            // the daemon's opinion of a tar that stopped — or the
-            // transport's, that the request went away. Neither names the
-            // file that could not be read.
-            let message = match packing_failure(&mut packing).await {
-                Some(packed) => {
-                    format!("packing the build context for {}: {packed}", build.tag)
-                }
-                None => {
-                    // What the step that failed had printed, when BuildKit
-                    // named one; otherwise the tail of the build as a
-                    // whole, which is all the legacy builder can offer and
-                    // all a silent step leaves.
-                    let tail = progress
-                        .failure_tail()
-                        .unwrap_or_else(|| recent.iter().cloned().collect());
-
-                    with_recent_output(error, &tail)
-                }
-            };
-
-            events.step_failed("build", label, message.clone());
-            return Err(BuildFailure::Failed(RuntimeError::failed(
-                format!("building {}", build.tag),
-                message,
-            )));
         }
 
-        // **A build that finished still has to be asked.** The daemon
-        // reporting success over a context that stopped early is a build of
-        // whatever arrived before the error, which is not the worktree.
-        if let Some(packed) = packing_failure(&mut packing).await {
-            let message = format!("packing the build context for {}: {packed}", build.tag);
-            events.step_failed("build", label, message.clone());
-            return Err(BuildFailure::Failed(RuntimeError::failed(
-                format!("building {}", build.tag),
-                message,
-            )));
+        // **The request goes before the packer is asked about itself.**
+        // Dropping it drops the channel the walk is feeding, so a walk
+        // still going stops at its next chunk. Asking first would instead
+        // wait out the rest of a worktree nobody is going to build now —
+        // minutes of `sending the build context` after the build had
+        // already failed.
+        drop(stream);
+
+        // **A refusal is not a failure.** A daemon with BuildKit turned off
+        // says so before the build starts, and the caller answers it by
+        // building again with the other builder. Once output has been
+        // produced the build was running, and whatever it says about
+        // BuildKit is the build's own to say.
+        if let Some(error) = failed.as_deref()
+            && buildkit
+            && recent.is_empty()
+            && is_buildkit_refusal(error)
+        {
+            // Waited out before the caller packs the same worktree again.
+            // A `spawn_blocking` task cannot be cancelled, so a walk left
+            // running would count its way up a step the second attempt is
+            // counting from zero on, onto one line.
+            packing_failure(&mut packing).await;
+            return Err(BuildFailure::NoBuildKit(error.to_string()));
         }
 
-        Ok(())
+        // **What the packer said comes first, when it said anything.** A
+        // walk that dies half way ends the body early, and what comes back
+        // is the daemon's opinion of a tar that stopped — or nothing at
+        // all, when what arrived was enough to build something. Neither
+        // names the file that could not be read.
+        let message = match (packing_failure(&mut packing).await, failed) {
+            (Some(packed), _) => Some(format!(
+                "packing the build context for {}: {packed}",
+                build.tag
+            )),
+            // What the step that failed had printed, when BuildKit named
+            // one; otherwise the tail of the build as a whole, which is all
+            // the legacy builder can offer and all a silent step leaves.
+            (None, Some(error)) => {
+                let tail = progress
+                    .failure_tail()
+                    .unwrap_or_else(|| recent.iter().cloned().collect());
+
+                Some(with_recent_output(&error, &tail))
+            }
+            (None, None) => None,
+        };
+
+        let Some(message) = message else {
+            return Ok(());
+        };
+
+        events.step_failed("build", label, message.clone());
+        Err(BuildFailure::Failed(RuntimeError::failed(
+            format!("building {}", build.tag),
+            message,
+        )))
     }
 
     /// Pulls the image unless it is already local.
@@ -2236,11 +2255,6 @@ fn pack_context<W: std::io::Write>(
     builder.into_inner()
 }
 
-/// Where the Dockerfile a build names actually is.
-///
-/// Docker names the Dockerfile by its path inside the tar, so the two cases
-/// are packed differently: one is already in the context under its own name,
-/// the other has to be put there under a reserved one.
 /// Why the context could not be packed, when that is what happened.
 ///
 /// Taken rather than borrowed: a build asks twice — once when it fails and
@@ -2254,9 +2268,13 @@ async fn packing_failure(packing: &mut Option<Packing>) -> Option<String> {
     match packing.take()?.await {
         Ok(Packed::Failed(err)) => Some(crate::error::with_causes(&err)),
         Ok(Packed::All | Packed::Cut) => None,
-        // Cancelled, or panicked. Neither has anything to add to whatever
-        // the build itself reported.
-        Err(_) => None,
+        // **A walk that died is a context that stopped.** The body ends
+        // cleanly when the packer unwinds — the sender goes with it — so
+        // the daemon sees a short tar rather than an error, and a build
+        // whose `COPY` happened to be satisfied by what arrived first
+        // would succeed on half a worktree. Reading this as "nothing to
+        // report" is how that gets tagged and run.
+        Err(err) => Some(format!("the walk of the context did not finish: {err}")),
     }
 }
 
@@ -2373,8 +2391,16 @@ impl std::io::Write for ChunkWriter {
         self.buffer.extend_from_slice(buf);
 
         while self.buffer.len() >= CONTEXT_CHUNK {
-            let rest = self.buffer.split_off(CONTEXT_CHUNK);
-            let chunk = std::mem::replace(&mut self.buffer, rest);
+            // `split_off` hands the leftover a `Vec` of its own size, and
+            // putting that back would throw the reservation away — `tar`
+            // writes in 8 KiB pieces, so every chunk would climb back to
+            // 128 KiB through four more allocations. Over a 3 GB context
+            // that is a hundred thousand of them on the path this exists
+            // to keep quick.
+            let chunk = self.buffer.split_off(CONTEXT_CHUNK);
+            let chunk = std::mem::replace(&mut self.buffer, chunk);
+            self.buffer
+                .reserve(CONTEXT_CHUNK.saturating_sub(self.buffer.len()));
             self.emit(chunk)?;
         }
 
@@ -2474,6 +2500,12 @@ fn stream_context(
     )
 }
 
+/// Where the Dockerfile a build names actually is.
+///
+/// Docker names the Dockerfile by its path inside the tar, so the two cases
+/// are packed differently: one is already in the context under its own name,
+/// the other has to be put there under a reserved one.
+///
 /// Owned rather than borrowed, because the walk that reads it runs on a
 /// blocking thread of its own and outlives the call that started it.
 #[derive(Clone, Debug)]
@@ -2609,8 +2641,9 @@ mod tests {
             id: Some("abc123".into()),
             image: Some("node:22".into()),
             // `docker ps`'s own words, which is what the callers below
-            // read like.
-            state: state.parse().ok(),
+            // read like. A state the enum does not know is the test's
+            // mistake, not a case to be quietly mapped to `Unknown`.
+            state: Some(state.parse().expect("a state Docker reports")),
             labels: Some(labels_map),
             ports: Some(vec![PortSummary {
                 private_port: 3000,
