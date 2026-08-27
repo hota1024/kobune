@@ -107,7 +107,7 @@ rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 # it now parses the certificate here — which is where rcgen was reading them
 # from anyway. Kept in step with rcgen's own x509-parser to avoid two copies.
 x509-parser = "0.18"
-hickory-server = "0.24"
+hickory-server = "0.26"
 hickory-proto = "0.24"
 
 # Runtime. `buildkit` brings the gRPC session a BuildKit build runs over;
