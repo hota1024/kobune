@@ -404,10 +404,13 @@ fn transfer_spans(transfer: &Transfer) -> Vec<Span<'static>> {
 fn bytes(count: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
 
-    if count >= MB {
-        // One decimal: the digit after it changes faster than the screen
-        // is repainted, and reads as noise.
+    // One decimal throughout: the digit after it changes faster than the
+    // screen is repainted, and reads as noise.
+    if count >= GB {
+        format!("{}.{} GB", count / GB, (count % GB) * 10 / GB)
+    } else if count >= MB {
         format!("{}.{} MB", count / MB, (count % MB) * 10 / MB)
     } else {
         format!("{} kB", count / KB)
@@ -697,6 +700,9 @@ mod tests {
         assert_eq!(bytes(4096), "4 kB");
         assert_eq!(bytes(1024 * 1024), "1.0 MB");
         assert_eq!(bytes(7_654_321), "7.2 MB");
+        // A build context is what gets this far. `3420.5 MB` would not
+        // read as a mistake; `3.1 GB` does.
+        assert_eq!(bytes(3_342_664_218), "3.1 GB");
     }
 
     #[test]

@@ -31,6 +31,48 @@ impl RuntimeError {
             message: message.to_string(),
         }
     }
+
+    /// [`RuntimeError::failed`], keeping what is behind the error as well
+    /// as the error. See [`with_causes`].
+    pub fn caused_by(
+        operation: impl Into<String>,
+        err: &(dyn std::error::Error + 'static),
+    ) -> Self {
+        Self::Failed {
+            operation: operation.into(),
+            message: with_causes(err),
+        }
+    }
+}
+
+/// An error, and everything behind it.
+///
+/// **`Display` is only ever the top of the chain**, and the libraries under
+/// this one keep the answer at the bottom of it. `hyper`'s client prints
+/// `client error (SendRequest)` — literally `write!(f, "client error
+/// ({:?})", self.kind)` — and hangs the `Invalid argument (os error 22)`
+/// that caused it off `source()`. `bollard` wraps that in `Error in the
+/// hyper legacy client: {err}`, passing the useless half along and dropping
+/// the rest. A build failing on a context too large to write reported those
+/// seven words and nothing that led anywhere, and no amount of retrying was
+/// going to add to them.
+///
+/// A cause that only repeats what wrapped it is left out, so the common
+/// `#[error("{0}")]` wrapper does not say everything twice.
+pub fn with_causes(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = err.to_string();
+    let mut cause = err.source();
+
+    while let Some(next) = cause {
+        let text = next.to_string();
+        if !text.is_empty() && !message.ends_with(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        cause = next.source();
+    }
+
+    message
 }
 
 impl From<RuntimeError> for ApiError {
@@ -72,6 +114,51 @@ mod tests {
             "starting it fixes this, so retrying is worth it"
         );
         assert!(api.hint.expect("has a hint").contains("Docker"));
+    }
+
+    /// A stand-in for the two-deep wrapping `bollard` does over `hyper`.
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|next| next as _)
+        }
+    }
+
+    #[test]
+    fn an_error_carries_what_is_behind_it() {
+        let err = Layer(
+            "Error in the hyper legacy client",
+            Some(Box::new(Layer(
+                "client error (SendRequest)",
+                Some(Box::new(Layer("Invalid argument (os error 22)", None))),
+            ))),
+        );
+
+        assert_eq!(
+            with_causes(&err),
+            "Error in the hyper legacy client: client error (SendRequest): \
+             Invalid argument (os error 22)"
+        );
+    }
+
+    #[test]
+    fn a_cause_that_only_repeats_its_wrapper_is_left_out() {
+        // What `#[error("{0}")]` produces, and saying it twice helps
+        // nobody.
+        let err = Layer(
+            "cannot reach docker",
+            Some(Box::new(Layer("cannot reach docker", None))),
+        );
+
+        assert_eq!(with_causes(&err), "cannot reach docker");
     }
 
     #[test]

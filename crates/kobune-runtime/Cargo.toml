@@ -23,6 +23,9 @@ bollard.workspace = true
 # RFC 3339 — see `terminal_modes`.
 chrono.workspace = true
 tar = "0.4"
+# The build context leaves in chunks of `Bytes`, which is what the body of
+# the request to the daemon is made of — see `stream_context`.
+bytes.workspace = true
 shell-words.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

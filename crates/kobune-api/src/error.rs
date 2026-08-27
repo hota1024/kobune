@@ -108,6 +108,27 @@ impl ErrorCode {
     pub fn is_retryable(self) -> bool {
         matches!(self, Self::RuntimeUnavailable | Self::RuntimeFailed)
     }
+
+    /// Whether this is the caller asking for something that is not there,
+    /// rather than Kobune failing to do something it should have done.
+    ///
+    /// **What separates a log worth reading from a log nobody reads.**
+    /// `kobune logs` on a service that was never started is an answer, not
+    /// an incident; logging it at the same level as a build that fell over
+    /// makes `ERROR` the ordinary severity of the file and leaves nothing
+    /// to search for.
+    pub fn is_the_callers(self) -> bool {
+        matches!(
+            self,
+            Self::NotFound
+                | Self::AlreadyExists
+                | Self::ConfigNotFound
+                | Self::InvalidConfig
+                | Self::NotAGitRepository
+                | Self::Unsupported
+                | Self::Cancelled
+        )
+    }
 }
 
 impl From<kobune_core::Error> for ApiError {
@@ -148,6 +169,34 @@ impl From<kobune_core::Error> for ApiError {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// The three that mean Kobune could not do its job, and which are
+    /// therefore the only ones worth an `ERROR` in the daemon's log.
+    #[test]
+    fn a_failure_of_ours_is_told_from_a_request_we_could_not_answer() {
+        for code in [
+            ErrorCode::RuntimeUnavailable,
+            ErrorCode::RuntimeFailed,
+            ErrorCode::Internal,
+        ] {
+            assert!(!code.is_the_callers(), "{code:?} is ours to answer for");
+        }
+
+        for code in [
+            ErrorCode::NotFound,
+            ErrorCode::AlreadyExists,
+            ErrorCode::ConfigNotFound,
+            ErrorCode::InvalidConfig,
+            ErrorCode::NotAGitRepository,
+            ErrorCode::Unsupported,
+            ErrorCode::Cancelled,
+        ] {
+            assert!(
+                code.is_the_callers(),
+                "{code:?} is an answer, not an incident"
+            );
+        }
+    }
 
     #[test]
     fn exit_codes_are_distinct() {

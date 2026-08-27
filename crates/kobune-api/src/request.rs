@@ -275,6 +275,36 @@ fn yes() -> bool {
 }
 
 impl Request {
+    /// What this request is called on the wire.
+    ///
+    /// The same word `op` carries, so a line in `kobuned.log` and a line in
+    /// a protocol trace name the same thing. Nothing else about the request
+    /// belongs in a log: the fields carry paths, branch names and the
+    /// environment a service is given.
+    pub fn op(&self) -> &'static str {
+        match self {
+            Self::Ping => "ping",
+            Self::Shutdown => "shutdown",
+            Self::Purge { .. } => "purge",
+            Self::Doctor { .. } => "doctor",
+            Self::Ls { .. } => "ls",
+            Self::New { .. } => "new",
+            Self::Rm { .. } => "rm",
+            Self::Up { .. } => "up",
+            Self::Down { .. } => "down",
+            Self::Status { .. } => "status",
+            Self::Logs { .. } => "logs",
+            Self::Exec { .. } => "exec",
+            Self::EnvList { .. } => "env_list",
+            Self::EnvSet { .. } => "env_set",
+            Self::EnvUnset { .. } => "env_unset",
+            Self::ConfigShow { .. } => "config_show",
+            Self::TunnelEnable { .. } => "tunnel_enable",
+            Self::TunnelDisable { .. } => "tunnel_disable",
+            Self::TunnelStatus { .. } => "tunnel_status",
+        }
+    }
+
     /// Whether this is a long-running operation that emits progress.
     ///
     /// Clients show a progress indicator when this is true.
@@ -338,6 +368,107 @@ mod tests {
         match request {
             Request::New { start, .. } => assert!(start, "start defaults to true"),
             other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    /// **The name in the log is the name on the wire**, and the two are
+    /// written in different places — one a match arm, the other a serde
+    /// attribute. A variant added to one and not the other would leave a
+    /// log line naming a request nobody can find in a trace.
+    #[test]
+    fn every_request_is_logged_under_the_name_it_travels_by() {
+        let target = Target::new(PathBuf::from("/repo"));
+
+        // Every variant, because the drift this is here to catch is a
+        // variant added to one side and not the other — and six of nineteen
+        // would have caught it only by luck.
+        for request in [
+            Request::Ping,
+            Request::Shutdown,
+            Request::Purge { dry_run: true },
+            Request::Doctor {
+                target: target.clone(),
+            },
+            Request::Ls {
+                target: target.clone(),
+                all_projects: false,
+            },
+            Request::New {
+                target: target.clone(),
+                branch: "x".into(),
+                base: None,
+                path: None,
+                start: true,
+                rebuild: false,
+            },
+            Request::Rm {
+                target: target.clone(),
+                force: false,
+            },
+            Request::Up {
+                target: target.clone(),
+                services: vec![],
+                rebuild: false,
+            },
+            Request::Down {
+                target: target.clone(),
+                services: vec![],
+                all: false,
+            },
+            Request::Status {
+                target: target.clone(),
+            },
+            Request::Logs {
+                target: target.clone(),
+                services: vec![],
+                follow: false,
+                tail: None,
+                attach: None,
+            },
+            Request::Exec {
+                target: target.clone(),
+                service: "web".into(),
+                command: vec![],
+                fresh: false,
+                workdir: None,
+            },
+            Request::EnvList {
+                target: target.clone(),
+                reveal: false,
+                service: None,
+            },
+            Request::EnvSet {
+                target: target.clone(),
+                scope: kobune_core::EnvScope::Workspace,
+                key: "K".into(),
+                value: "V".into(),
+            },
+            Request::EnvUnset {
+                target: target.clone(),
+                scope: kobune_core::EnvScope::Workspace,
+                key: "K".into(),
+            },
+            Request::ConfigShow {
+                target: target.clone(),
+                all: false,
+            },
+            Request::TunnelEnable {
+                target: target.clone(),
+                provider: None,
+                domain: None,
+                public: false,
+            },
+            Request::TunnelStatus {
+                target: target.clone(),
+            },
+            Request::TunnelDisable { target },
+        ] {
+            let wire = serde_json::to_value(&request).expect("serializes");
+            assert_eq!(
+                wire["op"].as_str(),
+                Some(request.op()),
+                "{request:?} is logged under a different name than it travels by"
+            );
         }
     }
 

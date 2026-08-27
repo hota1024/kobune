@@ -778,6 +778,10 @@ was to shell out to `docker build`, which trades the dependency for a CLI that
 need not be installed beside a daemon Kobune can already reach over its socket,
 and for parsing output written to be read rather than consumed.
 
+It has since paid for itself twice. Which version of `bollard` is in the tree
+also decides what shapes of request body reach the daemon, and that is what
+the next section turns out to rest on.
+
 #### The `.dockerignore` is Kobune's to read
 
 **Nothing else will read it.** The daemon has never done this filtering:
@@ -786,8 +790,7 @@ out of the tar it uploads, and one that arrives *inside* the tar is one more
 file in the context. Kobune is the client here, so `dockerignore.rs` is the
 client's half — read at the root of the context, and the walk that packs the
 tar skips what it names. Until it did, a repository that asked for its
-`node_modules` to be left out had it read into memory, sent, and picked up by
-`COPY . .`.
+`node_modules` to be left out had it read, sent, and picked up by `COPY . .`.
 
 The rules are close to `.gitignore` and not the same, which is what makes
 borrowing an implementation the wrong move. **A pattern is anchored to the root
@@ -821,6 +824,50 @@ would also mean writing the tar headers by hand, because `tar`'s own path for
 a special file names the entry after its absolute location on disk. A test
 pins what the walk used to do, so the reason is not rediscovered by whoever
 tidies it next.
+
+#### The context is streamed, because one write is one write
+
+The context was packed into memory and handed to the Docker API whole, which
+is the obvious reading of "the API takes a tar". It is also a limit nobody set
+deliberately, three layers down and invisible from here.
+
+One buffer becomes one body frame, one body frame becomes one entry in the
+vector `writev(2)` is given, and Darwin's `writev` refuses a vector whose
+lengths sum past what an `int` holds. A build context over 2 GiB therefore
+failed before the daemon had read a byte of it, with `EINVAL` — and, because
+`hyper` prints `client error (SendRequest)` and keeps the reason in the layer
+below, what a person saw was seven words that led nowhere. Linux short-writes
+where macOS refuses, so the same context built there.
+
+**`docker build` never met the limit**, which is why the same Dockerfile built
+on the command line and failed through Kobune. It does not hold the context
+either: it sends it as it walks. So does this now — the tar goes into a bounded
+channel in chunks, and the request reads from the channel. Three things follow
+from that, and only the first is the bug:
+
+- No frame is large enough to reach the limit, whatever the context.
+- The daemon holds a chunk rather than a worktree. The repository that found
+  this had `kobuned` holding 3.34 GB across 9,563 files, on every build.
+- A build nobody is waiting for stops packing, because the packer blocks on a
+  channel nobody is reading.
+
+Two costs came with it, both worth naming. **A walk that fails part way can no
+longer be reported before the request goes out**, so it ends the request body
+with the error rather than letting a tar that simply stops be built from —
+otherwise the daemon reports its opinion of a truncated archive, which never
+names the file that could not be read. And **the walk now happens inside the
+request**, which the API client bounds; two minutes was ample for copying an
+already-packed tar to a socket and is not ample for reading a large worktree
+off a cold cache, so a build is given an hour and everything else keeps the two
+minutes.
+
+**The size of the context is now said out loud**, which is the other half of
+the same story. `docker build` prints it and Kobune did not, so a
+`.dockerignore` that had quietly stopped covering a directory was invisible
+until a build failed for a reason that looked unrelated. It is reported as it
+is sent, and past 512 MiB it is called out — not refused, since a context that
+size works now, but a context that size is nearly always something nobody
+meant to send.
 
 #### A running container can be stale too (found while building this)
 

@@ -16,18 +16,19 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bollard::Docker;
-use bollard::container::{
-    AttachContainerOptions, Config, CreateContainerOptions, ListContainersOptions, LogOutput,
-    LogsOptions, RemoveContainerOptions, ResizeContainerTtyOptions, StartContainerOptions,
-    StopContainerOptions,
-};
-use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::image::{BuildImageOptions, BuilderVersion, CreateImageOptions};
+use bollard::container::LogOutput;
+use bollard::exec::StartExecResults;
 use bollard::models::{
-    BuildInfoAux, ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
+    BuildInfoAux, ContainerCreateBody, ContainerSummary, ContainerSummaryStateEnum,
+    EndpointSettings, ExecConfig, HostConfig, Mount, MountType, NetworkConnectRequest,
+    NetworkCreateRequest, NetworkingConfig, PortBinding, VolumeCreateRequest,
 };
-use bollard::network::{ConnectNetworkOptions, CreateNetworkOptions, ListNetworksOptions};
-use bollard::volume::ListVolumesOptions;
+use bollard::query_parameters::{
+    AttachContainerOptions, BuildImageOptions, BuilderVersion, CreateContainerOptions,
+    CreateImageOptions, ListContainersOptions, ListNetworksOptions, ListVolumesOptions,
+    LogsOptions, RemoveContainerOptions, RemoveVolumeOptions, ResizeContainerTTYOptions,
+    StopContainerOptions, WaitContainerOptions,
+};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use kobune_api::OutputStream;
@@ -63,7 +64,7 @@ impl crate::health::CommandProbe for DockerCommandProbe {
             .docker
             .create_exec(
                 &self.container,
-                CreateExecOptions {
+                ExecConfig {
                     cmd: Some(command.to_vec()),
                     // The output is not read, only the status, but Docker
                     // needs somewhere to put it.
@@ -110,13 +111,15 @@ impl Resize for DockerTerminal {
         self.docker
             .resize_container_tty(
                 &self.container,
-                ResizeContainerTtyOptions {
-                    width: window.cols,
-                    height: window.rows,
+                ResizeContainerTTYOptions {
+                    w: window.cols as i32,
+                    h: window.rows as i32,
                 },
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("resizing {}'s terminal", self.service), e))
+            .map_err(|e| {
+                RuntimeError::caused_by(format!("resizing {}'s terminal", self.service), &e)
+            })
     }
 }
 
@@ -131,8 +134,59 @@ const BUILD_CONTEXT_LINES: usize = 12;
 /// Prefixed so it cannot collide with a real file in the context.
 const DOCKERFILE_ENTRY: &str = ".kobune-dockerfile";
 
+/// How much of the build context goes into one frame of the request body.
+///
+/// **What matters is that there is a bound at all.** `hyper` collects body
+/// frames and hands them to `writev(2)` as one vector, and macOS refuses a
+/// vector whose lengths sum past what an `int` holds — so a context of one
+/// 3.3 GB frame failed the request outright, with `EINVAL` and no build.
+/// See [`pack_context`].
+///
+/// 128 KiB is under a third of what `hyper` will buffer before writing, so
+/// several frames still leave in one call and the bound costs nothing; and
+/// small enough that what is waiting on the socket is a couple of megabytes
+/// rather than the worktree.
+const CONTEXT_CHUNK: usize = 128 * 1024;
+
+/// How long a request has to be answered before it is given up on.
+///
+/// `bollard`'s own default, written out because a build does not use it and
+/// two connections that disagree about where the daemon is would be worse
+/// than one that says what it wants.
+const REQUEST_TIMEOUT_SECS: u64 = 120;
+
+/// How long a build has to hand its context over and hear back.
+///
+/// See [`DockerRuntime::connect`] for why a build is not held to the two
+/// minutes everything else is.
+const BUILD_TIMEOUT_SECS: u64 = 60 * 60;
+
+/// How many chunks of context may be waiting for the socket.
+///
+/// The packer blocks once this many are queued, which is what keeps memory
+/// flat however large the context turns out to be.
+const CHUNKS_IN_FLIGHT: usize = 16;
+
+/// How much context goes by between one progress line and the next.
+///
+/// **Not a line per chunk.** Every one is an event fanned out to whoever is
+/// watching, and a 3 GB context is twenty-five thousand chunks. This is
+/// often enough to watch a large context move and silent for every context
+/// that is not a problem.
+const CONTEXT_STRIDE: u64 = 64 * 1024 * 1024;
+
+/// The size of build context that is worth remarking on.
+///
+/// **Not a limit.** The context streams, so a large one works. It is that a
+/// context this size is almost always something nobody meant to send: the
+/// repository that prompted all this named `node_modules` and `.next` in
+/// its `.dockerignore` and not the two directories that held 3.34 GB
+/// between them, and nothing said so — the build simply failed. `docker
+/// build` prints the size of what it sends, and this is the reason to.
+const A_CONTEXT_WORTH_MENTIONING: u64 = 512 * 1024 * 1024;
+
 /// How many seconds a stop waits before it escalates to SIGKILL.
-const STOP_TIMEOUT_SECS: i64 = 10;
+const STOP_TIMEOUT_SECS: i32 = 10;
 
 /// Exit codes that mean "asked to stop" rather than "fell over".
 ///
@@ -224,6 +278,8 @@ fn is_buildkit_refusal(error: &str) -> bool {
 
 pub struct DockerRuntime {
     docker: Docker,
+    /// The same daemon, on a longer leash. See [`DockerRuntime::connect`].
+    builds: Docker,
     /// The services Kobune itself stopped. See [`DockerRuntime::stop`].
     asked_to_stop: Mutex<HashSet<ServiceKey>>,
     /// One lock per network name, held across
@@ -252,17 +308,46 @@ impl DockerRuntime {
     /// Nothing is sent yet, so this succeeds even with Docker down. Actual
     /// reachability is [`Runtime::probe`]'s business.
     pub fn connect() -> Result<Self> {
-        let docker =
-            Docker::connect_with_local_defaults().map_err(|err| RuntimeError::Unavailable {
-                runtime: RUNTIME_ID.to_string(),
-                message: err.to_string(),
-            })?;
+        // One answer about where the daemon is, used twice. Two
+        // connections that resolved it separately could reach different
+        // daemons, and a build talking to one while everything else talks
+        // to another is not a failure anybody would read correctly.
+        let socket = socket();
 
-        Ok(Self::with_client(docker))
+        let connect = |timeout| {
+            Docker::connect_with_local(&socket, timeout, bollard::API_DEFAULT_VERSION).map_err(
+                |err: bollard::errors::Error| RuntimeError::Unavailable {
+                    runtime: RUNTIME_ID.to_string(),
+                    message: crate::error::with_causes(&err),
+                },
+            )
+        };
+
+        let docker = connect(REQUEST_TIMEOUT_SECS)?;
+
+        // **A build is given longer than everything else.** The two-minute
+        // bound is on the whole request, and for a build that covers the
+        // upload: the daemon holds its own output back until it has read
+        // the context to the end, so nothing comes back until the last
+        // byte has gone. That was survivable while the context was packed
+        // into memory first and the request only copied it to the socket.
+        // It is not now that the walk of the worktree happens inside the
+        // request — a large context on a cold cache is minutes of reading,
+        // and giving up on a build that is making progress is worse than
+        // waiting for it. The bound is still there: what it is for is a
+        // daemon that has wedged, and an hour says that as well as two
+        // minutes does.
+        let builds = connect(BUILD_TIMEOUT_SECS)?;
+
+        Ok(Self {
+            builds,
+            ..Self::with_client(docker)
+        })
     }
 
     pub fn with_client(docker: Docker) -> Self {
         Self {
+            builds: docker.clone(),
             docker,
             asked_to_stop: Mutex::new(HashSet::new()),
             network_locks: Mutex::new(HashMap::new()),
@@ -304,10 +389,10 @@ impl DockerRuntime {
             .clone()
     }
 
-    fn unavailable(err: impl std::fmt::Display) -> RuntimeError {
+    fn unavailable(err: bollard::errors::Error) -> RuntimeError {
         RuntimeError::Unavailable {
             runtime: RUNTIME_ID.to_string(),
-            message: err.to_string(),
+            message: crate::error::with_causes(&err),
         }
     }
 
@@ -342,9 +427,11 @@ impl DockerRuntime {
 
         let existing = self
             .docker
-            .list_networks(Some(ListNetworksOptions { filters }))
+            .list_networks(Some(ListNetworksOptions {
+                filters: Some(filters),
+            }))
             .await
-            .map_err(|e| RuntimeError::failed("listing networks", e))?;
+            .map_err(|e| RuntimeError::caused_by("listing networks", &e))?;
 
         // The filter is a prefix match, so only an exact name counts.
         if existing
@@ -363,14 +450,14 @@ impl DockerRuntime {
         network_labels.insert(labels::WORKSPACE.to_string(), key.workspace.clone());
 
         self.docker
-            .create_network(CreateNetworkOptions {
+            .create_network(NetworkCreateRequest {
                 name: name.clone(),
-                driver: "bridge".to_string(),
-                labels: network_labels,
+                driver: Some("bridge".to_string()),
+                labels: Some(network_labels),
                 ..Default::default()
             })
             .await
-            .map_err(|e| RuntimeError::failed("creating the network", e))?;
+            .map_err(|e| RuntimeError::caused_by("creating the network", &e))?;
 
         Ok(name)
     }
@@ -409,32 +496,7 @@ impl DockerRuntime {
 
         events.step_started("build", &label);
 
-        let pack = || -> Result<(Vec<u8>, String)> {
-            let packed = || -> std::io::Result<(Vec<u8>, String)> {
-                // Worked out before the packing rather than after, because
-                // `.dockerignore` has to be told which file not to leave out.
-                let inside = build
-                    .dockerfile
-                    .strip_prefix(&build.context)
-                    .ok()
-                    .map(|relative| relative.to_string_lossy().to_string());
-
-                let dockerfile = match &inside {
-                    Some(path) => Dockerfile::Inside(path),
-                    None => Dockerfile::Outside(&build.dockerfile),
-                };
-
-                Ok((
-                    pack_context(&build.context, dockerfile)?,
-                    dockerfile.entry(),
-                ))
-            };
-
-            packed().map_err(|err| {
-                events.step_failed("build", &label, err.to_string());
-                RuntimeError::failed(format!("packing the build context for {}", build.tag), err)
-            })
-        };
+        let dockerfile = Dockerfile::of(build);
 
         // **BuildKit first.** It is what `docker build` itself has used
         // since Docker 23, so it is what the Dockerfiles people write
@@ -442,10 +504,8 @@ impl DockerRuntime {
         // frontend are all hard errors under the legacy builder — which is
         // deprecated, and on its way out of the daemon altogether.
         if !self.buildkit_ruled_out() {
-            let (context, dockerfile) = pack()?;
-
             match self
-                .run_build(build, dockerfile, context, true, &label, events)
+                .run_build(build, &dockerfile, true, &label, events)
                 .await
             {
                 Ok(()) => {
@@ -466,9 +526,12 @@ impl DockerRuntime {
             }
         }
 
-        let (context, dockerfile) = pack()?;
-
-        self.run_build(build, dockerfile, context, false, &label, events)
+        // **Packed a second time**, because a body that has been sent
+        // cannot be rewound and the refusal only arrives once the request
+        // has gone. It costs a second walk of the worktree and nothing
+        // resident, and it happens at most once per daemon: the answer is
+        // remembered above.
+        self.run_build(build, &dockerfile, false, &label, events)
             .await
             .map_err(|failure| match failure {
                 BuildFailure::Failed(err) => err,
@@ -499,20 +562,21 @@ impl DockerRuntime {
     async fn run_build(
         &self,
         build: &BuildSpec,
-        dockerfile: String,
-        context: Vec<u8>,
+        dockerfile: &Dockerfile,
         buildkit: bool,
         label: &str,
         events: &EventSink,
     ) -> std::result::Result<(), BuildFailure> {
         let options = BuildImageOptions {
-            dockerfile,
-            t: build.tag.clone(),
-            buildargs: build
-                .args
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            dockerfile: dockerfile.entry(),
+            t: Some(build.tag.clone()),
+            buildargs: Some(
+                build
+                    .args
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
             // Without this, an intermediate container is left behind for
             // every failed build.
             rm: true,
@@ -531,13 +595,19 @@ impl DockerRuntime {
             ..Default::default()
         };
 
-        let mut stream = self.docker.build_image(options, None, Some(context.into()));
+        let (chunks, packing) = stream_context(&build.context, dockerfile, label, events);
+        let mut packing = Some(packing);
+
+        let mut stream =
+            self.builds
+                .build_image(options, None, Some(bollard::body_try_stream(chunks)));
 
         // The last few lines of output, kept so a failure can say what the
         // build was doing. Docker's own error is often just "exit code 3",
         // and the command that produced it is the part worth reading.
         let mut recent: VecDeque<String> = VecDeque::with_capacity(BUILD_CONTEXT_LINES);
         let mut progress = crate::buildkit::Progress::new();
+        let mut failed: Option<String> = None;
 
         while let Some(item) = stream.next().await {
             let failure = match item {
@@ -570,45 +640,94 @@ impl DockerRuntime {
 
                     // A failing RUN can come back in-band rather than as a
                     // stream error, so both paths have to be handled.
-                    info.error
+                    //
+                    // **The message is optional and the failure is not.**
+                    // `bollard` turns a detail that carries one into a
+                    // stream error, so only the wordless kind reaches here
+                    // — and reading "no message" as "no failure" would
+                    // report a build that died as one that finished.
+                    info.error_detail.map(|detail| {
+                        detail.message.unwrap_or_else(|| {
+                            "the daemon reported a failure and did not say what it was".to_string()
+                        })
+                    })
                 }
                 // bollard folds an in-band failure into this, but its
                 // Display drops the message, leaving "Docker stream error"
                 // and nothing else. Dig the real one out.
                 Err(bollard::errors::Error::DockerStreamError { error }) => Some(error),
-                Err(err) => Some(err.to_string()),
+                // **Everything behind it, not just the top.** A build
+                // over a context the socket would not take reported
+                // `client error (SendRequest)` and stopped there, because
+                // that is all `Display` says and the reason lives one link
+                // down. See [`crate::error::with_causes`].
+                Err(err) => Some(crate::error::with_causes(&err)),
             };
 
-            let Some(error) = failure else {
-                continue;
-            };
-            let error = error.trim();
-
-            // **A refusal is not a failure.** A daemon with BuildKit turned
-            // off says so before the build starts, and the caller answers
-            // it by building again with the other builder. Once output has
-            // been produced the build was running, and whatever it says
-            // about BuildKit is the build's own to say.
-            if buildkit && recent.is_empty() && is_buildkit_refusal(error) {
-                return Err(BuildFailure::NoBuildKit(error.to_string()));
+            if let Some(error) = failure {
+                failed = Some(error.trim().to_string());
+                break;
             }
+        }
 
+        // **The request goes before the packer is asked about itself.**
+        // Dropping it drops the channel the walk is feeding, so a walk
+        // still going stops at its next chunk. Asking first would instead
+        // wait out the rest of a worktree nobody is going to build now —
+        // minutes of `sending the build context` after the build had
+        // already failed.
+        drop(stream);
+
+        // **A refusal is not a failure.** A daemon with BuildKit turned off
+        // says so before the build starts, and the caller answers it by
+        // building again with the other builder. Once output has been
+        // produced the build was running, and whatever it says about
+        // BuildKit is the build's own to say.
+        if let Some(error) = failed.as_deref()
+            && buildkit
+            && recent.is_empty()
+            && is_buildkit_refusal(error)
+        {
+            // Waited out before the caller packs the same worktree again.
+            // A `spawn_blocking` task cannot be cancelled, so a walk left
+            // running would count its way up a step the second attempt is
+            // counting from zero on, onto one line.
+            packing_failure(&mut packing).await;
+            return Err(BuildFailure::NoBuildKit(error.to_string()));
+        }
+
+        // **What the packer said comes first, when it said anything.** A
+        // walk that dies half way ends the body early, and what comes back
+        // is the daemon's opinion of a tar that stopped — or nothing at
+        // all, when what arrived was enough to build something. Neither
+        // names the file that could not be read.
+        let message = match (packing_failure(&mut packing).await, failed) {
+            (Some(packed), _) => Some(format!(
+                "packing the build context for {}: {packed}",
+                build.tag
+            )),
             // What the step that failed had printed, when BuildKit named
             // one; otherwise the tail of the build as a whole, which is all
             // the legacy builder can offer and all a silent step leaves.
-            let tail = progress
-                .failure_tail()
-                .unwrap_or_else(|| recent.iter().cloned().collect());
+            (None, Some(error)) => {
+                let tail = progress
+                    .failure_tail()
+                    .unwrap_or_else(|| recent.iter().cloned().collect());
 
-            let message = with_recent_output(error, &tail);
-            events.step_failed("build", label, message.clone());
-            return Err(BuildFailure::Failed(RuntimeError::failed(
-                format!("building {}", build.tag),
-                message,
-            )));
-        }
+                Some(with_recent_output(&error, &tail))
+            }
+            (None, None) => None,
+        };
 
-        Ok(())
+        let Some(message) = message else {
+            return Ok(());
+        };
+
+        events.step_failed("build", label, message.clone());
+        Err(BuildFailure::Failed(RuntimeError::failed(
+            format!("building {}", build.tag),
+            message,
+        )))
     }
 
     /// Pulls the image unless it is already local.
@@ -622,7 +741,7 @@ impl DockerRuntime {
 
         let mut stream = self.docker.create_image(
             Some(CreateImageOptions {
-                from_image: image,
+                from_image: Some(image.to_string()),
                 ..Default::default()
             }),
             None,
@@ -637,10 +756,11 @@ impl DockerRuntime {
                     }
                 }
                 Err(err) => {
-                    events.step_failed("pull", format!("pulling image {image}"), err.to_string());
+                    let message = crate::error::with_causes(&err);
+                    events.step_failed("pull", format!("pulling image {image}"), message.clone());
                     return Err(RuntimeError::ImageUnavailable {
                         image: image.to_string(),
-                        message: err.to_string(),
+                        message,
                     });
                 }
             }
@@ -679,13 +799,13 @@ impl DockerRuntime {
         }
 
         self.docker
-            .create_volume(bollard::volume::CreateVolumeOptions {
-                name: full.clone(),
-                labels: volume_labels,
+            .create_volume(VolumeCreateRequest {
+                name: Some(full.clone()),
+                labels: Some(volume_labels),
                 ..Default::default()
             })
             .await
-            .map_err(|e| RuntimeError::failed("creating the volume", e))?;
+            .map_err(|e| RuntimeError::caused_by("creating the volume", &e))?;
 
         Ok(full)
     }
@@ -717,8 +837,8 @@ impl DockerRuntime {
                 docker
                     .wait_container(
                         &id,
-                        Some(bollard::container::WaitContainerOptions {
-                            condition: "next-exit",
+                        Some(WaitContainerOptions {
+                            condition: "next-exit".to_string(),
                         }),
                     )
                     .next()
@@ -730,21 +850,21 @@ impl DockerRuntime {
             .docker
             .attach_container(
                 id,
-                Some(AttachContainerOptions::<String> {
-                    stream: Some(true),
-                    stdout: Some(true),
-                    stderr: Some(true),
-                    logs: Some(true),
+                Some(AttachContainerOptions {
+                    stream: true,
+                    stdout: true,
+                    stderr: true,
+                    logs: true,
                     ..Default::default()
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed("attaching to the throwaway container", e))?;
+            .map_err(|e| RuntimeError::caused_by("attaching to the throwaway container", &e))?;
 
         self.docker
-            .start_container(id, None::<StartContainerOptions<String>>)
+            .start_container(id, None)
             .await
-            .map_err(|e| RuntimeError::failed("starting the throwaway container", e))?;
+            .map_err(|e| RuntimeError::caused_by("starting the throwaway container", &e))?;
 
         let mut output = attached.output;
         while let Some(chunk) = output.next().await {
@@ -781,7 +901,7 @@ impl DockerRuntime {
             Ok(Some(Ok(response))) => response.status_code,
             Ok(Some(Err(bollard::errors::Error::DockerContainerWaitError { code, .. }))) => code,
             Ok(Some(Err(err))) => {
-                return Err(RuntimeError::failed("waiting for the throwaway", err));
+                return Err(RuntimeError::caused_by("waiting for the throwaway", &err));
             }
             Ok(None) => {
                 return Err(RuntimeError::failed(
@@ -789,7 +909,7 @@ impl DockerRuntime {
                     "Docker closed the connection without reporting an exit code",
                 ));
             }
-            Err(err) => return Err(RuntimeError::failed("waiting for the throwaway", err)),
+            Err(err) => return Err(RuntimeError::caused_by("waiting for the throwaway", &err)),
         };
 
         Ok(ExecOutcome {
@@ -820,7 +940,9 @@ impl DockerRuntime {
 
         let listed = match self
             .docker
-            .list_volumes(Some(ListVolumesOptions { filters }))
+            .list_volumes(Some(ListVolumesOptions {
+                filters: Some(filters),
+            }))
             .await
         {
             Ok(listed) => listed,
@@ -831,7 +953,11 @@ impl DockerRuntime {
         };
 
         for volume in listed.volumes.unwrap_or_default() {
-            match self.docker.remove_volume(&volume.name, None).await {
+            match self
+                .docker
+                .remove_volume(&volume.name, None::<RemoveVolumeOptions>)
+                .await
+            {
                 Ok(()) => events.debug(format!("removed volume {}", volume.name)),
                 Err(err) => {
                     events.debug(format!("volume {} was not removed: {err}", volume.name));
@@ -856,7 +982,7 @@ impl DockerRuntime {
             .docker
             .list_containers(Some(ListContainersOptions {
                 all: true,
-                filters,
+                filters: Some(filters),
                 ..Default::default()
             }))
             .await
@@ -938,11 +1064,11 @@ impl DockerRuntime {
             .docker
             .attach_container(
                 id,
-                Some(AttachContainerOptions::<String> {
-                    stream: Some(true),
-                    stdout: Some(true),
-                    stderr: Some(true),
-                    logs: Some(false),
+                Some(AttachContainerOptions {
+                    stream: true,
+                    stdout: true,
+                    stderr: true,
+                    logs: false,
                     ..Default::default()
                 }),
             )
@@ -1071,7 +1197,9 @@ impl DockerRuntime {
         // An empty host port lets Docker pick a free one. Bound to
         // 127.0.0.1 so it never reaches the LAN.
         let mut port_bindings = HashMap::new();
-        let mut exposed_ports = HashMap::new();
+        // A list of `"3000/tcp"`, where the API once took a map keyed by
+        // the same string with nothing behind it.
+        let mut exposed_ports: Vec<String> = Vec::new();
         if let Some(port) = port {
             let key = format!("{port}/tcp");
             port_bindings.insert(
@@ -1081,13 +1209,13 @@ impl DockerRuntime {
                     host_port: Some(String::new()),
                 }]),
             );
-            exposed_ports.insert(key, HashMap::new());
+            exposed_ports.push(key);
         }
 
         let mut mounts = Vec::new();
         if let Some(SourceMount { host, target }) = &spec.source_mount {
             mounts.push(Mount {
-                typ: Some(MountTypeEnum::BIND),
+                typ: Some(MountType::BIND),
                 source: Some(host.to_string_lossy().to_string()),
                 target: Some(target.clone()),
                 ..Default::default()
@@ -1106,7 +1234,7 @@ impl DockerRuntime {
                         .ensure_volume(&spec.key.workspace, name, *scope)
                         .await?;
                     mounts.push(Mount {
-                        typ: Some(MountTypeEnum::VOLUME),
+                        typ: Some(MountType::VOLUME),
                         source: Some(full),
                         target: Some(target.clone()),
                         read_only: Some(*read_only),
@@ -1119,7 +1247,7 @@ impl DockerRuntime {
                     read_only,
                 } => {
                     mounts.push(Mount {
-                        typ: Some(MountTypeEnum::BIND),
+                        typ: Some(MountType::BIND),
                         source: Some(source.to_string_lossy().to_string()),
                         target: Some(target.clone()),
                         read_only: Some(*read_only),
@@ -1145,7 +1273,7 @@ impl DockerRuntime {
             },
         );
 
-        let config = Config {
+        let config = ContainerCreateBody {
             image: Some(spec.image.clone()),
             // Both halves, or neither. A terminal with no stdin is one the
             // program can draw on but nobody can answer, which is the half
@@ -1198,8 +1326,8 @@ impl DockerRuntime {
                 },
                 ..Default::default()
             }),
-            networking_config: Some(bollard::container::NetworkingConfig {
-                endpoints_config: endpoints,
+            networking_config: Some(NetworkingConfig {
+                endpoints_config: Some(endpoints),
             }),
             ..Default::default()
         };
@@ -1208,13 +1336,13 @@ impl DockerRuntime {
             .docker
             .create_container(
                 Some(CreateContainerOptions {
-                    name: name.clone(),
-                    platform: None,
+                    name: Some(name.clone()),
+                    platform: String::new(),
                 }),
                 config,
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("creating container {name}"), e))?;
+            .map_err(|e| RuntimeError::caused_by(format!("creating container {name}"), &e))?;
 
         Ok(created.id)
     }
@@ -1233,7 +1361,7 @@ impl DockerRuntime {
             .docker
             .inspect_container(container_id, None)
             .await
-            .map_err(|e| RuntimeError::failed("inspecting the container", e))?;
+            .map_err(|e| RuntimeError::caused_by("inspecting the container", &e))?;
 
         let bindings = details
             .network_settings
@@ -1271,29 +1399,30 @@ impl DockerRuntime {
             .get(labels::PORT)
             .and_then(|value| value.parse::<u16>().ok());
 
-        // The `docker ps` state is a string.
-        let state = match summary.state.as_deref() {
-            Some("running") => ServiceState::Ready,
-            Some("created" | "restarting") => ServiceState::Starting,
+        use ContainerSummaryStateEnum as DockerState;
+
+        let state = match summary.state {
+            Some(DockerState::RUNNING) => ServiceState::Ready,
+            Some(DockerState::CREATED | DockerState::RESTARTING) => ServiceState::Starting,
             // A stop Kobune asked for is a stop whatever the process made
             // of the signal. `turbo` and `next` catch SIGTERM and exit 1
             // themselves, which is indistinguishable from a crash by the
             // exit code alone — and leaves an idle-stopped service sitting
             // in `failed` until someone reads the logs to find out that
             // nothing is wrong.
-            Some("exited") if stopped_by_us => ServiceState::Stopped,
-            Some("exited") => match crash_code(summary.status.as_deref()) {
+            Some(DockerState::EXITED) if stopped_by_us => ServiceState::Stopped,
+            Some(DockerState::EXITED) => match crash_code(summary.status.as_deref()) {
                 Some(code) => ServiceState::failed(format!(
                     "the container exited with code {code}. \
                      `kobune logs {service}` has the output"
                 )),
                 None => ServiceState::Stopped,
             },
-            Some("dead") => ServiceState::failed(format!(
+            Some(DockerState::DEAD) => ServiceState::failed(format!(
                 "the container is dead. `kobune logs {service}` has whatever it \
                  managed to write"
             )),
-            Some("paused" | "removing") => ServiceState::Stopped,
+            Some(DockerState::PAUSED | DockerState::REMOVING) => ServiceState::Stopped,
             _ => ServiceState::Unknown,
         };
 
@@ -1439,7 +1568,10 @@ impl Runtime for DockerRuntime {
 
             let wrong_terminal = has_terminal != spec.tty;
 
-            if !wrong_image && !wrong_terminal && existing.state.as_deref() == Some("running") {
+            if !wrong_image
+                && !wrong_terminal
+                && existing.state == Some(ContainerSummaryStateEnum::RUNNING)
+            {
                 events.step_skipped(
                     "start",
                     format!("starting {}", spec.name()),
@@ -1472,7 +1604,7 @@ impl Runtime for DockerRuntime {
                     }),
                 )
                 .await
-                .map_err(|e| RuntimeError::failed(format!("removing container {name}"), e))?;
+                .map_err(|e| RuntimeError::caused_by(format!("removing container {name}"), &e))?;
         }
 
         events.step_started("start", format!("starting {}", spec.name()));
@@ -1493,12 +1625,12 @@ impl Runtime for DockerRuntime {
                 .docker
                 .connect_network(
                     &shared,
-                    ConnectNetworkOptions {
+                    NetworkConnectRequest {
                         container: id.clone(),
-                        endpoint_config: EndpointSettings {
+                        endpoint_config: Some(EndpointSettings {
                             aliases: Some(vec![spec.key.service.clone()]),
                             ..Default::default()
-                        },
+                        }),
                     },
                 )
                 .await;
@@ -1511,20 +1643,18 @@ impl Runtime for DockerRuntime {
             self.watch_terminal(&id).await;
         }
 
-        self.docker
-            .start_container(&id, None::<StartContainerOptions<String>>)
-            .await
-            .map_err(|e| {
-                // The watch above was for a container that never ran, so
-                // it has nothing to say and no end coming: what it is
-                // attached to sits in `created` until the next start
-                // removes it. Dropping the entry keeps the map to
-                // containers that exist; the task goes with the removal.
-                self.terminals().remove(&id);
+        self.docker.start_container(&id, None).await.map_err(|e| {
+            // The watch above was for a container that never ran, so
+            // it has nothing to say and no end coming: what it is
+            // attached to sits in `created` until the next start
+            // removes it. Dropping the entry keeps the map to
+            // containers that exist; the task goes with the removal.
+            self.terminals().remove(&id);
 
-                events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
-                RuntimeError::failed(format!("starting container {name}"), e)
-            })?;
+            let reason = crate::error::with_causes(&e);
+            events.step_failed("start", format!("starting {}", spec.name()), reason);
+            RuntimeError::caused_by(format!("starting container {name}"), &e)
+        })?;
 
         // **A terminal Docker has just created has no size at all**, and
         // gets one only when a client attaches. A program that draws a
@@ -1537,9 +1667,9 @@ impl Runtime for DockerRuntime {
                 .docker
                 .resize_container_tty(
                     &id,
-                    ResizeContainerTtyOptions {
-                        width: DEFAULT_WINDOW.cols,
-                        height: DEFAULT_WINDOW.rows,
+                    ResizeContainerTTYOptions {
+                        w: DEFAULT_WINDOW.cols as i32,
+                        h: DEFAULT_WINDOW.rows as i32,
                     },
                 )
                 .await
@@ -1604,7 +1734,7 @@ impl Runtime for DockerRuntime {
         };
 
         let id = container.id.unwrap_or_default();
-        if container.state.as_deref() != Some("running") {
+        if container.state != Some(ContainerSummaryStateEnum::RUNNING) {
             events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
         }
@@ -1615,11 +1745,12 @@ impl Runtime for DockerRuntime {
             .stop_container(
                 &id,
                 Some(StopContainerOptions {
-                    t: STOP_TIMEOUT_SECS,
+                    t: Some(STOP_TIMEOUT_SECS),
+                    signal: None,
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("stopping container {id}"), e))?;
+            .map_err(|e| RuntimeError::caused_by(format!("stopping container {id}"), &e))?;
 
         // Remembered so the exit code it produced is not read as a crash.
         // Only for as long as this runtime lives: after a daemon restart
@@ -1650,7 +1781,7 @@ impl Runtime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("removing container {id}"), e))?;
+            .map_err(|e| RuntimeError::caused_by(format!("removing container {id}"), &e))?;
 
         // There is no longer a container whose exit code needs explaining.
         self.stopped_set().remove(key);
@@ -1673,7 +1804,7 @@ impl Runtime for DockerRuntime {
             .docker
             .list_containers(Some(ListContainersOptions {
                 all: true,
-                filters,
+                filters: Some(filters),
                 ..Default::default()
             }))
             .await
@@ -1691,7 +1822,7 @@ impl Runtime for DockerRuntime {
                         }),
                     )
                     .await
-                    .map_err(|e| RuntimeError::failed(format!("removing container {id}"), e))?;
+                    .map_err(|e| RuntimeError::caused_by(format!("removing container {id}"), &e))?;
             }
         }
         events.step_done("destroy", "removing containers");
@@ -1731,7 +1862,7 @@ impl Runtime for DockerRuntime {
         let id = container.id.unwrap_or_default();
         let stream = self.docker.logs(
             &id,
-            Some(LogsOptions::<String> {
+            Some(LogsOptions {
                 follow: options.follow,
                 stdout: true,
                 stderr: true,
@@ -1783,7 +1914,7 @@ impl Runtime for DockerRuntime {
             )
         })?;
 
-        if container.state.as_deref() != Some("running") {
+        if container.state != Some(ContainerSummaryStateEnum::RUNNING) {
             return Err(RuntimeError::failed(
                 format!("attaching to {}", key.service),
                 "the container is not running. Start it with `kobune up`",
@@ -1795,11 +1926,11 @@ impl Runtime for DockerRuntime {
             .docker
             .attach_container(
                 &id,
-                Some(AttachContainerOptions::<String> {
-                    stdin: Some(true),
-                    stdout: Some(true),
-                    stderr: Some(true),
-                    stream: Some(true),
+                Some(AttachContainerOptions {
+                    stdin: true,
+                    stdout: true,
+                    stderr: true,
+                    stream: true,
                     // **No output replayed.** A full-screen program's past
                     // output is a record of a screen that no longer
                     // exists; drawing it again produces a mess, and the
@@ -1808,7 +1939,7 @@ impl Runtime for DockerRuntime {
                     //
                     // What the program *said about the terminal* is
                     // replayed, and separately — see the preamble below.
-                    logs: Some(false),
+                    logs: false,
                     // Left to Docker's default, and never triggered:
                     // detaching is the client's business, and it holds the
                     // keys before they get this far.
@@ -1816,7 +1947,7 @@ impl Runtime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("attaching to {}", key.service), e))?;
+            .map_err(|e| RuntimeError::caused_by(format!("attaching to {}", key.service), &e))?;
 
         // Taken from the watcher that has been reading this terminal since
         // before the container started. Nothing is read back here, and
@@ -1868,7 +1999,7 @@ impl Runtime for DockerRuntime {
             )
         })?;
 
-        if container.state.as_deref() != Some("running") {
+        if container.state != Some(ContainerSummaryStateEnum::RUNNING) {
             // Wanting to exec into a container is at its most likely just
             // after one fell over, and "start it with `kobune up`" describes
             // the wrong problem.
@@ -1891,7 +2022,7 @@ impl Runtime for DockerRuntime {
             .docker
             .create_exec(
                 &id,
-                CreateExecOptions {
+                ExecConfig {
                     cmd: Some(command.to_vec()),
                     working_dir: options.workdir.clone(),
                     attach_stdout: Some(true),
@@ -1902,13 +2033,13 @@ impl Runtime for DockerRuntime {
                 },
             )
             .await
-            .map_err(|e| RuntimeError::failed("creating the exec", e))?;
+            .map_err(|e| RuntimeError::caused_by("creating the exec", &e))?;
 
         let started = self
             .docker
             .start_exec(&created.id, None)
             .await
-            .map_err(|e| RuntimeError::failed("starting the exec", e))?;
+            .map_err(|e| RuntimeError::caused_by("starting the exec", &e))?;
 
         if let StartExecResults::Attached { mut output, .. } = started {
             while let Some(chunk) = output.next().await {
@@ -1931,7 +2062,7 @@ impl Runtime for DockerRuntime {
             .docker
             .inspect_exec(&created.id)
             .await
-            .map_err(|e| RuntimeError::failed("inspecting the exec", e))?;
+            .map_err(|e| RuntimeError::caused_by("inspecting the exec", &e))?;
 
         Ok(ExecOutcome {
             exit_code: inspected.exit_code.unwrap_or(-1) as i32,
@@ -1992,7 +2123,7 @@ impl Runtime for DockerRuntime {
             .docker
             .list_containers(Some(ListContainersOptions {
                 all: true,
-                filters,
+                filters: Some(filters),
                 ..Default::default()
             }))
             .await
@@ -2018,7 +2149,9 @@ impl Runtime for DockerRuntime {
 
         let listed = self
             .docker
-            .list_volumes(Some(ListVolumesOptions { filters }))
+            .list_volumes(Some(ListVolumesOptions {
+                filters: Some(filters),
+            }))
             .await
             .map_err(Self::unavailable)?;
 
@@ -2039,9 +2172,9 @@ impl Runtime for DockerRuntime {
 
     async fn remove_managed_volume(&self, volume: &ManagedVolume) -> Result<()> {
         self.docker
-            .remove_volume(&volume.id, None)
+            .remove_volume(&volume.id, None::<RemoveVolumeOptions>)
             .await
-            .map_err(|e| RuntimeError::failed(format!("removing volume {}", volume.id), e))
+            .map_err(|e| RuntimeError::caused_by(format!("removing volume {}", volume.id), &e))
     }
 }
 
@@ -2072,20 +2205,31 @@ fn with_recent_output(error: &str, lines: &[String]) -> String {
 /// Tars a build context for the Docker API, less what `.dockerignore` says
 /// to leave out.
 ///
-/// The API takes the context as a tar stream, so what is packed here is read
-/// into memory whole — which is the other reason the filtering matters. **No
-/// builder does it for us**: `docker build` reads the file on the client side
-/// and leaves the excluded paths out of what it uploads, and a
-/// `.dockerignore` that arrives *inside* the tar is one more file in the
-/// context. Kobune is the client here, so it reads it. See
+/// **Written out as it is walked, never held whole.** The API takes the
+/// context as a tar stream, and a stream is what this produces: a 3.3 GB
+/// worktree used to be read into one `Vec<u8>`, handed to `hyper` as a
+/// single body frame and offered to `writev(2)` as a single vector, which
+/// macOS refuses once the lengths sum past what an `int` holds. `docker
+/// build` never met the limit because it sends the context in pieces, so
+/// the same Dockerfile built on the command line and failed here — with
+/// `client error (SendRequest)` and nothing else. See [`ChunkWriter`].
+///
+/// **No builder does the filtering for us**: `docker build` reads the file
+/// on the client side and leaves the excluded paths out of what it uploads,
+/// and a `.dockerignore` that arrives *inside* the tar is one more file in
+/// the context. Kobune is the client here, so it reads it. See
 /// [`crate::dockerignore`].
 ///
 /// `dockerfile` says where the Dockerfile is, which decides both what the
 /// patterns may not take out and whether one has to be added.
-fn pack_context(context: &Path, dockerfile: Dockerfile<'_>) -> std::io::Result<Vec<u8>> {
+fn pack_context<W: std::io::Write>(
+    context: &Path,
+    dockerfile: &Dockerfile,
+    into: W,
+) -> std::io::Result<W> {
     let ignore = crate::dockerignore::Ignore::for_context(context, dockerfile.inside())?;
 
-    let mut builder = tar::Builder::new(Vec::new());
+    let mut builder = tar::Builder::new(into);
     builder.follow_symlinks(false);
     // `./`, which is what `append_dir_all` called the root. Every entry
     // below it is named without the prefix; `tar` strips a leading `./`
@@ -2111,27 +2255,286 @@ fn pack_context(context: &Path, dockerfile: Dockerfile<'_>) -> std::io::Result<V
     builder.into_inner()
 }
 
+/// Why the context could not be packed, when that is what happened.
+///
+/// Taken rather than borrowed: a build asks twice — once when it fails and
+/// once when it does not — and the answer is only there to be had once.
+///
+/// [`Packed::Cut`] is not a reason and never becomes one: a build that
+/// failed on its own account stops reading, so asking after the failure
+/// would otherwise turn every early failure over a large context into a
+/// sentence about a channel.
+async fn packing_failure(packing: &mut Option<Packing>) -> Option<String> {
+    match packing.take()?.await {
+        Ok(Packed::Failed(err)) => Some(crate::error::with_causes(&err)),
+        Ok(Packed::All | Packed::Cut) => None,
+        // **A walk that died is a context that stopped.** The body ends
+        // cleanly when the packer unwinds — the sender goes with it — so
+        // the daemon sees a short tar rather than an error, and a build
+        // whose `COPY` happened to be satisfied by what arrived first
+        // would succeed on half a worktree. Reading this as "nothing to
+        // report" is how that gets tagged and run.
+        Err(err) => Some(format!("the walk of the context did not finish: {err}")),
+    }
+}
+
+/// Where the daemon is.
+///
+/// The same answer `bollard`'s own defaults reach, worked out here because
+/// neither connection can use them: both name a timeout, and the call that
+/// takes one does not read the environment. `DOCKER_HOST` is honoured only
+/// when it names a socket, which is the reading `bollard` has always given
+/// it — a `tcp://` one has never reached this backend.
+fn socket() -> String {
+    const DEFAULT: &str = "unix:///var/run/docker.sock";
+
+    std::env::var("DOCKER_HOST")
+        .ok()
+        .filter(|host| host.starts_with("unix://"))
+        .unwrap_or_else(|| DEFAULT.to_string())
+}
+
+/// A `Write` that hands the packed context to the request, a chunk at a time.
+///
+/// **Blocking, on a thread that may block.** `tar` is synchronous and the
+/// walk is disk-bound, so it runs under `spawn_blocking`; the send is what
+/// puts the socket's back-pressure onto the walk, and is the reason memory
+/// stays flat however large the context turns out to be.
+struct ChunkWriter {
+    sender: tokio::sync::mpsc::Sender<std::result::Result<bytes::Bytes, std::io::Error>>,
+    buffer: Vec<u8>,
+    /// How much has gone. Reported when the context is packed, so a
+    /// worktree that turns out to be enormous says so.
+    sent: u64,
+    /// Where the progress goes, and what the step it belongs to is called.
+    events: EventSink,
+    label: String,
+    /// What `sent` was at the last progress line, so the lines come at a
+    /// stride rather than one per chunk.
+    announced: u64,
+    /// Whether the context has already been called large. Once is enough.
+    remarked: bool,
+}
+
+impl ChunkWriter {
+    fn new(
+        sender: tokio::sync::mpsc::Sender<std::result::Result<bytes::Bytes, std::io::Error>>,
+        events: EventSink,
+        label: String,
+    ) -> Self {
+        Self {
+            sender,
+            buffer: Vec::with_capacity(CONTEXT_CHUNK),
+            sent: 0,
+            events,
+            label,
+            announced: 0,
+            remarked: false,
+        }
+    }
+
+    /// Says how much of the context has gone, now and then.
+    fn announce(&mut self) {
+        if self.sent >= A_CONTEXT_WORTH_MENTIONING && !self.remarked {
+            self.remarked = true;
+            let message = format!(
+                "the build context is over {}. Anything `.dockerignore` \
+                 does not name is sent, and everything sent is read",
+                crate::buildkit::bytes(A_CONTEXT_WORTH_MENTIONING as i64)
+            );
+            tracing::warn!("{message}");
+            self.events.warn(message);
+        }
+
+        if self.sent - self.announced < CONTEXT_STRIDE {
+            return;
+        }
+
+        self.announced = self.sent;
+        self.report();
+    }
+
+    /// One line naming what has gone so far.
+    fn report(&self) {
+        self.events.step_progress(
+            "build",
+            &self.label,
+            format!(
+                "sending the build context: {}",
+                crate::buildkit::bytes(self.sent as i64)
+            ),
+        );
+    }
+
+    fn emit(&mut self, chunk: Vec<u8>) -> std::io::Result<()> {
+        self.sent += chunk.len() as u64;
+        self.sender
+            .blocking_send(Ok(bytes::Bytes::from(chunk)))
+            // **Nobody is reading, so stop packing.** A cancelled `up`, or
+            // a daemon that answered before it had taken the whole
+            // context. Walking the rest of a worktree to feed a request
+            // that has gone is work with nowhere to put it — which is what
+            // packing into memory first meant doing, every time.
+            //
+            // Marked so it can be told from a file that could not be read:
+            // this one is never the reason for anything, and reporting it
+            // as one would bury the real error. See [`Packed::Cut`].
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, CUT))?;
+
+        self.announce();
+        Ok(())
+    }
+}
+
+impl std::io::Write for ChunkWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+
+        while self.buffer.len() >= CONTEXT_CHUNK {
+            // `split_off` hands the leftover a `Vec` of its own size, and
+            // putting that back would throw the reservation away — `tar`
+            // writes in 8 KiB pieces, so every chunk would climb back to
+            // 128 KiB through four more allocations. Over a 3 GB context
+            // that is a hundred thousand of them on the path this exists
+            // to keep quick.
+            let chunk = self.buffer.split_off(CONTEXT_CHUNK);
+            let chunk = std::mem::replace(&mut self.buffer, chunk);
+            self.buffer
+                .reserve(CONTEXT_CHUNK.saturating_sub(self.buffer.len()));
+            self.emit(chunk)?;
+        }
+
+        Ok(buf.len())
+    }
+
+    /// **Called once the archive is finished, not before.** A tar ends with
+    /// two zero blocks, and they are in the tail this pushes out.
+    fn flush(&mut self) -> std::io::Result<()> {
+        if !self.buffer.is_empty() {
+            let chunk = std::mem::take(&mut self.buffer);
+            self.emit(chunk)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// What became of the walk that packed the context.
+enum Packed {
+    /// All of it went. How much is on the progress line the walk itself
+    /// emitted — see [`ChunkWriter::report`] — rather than carried back
+    /// here, because by the time the build ends nobody is waiting on it.
+    All,
+    /// The request stopped reading before the walk was done.
+    ///
+    /// **Never a reason on its own.** This is what a build that failed
+    /// looks like from the packer's side: the daemon answers, the body is
+    /// dropped, and the send has nowhere to go. Reporting it would replace
+    /// the Dockerfile error the user needs with a sentence about a channel.
+    Cut,
+    /// A file in the context could not be read.
+    Failed(std::io::Error),
+}
+
+/// What [`ChunkWriter::emit`] says when the request has stopped reading.
+const CUT: &str = "the build stopped reading the context";
+
+/// The walk, still going.
+type Packing = tokio::task::JoinHandle<Packed>;
+
+/// The packed context, as the request body reads it.
+type Chunks =
+    tokio_stream::wrappers::ReceiverStream<std::result::Result<bytes::Bytes, std::io::Error>>;
+
+/// Packs the context on a blocking thread and hands back its chunks.
+///
+/// The walk and the upload run at once, so the daemon reads while the
+/// worktree is still being read — and a build nobody is waiting for any
+/// more stops packing rather than finishing into a dropped buffer.
+fn stream_context(
+    context: &Path,
+    dockerfile: &Dockerfile,
+    label: &str,
+    events: &EventSink,
+) -> (Chunks, Packing) {
+    let (sender, receiver) = tokio::sync::mpsc::channel(CHUNKS_IN_FLIGHT);
+
+    let context = context.to_path_buf();
+    let dockerfile = dockerfile.clone();
+    let events = events.clone();
+    let label = label.to_string();
+
+    let packing = tokio::task::spawn_blocking(move || {
+        let writer = ChunkWriter::new(sender.clone(), events, label);
+
+        let packed = pack_context(&context, &dockerfile, writer)
+            .and_then(|mut writer| std::io::Write::flush(&mut writer).map(|()| writer));
+
+        match packed {
+            Ok(writer) => {
+                // **Once, whatever the size.** The lines above come at a
+                // stride, so a context under it has said nothing yet — and
+                // the size of what was sent is the thing worth knowing
+                // when a build behaves oddly.
+                writer.report();
+                Packed::All
+            }
+            Err(err) if err.get_ref().is_some_and(|cut| cut.to_string() == CUT) => Packed::Cut,
+            Err(err) => {
+                // **Down the body as well as back to the caller.** A tar
+                // that simply stops is a tar the daemon would try to build
+                // from; ending the body with an error is what makes the
+                // request be abandoned instead. `io::Error` is not `Clone`,
+                // so what goes down the body is a copy and what the caller
+                // reports is the original.
+                let copy = std::io::Error::new(err.kind(), err.to_string());
+                let _ = sender.blocking_send(Err(copy));
+                Packed::Failed(err)
+            }
+        }
+    });
+
+    (
+        tokio_stream::wrappers::ReceiverStream::new(receiver),
+        packing,
+    )
+}
+
 /// Where the Dockerfile a build names actually is.
 ///
 /// Docker names the Dockerfile by its path inside the tar, so the two cases
 /// are packed differently: one is already in the context under its own name,
 /// the other has to be put there under a reserved one.
-#[derive(Clone, Copy)]
-enum Dockerfile<'a> {
+///
+/// Owned rather than borrowed, because the walk that reads it runs on a
+/// blocking thread of its own and outlives the call that started it.
+#[derive(Clone, Debug)]
+enum Dockerfile {
     /// In the context, at this path relative to its root.
-    Inside(&'a str),
+    Inside(String),
     /// Elsewhere in the worktree. One context can build several images, so
     /// `dockerfile` is free to point outside it.
-    Outside(&'a Path),
+    Outside(std::path::PathBuf),
 }
 
-impl<'a> Dockerfile<'a> {
+impl Dockerfile {
+    /// Where the build spec says the Dockerfile is.
+    ///
+    /// Worked out before the packing rather than after, because
+    /// `.dockerignore` has to be told which file not to leave out.
+    fn of(build: &BuildSpec) -> Self {
+        match build.dockerfile.strip_prefix(&build.context) {
+            Ok(relative) => Self::Inside(relative.to_string_lossy().to_string()),
+            Err(_) => Self::Outside(build.dockerfile.clone()),
+        }
+    }
+
     /// Its path within the context, when it has one.
     ///
     /// What [`crate::dockerignore`] is told not to leave out — an outside
     /// one is added after the patterns have had their say, so there is
     /// nothing to spare.
-    fn inside(self) -> Option<&'a str> {
+    fn inside(&self) -> Option<&str> {
         match self {
             Self::Inside(path) => Some(path),
             Self::Outside(_) => None,
@@ -2139,7 +2542,7 @@ impl<'a> Dockerfile<'a> {
     }
 
     /// The name the build asks the daemon for.
-    fn entry(self) -> String {
+    fn entry(&self) -> String {
         match self {
             Self::Inside(path) => path.to_string(),
             Self::Outside(_) => DOCKERFILE_ENTRY.to_string(),
@@ -2150,8 +2553,8 @@ impl<'a> Dockerfile<'a> {
 /// Adds what is under `dir` and not left out, then does the same below it.
 ///
 /// `prefix` is `dir` relative to the root of the context, empty at the top.
-fn pack_into(
-    builder: &mut tar::Builder<Vec<u8>>,
+fn pack_into<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
     dir: &Path,
     prefix: &str,
     ignore: &crate::dockerignore::Ignore,
@@ -2230,16 +2633,19 @@ fn extra_hosts(spec: &ServiceSpec) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::models::Port;
+    use bollard::models::PortSummary;
     use std::collections::HashMap;
 
     fn summary_with(labels_map: HashMap<String, String>, state: &str) -> ContainerSummary {
         ContainerSummary {
             id: Some("abc123".into()),
             image: Some("node:22".into()),
-            state: Some(state.into()),
+            // `docker ps`'s own words, which is what the callers below
+            // read like. A state the enum does not know is the test's
+            // mistake, not a case to be quietly mapped to `Unknown`.
+            state: Some(state.parse().expect("a state Docker reports")),
             labels: Some(labels_map),
-            ports: Some(vec![Port {
+            ports: Some(vec![PortSummary {
                 private_port: 3000,
                 public_port: Some(49312),
                 ip: Some("127.0.0.1".into()),
@@ -2349,7 +2755,11 @@ mod tests {
         for round in 0..4 {
             let _ = runtime
                 .docker
-                .remove_image(&format!("kobune-leak-probe-{round}:latest"), None, None)
+                .remove_image(
+                    &format!("kobune-leak-probe-{round}:latest"),
+                    None::<bollard::query_parameters::RemoveImageOptions>,
+                    None,
+                )
                 .await;
         }
 
@@ -2360,9 +2770,261 @@ mod tests {
         );
     }
 
+    /// Every chunk the context went out in, and what the packer reported.
+    async fn streamed(context: &Path, dockerfile: &Dockerfile) -> (Vec<bytes::Bytes>, Packed) {
+        use futures::StreamExt;
+
+        let (chunks, packing) = stream_context(context, dockerfile, "build", &EventSink::discard());
+        let mut kept = Vec::new();
+        let mut failure = None;
+
+        let mut chunks = chunks;
+        while let Some(chunk) = chunks.next().await {
+            match chunk {
+                Ok(bytes) => kept.push(bytes),
+                Err(err) => failure = Some(err),
+            }
+        }
+
+        let reported = packing.await.expect("the packer ran");
+
+        if let Some(err) = failure {
+            assert!(
+                matches!(reported, Packed::Failed(_)),
+                "the body was ended with {err} and the packer reported nothing"
+            );
+        }
+
+        (kept, reported)
+    }
+
+    /// **A context leaves in pieces, whatever size it is.**
+    ///
+    /// One `Bytes` for the whole context is one vector handed to
+    /// `writev(2)`, and macOS refuses one whose lengths sum past what an
+    /// `int` holds — so a 3.3 GB worktree failed the build outright with
+    /// `client error (SendRequest)` and nothing else, while a 12 KB one
+    /// beside it built every time. A file larger than one chunk is what
+    /// says the writer splits rather than buffers; reassembling is what
+    /// says splitting changed nothing about what is sent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_build_context_goes_out_in_bounded_chunks() {
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join("big.bin"),
+            vec![7u8; CONTEXT_CHUNK * 3 + 11],
+        )
+        .expect("writes");
+
+        let dockerfile = Dockerfile::Inside("Dockerfile".into());
+        let (chunks, reported) = streamed(dir.path(), &dockerfile).await;
+
+        assert!(
+            chunks.len() > 3,
+            "the context went out in {} frame(s)",
+            chunks.len()
+        );
+        for chunk in &chunks {
+            assert!(
+                chunk.len() <= CONTEXT_CHUNK,
+                "a {}-byte frame went out whole",
+                chunk.len()
+            );
+        }
+
+        // Byte for byte what packing into memory produces.
+        let streamed: Vec<u8> = chunks.concat();
+        let whole = pack_context(dir.path(), &dockerfile, Vec::new()).expect("packs");
+        assert_eq!(streamed, whole);
+        assert!(matches!(reported, Packed::All), "the context did not pack");
+    }
+
+    /// Drains a context, keeping the events rather than the bytes.
+    async fn events_of_streaming(context: &Path, dockerfile: &Dockerfile) -> Vec<String> {
+        use futures::StreamExt;
+
+        let (events, mut received) = EventSink::channel();
+        let (mut chunks, packing) = stream_context(context, dockerfile, "building x", &events);
+
+        while chunks.next().await.is_some() {}
+        assert!(
+            matches!(packing.await.expect("the packer ran"), Packed::All),
+            "the context did not pack"
+        );
+        drop(events);
+
+        let mut lines = Vec::new();
+        while let Some(event) = received.recv().await {
+            match event {
+                kobune_api::Event::Step {
+                    status: kobune_api::StepStatus::Progress { message },
+                    ..
+                }
+                | kobune_api::Event::Log { message, .. } => lines.push(message),
+                _ => {}
+            }
+        }
+
+        lines
+    }
+
+    /// **A build that failed says why it failed.**
+    ///
+    /// The daemon answers a bad Dockerfile before it has read the context,
+    /// so the packer's send has nowhere to go and it stops — which is a
+    /// consequence of the failure, not the failure. Reported as one, every
+    /// build that failed early over a context too large to have finished
+    /// uploading would have said "the build stopped reading the context"
+    /// instead of naming the step that died.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_request_that_stops_reading_is_not_the_reason_for_anything() {
+        use futures::StreamExt;
+
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join("big.bin"),
+            vec![7u8; CONTEXT_CHUNK * (CHUNKS_IN_FLIGHT + 4)],
+        )
+        .expect("writes");
+
+        let (mut chunks, packing) = stream_context(
+            dir.path(),
+            &Dockerfile::Inside("Dockerfile".into()),
+            "building x",
+            &EventSink::discard(),
+        );
+
+        // What a daemon that has made up its mind does: take a little and
+        // go. The rest of the context has nowhere to be put.
+        chunks
+            .next()
+            .await
+            .expect("a first chunk")
+            .expect("which is context, not an error");
+        drop(chunks);
+
+        assert!(
+            matches!(packing.await.expect("the packer ran"), Packed::Cut),
+            "a reader that went away was read as the context failing"
+        );
+
+        let mut none = Some(tokio::spawn(async { Packed::Cut }));
+        assert_eq!(
+            packing_failure(&mut none).await,
+            None,
+            "a cut-off body was offered as the reason a build failed"
+        );
+    }
+
+    /// **How big the context is, said out loud.** `docker build` prints it;
+    /// Kobune printed nothing, so a `.dockerignore` that had quietly stopped
+    /// covering a directory looked like a bug in the build rather than 3 GB
+    /// going over a socket.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_size_of_the_context_is_reported() {
+        let dir = a_context();
+        let lines = events_of_streaming(dir.path(), &Dockerfile::Inside("Dockerfile".into())).await;
+
+        let said = lines
+            .iter()
+            .find(|line| line.starts_with("sending the build context:"))
+            .unwrap_or_else(|| panic!("nothing said how much was sent: {lines:?}"));
+
+        // The count is the walk's own, so what it says has to be what a
+        // reader of the tar would find.
+        let whole = pack_context(
+            dir.path(),
+            &Dockerfile::Inside("Dockerfile".into()),
+            Vec::new(),
+        )
+        .expect("packs");
+        assert_eq!(
+            said,
+            &format!(
+                "sending the build context: {}",
+                crate::buildkit::bytes(whole.len() as i64)
+            )
+        );
+    }
+
+    /// A context nobody meant to send is worth saying so about, even though
+    /// it now works.
+    ///
+    /// Driven with zeroes rather than a fixture, because what is under test
+    /// is the counting: half a gigabyte on disk would test the filesystem
+    /// instead, and a sparse file — the cheap way to write one — is packed
+    /// as a GNU sparse entry on Linux and as its zeroes on macOS, so it
+    /// counts differently on the two.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_context_nobody_meant_to_send_is_remarked_on() {
+        use futures::StreamExt;
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(CHUNKS_IN_FLIGHT);
+        let (events, mut received) = EventSink::channel();
+
+        let writing = tokio::task::spawn_blocking(move || {
+            let mut writer = ChunkWriter::new(sender, events, "building x".to_string());
+            let block = [0u8; 64 * 1024];
+
+            while writer.sent <= A_CONTEXT_WORTH_MENTIONING {
+                std::io::Write::write_all(&mut writer, &block).expect("writes");
+            }
+        });
+
+        let mut chunks = tokio_stream::wrappers::ReceiverStream::new(receiver);
+        while chunks.next().await.is_some() {}
+        writing.await.expect("wrote");
+
+        let mut lines = Vec::new();
+        while let Some(event) = received.recv().await {
+            match event {
+                kobune_api::Event::Step {
+                    status: kobune_api::StepStatus::Progress { message },
+                    ..
+                }
+                | kobune_api::Event::Log { message, .. } => lines.push(message),
+                _ => {}
+            }
+        }
+
+        let remark = lines
+            .iter()
+            .find(|line| line.contains("the build context is over"))
+            .unwrap_or_else(|| panic!("nothing remarked on it: {lines:?}"));
+        assert!(
+            remark.contains(".dockerignore"),
+            "the remark does not say what to do about it: {remark}"
+        );
+
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("the build context is over"))
+                .count(),
+            1,
+            "said more than once"
+        );
+    }
+
+    /// A context that cannot be read says so, rather than leaving the
+    /// daemon to build whatever arrived before the walk stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_context_that_cannot_be_read_says_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("not-here");
+
+        let dockerfile = Dockerfile::Inside("Dockerfile".into());
+        let (_, reported) = streamed(&missing, &dockerfile).await;
+
+        let Packed::Failed(err) = reported else {
+            panic!("a context that is not there cannot be packed");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
     /// The names in a packed context, sorted.
-    fn packed(context: &Path, dockerfile: Dockerfile<'_>) -> Vec<String> {
-        let tar = pack_context(context, dockerfile).expect("packs");
+    fn packed(context: &Path, dockerfile: Dockerfile) -> Vec<String> {
+        let tar = pack_context(context, &dockerfile, Vec::new()).expect("packs");
 
         let mut names: Vec<String> = tar::Archive::new(tar.as_slice())
             .entries()
@@ -2431,7 +3093,7 @@ mod tests {
         expected.sort();
 
         assert_eq!(
-            packed(dir.path(), Dockerfile::Inside("Dockerfile")),
+            packed(dir.path(), Dockerfile::Inside("Dockerfile".into())),
             expected
         );
     }
@@ -2448,7 +3110,7 @@ mod tests {
         let dockerfile = outside.path().join("web.Dockerfile");
         std::fs::write(&dockerfile, "FROM alpine\n").expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Outside(&dockerfile));
+        let names = packed(dir.path(), Dockerfile::Outside(dockerfile.clone()));
 
         assert!(
             names.contains(&DOCKERFILE_ENTRY.to_string()),
@@ -2468,7 +3130,7 @@ mod tests {
         let dockerfile = outside.path().join("web.Dockerfile");
         std::fs::write(&dockerfile, "FROM alpine\n").expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Outside(&dockerfile));
+        let names = packed(dir.path(), Dockerfile::Outside(dockerfile.clone()));
 
         assert!(names.contains(&DOCKERFILE_ENTRY.to_string()));
         assert!(!names.contains(&"package.json".to_string()));
@@ -2485,7 +3147,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile".into()));
 
         assert!(!names.iter().any(|name| name.contains("node_modules")));
         assert!(!names.iter().any(|name| name.contains("debug.log")));
@@ -2507,7 +3169,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile".into()));
 
         assert!(names.contains(&"Dockerfile".to_string()));
         assert!(names.contains(&"src/main.rs".to_string()));
@@ -2523,7 +3185,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile".into()));
 
         assert!(names.contains(&"node_modules/react/index.js".to_string()));
         // The directory itself stays out, as it does under `docker build`.
@@ -2544,7 +3206,7 @@ mod tests {
         builder.follow_symlinks(false);
         assert!(builder.append_dir_all(".", dir.path()).is_err());
 
-        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile".into()));
 
         assert!(!names.iter().any(|name| name.contains("app.sock")));
         assert!(names.contains(&"src/main.rs".to_string()));
