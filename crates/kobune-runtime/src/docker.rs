@@ -2241,14 +2241,19 @@ fn pack_context<W: std::io::Write>(
 /// Docker names the Dockerfile by its path inside the tar, so the two cases
 /// are packed differently: one is already in the context under its own name,
 /// the other has to be put there under a reserved one.
-/// What the walk that packed the context had to say, if it got that far.
+/// Why the context could not be packed, when that is what happened.
 ///
 /// Taken rather than borrowed: a build asks twice — once when it fails and
 /// once when it does not — and the answer is only there to be had once.
+///
+/// [`Packed::Cut`] is not a reason and never becomes one: a build that
+/// failed on its own account stops reading, so asking after the failure
+/// would otherwise turn every early failure over a large context into a
+/// sentence about a channel.
 async fn packing_failure(packing: &mut Option<Packing>) -> Option<String> {
     match packing.take()?.await {
-        Ok(Ok(_)) => None,
-        Ok(Err(err)) => Some(crate::error::with_causes(&err)),
+        Ok(Packed::Failed(err)) => Some(crate::error::with_causes(&err)),
+        Ok(Packed::All | Packed::Cut) => None,
         // Cancelled, or panicked. Neither has anything to add to whatever
         // the build itself reported.
         Err(_) => None,
@@ -2352,12 +2357,11 @@ impl ChunkWriter {
             // context. Walking the rest of a worktree to feed a request
             // that has gone is work with nowhere to put it — which is what
             // packing into memory first meant doing, every time.
-            .map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "the build stopped reading the context",
-                )
-            })?;
+            //
+            // Marked so it can be told from a file that could not be read:
+            // this one is never the reason for anything, and reporting it
+            // as one would bury the real error. See [`Packed::Cut`].
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, CUT))?;
 
         self.announce();
         Ok(())
@@ -2389,8 +2393,28 @@ impl std::io::Write for ChunkWriter {
     }
 }
 
-/// What the walk that packed the context had to say.
-type Packing = tokio::task::JoinHandle<std::io::Result<u64>>;
+/// What became of the walk that packed the context.
+enum Packed {
+    /// All of it went. How much is on the progress line the walk itself
+    /// emitted — see [`ChunkWriter::report`] — rather than carried back
+    /// here, because by the time the build ends nobody is waiting on it.
+    All,
+    /// The request stopped reading before the walk was done.
+    ///
+    /// **Never a reason on its own.** This is what a build that failed
+    /// looks like from the packer's side: the daemon answers, the body is
+    /// dropped, and the send has nowhere to go. Reporting it would replace
+    /// the Dockerfile error the user needs with a sentence about a channel.
+    Cut,
+    /// A file in the context could not be read.
+    Failed(std::io::Error),
+}
+
+/// What [`ChunkWriter::emit`] says when the request has stopped reading.
+const CUT: &str = "the build stopped reading the context";
+
+/// The walk, still going.
+type Packing = tokio::task::JoinHandle<Packed>;
 
 /// The packed context, as the request body reads it.
 type Chunks =
@@ -2417,16 +2441,19 @@ fn stream_context(
     let packing = tokio::task::spawn_blocking(move || {
         let writer = ChunkWriter::new(sender.clone(), events, label);
 
-        match pack_context(&context, &dockerfile, writer) {
-            Ok(mut writer) => {
-                std::io::Write::flush(&mut writer)?;
+        let packed = pack_context(&context, &dockerfile, writer)
+            .and_then(|mut writer| std::io::Write::flush(&mut writer).map(|()| writer));
+
+        match packed {
+            Ok(writer) => {
                 // **Once, whatever the size.** The lines above come at a
                 // stride, so a context under it has said nothing yet — and
                 // the size of what was sent is the thing worth knowing
                 // when a build behaves oddly.
                 writer.report();
-                Ok(writer.sent)
+                Packed::All
             }
+            Err(err) if err.get_ref().is_some_and(|cut| cut.to_string() == CUT) => Packed::Cut,
             Err(err) => {
                 // **Down the body as well as back to the caller.** A tar
                 // that simply stops is a tar the daemon would try to build
@@ -2436,7 +2463,7 @@ fn stream_context(
                 // reports is the original.
                 let copy = std::io::Error::new(err.kind(), err.to_string());
                 let _ = sender.blocking_send(Err(copy));
-                Err(err)
+                Packed::Failed(err)
             }
         }
     });
@@ -2711,10 +2738,7 @@ mod tests {
     }
 
     /// Every chunk the context went out in, and what the packer reported.
-    async fn streamed(
-        context: &Path,
-        dockerfile: &Dockerfile,
-    ) -> (Vec<bytes::Bytes>, std::io::Result<u64>) {
+    async fn streamed(context: &Path, dockerfile: &Dockerfile) -> (Vec<bytes::Bytes>, Packed) {
         use futures::StreamExt;
 
         let (chunks, packing) = stream_context(context, dockerfile, "build", &EventSink::discard());
@@ -2733,7 +2757,7 @@ mod tests {
 
         if let Some(err) = failure {
             assert!(
-                reported.is_err(),
+                matches!(reported, Packed::Failed(_)),
                 "the body was ended with {err} and the packer reported nothing"
             );
         }
@@ -2779,11 +2803,7 @@ mod tests {
         let streamed: Vec<u8> = chunks.concat();
         let whole = pack_context(dir.path(), &dockerfile, Vec::new()).expect("packs");
         assert_eq!(streamed, whole);
-        assert_eq!(
-            reported.expect("packs"),
-            whole.len() as u64,
-            "the count reported is not what went out"
-        );
+        assert!(matches!(reported, Packed::All), "the context did not pack");
     }
 
     /// Drains a context, keeping the events rather than the bytes.
@@ -2794,7 +2814,10 @@ mod tests {
         let (mut chunks, packing) = stream_context(context, dockerfile, "building x", &events);
 
         while chunks.next().await.is_some() {}
-        packing.await.expect("the packer ran").expect("packs");
+        assert!(
+            matches!(packing.await.expect("the packer ran"), Packed::All),
+            "the context did not pack"
+        );
         drop(events);
 
         let mut lines = Vec::new();
@@ -2812,6 +2835,54 @@ mod tests {
         lines
     }
 
+    /// **A build that failed says why it failed.**
+    ///
+    /// The daemon answers a bad Dockerfile before it has read the context,
+    /// so the packer's send has nowhere to go and it stops — which is a
+    /// consequence of the failure, not the failure. Reported as one, every
+    /// build that failed early over a context too large to have finished
+    /// uploading would have said "the build stopped reading the context"
+    /// instead of naming the step that died.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_request_that_stops_reading_is_not_the_reason_for_anything() {
+        use futures::StreamExt;
+
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join("big.bin"),
+            vec![7u8; CONTEXT_CHUNK * (CHUNKS_IN_FLIGHT + 4)],
+        )
+        .expect("writes");
+
+        let (mut chunks, packing) = stream_context(
+            dir.path(),
+            &Dockerfile::Inside("Dockerfile".into()),
+            "building x",
+            &EventSink::discard(),
+        );
+
+        // What a daemon that has made up its mind does: take a little and
+        // go. The rest of the context has nowhere to be put.
+        chunks
+            .next()
+            .await
+            .expect("a first chunk")
+            .expect("which is context, not an error");
+        drop(chunks);
+
+        assert!(
+            matches!(packing.await.expect("the packer ran"), Packed::Cut),
+            "a reader that went away was read as the context failing"
+        );
+
+        let mut none = Some(tokio::spawn(async { Packed::Cut }));
+        assert_eq!(
+            packing_failure(&mut none).await,
+            None,
+            "a cut-off body was offered as the reason a build failed"
+        );
+    }
+
     /// **How big the context is, said out loud.** `docker build` prints it;
     /// Kobune printed nothing, so a `.dockerignore` that had quietly stopped
     /// covering a directory looked like a bug in the build rather than 3 GB
@@ -2821,11 +2892,25 @@ mod tests {
         let dir = a_context();
         let lines = events_of_streaming(dir.path(), &Dockerfile::Inside("Dockerfile".into())).await;
 
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.starts_with("sending the build context:")),
-            "nothing said how much was sent: {lines:?}"
+        let said = lines
+            .iter()
+            .find(|line| line.starts_with("sending the build context:"))
+            .unwrap_or_else(|| panic!("nothing said how much was sent: {lines:?}"));
+
+        // The count is the walk's own, so what it says has to be what a
+        // reader of the tar would find.
+        let whole = pack_context(
+            dir.path(),
+            &Dockerfile::Inside("Dockerfile".into()),
+            Vec::new(),
+        )
+        .expect("packs");
+        assert_eq!(
+            said,
+            &format!(
+                "sending the build context: {}",
+                crate::buildkit::bytes(whole.len() as i64)
+            )
         );
     }
 
@@ -2873,7 +2958,9 @@ mod tests {
         let dockerfile = Dockerfile::Inside("Dockerfile".into());
         let (_, reported) = streamed(&missing, &dockerfile).await;
 
-        let err = reported.expect_err("a context that is not there cannot be packed");
+        let Packed::Failed(err) = reported else {
+            panic!("a context that is not there cannot be packed");
+        };
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
