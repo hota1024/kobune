@@ -4320,6 +4320,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bollard",
+ "bytes",
  "chrono",
  "futures",
  "kobune-api",

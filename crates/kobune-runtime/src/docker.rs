@@ -134,6 +134,39 @@ const BUILD_CONTEXT_LINES: usize = 12;
 /// Prefixed so it cannot collide with a real file in the context.
 const DOCKERFILE_ENTRY: &str = ".kobune-dockerfile";
 
+/// How much of the build context goes into one frame of the request body.
+///
+/// **What matters is that there is a bound at all.** `hyper` collects body
+/// frames and hands them to `writev(2)` as one vector, and macOS refuses a
+/// vector whose lengths sum past what an `int` holds — so a context of one
+/// 3.3 GB frame failed the request outright, with `EINVAL` and no build.
+/// See [`pack_context`].
+///
+/// 128 KiB is under a third of what `hyper` will buffer before writing, so
+/// several frames still leave in one call and the bound costs nothing; and
+/// small enough that what is waiting on the socket is a couple of megabytes
+/// rather than the worktree.
+const CONTEXT_CHUNK: usize = 128 * 1024;
+
+/// How long a request has to be answered before it is given up on.
+///
+/// `bollard`'s own default, written out because a build does not use it and
+/// two connections that disagree about where the daemon is would be worse
+/// than one that says what it wants.
+const REQUEST_TIMEOUT_SECS: u64 = 120;
+
+/// How long a build has to hand its context over and hear back.
+///
+/// See [`DockerRuntime::connect`] for why a build is not held to the two
+/// minutes everything else is.
+const BUILD_TIMEOUT_SECS: u64 = 60 * 60;
+
+/// How many chunks of context may be waiting for the socket.
+///
+/// The packer blocks once this many are queued, which is what keeps memory
+/// flat however large the context turns out to be.
+const CHUNKS_IN_FLIGHT: usize = 16;
+
 /// How many seconds a stop waits before it escalates to SIGKILL.
 const STOP_TIMEOUT_SECS: i32 = 10;
 
@@ -227,6 +260,8 @@ fn is_buildkit_refusal(error: &str) -> bool {
 
 pub struct DockerRuntime {
     docker: Docker,
+    /// The same daemon, on a longer leash. See [`DockerRuntime::connect`].
+    builds: Docker,
     /// The services Kobune itself stopped. See [`DockerRuntime::stop`].
     asked_to_stop: Mutex<HashSet<ServiceKey>>,
     /// One lock per network name, held across
@@ -255,17 +290,46 @@ impl DockerRuntime {
     /// Nothing is sent yet, so this succeeds even with Docker down. Actual
     /// reachability is [`Runtime::probe`]'s business.
     pub fn connect() -> Result<Self> {
-        let docker =
-            Docker::connect_with_local_defaults().map_err(|err| RuntimeError::Unavailable {
-                runtime: RUNTIME_ID.to_string(),
-                message: err.to_string(),
-            })?;
+        // One answer about where the daemon is, used twice. Two
+        // connections that resolved it separately could reach different
+        // daemons, and a build talking to one while everything else talks
+        // to another is not a failure anybody would read correctly.
+        let socket = socket();
 
-        Ok(Self::with_client(docker))
+        let connect = |timeout| {
+            Docker::connect_with_local(&socket, timeout, bollard::API_DEFAULT_VERSION).map_err(
+                |err: bollard::errors::Error| RuntimeError::Unavailable {
+                    runtime: RUNTIME_ID.to_string(),
+                    message: crate::error::with_causes(&err),
+                },
+            )
+        };
+
+        let docker = connect(REQUEST_TIMEOUT_SECS)?;
+
+        // **A build is given longer than everything else.** The two-minute
+        // bound is on the whole request, and for a build that covers the
+        // upload: the daemon holds its own output back until it has read
+        // the context to the end, so nothing comes back until the last
+        // byte has gone. That was survivable while the context was packed
+        // into memory first and the request only copied it to the socket.
+        // It is not now that the walk of the worktree happens inside the
+        // request — a large context on a cold cache is minutes of reading,
+        // and giving up on a build that is making progress is worse than
+        // waiting for it. The bound is still there: what it is for is a
+        // daemon that has wedged, and an hour says that as well as two
+        // minutes does.
+        let builds = connect(BUILD_TIMEOUT_SECS)?;
+
+        Ok(Self {
+            builds,
+            ..Self::with_client(docker)
+        })
     }
 
     pub fn with_client(docker: Docker) -> Self {
         Self {
+            builds: docker.clone(),
             docker,
             asked_to_stop: Mutex::new(HashSet::new()),
             network_locks: Mutex::new(HashMap::new()),
@@ -414,35 +478,7 @@ impl DockerRuntime {
 
         events.step_started("build", &label);
 
-        let pack = || -> Result<(Vec<u8>, String)> {
-            let packed = || -> std::io::Result<(Vec<u8>, String)> {
-                // Worked out before the packing rather than after, because
-                // `.dockerignore` has to be told which file not to leave out.
-                let inside = build
-                    .dockerfile
-                    .strip_prefix(&build.context)
-                    .ok()
-                    .map(|relative| relative.to_string_lossy().to_string());
-
-                let dockerfile = match &inside {
-                    Some(path) => Dockerfile::Inside(path),
-                    None => Dockerfile::Outside(&build.dockerfile),
-                };
-
-                Ok((
-                    pack_context(&build.context, dockerfile)?,
-                    dockerfile.entry(),
-                ))
-            };
-
-            packed().map_err(|err| {
-                events.step_failed("build", &label, err.to_string());
-                RuntimeError::caused_by(
-                    format!("packing the build context for {}", build.tag),
-                    &err,
-                )
-            })
-        };
+        let dockerfile = Dockerfile::of(build);
 
         // **BuildKit first.** It is what `docker build` itself has used
         // since Docker 23, so it is what the Dockerfiles people write
@@ -450,10 +486,8 @@ impl DockerRuntime {
         // frontend are all hard errors under the legacy builder — which is
         // deprecated, and on its way out of the daemon altogether.
         if !self.buildkit_ruled_out() {
-            let (context, dockerfile) = pack()?;
-
             match self
-                .run_build(build, dockerfile, context, true, &label, events)
+                .run_build(build, &dockerfile, true, &label, events)
                 .await
             {
                 Ok(()) => {
@@ -474,9 +508,12 @@ impl DockerRuntime {
             }
         }
 
-        let (context, dockerfile) = pack()?;
-
-        self.run_build(build, dockerfile, context, false, &label, events)
+        // **Packed a second time**, because a body that has been sent
+        // cannot be rewound and the refusal only arrives once the request
+        // has gone. It costs a second walk of the worktree and nothing
+        // resident, and it happens at most once per daemon: the answer is
+        // remembered above.
+        self.run_build(build, &dockerfile, false, &label, events)
             .await
             .map_err(|failure| match failure {
                 BuildFailure::Failed(err) => err,
@@ -507,14 +544,13 @@ impl DockerRuntime {
     async fn run_build(
         &self,
         build: &BuildSpec,
-        dockerfile: String,
-        context: Vec<u8>,
+        dockerfile: &Dockerfile,
         buildkit: bool,
         label: &str,
         events: &EventSink,
     ) -> std::result::Result<(), BuildFailure> {
         let options = BuildImageOptions {
-            dockerfile,
+            dockerfile: dockerfile.entry(),
             t: Some(build.tag.clone()),
             buildargs: Some(
                 build
@@ -541,9 +577,12 @@ impl DockerRuntime {
             ..Default::default()
         };
 
+        let (chunks, packing) = stream_context(&build.context, dockerfile);
+        let mut packing = Some(packing);
+
         let mut stream =
-            self.docker
-                .build_image(options, None, Some(bollard::body_full(context.into())));
+            self.builds
+                .build_image(options, None, Some(bollard::body_try_stream(chunks)));
 
         // The last few lines of output, kept so a failure can say what the
         // build was doing. Docker's own error is often just "exit code 3",
@@ -610,14 +649,40 @@ impl DockerRuntime {
                 return Err(BuildFailure::NoBuildKit(error.to_string()));
             }
 
-            // What the step that failed had printed, when BuildKit named
-            // one; otherwise the tail of the build as a whole, which is all
-            // the legacy builder can offer and all a silent step leaves.
-            let tail = progress
-                .failure_tail()
-                .unwrap_or_else(|| recent.iter().cloned().collect());
+            // **What the packer said, when it said anything.** A walk that
+            // dies half way ends the body early, and what comes back is
+            // the daemon's opinion of a tar that stopped — or the
+            // transport's, that the request went away. Neither names the
+            // file that could not be read.
+            let message = match packing_failure(&mut packing).await {
+                Some(packed) => {
+                    format!("packing the build context for {}: {packed}", build.tag)
+                }
+                None => {
+                    // What the step that failed had printed, when BuildKit
+                    // named one; otherwise the tail of the build as a
+                    // whole, which is all the legacy builder can offer and
+                    // all a silent step leaves.
+                    let tail = progress
+                        .failure_tail()
+                        .unwrap_or_else(|| recent.iter().cloned().collect());
 
-            let message = with_recent_output(error, &tail);
+                    with_recent_output(error, &tail)
+                }
+            };
+
+            events.step_failed("build", label, message.clone());
+            return Err(BuildFailure::Failed(RuntimeError::failed(
+                format!("building {}", build.tag),
+                message,
+            )));
+        }
+
+        // **A build that finished still has to be asked.** The daemon
+        // reporting success over a context that stopped early is a build of
+        // whatever arrived before the error, which is not the worktree.
+        if let Some(packed) = packing_failure(&mut packing).await {
+            let message = format!("packing the build context for {}: {packed}", build.tag);
             events.step_failed("build", label, message.clone());
             return Err(BuildFailure::Failed(RuntimeError::failed(
                 format!("building {}", build.tag),
@@ -2103,20 +2168,31 @@ fn with_recent_output(error: &str, lines: &[String]) -> String {
 /// Tars a build context for the Docker API, less what `.dockerignore` says
 /// to leave out.
 ///
-/// The API takes the context as a tar stream, so what is packed here is read
-/// into memory whole — which is the other reason the filtering matters. **No
-/// builder does it for us**: `docker build` reads the file on the client side
-/// and leaves the excluded paths out of what it uploads, and a
-/// `.dockerignore` that arrives *inside* the tar is one more file in the
-/// context. Kobune is the client here, so it reads it. See
+/// **Written out as it is walked, never held whole.** The API takes the
+/// context as a tar stream, and a stream is what this produces: a 3.3 GB
+/// worktree used to be read into one `Vec<u8>`, handed to `hyper` as a
+/// single body frame and offered to `writev(2)` as a single vector, which
+/// macOS refuses once the lengths sum past what an `int` holds. `docker
+/// build` never met the limit because it sends the context in pieces, so
+/// the same Dockerfile built on the command line and failed here — with
+/// `client error (SendRequest)` and nothing else. See [`ChunkWriter`].
+///
+/// **No builder does the filtering for us**: `docker build` reads the file
+/// on the client side and leaves the excluded paths out of what it uploads,
+/// and a `.dockerignore` that arrives *inside* the tar is one more file in
+/// the context. Kobune is the client here, so it reads it. See
 /// [`crate::dockerignore`].
 ///
 /// `dockerfile` says where the Dockerfile is, which decides both what the
 /// patterns may not take out and whether one has to be added.
-fn pack_context(context: &Path, dockerfile: Dockerfile<'_>) -> std::io::Result<Vec<u8>> {
+fn pack_context<W: std::io::Write>(
+    context: &Path,
+    dockerfile: &Dockerfile,
+    into: W,
+) -> std::io::Result<W> {
     let ignore = crate::dockerignore::Ignore::for_context(context, dockerfile.inside())?;
 
-    let mut builder = tar::Builder::new(Vec::new());
+    let mut builder = tar::Builder::new(into);
     builder.follow_symlinks(false);
     // `./`, which is what `append_dir_all` called the root. Every entry
     // below it is named without the prefix; `tar` strips a leading `./`
@@ -2147,22 +2223,179 @@ fn pack_context(context: &Path, dockerfile: Dockerfile<'_>) -> std::io::Result<V
 /// Docker names the Dockerfile by its path inside the tar, so the two cases
 /// are packed differently: one is already in the context under its own name,
 /// the other has to be put there under a reserved one.
-#[derive(Clone, Copy)]
-enum Dockerfile<'a> {
-    /// In the context, at this path relative to its root.
-    Inside(&'a str),
-    /// Elsewhere in the worktree. One context can build several images, so
-    /// `dockerfile` is free to point outside it.
-    Outside(&'a Path),
+/// What the walk that packed the context had to say, if it got that far.
+///
+/// Taken rather than borrowed: a build asks twice — once when it fails and
+/// once when it does not — and the answer is only there to be had once.
+async fn packing_failure(packing: &mut Option<Packing>) -> Option<String> {
+    match packing.take()?.await {
+        Ok(Ok(_)) => None,
+        Ok(Err(err)) => Some(crate::error::with_causes(&err)),
+        // Cancelled, or panicked. Neither has anything to add to whatever
+        // the build itself reported.
+        Err(_) => None,
+    }
 }
 
-impl<'a> Dockerfile<'a> {
+/// Where the daemon is.
+///
+/// The same answer `bollard`'s own defaults reach, worked out here because
+/// neither connection can use them: both name a timeout, and the call that
+/// takes one does not read the environment. `DOCKER_HOST` is honoured only
+/// when it names a socket, which is the reading `bollard` has always given
+/// it — a `tcp://` one has never reached this backend.
+fn socket() -> String {
+    const DEFAULT: &str = "unix:///var/run/docker.sock";
+
+    std::env::var("DOCKER_HOST")
+        .ok()
+        .filter(|host| host.starts_with("unix://"))
+        .unwrap_or_else(|| DEFAULT.to_string())
+}
+
+/// A `Write` that hands the packed context to the request, a chunk at a time.
+///
+/// **Blocking, on a thread that may block.** `tar` is synchronous and the
+/// walk is disk-bound, so it runs under `spawn_blocking`; the send is what
+/// puts the socket's back-pressure onto the walk, and is the reason memory
+/// stays flat however large the context turns out to be.
+struct ChunkWriter {
+    sender: tokio::sync::mpsc::Sender<std::result::Result<bytes::Bytes, std::io::Error>>,
+    buffer: Vec<u8>,
+    /// How much has gone. Reported when the context is packed, so a
+    /// worktree that turns out to be enormous says so.
+    sent: u64,
+}
+
+impl ChunkWriter {
+    fn new(
+        sender: tokio::sync::mpsc::Sender<std::result::Result<bytes::Bytes, std::io::Error>>,
+    ) -> Self {
+        Self {
+            sender,
+            buffer: Vec::with_capacity(CONTEXT_CHUNK),
+            sent: 0,
+        }
+    }
+
+    fn emit(&mut self, chunk: Vec<u8>) -> std::io::Result<()> {
+        self.sent += chunk.len() as u64;
+        self.sender
+            .blocking_send(Ok(bytes::Bytes::from(chunk)))
+            // **Nobody is reading, so stop packing.** A cancelled `up`, or
+            // a daemon that answered before it had taken the whole
+            // context. Walking the rest of a worktree to feed a request
+            // that has gone is work with nowhere to put it — which is what
+            // packing into memory first meant doing, every time.
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "the build stopped reading the context",
+                )
+            })
+    }
+}
+
+impl std::io::Write for ChunkWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+
+        while self.buffer.len() >= CONTEXT_CHUNK {
+            let rest = self.buffer.split_off(CONTEXT_CHUNK);
+            let chunk = std::mem::replace(&mut self.buffer, rest);
+            self.emit(chunk)?;
+        }
+
+        Ok(buf.len())
+    }
+
+    /// **Called once the archive is finished, not before.** A tar ends with
+    /// two zero blocks, and they are in the tail this pushes out.
+    fn flush(&mut self) -> std::io::Result<()> {
+        if !self.buffer.is_empty() {
+            let chunk = std::mem::take(&mut self.buffer);
+            self.emit(chunk)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// What the walk that packed the context had to say.
+type Packing = tokio::task::JoinHandle<std::io::Result<u64>>;
+
+/// The packed context, as the request body reads it.
+type Chunks =
+    tokio_stream::wrappers::ReceiverStream<std::result::Result<bytes::Bytes, std::io::Error>>;
+
+/// Packs the context on a blocking thread and hands back its chunks.
+///
+/// The walk and the upload run at once, so the daemon reads while the
+/// worktree is still being read — and a build nobody is waiting for any
+/// more stops packing rather than finishing into a dropped buffer.
+fn stream_context(context: &Path, dockerfile: &Dockerfile) -> (Chunks, Packing) {
+    let (sender, receiver) = tokio::sync::mpsc::channel(CHUNKS_IN_FLIGHT);
+
+    let context = context.to_path_buf();
+    let dockerfile = dockerfile.clone();
+
+    let packing = tokio::task::spawn_blocking(move || {
+        let writer = ChunkWriter::new(sender.clone());
+
+        match pack_context(&context, &dockerfile, writer) {
+            Ok(mut writer) => {
+                std::io::Write::flush(&mut writer)?;
+                Ok(writer.sent)
+            }
+            Err(err) => {
+                // **Down the body as well as back to the caller.** A tar
+                // that simply stops is a tar the daemon would try to build
+                // from; ending the body with an error is what makes the
+                // request be abandoned instead. `io::Error` is not `Clone`,
+                // so what goes down the body is a copy and what the caller
+                // reports is the original.
+                let copy = std::io::Error::new(err.kind(), err.to_string());
+                let _ = sender.blocking_send(Err(copy));
+                Err(err)
+            }
+        }
+    });
+
+    (
+        tokio_stream::wrappers::ReceiverStream::new(receiver),
+        packing,
+    )
+}
+
+/// Owned rather than borrowed, because the walk that reads it runs on a
+/// blocking thread of its own and outlives the call that started it.
+#[derive(Clone, Debug)]
+enum Dockerfile {
+    /// In the context, at this path relative to its root.
+    Inside(String),
+    /// Elsewhere in the worktree. One context can build several images, so
+    /// `dockerfile` is free to point outside it.
+    Outside(std::path::PathBuf),
+}
+
+impl Dockerfile {
+    /// Where the build spec says the Dockerfile is.
+    ///
+    /// Worked out before the packing rather than after, because
+    /// `.dockerignore` has to be told which file not to leave out.
+    fn of(build: &BuildSpec) -> Self {
+        match build.dockerfile.strip_prefix(&build.context) {
+            Ok(relative) => Self::Inside(relative.to_string_lossy().to_string()),
+            Err(_) => Self::Outside(build.dockerfile.clone()),
+        }
+    }
+
     /// Its path within the context, when it has one.
     ///
     /// What [`crate::dockerignore`] is told not to leave out — an outside
     /// one is added after the patterns have had their say, so there is
     /// nothing to spare.
-    fn inside(self) -> Option<&'a str> {
+    fn inside(&self) -> Option<&str> {
         match self {
             Self::Inside(path) => Some(path),
             Self::Outside(_) => None,
@@ -2170,7 +2403,7 @@ impl<'a> Dockerfile<'a> {
     }
 
     /// The name the build asks the daemon for.
-    fn entry(self) -> String {
+    fn entry(&self) -> String {
         match self {
             Self::Inside(path) => path.to_string(),
             Self::Outside(_) => DOCKERFILE_ENTRY.to_string(),
@@ -2181,8 +2414,8 @@ impl<'a> Dockerfile<'a> {
 /// Adds what is under `dir` and not left out, then does the same below it.
 ///
 /// `prefix` is `dir` relative to the root of the context, empty at the top.
-fn pack_into(
-    builder: &mut tar::Builder<Vec<u8>>,
+fn pack_into<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
     dir: &Path,
     prefix: &str,
     ignore: &crate::dockerignore::Ignore,
@@ -2397,9 +2630,99 @@ mod tests {
         );
     }
 
+    /// Every chunk the context went out in, and what the packer reported.
+    async fn streamed(
+        context: &Path,
+        dockerfile: &Dockerfile,
+    ) -> (Vec<bytes::Bytes>, std::io::Result<u64>) {
+        use futures::StreamExt;
+
+        let (chunks, packing) = stream_context(context, dockerfile);
+        let mut kept = Vec::new();
+        let mut failure = None;
+
+        let mut chunks = chunks;
+        while let Some(chunk) = chunks.next().await {
+            match chunk {
+                Ok(bytes) => kept.push(bytes),
+                Err(err) => failure = Some(err),
+            }
+        }
+
+        let reported = packing.await.expect("the packer ran");
+
+        if let Some(err) = failure {
+            assert!(
+                reported.is_err(),
+                "the body was ended with {err} and the packer reported nothing"
+            );
+        }
+
+        (kept, reported)
+    }
+
+    /// **A context leaves in pieces, whatever size it is.**
+    ///
+    /// One `Bytes` for the whole context is one vector handed to
+    /// `writev(2)`, and macOS refuses one whose lengths sum past what an
+    /// `int` holds — so a 3.3 GB worktree failed the build outright with
+    /// `client error (SendRequest)` and nothing else, while a 12 KB one
+    /// beside it built every time. A file larger than one chunk is what
+    /// says the writer splits rather than buffers; reassembling is what
+    /// says splitting changed nothing about what is sent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_build_context_goes_out_in_bounded_chunks() {
+        let dir = a_context();
+        std::fs::write(
+            dir.path().join("big.bin"),
+            vec![7u8; CONTEXT_CHUNK * 3 + 11],
+        )
+        .expect("writes");
+
+        let dockerfile = Dockerfile::Inside("Dockerfile".into());
+        let (chunks, reported) = streamed(dir.path(), &dockerfile).await;
+
+        assert!(
+            chunks.len() > 3,
+            "the context went out in {} frame(s)",
+            chunks.len()
+        );
+        for chunk in &chunks {
+            assert!(
+                chunk.len() <= CONTEXT_CHUNK,
+                "a {}-byte frame went out whole",
+                chunk.len()
+            );
+        }
+
+        // Byte for byte what packing into memory produces.
+        let streamed: Vec<u8> = chunks.concat();
+        let whole = pack_context(dir.path(), &dockerfile, Vec::new()).expect("packs");
+        assert_eq!(streamed, whole);
+        assert_eq!(
+            reported.expect("packs"),
+            whole.len() as u64,
+            "the count reported is not what went out"
+        );
+    }
+
+    /// A context that cannot be read says so, rather than leaving the
+    /// daemon to build whatever arrived before the walk stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_context_that_cannot_be_read_says_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("not-here");
+
+        let dockerfile = Dockerfile::Inside("Dockerfile".into());
+        let (_, reported) = streamed(&missing, &dockerfile).await;
+
+        let err = reported.expect_err("a context that is not there cannot be packed");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
     /// The names in a packed context, sorted.
-    fn packed(context: &Path, dockerfile: Dockerfile<'_>) -> Vec<String> {
-        let tar = pack_context(context, dockerfile).expect("packs");
+    fn packed(context: &Path, dockerfile: Dockerfile) -> Vec<String> {
+        let tar = pack_context(context, &dockerfile, Vec::new()).expect("packs");
 
         let mut names: Vec<String> = tar::Archive::new(tar.as_slice())
             .entries()
@@ -2468,7 +2791,7 @@ mod tests {
         expected.sort();
 
         assert_eq!(
-            packed(dir.path(), Dockerfile::Inside("Dockerfile")),
+            packed(dir.path(), Dockerfile::Inside("Dockerfile".into())),
             expected
         );
     }
@@ -2485,7 +2808,7 @@ mod tests {
         let dockerfile = outside.path().join("web.Dockerfile");
         std::fs::write(&dockerfile, "FROM alpine\n").expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Outside(&dockerfile));
+        let names = packed(dir.path(), Dockerfile::Outside(dockerfile.clone()));
 
         assert!(
             names.contains(&DOCKERFILE_ENTRY.to_string()),
@@ -2505,7 +2828,7 @@ mod tests {
         let dockerfile = outside.path().join("web.Dockerfile");
         std::fs::write(&dockerfile, "FROM alpine\n").expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Outside(&dockerfile));
+        let names = packed(dir.path(), Dockerfile::Outside(dockerfile.clone()));
 
         assert!(names.contains(&DOCKERFILE_ENTRY.to_string()));
         assert!(!names.contains(&"package.json".to_string()));
@@ -2522,7 +2845,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile".into()));
 
         assert!(!names.iter().any(|name| name.contains("node_modules")));
         assert!(!names.iter().any(|name| name.contains("debug.log")));
@@ -2544,7 +2867,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile".into()));
 
         assert!(names.contains(&"Dockerfile".to_string()));
         assert!(names.contains(&"src/main.rs".to_string()));
@@ -2560,7 +2883,7 @@ mod tests {
         )
         .expect("writes");
 
-        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile".into()));
 
         assert!(names.contains(&"node_modules/react/index.js".to_string()));
         // The directory itself stays out, as it does under `docker build`.
@@ -2581,7 +2904,7 @@ mod tests {
         builder.follow_symlinks(false);
         assert!(builder.append_dir_all(".", dir.path()).is_err());
 
-        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile"));
+        let names = packed(dir.path(), Dockerfile::Inside("Dockerfile".into()));
 
         assert!(!names.iter().any(|name| name.contains("app.sock")));
         assert!(names.contains(&"src/main.rs".to_string()));
