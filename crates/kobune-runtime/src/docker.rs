@@ -2916,18 +2916,43 @@ mod tests {
 
     /// A context nobody meant to send is worth saying so about, even though
     /// it now works.
+    ///
+    /// Driven with zeroes rather than a fixture, because what is under test
+    /// is the counting: half a gigabyte on disk would test the filesystem
+    /// instead, and a sparse file — the cheap way to write one — is packed
+    /// as a GNU sparse entry on Linux and as its zeroes on macOS, so it
+    /// counts differently on the two.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_context_nobody_meant_to_send_is_remarked_on() {
-        let dir = a_context();
+        use futures::StreamExt;
 
-        // Sparse, so this costs a `tar` read of zeroes rather than a
-        // gigabyte of disk.
-        let big = std::fs::File::create(dir.path().join("big.bin")).expect("creates");
-        big.set_len(A_CONTEXT_WORTH_MENTIONING + CONTEXT_CHUNK as u64)
-            .expect("sizes");
-        drop(big);
+        let (sender, receiver) = tokio::sync::mpsc::channel(CHUNKS_IN_FLIGHT);
+        let (events, mut received) = EventSink::channel();
 
-        let lines = events_of_streaming(dir.path(), &Dockerfile::Inside("Dockerfile".into())).await;
+        let writing = tokio::task::spawn_blocking(move || {
+            let mut writer = ChunkWriter::new(sender, events, "building x".to_string());
+            let block = [0u8; 64 * 1024];
+
+            while writer.sent <= A_CONTEXT_WORTH_MENTIONING {
+                std::io::Write::write_all(&mut writer, &block).expect("writes");
+            }
+        });
+
+        let mut chunks = tokio_stream::wrappers::ReceiverStream::new(receiver);
+        while chunks.next().await.is_some() {}
+        writing.await.expect("wrote");
+
+        let mut lines = Vec::new();
+        while let Some(event) = received.recv().await {
+            match event {
+                kobune_api::Event::Step {
+                    status: kobune_api::StepStatus::Progress { message },
+                    ..
+                }
+                | kobune_api::Event::Log { message, .. } => lines.push(message),
+                _ => {}
+            }
+        }
 
         let remark = lines
             .iter()
