@@ -110,8 +110,13 @@ x509-parser = "0.18"
 hickory-server = "0.24"
 hickory-proto = "0.24"
 
-# Runtime
-bollard = { version = "0.18", features = ["buildkit"] }
+# Runtime. `buildkit` brings the gRPC session a BuildKit build runs over;
+# it also decides which body types `build_image` will take, which is what
+# lets the build context be streamed rather than handed over whole. It
+# stopped implying a date library of its own in 0.21, and refuses to build
+# without one, so `chrono` — the one already in this workspace — is named
+# here rather than left to whichever the build happens to see first.
+bollard = { version = "0.21", features = ["buildkit", "chrono"] }
 
 # HTTP client, for the update check. rustls rather than the system TLS:
 # the proxy already depends on it, so nothing new is pulled in.

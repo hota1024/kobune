@@ -16,18 +16,19 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bollard::Docker;
-use bollard::container::{
-    AttachContainerOptions, Config, CreateContainerOptions, ListContainersOptions, LogOutput,
-    LogsOptions, RemoveContainerOptions, ResizeContainerTtyOptions, StartContainerOptions,
-    StopContainerOptions,
-};
-use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::image::{BuildImageOptions, BuilderVersion, CreateImageOptions};
+use bollard::container::LogOutput;
+use bollard::exec::StartExecResults;
 use bollard::models::{
-    BuildInfoAux, ContainerSummary, EndpointSettings, HostConfig, Mount, MountTypeEnum, PortBinding,
+    BuildInfoAux, ContainerCreateBody, ContainerSummary, ContainerSummaryStateEnum,
+    EndpointSettings, ExecConfig, HostConfig, Mount, MountType, NetworkConnectRequest,
+    NetworkCreateRequest, NetworkingConfig, PortBinding, VolumeCreateRequest,
 };
-use bollard::network::{ConnectNetworkOptions, CreateNetworkOptions, ListNetworksOptions};
-use bollard::volume::ListVolumesOptions;
+use bollard::query_parameters::{
+    AttachContainerOptions, BuildImageOptions, BuilderVersion, CreateContainerOptions,
+    CreateImageOptions, ListContainersOptions, ListNetworksOptions, ListVolumesOptions,
+    LogsOptions, RemoveContainerOptions, RemoveVolumeOptions, ResizeContainerTTYOptions,
+    StopContainerOptions, WaitContainerOptions,
+};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use kobune_api::OutputStream;
@@ -63,7 +64,7 @@ impl crate::health::CommandProbe for DockerCommandProbe {
             .docker
             .create_exec(
                 &self.container,
-                CreateExecOptions {
+                ExecConfig {
                     cmd: Some(command.to_vec()),
                     // The output is not read, only the status, but Docker
                     // needs somewhere to put it.
@@ -110,9 +111,9 @@ impl Resize for DockerTerminal {
         self.docker
             .resize_container_tty(
                 &self.container,
-                ResizeContainerTtyOptions {
-                    width: window.cols,
-                    height: window.rows,
+                ResizeContainerTTYOptions {
+                    w: window.cols as i32,
+                    h: window.rows as i32,
                 },
             )
             .await
@@ -132,7 +133,7 @@ const BUILD_CONTEXT_LINES: usize = 12;
 const DOCKERFILE_ENTRY: &str = ".kobune-dockerfile";
 
 /// How many seconds a stop waits before it escalates to SIGKILL.
-const STOP_TIMEOUT_SECS: i64 = 10;
+const STOP_TIMEOUT_SECS: i32 = 10;
 
 /// Exit codes that mean "asked to stop" rather than "fell over".
 ///
@@ -342,7 +343,9 @@ impl DockerRuntime {
 
         let existing = self
             .docker
-            .list_networks(Some(ListNetworksOptions { filters }))
+            .list_networks(Some(ListNetworksOptions {
+                filters: Some(filters),
+            }))
             .await
             .map_err(|e| RuntimeError::failed("listing networks", e))?;
 
@@ -363,10 +366,10 @@ impl DockerRuntime {
         network_labels.insert(labels::WORKSPACE.to_string(), key.workspace.clone());
 
         self.docker
-            .create_network(CreateNetworkOptions {
+            .create_network(NetworkCreateRequest {
                 name: name.clone(),
-                driver: "bridge".to_string(),
-                labels: network_labels,
+                driver: Some("bridge".to_string()),
+                labels: Some(network_labels),
                 ..Default::default()
             })
             .await
@@ -507,12 +510,14 @@ impl DockerRuntime {
     ) -> std::result::Result<(), BuildFailure> {
         let options = BuildImageOptions {
             dockerfile,
-            t: build.tag.clone(),
-            buildargs: build
-                .args
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            t: Some(build.tag.clone()),
+            buildargs: Some(
+                build
+                    .args
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
             // Without this, an intermediate container is left behind for
             // every failed build.
             rm: true,
@@ -531,7 +536,9 @@ impl DockerRuntime {
             ..Default::default()
         };
 
-        let mut stream = self.docker.build_image(options, None, Some(context.into()));
+        let mut stream =
+            self.docker
+                .build_image(options, None, Some(bollard::body_full(context.into())));
 
         // The last few lines of output, kept so a failure can say what the
         // build was doing. Docker's own error is often just "exit code 3",
@@ -570,7 +577,7 @@ impl DockerRuntime {
 
                     // A failing RUN can come back in-band rather than as a
                     // stream error, so both paths have to be handled.
-                    info.error
+                    info.error_detail.and_then(|detail| detail.message)
                 }
                 // bollard folds an in-band failure into this, but its
                 // Display drops the message, leaving "Docker stream error"
@@ -622,7 +629,7 @@ impl DockerRuntime {
 
         let mut stream = self.docker.create_image(
             Some(CreateImageOptions {
-                from_image: image,
+                from_image: Some(image.to_string()),
                 ..Default::default()
             }),
             None,
@@ -679,9 +686,9 @@ impl DockerRuntime {
         }
 
         self.docker
-            .create_volume(bollard::volume::CreateVolumeOptions {
-                name: full.clone(),
-                labels: volume_labels,
+            .create_volume(VolumeCreateRequest {
+                name: Some(full.clone()),
+                labels: Some(volume_labels),
                 ..Default::default()
             })
             .await
@@ -717,8 +724,8 @@ impl DockerRuntime {
                 docker
                     .wait_container(
                         &id,
-                        Some(bollard::container::WaitContainerOptions {
-                            condition: "next-exit",
+                        Some(WaitContainerOptions {
+                            condition: "next-exit".to_string(),
                         }),
                     )
                     .next()
@@ -730,11 +737,11 @@ impl DockerRuntime {
             .docker
             .attach_container(
                 id,
-                Some(AttachContainerOptions::<String> {
-                    stream: Some(true),
-                    stdout: Some(true),
-                    stderr: Some(true),
-                    logs: Some(true),
+                Some(AttachContainerOptions {
+                    stream: true,
+                    stdout: true,
+                    stderr: true,
+                    logs: true,
                     ..Default::default()
                 }),
             )
@@ -742,7 +749,7 @@ impl DockerRuntime {
             .map_err(|e| RuntimeError::failed("attaching to the throwaway container", e))?;
 
         self.docker
-            .start_container(id, None::<StartContainerOptions<String>>)
+            .start_container(id, None)
             .await
             .map_err(|e| RuntimeError::failed("starting the throwaway container", e))?;
 
@@ -820,7 +827,9 @@ impl DockerRuntime {
 
         let listed = match self
             .docker
-            .list_volumes(Some(ListVolumesOptions { filters }))
+            .list_volumes(Some(ListVolumesOptions {
+                filters: Some(filters),
+            }))
             .await
         {
             Ok(listed) => listed,
@@ -831,7 +840,11 @@ impl DockerRuntime {
         };
 
         for volume in listed.volumes.unwrap_or_default() {
-            match self.docker.remove_volume(&volume.name, None).await {
+            match self
+                .docker
+                .remove_volume(&volume.name, None::<RemoveVolumeOptions>)
+                .await
+            {
                 Ok(()) => events.debug(format!("removed volume {}", volume.name)),
                 Err(err) => {
                     events.debug(format!("volume {} was not removed: {err}", volume.name));
@@ -856,7 +869,7 @@ impl DockerRuntime {
             .docker
             .list_containers(Some(ListContainersOptions {
                 all: true,
-                filters,
+                filters: Some(filters),
                 ..Default::default()
             }))
             .await
@@ -938,11 +951,11 @@ impl DockerRuntime {
             .docker
             .attach_container(
                 id,
-                Some(AttachContainerOptions::<String> {
-                    stream: Some(true),
-                    stdout: Some(true),
-                    stderr: Some(true),
-                    logs: Some(false),
+                Some(AttachContainerOptions {
+                    stream: true,
+                    stdout: true,
+                    stderr: true,
+                    logs: false,
                     ..Default::default()
                 }),
             )
@@ -1071,7 +1084,9 @@ impl DockerRuntime {
         // An empty host port lets Docker pick a free one. Bound to
         // 127.0.0.1 so it never reaches the LAN.
         let mut port_bindings = HashMap::new();
-        let mut exposed_ports = HashMap::new();
+        // A list of `"3000/tcp"`, where the API once took a map keyed by
+        // the same string with nothing behind it.
+        let mut exposed_ports: Vec<String> = Vec::new();
         if let Some(port) = port {
             let key = format!("{port}/tcp");
             port_bindings.insert(
@@ -1081,13 +1096,13 @@ impl DockerRuntime {
                     host_port: Some(String::new()),
                 }]),
             );
-            exposed_ports.insert(key, HashMap::new());
+            exposed_ports.push(key);
         }
 
         let mut mounts = Vec::new();
         if let Some(SourceMount { host, target }) = &spec.source_mount {
             mounts.push(Mount {
-                typ: Some(MountTypeEnum::BIND),
+                typ: Some(MountType::BIND),
                 source: Some(host.to_string_lossy().to_string()),
                 target: Some(target.clone()),
                 ..Default::default()
@@ -1106,7 +1121,7 @@ impl DockerRuntime {
                         .ensure_volume(&spec.key.workspace, name, *scope)
                         .await?;
                     mounts.push(Mount {
-                        typ: Some(MountTypeEnum::VOLUME),
+                        typ: Some(MountType::VOLUME),
                         source: Some(full),
                         target: Some(target.clone()),
                         read_only: Some(*read_only),
@@ -1119,7 +1134,7 @@ impl DockerRuntime {
                     read_only,
                 } => {
                     mounts.push(Mount {
-                        typ: Some(MountTypeEnum::BIND),
+                        typ: Some(MountType::BIND),
                         source: Some(source.to_string_lossy().to_string()),
                         target: Some(target.clone()),
                         read_only: Some(*read_only),
@@ -1145,7 +1160,7 @@ impl DockerRuntime {
             },
         );
 
-        let config = Config {
+        let config = ContainerCreateBody {
             image: Some(spec.image.clone()),
             // Both halves, or neither. A terminal with no stdin is one the
             // program can draw on but nobody can answer, which is the half
@@ -1198,8 +1213,8 @@ impl DockerRuntime {
                 },
                 ..Default::default()
             }),
-            networking_config: Some(bollard::container::NetworkingConfig {
-                endpoints_config: endpoints,
+            networking_config: Some(NetworkingConfig {
+                endpoints_config: Some(endpoints),
             }),
             ..Default::default()
         };
@@ -1208,8 +1223,8 @@ impl DockerRuntime {
             .docker
             .create_container(
                 Some(CreateContainerOptions {
-                    name: name.clone(),
-                    platform: None,
+                    name: Some(name.clone()),
+                    platform: String::new(),
                 }),
                 config,
             )
@@ -1271,29 +1286,30 @@ impl DockerRuntime {
             .get(labels::PORT)
             .and_then(|value| value.parse::<u16>().ok());
 
-        // The `docker ps` state is a string.
-        let state = match summary.state.as_deref() {
-            Some("running") => ServiceState::Ready,
-            Some("created" | "restarting") => ServiceState::Starting,
+        use ContainerSummaryStateEnum as DockerState;
+
+        let state = match summary.state {
+            Some(DockerState::RUNNING) => ServiceState::Ready,
+            Some(DockerState::CREATED | DockerState::RESTARTING) => ServiceState::Starting,
             // A stop Kobune asked for is a stop whatever the process made
             // of the signal. `turbo` and `next` catch SIGTERM and exit 1
             // themselves, which is indistinguishable from a crash by the
             // exit code alone — and leaves an idle-stopped service sitting
             // in `failed` until someone reads the logs to find out that
             // nothing is wrong.
-            Some("exited") if stopped_by_us => ServiceState::Stopped,
-            Some("exited") => match crash_code(summary.status.as_deref()) {
+            Some(DockerState::EXITED) if stopped_by_us => ServiceState::Stopped,
+            Some(DockerState::EXITED) => match crash_code(summary.status.as_deref()) {
                 Some(code) => ServiceState::failed(format!(
                     "the container exited with code {code}. \
                      `kobune logs {service}` has the output"
                 )),
                 None => ServiceState::Stopped,
             },
-            Some("dead") => ServiceState::failed(format!(
+            Some(DockerState::DEAD) => ServiceState::failed(format!(
                 "the container is dead. `kobune logs {service}` has whatever it \
                  managed to write"
             )),
-            Some("paused" | "removing") => ServiceState::Stopped,
+            Some(DockerState::PAUSED | DockerState::REMOVING) => ServiceState::Stopped,
             _ => ServiceState::Unknown,
         };
 
@@ -1439,7 +1455,10 @@ impl Runtime for DockerRuntime {
 
             let wrong_terminal = has_terminal != spec.tty;
 
-            if !wrong_image && !wrong_terminal && existing.state.as_deref() == Some("running") {
+            if !wrong_image
+                && !wrong_terminal
+                && existing.state == Some(ContainerSummaryStateEnum::RUNNING)
+            {
                 events.step_skipped(
                     "start",
                     format!("starting {}", spec.name()),
@@ -1493,12 +1512,12 @@ impl Runtime for DockerRuntime {
                 .docker
                 .connect_network(
                     &shared,
-                    ConnectNetworkOptions {
+                    NetworkConnectRequest {
                         container: id.clone(),
-                        endpoint_config: EndpointSettings {
+                        endpoint_config: Some(EndpointSettings {
                             aliases: Some(vec![spec.key.service.clone()]),
                             ..Default::default()
-                        },
+                        }),
                     },
                 )
                 .await;
@@ -1511,20 +1530,17 @@ impl Runtime for DockerRuntime {
             self.watch_terminal(&id).await;
         }
 
-        self.docker
-            .start_container(&id, None::<StartContainerOptions<String>>)
-            .await
-            .map_err(|e| {
-                // The watch above was for a container that never ran, so
-                // it has nothing to say and no end coming: what it is
-                // attached to sits in `created` until the next start
-                // removes it. Dropping the entry keeps the map to
-                // containers that exist; the task goes with the removal.
-                self.terminals().remove(&id);
+        self.docker.start_container(&id, None).await.map_err(|e| {
+            // The watch above was for a container that never ran, so
+            // it has nothing to say and no end coming: what it is
+            // attached to sits in `created` until the next start
+            // removes it. Dropping the entry keeps the map to
+            // containers that exist; the task goes with the removal.
+            self.terminals().remove(&id);
 
-                events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
-                RuntimeError::failed(format!("starting container {name}"), e)
-            })?;
+            events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
+            RuntimeError::failed(format!("starting container {name}"), e)
+        })?;
 
         // **A terminal Docker has just created has no size at all**, and
         // gets one only when a client attaches. A program that draws a
@@ -1537,9 +1553,9 @@ impl Runtime for DockerRuntime {
                 .docker
                 .resize_container_tty(
                     &id,
-                    ResizeContainerTtyOptions {
-                        width: DEFAULT_WINDOW.cols,
-                        height: DEFAULT_WINDOW.rows,
+                    ResizeContainerTTYOptions {
+                        w: DEFAULT_WINDOW.cols as i32,
+                        h: DEFAULT_WINDOW.rows as i32,
                     },
                 )
                 .await
@@ -1604,7 +1620,7 @@ impl Runtime for DockerRuntime {
         };
 
         let id = container.id.unwrap_or_default();
-        if container.state.as_deref() != Some("running") {
+        if container.state != Some(ContainerSummaryStateEnum::RUNNING) {
             events.step_skipped("stop", format!("stopping {}", key.service), "not running");
             return Ok(());
         }
@@ -1615,7 +1631,8 @@ impl Runtime for DockerRuntime {
             .stop_container(
                 &id,
                 Some(StopContainerOptions {
-                    t: STOP_TIMEOUT_SECS,
+                    t: Some(STOP_TIMEOUT_SECS),
+                    signal: None,
                 }),
             )
             .await
@@ -1673,7 +1690,7 @@ impl Runtime for DockerRuntime {
             .docker
             .list_containers(Some(ListContainersOptions {
                 all: true,
-                filters,
+                filters: Some(filters),
                 ..Default::default()
             }))
             .await
@@ -1731,7 +1748,7 @@ impl Runtime for DockerRuntime {
         let id = container.id.unwrap_or_default();
         let stream = self.docker.logs(
             &id,
-            Some(LogsOptions::<String> {
+            Some(LogsOptions {
                 follow: options.follow,
                 stdout: true,
                 stderr: true,
@@ -1783,7 +1800,7 @@ impl Runtime for DockerRuntime {
             )
         })?;
 
-        if container.state.as_deref() != Some("running") {
+        if container.state != Some(ContainerSummaryStateEnum::RUNNING) {
             return Err(RuntimeError::failed(
                 format!("attaching to {}", key.service),
                 "the container is not running. Start it with `kobune up`",
@@ -1795,11 +1812,11 @@ impl Runtime for DockerRuntime {
             .docker
             .attach_container(
                 &id,
-                Some(AttachContainerOptions::<String> {
-                    stdin: Some(true),
-                    stdout: Some(true),
-                    stderr: Some(true),
-                    stream: Some(true),
+                Some(AttachContainerOptions {
+                    stdin: true,
+                    stdout: true,
+                    stderr: true,
+                    stream: true,
                     // **No output replayed.** A full-screen program's past
                     // output is a record of a screen that no longer
                     // exists; drawing it again produces a mess, and the
@@ -1808,7 +1825,7 @@ impl Runtime for DockerRuntime {
                     //
                     // What the program *said about the terminal* is
                     // replayed, and separately — see the preamble below.
-                    logs: Some(false),
+                    logs: false,
                     // Left to Docker's default, and never triggered:
                     // detaching is the client's business, and it holds the
                     // keys before they get this far.
@@ -1868,7 +1885,7 @@ impl Runtime for DockerRuntime {
             )
         })?;
 
-        if container.state.as_deref() != Some("running") {
+        if container.state != Some(ContainerSummaryStateEnum::RUNNING) {
             // Wanting to exec into a container is at its most likely just
             // after one fell over, and "start it with `kobune up`" describes
             // the wrong problem.
@@ -1891,7 +1908,7 @@ impl Runtime for DockerRuntime {
             .docker
             .create_exec(
                 &id,
-                CreateExecOptions {
+                ExecConfig {
                     cmd: Some(command.to_vec()),
                     working_dir: options.workdir.clone(),
                     attach_stdout: Some(true),
@@ -1992,7 +2009,7 @@ impl Runtime for DockerRuntime {
             .docker
             .list_containers(Some(ListContainersOptions {
                 all: true,
-                filters,
+                filters: Some(filters),
                 ..Default::default()
             }))
             .await
@@ -2018,7 +2035,9 @@ impl Runtime for DockerRuntime {
 
         let listed = self
             .docker
-            .list_volumes(Some(ListVolumesOptions { filters }))
+            .list_volumes(Some(ListVolumesOptions {
+                filters: Some(filters),
+            }))
             .await
             .map_err(Self::unavailable)?;
 
@@ -2039,7 +2058,7 @@ impl Runtime for DockerRuntime {
 
     async fn remove_managed_volume(&self, volume: &ManagedVolume) -> Result<()> {
         self.docker
-            .remove_volume(&volume.id, None)
+            .remove_volume(&volume.id, None::<RemoveVolumeOptions>)
             .await
             .map_err(|e| RuntimeError::failed(format!("removing volume {}", volume.id), e))
     }
@@ -2230,16 +2249,18 @@ fn extra_hosts(spec: &ServiceSpec) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::models::Port;
+    use bollard::models::PortSummary;
     use std::collections::HashMap;
 
     fn summary_with(labels_map: HashMap<String, String>, state: &str) -> ContainerSummary {
         ContainerSummary {
             id: Some("abc123".into()),
             image: Some("node:22".into()),
-            state: Some(state.into()),
+            // `docker ps`'s own words, which is what the callers below
+            // read like.
+            state: state.parse().ok(),
             labels: Some(labels_map),
-            ports: Some(vec![Port {
+            ports: Some(vec![PortSummary {
                 private_port: 3000,
                 public_port: Some(49312),
                 ip: Some("127.0.0.1".into()),
@@ -2349,7 +2370,11 @@ mod tests {
         for round in 0..4 {
             let _ = runtime
                 .docker
-                .remove_image(&format!("kobune-leak-probe-{round}:latest"), None, None)
+                .remove_image(
+                    &format!("kobune-leak-probe-{round}:latest"),
+                    None::<bollard::query_parameters::RemoveImageOptions>,
+                    None,
+                )
                 .await;
         }
 
