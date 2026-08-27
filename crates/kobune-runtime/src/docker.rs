@@ -117,7 +117,9 @@ impl Resize for DockerTerminal {
                 },
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("resizing {}'s terminal", self.service), e))
+            .map_err(|e| {
+                RuntimeError::caused_by(format!("resizing {}'s terminal", self.service), &e)
+            })
     }
 }
 
@@ -305,10 +307,10 @@ impl DockerRuntime {
             .clone()
     }
 
-    fn unavailable(err: impl std::fmt::Display) -> RuntimeError {
+    fn unavailable(err: bollard::errors::Error) -> RuntimeError {
         RuntimeError::Unavailable {
             runtime: RUNTIME_ID.to_string(),
-            message: err.to_string(),
+            message: crate::error::with_causes(&err),
         }
     }
 
@@ -347,7 +349,7 @@ impl DockerRuntime {
                 filters: Some(filters),
             }))
             .await
-            .map_err(|e| RuntimeError::failed("listing networks", e))?;
+            .map_err(|e| RuntimeError::caused_by("listing networks", &e))?;
 
         // The filter is a prefix match, so only an exact name counts.
         if existing
@@ -373,7 +375,7 @@ impl DockerRuntime {
                 ..Default::default()
             })
             .await
-            .map_err(|e| RuntimeError::failed("creating the network", e))?;
+            .map_err(|e| RuntimeError::caused_by("creating the network", &e))?;
 
         Ok(name)
     }
@@ -435,7 +437,10 @@ impl DockerRuntime {
 
             packed().map_err(|err| {
                 events.step_failed("build", &label, err.to_string());
-                RuntimeError::failed(format!("packing the build context for {}", build.tag), err)
+                RuntimeError::caused_by(
+                    format!("packing the build context for {}", build.tag),
+                    &err,
+                )
             })
         };
 
@@ -583,7 +588,12 @@ impl DockerRuntime {
                 // Display drops the message, leaving "Docker stream error"
                 // and nothing else. Dig the real one out.
                 Err(bollard::errors::Error::DockerStreamError { error }) => Some(error),
-                Err(err) => Some(err.to_string()),
+                // **Everything behind it, not just the top.** A build
+                // over a context the socket would not take reported
+                // `client error (SendRequest)` and stopped there, because
+                // that is all `Display` says and the reason lives one link
+                // down. See [`crate::error::with_causes`].
+                Err(err) => Some(crate::error::with_causes(&err)),
             };
 
             let Some(error) = failure else {
@@ -644,10 +654,11 @@ impl DockerRuntime {
                     }
                 }
                 Err(err) => {
-                    events.step_failed("pull", format!("pulling image {image}"), err.to_string());
+                    let message = crate::error::with_causes(&err);
+                    events.step_failed("pull", format!("pulling image {image}"), message.clone());
                     return Err(RuntimeError::ImageUnavailable {
                         image: image.to_string(),
-                        message: err.to_string(),
+                        message,
                     });
                 }
             }
@@ -692,7 +703,7 @@ impl DockerRuntime {
                 ..Default::default()
             })
             .await
-            .map_err(|e| RuntimeError::failed("creating the volume", e))?;
+            .map_err(|e| RuntimeError::caused_by("creating the volume", &e))?;
 
         Ok(full)
     }
@@ -746,12 +757,12 @@ impl DockerRuntime {
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed("attaching to the throwaway container", e))?;
+            .map_err(|e| RuntimeError::caused_by("attaching to the throwaway container", &e))?;
 
         self.docker
             .start_container(id, None)
             .await
-            .map_err(|e| RuntimeError::failed("starting the throwaway container", e))?;
+            .map_err(|e| RuntimeError::caused_by("starting the throwaway container", &e))?;
 
         let mut output = attached.output;
         while let Some(chunk) = output.next().await {
@@ -788,7 +799,7 @@ impl DockerRuntime {
             Ok(Some(Ok(response))) => response.status_code,
             Ok(Some(Err(bollard::errors::Error::DockerContainerWaitError { code, .. }))) => code,
             Ok(Some(Err(err))) => {
-                return Err(RuntimeError::failed("waiting for the throwaway", err));
+                return Err(RuntimeError::caused_by("waiting for the throwaway", &err));
             }
             Ok(None) => {
                 return Err(RuntimeError::failed(
@@ -796,7 +807,7 @@ impl DockerRuntime {
                     "Docker closed the connection without reporting an exit code",
                 ));
             }
-            Err(err) => return Err(RuntimeError::failed("waiting for the throwaway", err)),
+            Err(err) => return Err(RuntimeError::caused_by("waiting for the throwaway", &err)),
         };
 
         Ok(ExecOutcome {
@@ -1229,7 +1240,7 @@ impl DockerRuntime {
                 config,
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("creating container {name}"), e))?;
+            .map_err(|e| RuntimeError::caused_by(format!("creating container {name}"), &e))?;
 
         Ok(created.id)
     }
@@ -1248,7 +1259,7 @@ impl DockerRuntime {
             .docker
             .inspect_container(container_id, None)
             .await
-            .map_err(|e| RuntimeError::failed("inspecting the container", e))?;
+            .map_err(|e| RuntimeError::caused_by("inspecting the container", &e))?;
 
         let bindings = details
             .network_settings
@@ -1491,7 +1502,7 @@ impl Runtime for DockerRuntime {
                     }),
                 )
                 .await
-                .map_err(|e| RuntimeError::failed(format!("removing container {name}"), e))?;
+                .map_err(|e| RuntimeError::caused_by(format!("removing container {name}"), &e))?;
         }
 
         events.step_started("start", format!("starting {}", spec.name()));
@@ -1538,8 +1549,9 @@ impl Runtime for DockerRuntime {
             // containers that exist; the task goes with the removal.
             self.terminals().remove(&id);
 
-            events.step_failed("start", format!("starting {}", spec.name()), e.to_string());
-            RuntimeError::failed(format!("starting container {name}"), e)
+            let reason = crate::error::with_causes(&e);
+            events.step_failed("start", format!("starting {}", spec.name()), reason);
+            RuntimeError::caused_by(format!("starting container {name}"), &e)
         })?;
 
         // **A terminal Docker has just created has no size at all**, and
@@ -1636,7 +1648,7 @@ impl Runtime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("stopping container {id}"), e))?;
+            .map_err(|e| RuntimeError::caused_by(format!("stopping container {id}"), &e))?;
 
         // Remembered so the exit code it produced is not read as a crash.
         // Only for as long as this runtime lives: after a daemon restart
@@ -1667,7 +1679,7 @@ impl Runtime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("removing container {id}"), e))?;
+            .map_err(|e| RuntimeError::caused_by(format!("removing container {id}"), &e))?;
 
         // There is no longer a container whose exit code needs explaining.
         self.stopped_set().remove(key);
@@ -1708,7 +1720,7 @@ impl Runtime for DockerRuntime {
                         }),
                     )
                     .await
-                    .map_err(|e| RuntimeError::failed(format!("removing container {id}"), e))?;
+                    .map_err(|e| RuntimeError::caused_by(format!("removing container {id}"), &e))?;
             }
         }
         events.step_done("destroy", "removing containers");
@@ -1833,7 +1845,7 @@ impl Runtime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(|e| RuntimeError::failed(format!("attaching to {}", key.service), e))?;
+            .map_err(|e| RuntimeError::caused_by(format!("attaching to {}", key.service), &e))?;
 
         // Taken from the watcher that has been reading this terminal since
         // before the container started. Nothing is read back here, and
@@ -1919,13 +1931,13 @@ impl Runtime for DockerRuntime {
                 },
             )
             .await
-            .map_err(|e| RuntimeError::failed("creating the exec", e))?;
+            .map_err(|e| RuntimeError::caused_by("creating the exec", &e))?;
 
         let started = self
             .docker
             .start_exec(&created.id, None)
             .await
-            .map_err(|e| RuntimeError::failed("starting the exec", e))?;
+            .map_err(|e| RuntimeError::caused_by("starting the exec", &e))?;
 
         if let StartExecResults::Attached { mut output, .. } = started {
             while let Some(chunk) = output.next().await {
@@ -1948,7 +1960,7 @@ impl Runtime for DockerRuntime {
             .docker
             .inspect_exec(&created.id)
             .await
-            .map_err(|e| RuntimeError::failed("inspecting the exec", e))?;
+            .map_err(|e| RuntimeError::caused_by("inspecting the exec", &e))?;
 
         Ok(ExecOutcome {
             exit_code: inspected.exit_code.unwrap_or(-1) as i32,
@@ -2060,7 +2072,7 @@ impl Runtime for DockerRuntime {
         self.docker
             .remove_volume(&volume.id, None::<RemoveVolumeOptions>)
             .await
-            .map_err(|e| RuntimeError::failed(format!("removing volume {}", volume.id), e))
+            .map_err(|e| RuntimeError::caused_by(format!("removing volume {}", volume.id), &e))
     }
 }
 

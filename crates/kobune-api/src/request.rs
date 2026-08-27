@@ -275,6 +275,36 @@ fn yes() -> bool {
 }
 
 impl Request {
+    /// What this request is called on the wire.
+    ///
+    /// The same word `op` carries, so a line in `kobuned.log` and a line in
+    /// a protocol trace name the same thing. Nothing else about the request
+    /// belongs in a log: the fields carry paths, branch names and the
+    /// environment a service is given.
+    pub fn op(&self) -> &'static str {
+        match self {
+            Self::Ping => "ping",
+            Self::Shutdown => "shutdown",
+            Self::Purge { .. } => "purge",
+            Self::Doctor { .. } => "doctor",
+            Self::Ls { .. } => "ls",
+            Self::New { .. } => "new",
+            Self::Rm { .. } => "rm",
+            Self::Up { .. } => "up",
+            Self::Down { .. } => "down",
+            Self::Status { .. } => "status",
+            Self::Logs { .. } => "logs",
+            Self::Exec { .. } => "exec",
+            Self::EnvList { .. } => "env_list",
+            Self::EnvSet { .. } => "env_set",
+            Self::EnvUnset { .. } => "env_unset",
+            Self::ConfigShow { .. } => "config_show",
+            Self::TunnelEnable { .. } => "tunnel_enable",
+            Self::TunnelDisable { .. } => "tunnel_disable",
+            Self::TunnelStatus { .. } => "tunnel_status",
+        }
+    }
+
     /// Whether this is a long-running operation that emits progress.
     ///
     /// Clients show a progress indicator when this is true.
@@ -338,6 +368,37 @@ mod tests {
         match request {
             Request::New { start, .. } => assert!(start, "start defaults to true"),
             other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    /// **The name in the log is the name on the wire**, and the two are
+    /// written in different places — one a match arm, the other a serde
+    /// attribute. A variant added to one and not the other would leave a
+    /// log line naming a request nobody can find in a trace.
+    #[test]
+    fn every_request_is_logged_under_the_name_it_travels_by() {
+        let target = Target::new(PathBuf::from("/repo"));
+
+        for request in [
+            Request::Ping,
+            Request::Shutdown,
+            Request::Purge { dry_run: true },
+            Request::Doctor {
+                target: target.clone(),
+            },
+            Request::Up {
+                target: target.clone(),
+                services: vec![],
+                rebuild: false,
+            },
+            Request::TunnelDisable { target },
+        ] {
+            let wire = serde_json::to_value(&request).expect("serializes");
+            assert_eq!(
+                wire["op"].as_str(),
+                Some(request.op()),
+                "{request:?} is logged under a different name than it travels by"
+            );
         }
     }
 

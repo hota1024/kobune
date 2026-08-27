@@ -103,13 +103,27 @@ impl EventSink {
         self.send(Event::step_done(self.step_id(id), label));
     }
 
+    /// A step that did not finish, and why.
+    ///
+    /// **Logged as well as sent.** The event goes to whoever asked for the
+    /// work, and a CLI that has since exited takes it with it — so a
+    /// failure nobody was watching, or one somebody wants to look at again
+    /// an hour later, used to leave no trace at all. `kobuned.log` held
+    /// `INFO` lines either side of a build that failed and nothing about
+    /// the failure.
     pub fn step_failed(
         &self,
         id: impl Into<String>,
         label: impl Into<String>,
         reason: impl Into<String>,
     ) {
-        self.send(Event::step_failed(self.step_id(id), label, reason));
+        let id = self.step_id(id);
+        let label = label.into();
+        let reason = reason.into();
+
+        tracing::error!(step = %id, "{label}: {reason}");
+
+        self.send(Event::step_failed(id, label, reason));
     }
 
     pub fn step_skipped(

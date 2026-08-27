@@ -326,6 +326,7 @@ async fn serve(
         }
     });
 
+    let op = request.op();
     let outcome = supervisor.handle(request, &sink, from_client).await;
 
     // Dropping the sink closes the channel and ends the pump.
@@ -334,7 +335,16 @@ async fn serve(
 
     let response = match outcome {
         Ok(value) => ServerMessage::ok(id, value),
-        Err(error) => ServerMessage::err(id, error),
+        Err(error) => {
+            // **The log is the only record.** The error goes down the
+            // socket to whoever asked, and there it ends: a `kobune up`
+            // that failed while nobody was reading, or one somebody wants
+            // to look at again tomorrow, left nothing behind. The code
+            // rather than the message alone, so a search can find every
+            // failure of a kind without guessing at the wording.
+            tracing::error!(op, code = ?error.code, "{}", error.message);
+            ServerMessage::err(id, error)
+        }
     };
 
     let mut guard = writer.lock().await;
