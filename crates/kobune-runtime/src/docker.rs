@@ -167,6 +167,24 @@ const BUILD_TIMEOUT_SECS: u64 = 60 * 60;
 /// flat however large the context turns out to be.
 const CHUNKS_IN_FLIGHT: usize = 16;
 
+/// How much context goes by between one progress line and the next.
+///
+/// **Not a line per chunk.** Every one is an event fanned out to whoever is
+/// watching, and a 3 GB context is twenty-five thousand chunks. This is
+/// often enough to watch a large context move and silent for every context
+/// that is not a problem.
+const CONTEXT_STRIDE: u64 = 64 * 1024 * 1024;
+
+/// The size of build context that is worth remarking on.
+///
+/// **Not a limit.** The context streams, so a large one works. It is that a
+/// context this size is almost always something nobody meant to send: the
+/// repository that prompted all this named `node_modules` and `.next` in
+/// its `.dockerignore` and not the two directories that held 3.34 GB
+/// between them, and nothing said so — the build simply failed. `docker
+/// build` prints the size of what it sends, and this is the reason to.
+const A_CONTEXT_WORTH_MENTIONING: u64 = 512 * 1024 * 1024;
+
 /// How many seconds a stop waits before it escalates to SIGKILL.
 const STOP_TIMEOUT_SECS: i32 = 10;
 
@@ -577,7 +595,7 @@ impl DockerRuntime {
             ..Default::default()
         };
 
-        let (chunks, packing) = stream_context(&build.context, dockerfile);
+        let (chunks, packing) = stream_context(&build.context, dockerfile, label, events);
         let mut packing = Some(packing);
 
         let mut stream =
@@ -2265,17 +2283,64 @@ struct ChunkWriter {
     /// How much has gone. Reported when the context is packed, so a
     /// worktree that turns out to be enormous says so.
     sent: u64,
+    /// Where the progress goes, and what the step it belongs to is called.
+    events: EventSink,
+    label: String,
+    /// What `sent` was at the last progress line, so the lines come at a
+    /// stride rather than one per chunk.
+    announced: u64,
+    /// Whether the context has already been called large. Once is enough.
+    remarked: bool,
 }
 
 impl ChunkWriter {
     fn new(
         sender: tokio::sync::mpsc::Sender<std::result::Result<bytes::Bytes, std::io::Error>>,
+        events: EventSink,
+        label: String,
     ) -> Self {
         Self {
             sender,
             buffer: Vec::with_capacity(CONTEXT_CHUNK),
             sent: 0,
+            events,
+            label,
+            announced: 0,
+            remarked: false,
         }
+    }
+
+    /// Says how much of the context has gone, now and then.
+    fn announce(&mut self) {
+        if self.sent >= A_CONTEXT_WORTH_MENTIONING && !self.remarked {
+            self.remarked = true;
+            let message = format!(
+                "the build context is over {}. Anything `.dockerignore` \
+                 does not name is sent, and everything sent is read",
+                crate::buildkit::bytes(A_CONTEXT_WORTH_MENTIONING as i64)
+            );
+            tracing::warn!("{message}");
+            self.events.warn(message);
+        }
+
+        if self.sent - self.announced < CONTEXT_STRIDE {
+            return;
+        }
+
+        self.announced = self.sent;
+        self.report();
+    }
+
+    /// One line naming what has gone so far.
+    fn report(&self) {
+        self.events.step_progress(
+            "build",
+            &self.label,
+            format!(
+                "sending the build context: {}",
+                crate::buildkit::bytes(self.sent as i64)
+            ),
+        );
     }
 
     fn emit(&mut self, chunk: Vec<u8>) -> std::io::Result<()> {
@@ -2292,7 +2357,10 @@ impl ChunkWriter {
                     std::io::ErrorKind::BrokenPipe,
                     "the build stopped reading the context",
                 )
-            })
+            })?;
+
+        self.announce();
+        Ok(())
     }
 }
 
@@ -2333,18 +2401,30 @@ type Chunks =
 /// The walk and the upload run at once, so the daemon reads while the
 /// worktree is still being read — and a build nobody is waiting for any
 /// more stops packing rather than finishing into a dropped buffer.
-fn stream_context(context: &Path, dockerfile: &Dockerfile) -> (Chunks, Packing) {
+fn stream_context(
+    context: &Path,
+    dockerfile: &Dockerfile,
+    label: &str,
+    events: &EventSink,
+) -> (Chunks, Packing) {
     let (sender, receiver) = tokio::sync::mpsc::channel(CHUNKS_IN_FLIGHT);
 
     let context = context.to_path_buf();
     let dockerfile = dockerfile.clone();
+    let events = events.clone();
+    let label = label.to_string();
 
     let packing = tokio::task::spawn_blocking(move || {
-        let writer = ChunkWriter::new(sender.clone());
+        let writer = ChunkWriter::new(sender.clone(), events, label);
 
         match pack_context(&context, &dockerfile, writer) {
             Ok(mut writer) => {
                 std::io::Write::flush(&mut writer)?;
+                // **Once, whatever the size.** The lines above come at a
+                // stride, so a context under it has said nothing yet — and
+                // the size of what was sent is the thing worth knowing
+                // when a build behaves oddly.
+                writer.report();
                 Ok(writer.sent)
             }
             Err(err) => {
@@ -2637,7 +2717,7 @@ mod tests {
     ) -> (Vec<bytes::Bytes>, std::io::Result<u64>) {
         use futures::StreamExt;
 
-        let (chunks, packing) = stream_context(context, dockerfile);
+        let (chunks, packing) = stream_context(context, dockerfile, "build", &EventSink::discard());
         let mut kept = Vec::new();
         let mut failure = None;
 
@@ -2703,6 +2783,83 @@ mod tests {
             reported.expect("packs"),
             whole.len() as u64,
             "the count reported is not what went out"
+        );
+    }
+
+    /// Drains a context, keeping the events rather than the bytes.
+    async fn events_of_streaming(context: &Path, dockerfile: &Dockerfile) -> Vec<String> {
+        use futures::StreamExt;
+
+        let (events, mut received) = EventSink::channel();
+        let (mut chunks, packing) = stream_context(context, dockerfile, "building x", &events);
+
+        while chunks.next().await.is_some() {}
+        packing.await.expect("the packer ran").expect("packs");
+        drop(events);
+
+        let mut lines = Vec::new();
+        while let Some(event) = received.recv().await {
+            match event {
+                kobune_api::Event::Step {
+                    status: kobune_api::StepStatus::Progress { message },
+                    ..
+                }
+                | kobune_api::Event::Log { message, .. } => lines.push(message),
+                _ => {}
+            }
+        }
+
+        lines
+    }
+
+    /// **How big the context is, said out loud.** `docker build` prints it;
+    /// Kobune printed nothing, so a `.dockerignore` that had quietly stopped
+    /// covering a directory looked like a bug in the build rather than 3 GB
+    /// going over a socket.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_size_of_the_context_is_reported() {
+        let dir = a_context();
+        let lines = events_of_streaming(dir.path(), &Dockerfile::Inside("Dockerfile".into())).await;
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("sending the build context:")),
+            "nothing said how much was sent: {lines:?}"
+        );
+    }
+
+    /// A context nobody meant to send is worth saying so about, even though
+    /// it now works.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_context_nobody_meant_to_send_is_remarked_on() {
+        let dir = a_context();
+
+        // Sparse, so this costs a `tar` read of zeroes rather than a
+        // gigabyte of disk.
+        let big = std::fs::File::create(dir.path().join("big.bin")).expect("creates");
+        big.set_len(A_CONTEXT_WORTH_MENTIONING + CONTEXT_CHUNK as u64)
+            .expect("sizes");
+        drop(big);
+
+        let lines = events_of_streaming(dir.path(), &Dockerfile::Inside("Dockerfile".into())).await;
+
+        let remark = lines
+            .iter()
+            .find(|line| line.contains("the build context is over"))
+            .unwrap_or_else(|| panic!("nothing remarked on it: {lines:?}"));
+        assert!(
+            remark.contains(".dockerignore"),
+            "the remark does not say what to do about it: {remark}"
+        );
+
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("the build context is over"))
+                .count(),
+            1,
+            "said more than once"
         );
     }
 
