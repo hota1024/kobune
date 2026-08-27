@@ -109,6 +109,26 @@ less accurately.
 
 ### Fixed
 
+- **A build context larger than 2 GB builds.** It was packed into memory and
+  handed to the Docker API as one write, and macOS refuses a single write past
+  what an `int` can count — so a service whose Dockerfile built fine under
+  `docker build` failed through Kobune every time, in under a second, saying
+  only `Error in the hyper legacy client: client error (SendRequest)`. The
+  context is now sent as it is walked, the way `docker build` sends it: no
+  single write is large enough to reach the limit, and the daemon holds a
+  chunk of the context rather than all of it. How much is being sent is
+  reported as it goes, and a context past 512 MB is called out — usually a
+  `.dockerignore` that has stopped covering something rather than a decision
+  (#129)
+
+- **A failure says what went wrong, and is written down.** Errors from the
+  Docker API arrived with everything but the cause: `client error
+  (SendRequest)` and no mention of the `Invalid argument (os error 22)` a
+  layer below it. The whole chain is reported now. And `kobuned.log` had no
+  record of a failure at all — it held `INFO` lines either side of a build
+  that failed and nothing about the failure — so every failed step and every
+  request that comes back an error is logged (#129)
+
 - **The documented install URL resolves again.** The documentation site moved
   to `kobune.1024.works` after the rename and `minato.1024.works` stopped
   existing, and nothing in the repository followed — so

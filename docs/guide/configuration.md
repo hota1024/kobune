@@ -206,6 +206,11 @@ builder `docker build` itself uses, so a Dockerfile that works on the command
 line works here — cache mounts and all. A `.dockerignore` at the root of the
 build context is applied, so what it names is never sent.
 
+Everything else is sent, and the size is reported as it goes. Past 512 MB
+Kobune says so, because a context that large is usually a `.dockerignore` that
+has stopped covering something rather than a decision — a build directory, a
+cache, or another worktree nested inside this one.
+
 Images are tagged with a fingerprint of the Dockerfile and the build args, so
 two worktrees that agree share one image and a build is skipped when that exact
 image already exists. That last part is what keeps waking a stopped service
