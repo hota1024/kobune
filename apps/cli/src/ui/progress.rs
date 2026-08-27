@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kobune_api::{Event, LogLevel, StepStatus};
+use kobune_core::size::bytes;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -400,23 +401,6 @@ fn transfer_spans(transfer: &Transfer) -> Vec<Span<'static>> {
     ]
 }
 
-/// A size a person can read at a glance, rather than to the byte.
-fn bytes(count: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-
-    // One decimal throughout: the digit after it changes faster than the
-    // screen is repainted, and reads as noise.
-    if count >= GB {
-        format!("{}.{} GB", count / GB, (count % GB) * 10 / GB)
-    } else if count >= MB {
-        format!("{}.{} MB", count / MB, (count % MB) * 10 / MB)
-    } else {
-        format!("{} kB", count / KB)
-    }
-}
-
 fn step_line(
     symbol: &'static str,
     style: ratatui::style::Style,
@@ -692,17 +676,6 @@ mod tests {
         let text = screen(&mut state);
         assert!(text.contains("✓ verifying the checksum"), "got:\n{text}");
         assert!(state.label_of("verify").is_none());
-    }
-
-    #[test]
-    fn sizes_read_as_sizes() {
-        assert_eq!(bytes(0), "0 kB");
-        assert_eq!(bytes(4096), "4 kB");
-        assert_eq!(bytes(1024 * 1024), "1.0 MB");
-        assert_eq!(bytes(7_654_321), "7.2 MB");
-        // A build context is what gets this far. `3420.5 MB` would not
-        // read as a mistake; `3.1 GB` does.
-        assert_eq!(bytes(3_342_664_218), "3.1 GB");
     }
 
     #[test]

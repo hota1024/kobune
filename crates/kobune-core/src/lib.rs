@@ -15,6 +15,7 @@ pub mod naming;
 pub mod paths;
 pub mod program;
 pub mod service;
+pub mod size;
 pub mod state;
 pub mod terminal;
 

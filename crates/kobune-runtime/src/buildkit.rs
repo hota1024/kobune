@@ -219,25 +219,14 @@ impl Vertex {
     }
 }
 
-/// A byte count, short enough to sit on a progress line.
+/// [`kobune_core::size::bytes`] for a counter BuildKit keeps in `i64`.
 ///
-/// Its own rather than the CLI's: `kobune-runtime` is on the daemon side of
-/// the API and no client crate may reach it, so the two cannot share one.
-/// The rounding matches, so the two read alike.
+/// Only the type is adapted; the rounding is shared with the CLI, which
+/// prints these same counts back. A negative count is not a size — the
+/// protobuf allows one, Docker does not send one — and reads as nothing
+/// transferred rather than as an enormous number.
 pub(crate) fn bytes(count: i64) -> String {
-    const KB: i64 = 1024;
-    const MB: i64 = 1024 * KB;
-    const GB: i64 = 1024 * MB;
-
-    // A build context is the one thing here that reaches gigabytes, and
-    // `3420.5 MB` is a number nobody reads as "this is far too much".
-    if count >= GB {
-        format!("{}.{} GB", count / GB, (count % GB) * 10 / GB)
-    } else if count >= MB {
-        format!("{}.{} MB", count / MB, (count % MB) * 10 / MB)
-    } else {
-        format!("{} kB", count / KB)
-    }
+    kobune_core::size::bytes(count.max(0) as u64)
 }
 
 #[cfg(test)]
@@ -245,16 +234,14 @@ mod tests {
     use super::*;
     use bollard::moby::buildkit::v1::{Vertex as PbVertex, VertexLog, VertexStatus};
 
-    /// The same rounding the CLI's own copy uses — see [`bytes`].
+    /// The rounding itself is [`kobune_core::size`]'s and tested there.
+    /// What is this crate's is the `i64` a counter arrives as.
     #[test]
-    fn sizes_read_as_sizes() {
-        assert_eq!(bytes(0), "0 kB");
-        assert_eq!(bytes(4096), "4 kB");
-        assert_eq!(bytes(1024 * 1024), "1.0 MB");
+    fn a_counter_that_went_backwards_is_not_an_enormous_size() {
         assert_eq!(bytes(7_654_321), "7.2 MB");
-        // What the build context reaches, and what made this arm worth
-        // having: `3420.5 MB` does not read as a mistake, `3.1 GB` does.
-        assert_eq!(bytes(3_342_664_218), "3.1 GB");
+        assert_eq!(bytes(0), "0 kB");
+        assert_eq!(bytes(-1), "0 kB");
+        assert_eq!(bytes(i64::MIN), "0 kB");
     }
 
     fn vertex(digest: &str, name: &str) -> PbVertex {
