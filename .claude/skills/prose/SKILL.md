@@ -79,8 +79,11 @@ Both languages move together. A page is not done when its English is done.
 The checker enforces the first four, because a mismatch is always a mistake:
 
 - **Headings** — same level, same order, one for one. Only the text differs.
-- **Code blocks** — same number, same order, same info string, and byte for
-  byte the same contents, apart from comments.
+- **Code blocks** — same number, same order, same info string. A block that
+  names a language holds what the program was given or printed, so its
+  contents are compared line for line as well, apart from the comments. An
+  untagged block is a figure: the architecture diagram labels its parts in
+  prose, and those are translated like any other prose.
 - **`:::` containers** — same type in the same place. The title after
   `::: tip` is prose and is translated.
 - **Tables** — same number of columns and rows.
