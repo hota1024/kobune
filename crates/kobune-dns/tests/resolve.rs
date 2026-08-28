@@ -43,12 +43,10 @@ async fn spawn_dns(config: DnsConfig) -> SocketAddr {
 async fn query(server: SocketAddr, name: &str, record_type: RecordType) -> Message {
     let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
 
-    let mut message = Message::new();
-    message
-        .set_id(0x1234)
-        .set_message_type(MessageType::Query)
-        .set_op_code(OpCode::Query)
-        .set_recursion_desired(true);
+    // 0.26 takes the header contents at construction rather than through
+    // setters, and the flags are fields on the metadata.
+    let mut message = Message::new(0x1234, MessageType::Query, OpCode::Query);
+    message.metadata.recursion_desired = true;
 
     let mut question = Query::new();
     question
@@ -76,11 +74,11 @@ async fn resolves_nested_localhost_names_to_loopback() {
     // Without this curl is useless and an agent cannot verify anything.
     let response = query(server, "web.feat-1.myapp.localhost.", RecordType::A).await;
 
-    assert_eq!(response.response_code(), ResponseCode::NoError);
-    assert_eq!(response.answers().len(), 1);
+    assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(response.answers.len(), 1);
 
-    match response.answers()[0].data() {
-        Some(RData::A(address)) => assert_eq!(address.0, Ipv4Addr::LOCALHOST),
+    match &response.answers[0].data {
+        RData::A(address) => assert_eq!(address.0, Ipv4Addr::LOCALHOST),
         other => panic!("expected an A record: {other:?}"),
     }
 }
@@ -92,8 +90,8 @@ async fn resolves_unknown_hosts_too() {
     let server = spawn_dns(DnsConfig::default()).await;
     let response = query(server, "never-created.myapp.localhost.", RecordType::A).await;
 
-    assert_eq!(response.response_code(), ResponseCode::NoError);
-    assert_eq!(response.answers().len(), 1);
+    assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(response.answers.len(), 1);
 }
 
 #[tokio::test]
@@ -103,11 +101,11 @@ async fn resolves_aaaa_to_ipv6_loopback() {
     let server = spawn_dns(DnsConfig::default()).await;
     let response = query(server, "web.myapp.localhost.", RecordType::AAAA).await;
 
-    assert_eq!(response.response_code(), ResponseCode::NoError);
-    assert_eq!(response.answers().len(), 1);
+    assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(response.answers.len(), 1);
 
-    match response.answers()[0].data() {
-        Some(RData::AAAA(address)) => {
+    match &response.answers[0].data {
+        RData::AAAA(address) => {
             assert_eq!(address.0, std::net::Ipv6Addr::LOCALHOST)
         }
         other => panic!("expected an AAAA record: {other:?}"),
@@ -119,8 +117,8 @@ async fn refuses_names_outside_its_scope() {
     let server = spawn_dns(DnsConfig::default()).await;
     let response = query(server, "example.com.", RecordType::A).await;
 
-    assert_eq!(response.response_code(), ResponseCode::NXDomain);
-    assert!(response.answers().is_empty());
+    assert_eq!(response.metadata.response_code, ResponseCode::NXDomain);
+    assert!(response.answers.is_empty());
 }
 
 #[tokio::test]
@@ -132,12 +130,12 @@ async fn serves_configured_suffixes() {
     .await;
 
     let served = query(server, "web.myapp.kobune.test.", RecordType::A).await;
-    assert_eq!(served.response_code(), ResponseCode::NoError);
-    assert_eq!(served.answers().len(), 1);
+    assert_eq!(served.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(served.answers.len(), 1);
 
     // localhost was left out of the configuration, so it is not served.
     let not_served = query(server, "web.myapp.localhost.", RecordType::A).await;
-    assert_eq!(not_served.response_code(), ResponseCode::NXDomain);
+    assert_eq!(not_served.metadata.response_code, ResponseCode::NXDomain);
 }
 
 #[tokio::test]
@@ -146,6 +144,6 @@ async fn preserves_the_query_id() {
     let server = spawn_dns(DnsConfig::default()).await;
     let response = query(server, "web.myapp.localhost.", RecordType::A).await;
 
-    assert_eq!(response.id(), 0x1234);
-    assert_eq!(response.message_type(), MessageType::Response);
+    assert_eq!(response.metadata.id, 0x1234);
+    assert_eq!(response.metadata.message_type, MessageType::Response);
 }

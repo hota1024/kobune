@@ -12,12 +12,13 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use hickory_proto::op::{Header, MessageType, OpCode, ResponseCode};
+use hickory_proto::op::{Header, HeaderCounts, MessageType, Metadata, OpCode, ResponseCode};
 use hickory_proto::rr::rdata::{A, AAAA};
 use hickory_proto::rr::{RData, Record, RecordType};
-use hickory_server::ServerFuture;
-use hickory_server::authority::MessageResponseBuilder;
+use hickory_server::Server;
+use hickory_server::net::runtime::Time;
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::zone_handler::MessageResponseBuilder;
 
 /// The TTL to put on answers, in seconds.
 ///
@@ -27,6 +28,13 @@ const DEFAULT_TTL: u32 = 5;
 
 /// How long a TCP connection may idle.
 const TCP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many answers may be queued for one TCP connection.
+///
+/// Counted in responses, not bytes. Every answer here is a handful of
+/// records built without any I/O, so the queue only ever holds what a
+/// client has not yet read; this is the depth `hickory` itself uses.
+const TCP_RESPONSE_QUEUE: usize = 32;
 
 /// The domain served by default.
 pub const DEFAULT_SUFFIX: &str = "localhost";
@@ -86,28 +94,34 @@ impl KobuneDns {
 
 #[async_trait::async_trait]
 impl RequestHandler for KobuneDns {
-    async fn handle_request<R: ResponseHandler>(
+    async fn handle_request<R: ResponseHandler, T: Time>(
         &self,
         request: &Request,
         mut response_handle: R,
     ) -> ResponseInfo {
+        // `Request` derefs to the message, which is where the question and
+        // the flags live. In 0.24 they were accessors on `Request` itself.
         let builder = MessageResponseBuilder::from_message_request(request);
 
-        let mut header = Header::response_from_request(request.header());
-        header.set_authoritative(true);
+        // 0.26 splits the old `Header` in two: `Metadata` is the identifier,
+        // the flags and the codes, and the record counts are filled in by
+        // whoever encodes the message. The builder wants the metadata.
+        let mut metadata = Metadata::response_from_request(&request.metadata);
+        metadata.authoritative = true;
 
         let mut answers: Vec<Record> = Vec::new();
 
-        if request.op_code() != OpCode::Query || request.message_type() != MessageType::Query {
+        if request.metadata.op_code != OpCode::Query
+            || request.metadata.message_type != MessageType::Query
+        {
             // Anything other than a query — an update, say — is not handled.
-            header.set_response_code(ResponseCode::NotImp);
-        } else {
-            let query = request.query();
+            metadata.response_code = ResponseCode::NotImp;
+        } else if let Some(query) = request.queries.queries().first() {
             let name = query.name().to_string();
 
             if !self.config.serves(&name) {
                 tracing::trace!("query outside our scope: {name}");
-                header.set_response_code(ResponseCode::NXDomain);
+                metadata.response_code = ResponseCode::NXDomain;
             } else {
                 match query.query_type() {
                     RecordType::A => answers.push(Record::from_rdata(
@@ -126,16 +140,29 @@ impl RequestHandler for KobuneDns {
                     other => tracing::trace!("{other} is not handled: {name}"),
                 }
             }
+        } else {
+            // A query with no question in it. 0.24 read the question
+            // through `request_info`, which had already rejected this; the
+            // question section is reachable directly now, so the case is
+            // ours to answer.
+            tracing::trace!("a query with no question section");
+            metadata.response_code = ResponseCode::FormErr;
         }
 
         let empty: [Record; 0] = [];
-        let response = builder.build(header, answers.iter(), &empty, &empty, &empty);
+        let response = builder.build(metadata, answers.iter(), &empty, &empty, &empty);
 
         match response_handle.send_response(response).await {
             Ok(info) => info,
             Err(err) => {
                 tracing::warn!("cannot send the DNS response: {err}");
-                ResponseInfo::from(header)
+                // The counts belong to a message that was never encoded, so
+                // they are zero. `Metadata` is `Copy`, so handing it to the
+                // builder above did not consume it.
+                ResponseInfo::from(Header {
+                    metadata,
+                    counts: HeaderCounts::default(),
+                })
             }
         }
     }
@@ -173,13 +200,13 @@ pub async fn serve_sockets(
         ));
     }
 
-    let mut server = ServerFuture::new(KobuneDns::new(config));
+    let mut server = Server::new(KobuneDns::new(config));
 
     for socket in udp {
         server.register_socket(socket);
     }
     for listener in tcp {
-        server.register_listener(listener, TCP_TIMEOUT);
+        server.register_listener(listener, TCP_TIMEOUT, TCP_RESPONSE_QUEUE);
     }
 
     tokio::select! {
