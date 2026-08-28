@@ -74,7 +74,7 @@ function inventory(args) {
 function parse(text) {
   const lines = text.split('\n')
   const marks = lines.map(() => ({
-    code: false, front: false, table: false, quote: false, info: null,
+    code: false, front: false, table: false, quote: false, info: null, closes: false,
   }))
   let fence = null
   let front = false
@@ -98,7 +98,7 @@ function parse(text) {
       marks[i].code = true
       const closes = opener && opener[1][0] === fence.char &&
         opener[1].length >= fence.length && !opener[2]
-      if (closes) fence = null
+      if (closes) { marks[i].closes = true; fence = null }
       continue
     }
     marks[i].table = line.trimStart().startsWith('|')
@@ -213,8 +213,13 @@ const PLAIN_FORM = /(である|であった|だった|ではない|であろう)
 
 const CONTRACTIONS =
   /\b(\w+n't|it's|that's|there's|here's|what's|let's|you're|we're|they're|i've|you've|we've|they've|i'll|you'll|we'll|it'll|i'd|you'd|we'd)\b/i
-const FIRST_PERSON = /\b(we|our|ours|us)\b/i
-const AMERICAN = /\b(color|colors|colored|behavior|behaviors|favorite|analyze|catalog|\w*iz(?:e|es|ed|ing|ation|ations))\b/i
+// Not `i`: the pronoun is never written in capitals, and `US` as a place is.
+// `US-East` used to be reported as first person, with no way to satisfy the
+// rule short of renaming the region.
+const FIRST_PERSON = /\b(?:[Ww]e|[Oo]ur|[Oo]urs|[Uu]s)\b/
+// `g` because a line holds more than one word. Read with `matchAll` only,
+// which works on a copy and so leaves `lastIndex` alone.
+const AMERICAN = /\b(color|colors|colored|behavior|behaviors|favorite|analyze|catalog|\w*iz(?:e|es|ed|ing|ation|ations))\b/gi
 const NOT_AMERICAN = /^(size|sizes|resize|resizes|resized|resizing|seize|seizes|prize|prizes|capsize|maize)$/i
 
 /** A line is over the limit only if it is still over it once URLs cannot help. */
@@ -277,8 +282,11 @@ function checkFile(path, add) {
       if (FIRST_PERSON.test(said)) {
         add(rel, n, 'en/person', 'we/our/us: name the thing instead')
       }
-      const spelling = said.match(AMERICAN)
-      if (spelling && !NOT_AMERICAN.test(spelling[0])) {
+      // The first match being an allowed one must not excuse the rest of
+      // the line: `Resizing the pane changes its behavior` used to pass,
+      // because `Resizing` matched first and is on the list.
+      const spelling = [...said.matchAll(AMERICAN)].find((m) => !NOT_AMERICAN.test(m[0]))
+      if (spelling) {
         add(rel, n, 'en/spelling', `${spelling[0]}: the docs are in British English`)
       }
       if (!quoted && /\s--\s|–/.test(read)) add(rel, n, 'en/dash', 'use — with a space either side')
@@ -301,9 +309,35 @@ function headings({ lines, marks }) {
   return out
 }
 
+/**
+ * A code line with the part the writer may have translated taken out.
+ *
+ * A comment inside a block is the writer speaking rather than the program, and
+ * the guide has those translated — `# follow this branch's logs` is its own
+ * example. Everything else in a block is what the program printed, and has to
+ * match to the byte. `#` and `//` only start a comment at the beginning of the
+ * line or after a space, so a `"#tag"` and the `//` of a URL are left alone.
+ */
+function withoutComment(line) {
+  return line.replace(/(?:^|\s)(?:#|\/\/).*$/, '').trimEnd()
+}
+
+/** Each fence: its info string, where it opened, and the body under it. */
 function fences({ lines, marks }) {
   const out = []
-  for (let i = 0; i < lines.length; i++) if (marks[i].info !== null) out.push(marks[i].info)
+  let open = null
+  for (let i = 0; i < lines.length; i++) {
+    if (marks[i].info !== null) {
+      open = { info: marks[i].info, line: i + 1, body: [] }
+      out.push(open)
+      continue
+    }
+    if (!open) continue
+    // `closes` rather than a fence match of our own: only the parser knows
+    // that a ``` inside a ```` block is content and not the end of it.
+    if (marks[i].closes) { open = null; continue }
+    open.body.push(withoutComment(lines[i]))
+  }
   return out
 }
 
@@ -348,8 +382,23 @@ function checkPair(rel, en, ja, add) {
     add(jaRel, 1, 'parity/code', `${fa.length} code blocks in English, ${fb.length} in Japanese`)
   } else {
     for (let i = 0; i < fa.length; i++) {
-      if (fa[i] === fb[i]) continue
-      add(jaRel, 1, 'parity/code', `code block ${i + 1} is \`\`\`${fa[i]} in English, \`\`\`${fb[i]} in Japanese`)
+      if (fa[i].info !== fb[i].info) {
+        add(jaRel, fb[i].line, 'parity/code',
+          `code block ${i + 1} is \`\`\`${fa[i].info} in English, \`\`\`${fb[i].info} in Japanese`)
+        break
+      }
+      // Only where the block names a language. Those hold what the program
+      // was given or printed, and translating any of it is the drift the
+      // guide's section is about. An untagged block is a figure — the
+      // architecture diagram and the file-layout listing both label their
+      // parts in prose, and those labels are meant to be translated.
+      if (!fa[i].info) continue
+      const drift = fa[i].body.findIndex((line, n) => line !== fb[i].body[n])
+      if (fa[i].body.length === fb[i].body.length && drift < 0) continue
+      const at = drift < 0 ? Math.min(fa[i].body.length, fb[i].body.length) : drift
+      add(jaRel, fb[i].line + at + 1, 'parity/code',
+        `code block ${i + 1} line ${at + 1}: English has "${fa[i].body[at] ?? '(nothing)'}", ` +
+        `Japanese has "${fb[i].body[at] ?? '(nothing)'}"`)
       break
     }
   }
