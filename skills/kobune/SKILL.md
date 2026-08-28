@@ -138,6 +138,17 @@ Creates the worktree, brings the environment up, and prints the URLs. There is
 no need to run `git worktree add` yourself — though Kobune recognises the
 worktree if you do.
 
+**Take a feature to a worktree of its own rather than switching the branch of
+the one you are in.** A workspace is found by the path of its worktree, and its
+label is fixed the first time Kobune sees that path, so `git switch -c` in the
+main worktree changes the code under a running environment and nothing else:
+the URLs, the containers and the workspace's own `.kobune/env.local` stay the
+ones the branch before it was using, and `kobune status` goes on reporting the
+branch the worktree was registered on. A worktree apiece leaves both branches
+with an environment that still works, and `kobune new` checks out a branch that
+already exists rather than creating it, so going back to one is the same
+command.
+
 Move into the new worktree before working. Its path is the `path` field of
 `kobune status --json`.
 
@@ -426,6 +437,7 @@ A `--json` error may carry a `hint`. **Read it — it says what to do next.**
 - Run `docker` or `container` directly
 - Put a port in a URL (`localhost:3000` and friends)
 - Edit `.env` by hand
+- Start a feature by switching the branch of the worktree you are in
 - Leave `kobune logs -f` running
 - Run `kobune` with no arguments, or `kobune tui`. That is a full screen for a
   person to watch, and it does not end on its own
