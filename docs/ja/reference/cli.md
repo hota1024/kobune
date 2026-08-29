@@ -1,11 +1,12 @@
 # CLI コマンド
 
-すべてのコマンドが `--json` と `-w, --workspace` を受け付けます。
+すべてのコマンドが `--json` を受け付けます。`-w, --workspace` は 1 つを除く
+すべてのコマンドが受け付けます。
 
 | フラグ | 説明 |
 | --- | --- |
 | `--json` | 応答を JSON で出力します。エラーも stdout に出力されるため、エージェントは 1 つのストリームのみを監視すれば済みます |
-| `-w, --workspace <name>` | 対象の workspace。省略した場合はカレントディレクトリから判定します |
+| `-w, --workspace <name>` | 対象の workspace。省略した場合はカレントディレクトリから判定します。例外は [`kobune cd`](#kobune-cd-workspace) で、名前をコマンドの後ろに書く形だけを受け付け、このフラグは拒否します |
 
 ## 出力の見え方
 
@@ -258,6 +259,44 @@ $ kobune ls --all-projects   # この daemon が把握している全プロジ�
 ついては**登録済みの** worktree のみが対象です。未登録のものを探すには他の
 リポジトリを開く必要があるためで、そのプロジェクト内で一度もコマンドを実行
 していない場合は、内側から見たときより行数が少なくなります。
+
+### `kobune cd [workspace]`
+
+シェルのカレントディレクトリを、その workspace の worktree へ移します。
+
+```console
+$ kobune cd feature/user-auth
+$ kobune cd fuauth             # 順番さえ合っていれば、文字は飛んでいてよい
+$ kobune cd                    # main worktree へ
+```
+
+名前は label とブランチ名の両方に対して照合し、どちらも全部を打つ必要は
+ありません。完全一致、前方一致、部分一致、最後に「文字が順番どおりに現れる」
+の順に試します。近い種類の一致が優先されるため、label を全部打った workspace
+は、その label を含むだけの長い label に勝ちます。
+
+**同じ近さで 2 つ当てはまった場合は、推測せずに聞き返します。** 両方の名前を
+返し、移動はしません。意図した場所の隣に移ってしまうより、動かないほうが
+ましだからです。
+
+```console
+$ kobune cd auth
+✗ error: `auth` could mean feature-user-auth or fix-auth
+  hint: name one of them exactly, or type enough of it to tell them apart
+```
+
+**プログラムは、自身を起動したシェルのカレントディレクトリを変えられません。**
+そのためこのコマンドはパスを出力するだけで、実際に移動させるのは
+[`kobune shell-init`](#シェル連携) が出力する関数です。関数を読み込んで
+いない場合は `cd "$(kobune cd feature)"` が同じ働きをします。
+
+**workspace は `cd` の後ろに書きます。`-w` は拒否します。** その関数が
+処理するのは `kobune cd …` の形だけで、それ以外はすべて素通しするためです。
+別の書き方を受け付けると、パスを出力してシェルは動かないという結果になります。
+エラーより気づきにくいうえ、関数を入れ忘れているようにも見えます。
+
+名前は Tab で補完できます。`-w` を受け付けるコマンドでは、その後ろでも同じ
+です。
 
 ### `kobune status`
 
@@ -762,6 +801,41 @@ $ kobune completions <bash|zsh|fish|elvish|powershell>
 スクリプトを標準出力に書き出します。各シェルの配置先は
 [インストール](../guide/installation#シェル補完) を参照してください。
 インストールスクリプトを使った場合は設定済みです。
+
+workspace の名前は入力のたびに daemon へ問い合わせるため、`kobune cd` と `-w`
+の補完には、その時点で存在する worktree が並びます。このために daemon が
+起動されることはありません。動いていなければ、待たずに何も出しません。
+
+## シェル連携
+
+```console
+$ kobune shell-init <bash|zsh|fish>
+```
+
+シェル関数を 1 つ出力します。この関数は `cd` 以外をすべてそのままコマンドへ
+渡します。シェルの起動ファイルから読み込みます。
+
+::: code-group
+```console [fish]
+$ echo 'kobune shell-init fish | source' >> ~/.config/fish/config.fish
+```
+
+```console [zsh]
+$ echo 'eval "$(kobune shell-init zsh)"' >> ~/.zshrc
+```
+
+```console [bash]
+$ echo 'eval "$(kobune shell-init bash)"' >> ~/.bashrc
+```
+:::
+
+[`kobune cd`](#kobune-cd-workspace) が必要とするのはこの 1 行だけです。
+インストールスクリプトは補完だけを書き込み、この行には触れません。起動
+ファイルは利用者のものであり、そこへ書き込むプログラムは、そのファイルの
+残り全部を任せられる相手でなければならないからです。
+
+`elvish` と `powershell` はここでは受け付けません。関数はシェルごとに手で
+書いてあり、誰も動かしたことのない関数は、無いより悪いためです。
 
 ## Kobune 自体の設定に使う環境変数
 

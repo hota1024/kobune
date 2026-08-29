@@ -18,6 +18,19 @@ $ kobune status -w feature-auth                  # the same, from anywhere
 The workspace name is the sanitised branch name: `feature/user-auth` becomes
 `feature-user-auth`. `kobune ls` shows both.
 
+Getting into one is a command of its own, and the name can be as much of it as
+tells it apart from the others:
+
+```console
+$ kobune cd feature-auth   # this shell, into that worktree
+$ kobune cd fuauth         # the same one
+```
+
+It needs the shell function from [`kobune
+shell-init`](../reference/cli#shell-integration), which is one line in your
+startup file: a program cannot change the directory of the shell that started
+it, so without the function this prints the path instead of moving.
+
 ## Starting work on something
 
 ```console

@@ -64,6 +64,12 @@ impl std::error::Error for ApiError {}
 pub enum ErrorCode {
     /// No such workspace, service or project.
     NotFound,
+    /// The name given could mean more than one workspace.
+    ///
+    /// Apart from [`Self::NotFound`] because what to do about it is the
+    /// opposite: there is too much to choose from rather than nothing,
+    /// and the message names what it could have meant.
+    Ambiguous,
     /// Already exists, so it cannot be created.
     AlreadyExists,
     /// No `kobune.toml` was found.
@@ -92,6 +98,7 @@ impl ErrorCode {
     pub fn exit_code(self) -> i32 {
         match self {
             Self::NotFound => 4,
+            Self::Ambiguous => 12,
             Self::AlreadyExists => 5,
             Self::ConfigNotFound => 6,
             Self::InvalidConfig => 7,
@@ -109,6 +116,7 @@ impl ErrorCode {
         match self {
             Self::RuntimeUnavailable | Self::RuntimeFailed => true,
             Self::NotFound
+            | Self::Ambiguous
             | Self::AlreadyExists
             | Self::ConfigNotFound
             | Self::InvalidConfig
@@ -135,6 +143,7 @@ impl ErrorCode {
     pub fn is_the_callers(self) -> bool {
         match self {
             Self::NotFound
+            | Self::Ambiguous
             | Self::AlreadyExists
             | Self::ConfigNotFound
             | Self::InvalidConfig
@@ -167,6 +176,8 @@ impl From<kobune_core::Error> for ApiError {
                 .with_hint("run this inside a git repository"),
             E::WorkspaceNotFound(_) => Self::new(ErrorCode::NotFound, message)
                 .with_hint("run `kobune ls` to see the available workspaces"),
+            E::WorkspaceAmbiguous { .. } => Self::new(ErrorCode::Ambiguous, message)
+                .with_hint("name one of them exactly, or type enough of it to tell them apart"),
             E::ServiceNotFound(_) => Self::new(ErrorCode::NotFound, message)
                 .with_hint("use a name defined under [services] in kobune.toml"),
             E::WorkspaceExists(_) => Self::new(ErrorCode::AlreadyExists, message),

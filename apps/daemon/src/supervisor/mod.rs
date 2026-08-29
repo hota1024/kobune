@@ -12,7 +12,7 @@ use std::time::Instant;
 use futures::StreamExt;
 use kobune_api::{
     ApiError, ErrorCode, PurgeProject, PurgeReport, PurgeWorkspace, Request, Response, ServiceInfo,
-    Target, Typed, Window, WorkspaceInfo,
+    Target, Typed, Window, WorkspaceInfo, WorkspaceLocation,
 };
 use kobune_core::{KobuneConfig, Paths, ServiceScope, ServiceState, StateStore, WorkspaceRecord};
 use kobune_proxy::Route;
@@ -175,6 +175,11 @@ impl Supervisor {
                 all,
             } => self.down(target, services, all, events).await,
             Request::Status { target } => self.status(target).await,
+            Request::Find {
+                target,
+                query,
+                candidates,
+            } => self.find(target, query, candidates).await,
             Request::Doctor { target } => self.doctor(target).await,
             Request::Logs {
                 target,
@@ -835,6 +840,106 @@ impl Supervisor {
                 &resolved.workspace,
                 &statuses,
             ),
+        })
+    }
+
+    /// Where the workspaces a name could mean actually are.
+    ///
+    /// **Not `ls` with the services left out.** `ls` asks the runtime what
+    /// is running, which is the slowest thing the daemon does and is
+    /// nothing to do with the question here — and this one is asked on a
+    /// Tab press, once per keystroke, by a shell that will throw the
+    /// answer away.
+    async fn find(
+        &self,
+        target: Target,
+        query: Option<String>,
+        candidates: bool,
+    ) -> Result<Response, ApiError> {
+        // **One pass over the state file, not two.** The project and the
+        // registrations are settled inside a single `update`, because
+        // every one of those writes the whole file and calls `fsync` —
+        // and this is the request a shell makes once per keystroke.
+        // `ls` does it in two, which is fine at once per command.
+        let (project, records) = {
+            let _guard = self.state_lock.lock().await;
+            self.store
+                .update(|state| {
+                    let context = resolve::resolve_project(&target, state, self.paths.root())?;
+
+                    // Registered the same way `ls` registers them, so a
+                    // worktree made with `git worktree add` a minute ago
+                    // is one this can move to.
+                    let mut records = Vec::new();
+                    for worktree in &context.repo.worktrees()? {
+                        if worktree.bare {
+                            continue;
+                        }
+                        records.push(context.ensure_registered(worktree, state)?);
+                    }
+
+                    Ok((context.project, records))
+                })
+                .map_err(ApiError::from)?
+        };
+
+        // A name that is nothing but spaces is a name that was not given.
+        let query = query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty());
+
+        let found: Vec<&WorkspaceRecord> = match (query, candidates) {
+            (query, true) => resolve::candidates(query.unwrap_or_default(), &records),
+            // Nothing typed, and one workspace to settle on: the main
+            // worktree, which is the one place every project has and the
+            // one nobody has to remember the name of.
+            (None, false) => records
+                .iter()
+                .find(|record| record.is_main)
+                .map(|record| vec![record])
+                .ok_or_else(|| {
+                    ApiError::from(kobune_core::Error::WorkspaceNotFound(
+                        "the main worktree".to_string(),
+                    ))
+                })?,
+            (Some(query), false) => {
+                let record = resolve::find_one(query, &records).map_err(ApiError::from)?;
+
+                // **A settled name is a directory somebody is about to be
+                // put in, so it has to be there.** `git worktree list`
+                // keeps naming one whose directory was deleted until
+                // somebody runs `git worktree prune`, and answering with
+                // it would send a shell somewhere that no longer exists.
+                // Only on this side: a listing offering one stale name
+                // costs a keystroke, and a stat per candidate costs every
+                // Tab press.
+                if !record.path.is_dir() {
+                    return Err(
+                        ApiError::from(kobune_core::Error::WorkspaceNotFound(format!(
+                            "{} (the worktree {} is gone)",
+                            record.label,
+                            record.path.display()
+                        )))
+                        .with_hint("run `git worktree prune` to forget it"),
+                    );
+                }
+
+                vec![record]
+            }
+        };
+
+        Ok(Response::Locations {
+            workspaces: found
+                .into_iter()
+                .map(|record| WorkspaceLocation {
+                    project: project.clone(),
+                    workspace: record.label.clone(),
+                    branch: record.branch.clone(),
+                    path: record.path.clone(),
+                    is_main: record.is_main,
+                })
+                .collect(),
         })
     }
 

@@ -197,6 +197,32 @@ fish は追加設定なしで読み込みます。zsh はディレクトリを `
 `elvish` と `powershell` も指定できますが、生成器に付いてくるだけで動作確認は
 していません。
 
+## worktree の間を移動する
+
+`kobune cd feature/user-auth` は、シェルのカレントディレクトリをその workspace
+の worktree へ移します。これには起動ファイルへの 1 行が必要です。インストール
+スクリプトはこの行を書きません。シェルが起動のたびに読むファイルへの書き込みは、
+頼まれてもいないのにやることではないからです。
+
+::: code-group
+```console [fish]
+$ echo 'kobune shell-init fish | source' >> ~/.config/fish/config.fish
+```
+
+```console [zsh]
+$ echo 'eval "$(kobune shell-init zsh)"' >> ~/.zshrc
+```
+
+```console [bash]
+$ echo 'eval "$(kobune shell-init bash)"' >> ~/.bashrc
+```
+:::
+
+これで `kobune` という名前のシェル関数が 1 つ定義されます。この関数は `cd`
+以外をすべてそのままコマンドへ渡します。読み込んでいない場合、`kobune cd` は
+移動先のパスを表示するだけです。プログラムは、自身を起動したシェルのカレント
+ディレクトリを変えられません。それができるのは、シェル側にいるこの関数です。
+
 ## 最新に保つ
 
 ```console
