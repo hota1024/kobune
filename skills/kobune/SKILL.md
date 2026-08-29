@@ -429,6 +429,7 @@ On failure, the exit code says what kind of failure it was.
 | 9 | Cannot reach the container runtime |
 | 10 | A runtime operation failed |
 | 11 | Unsupported |
+| 12 | The name given fits more than one workspace |
 
 A `--json` error may carry a `hint`. **Read it — it says what to do next.**
 

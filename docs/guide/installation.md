@@ -198,6 +198,32 @@ which is why the extra line is there. bash needs
 `elvish` and `powershell` are also accepted, since they come free with the
 generator, but nothing is tested against them.
 
+## Moving between worktrees
+
+`kobune cd feature/user-auth` moves the shell to that workspace's worktree,
+and it needs one line in your startup file. The install script does not add
+it: writing to the file your shell reads on every start is not something to do
+without being asked.
+
+::: code-group
+```console [fish]
+$ echo 'kobune shell-init fish | source' >> ~/.config/fish/config.fish
+```
+
+```console [zsh]
+$ echo 'eval "$(kobune shell-init zsh)"' >> ~/.zshrc
+```
+
+```console [bash]
+$ echo 'eval "$(kobune shell-init bash)"' >> ~/.bashrc
+```
+:::
+
+That defines one shell function named `kobune`, which passes everything that is
+not `cd` straight through to the command. Without it, `kobune cd` prints the
+path it would have moved to — a program cannot change the directory of the
+shell that started it, so the function is the part that can.
+
 ## Keeping it up to date
 
 ```console

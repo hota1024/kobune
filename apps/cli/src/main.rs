@@ -9,6 +9,7 @@ mod followup;
 mod init;
 mod launchd;
 mod output;
+mod shell;
 mod skill;
 mod system;
 mod ui;
@@ -139,6 +140,36 @@ enum Command {
         /// Rebuild images even when nothing Kobune can see has changed
         #[arg(long)]
         build: bool,
+    },
+
+    /// Move this shell to a workspace's worktree
+    ///
+    /// The name can be loose. Enough of the label or of the branch to
+    /// tell it from the others is enough, in any case, and the
+    /// characters only have to be in order — `fuauth` finds
+    /// `feature/user-auth`. A name that fits two of them equally well is
+    /// answered with both rather than with one of them.
+    ///
+    /// **A program cannot move the shell that ran it.** So this prints
+    /// the path, and `kobune shell-init` prints the shell function that
+    /// acts on one. Until that function is loaded, `cd "$(kobune cd
+    /// feature)"` does the same thing by hand.
+    ///
+    /// The workspace is named after `cd` and nowhere else. The global
+    /// `-w` is refused here rather than honoured, because the function
+    /// that moves the shell reads what was typed and only steps in for
+    /// `kobune cd …` — a spelling it let past would print a path and
+    /// leave you where you were.
+    Cd {
+        /// The workspace. The main worktree when left out
+        // **Not `workspace`**, which is the id the global `--workspace`
+        // already holds. Sharing it takes that flag off this one command
+        // — clap answered `kobune cd -w feature` with "unexpected
+        // argument" — and what is wanted is the flag arriving and being
+        // turned down in a sentence. The name a person sees is
+        // `value_name`'s.
+        #[arg(value_name = "WORKSPACE")]
+        workspace_name: Option<String>,
     },
 
     /// Destroy a worktree and its environment
@@ -304,11 +335,50 @@ enum Command {
         shell: clap_complete::Shell,
     },
 
+    /// Print the shell function `cd` needs
+    ///
+    /// One function, which passes everything that is not `cd` straight
+    /// through. Load it from your shell's startup file — the one line to
+    /// add is printed with it — and `kobune cd` moves the shell instead
+    /// of printing where it would have gone.
+    ShellInit {
+        /// bash, zsh or fish
+        shell: shell::Shell,
+    },
+
+    /// Candidates for the shell completions
+    ///
+    /// What the scripts `kobune completions` writes call, and hidden
+    /// because it is theirs: the output is a format they parse, and it
+    /// answers nothing `kobune ls` does not.
+    ///
+    /// **It never starts a daemon and never fails.** A Tab press is not a
+    /// reason to start one, so a machine with none running completes to
+    /// nothing rather than waiting.
+    // `hide` keeps it out of the help and out of nothing else: clap's
+    // completion generators list every subcommand, hidden or not, so it
+    // is offered at a Tab press. Worth knowing before reading that as a
+    // bug — running it prints two columns and changes nothing.
+    #[command(hide = true)]
+    Complete {
+        #[command(subcommand)]
+        command: CompleteCommand,
+    },
+
     /// Reach this environment from outside, over a tunnel service
     Tunnel {
         #[command(subcommand)]
         command: TunnelCommand,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum CompleteCommand {
+    /// Every workspace, one per line, as `label<TAB>branch`
+    ///
+    /// The label is what gets completed; the branch is the description
+    /// beside it, in the shells that can show one.
+    Workspaces,
 }
 
 #[derive(Subcommand, Debug)]
@@ -760,6 +830,13 @@ fn wants_update_notice(command: &Command) -> bool {
         // the check reads, so it would go to GitHub to recommend
         // reinstalling something the user has this second thrown away.
         Command::Update { .. } | Command::Completions { .. } | Command::Uninstall { .. }
+            // The three that a shell runs rather than a person reads.
+            // `complete` runs once per Tab press and `cd` once per
+            // directory change, and neither has a moment to spare for a
+            // check that may go to the network.
+            | Command::ShellInit { .. }
+            | Command::Complete { .. }
+            | Command::Cd { .. }
     )
 }
 
@@ -814,6 +891,11 @@ fn wants_followup_notice(command: &Command) -> bool {
             | Command::Completions { .. }
             | Command::Uninstall { .. }
             | Command::Daemon { .. }
+            // The same three as above, for the same reason: what a shell
+            // runs on its own is no place for a notice.
+            | Command::ShellInit { .. }
+            | Command::Complete { .. }
+            | Command::Cd { .. }
     )
 }
 
@@ -1053,12 +1135,35 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
         return handle_update(cli, *check).await;
     }
 
-    // Nor does printing a completion script.
+    // Nor does printing a completion script. What clap writes is wired
+    // to the daemon on the way out, for the arguments that take a
+    // workspace — clap can know every flag there is and no label at all.
     if let Command::Completions { shell } = &cli.command {
         let mut command = <Cli as CommandFactory>::command();
         let name = command.get_name().to_string();
-        clap_complete::generate(*shell, &mut command, name, &mut std::io::stdout());
+
+        let mut generated = Vec::new();
+        clap_complete::generate(*shell, &mut command, name, &mut generated);
+
+        let generated = String::from_utf8(generated)
+            .map_err(|err| CliError::Local(format!("the completion script is not UTF-8: {err}")))?;
+
+        print!("{}", shell::wire_workspaces(*shell, &generated));
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // Nor does printing the function that goes with it.
+    if let Command::ShellInit { shell } = &cli.command {
+        print!("{}", shell::integration(*shell));
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // A completion asks before anything else can, and **before the
+    // client is built**: a home directory that cannot be resolved is one
+    // more thing there is nothing to say about, and saying it would put
+    // a sentence in the middle of somebody's command line.
+    if let Command::Complete { command } = &cli.command {
+        return handle_complete(command, &cwd).await;
     }
 
     let client = Client::from_env().map_err(|err| {
@@ -1307,6 +1412,29 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
             all: *all,
         },
         Command::Status | Command::Url { .. } => Request::Status { target },
+        // **`cd` is the one command that turns down `--workspace`**, and
+        // the reason is in the shell rather than here. The function that
+        // does the moving steps in for `kobune cd …` and passes
+        // everything else through, so a spelling accepted here that it
+        // does not recognise — `kobune -w feature cd` — would print a
+        // path, leave the shell where it was, and then advise installing
+        // the function that was already installed. One spelling, and the
+        // other said no to in a sentence.
+        Command::Cd { workspace_name } => {
+            if target.workspace.is_some() {
+                return Err(CliError::Refused {
+                    message: "`cd` takes the workspace after it, not through --workspace"
+                        .to_string(),
+                    hint: "kobune cd feature".to_string(),
+                });
+            }
+
+            Request::Find {
+                target,
+                query: workspace_name.clone(),
+                candidates: false,
+            }
+        }
         Command::Logs {
             services,
             follow,
@@ -1354,6 +1482,8 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
         | Command::Daemon { .. }
         | Command::Skill { .. }
         | Command::Completions { .. }
+        | Command::ShellInit { .. }
+        | Command::Complete { .. }
         | Command::Uninstall { .. }
         | Command::Update { .. }
         // Not one request and one answer: it makes its own, for as long
@@ -1923,6 +2053,44 @@ fn report_conversion(outcome: &init::InitOutcome) {
     ui::note_lines("no equivalent here, so left out", &lines);
 }
 
+/// What a completion script gets back.
+///
+/// **Every failure here is silence and a zero.** This runs between a Tab
+/// press and a redraw: a daemon that is not running, a directory with no
+/// project in it and a socket that has gone are all the same answer —
+/// there is nothing to offer — and an error message would land in the
+/// middle of somebody's command line.
+async fn handle_complete(
+    command: &CompleteCommand,
+    cwd: &std::path::Path,
+) -> Result<ExitCode, CliError> {
+    let CompleteCommand::Workspaces = command;
+
+    let Ok(client) = Client::from_env() else {
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    let Ok(mut connection) = client.connect().await else {
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    let request = Request::Find {
+        target: Target::new(cwd.to_path_buf()),
+        query: None,
+        candidates: true,
+    };
+
+    let Ok(Response::Locations { workspaces }) = connection.call(request, |_| {}).await else {
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    for workspace in workspaces {
+        println!("{}\t{}", workspace.workspace, workspace.branch);
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Installing the Skill. Needs no daemon.
 fn handle_skill(
     cli: &Cli,
@@ -2049,6 +2217,11 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
         return present_url(cli, response, service.as_deref(), *qr);
     }
 
+    // `cd` prints one line, which a shell function reads.
+    if matches!(cli.command, Command::Cd { .. }) {
+        return present_cd(cli, response);
+    }
+
     // `env get` prints one line too, for the same reason.
     if let Command::Env {
         command: EnvCommand::Get { key, .. },
@@ -2094,10 +2267,59 @@ fn present(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
         Response::Tunnel(tunnel) => ui::tunnel(tunnel),
         // logs has already printed its lines; exec speaks through its
         // exit code. `uninstall` presents its own two halves — the plan
-        // and the outcome — and never reaches here.
-        Response::Exec { .. } | Response::Purge(_) => {}
+        // and the outcome — and never reaches here. Nor does a location:
+        // `cd` is the only thing that asks for one, and it prints the
+        // path itself.
+        Response::Exec { .. } | Response::Purge(_) | Response::Locations { .. } => {}
         Response::Empty if matches!(cli.command, Command::Logs { .. }) => {}
         Response::Empty => ui::confirm("done"),
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What `kobune cd` prints.
+///
+/// The path, on one line, because what reads it is
+/// `target=$(kobune cd …)` inside a shell function.
+///
+/// **A terminal on the other end means there is no such function.** The
+/// path is being shown rather than used, which is the one case where
+/// somebody typed `kobune cd` and watched nothing happen — so that is
+/// where the line about `shell-init` goes, and it goes to stderr, where
+/// it cannot end up inside anybody's `$( )`.
+fn present_cd(cli: &Cli, response: &Response) -> Result<ExitCode, CliError> {
+    if cli.json {
+        output::print_json(response);
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let Response::Locations { workspaces } = response else {
+        return Err(CliError::Local("cannot read the workspace".to_string()));
+    };
+
+    let Some(location) = workspaces.first() else {
+        return Err(CliError::Local("cannot read the workspace".to_string()));
+    };
+
+    ui::value(&location.path.display().to_string());
+
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        ui::notice(vec![match shell::Shell::current() {
+            Some(shell) => ui::hint(
+                &format!(
+                    "to move this shell instead of printing, add to your {shell} configuration"
+                ),
+                &shell.init_line(),
+            ),
+            // Naming the wrong shell here would be a line that does not
+            // work, pasted into a configuration file and left there. So
+            // an unrecognised `$SHELL` is asked rather than guessed at.
+            None => ui::hint(
+                "to move this shell instead of printing, load the function from",
+                "kobune shell-init <shell>",
+            ),
+        }]);
     }
 
     Ok(ExitCode::SUCCESS)
@@ -3326,6 +3548,81 @@ mod tests {
                 assert_eq!(target.workspace.as_deref(), Some("feat-1"));
             }
             other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cd_takes_the_name_after_it() {
+        let cli = Cli::try_parse_from(["kobune", "cd", "feature"]).expect("parses");
+        let target = Target::new(PathBuf::from("/repo")).workspace(cli.workspace.clone());
+
+        match build_request(&cli, target).expect("builds") {
+            Request::Find { query, .. } => assert_eq!(query.as_deref(), Some("feature")),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// The flag reaches `cd` either way round, and is turned down either
+    /// way round.
+    ///
+    /// **Turned down rather than honoured**, because the shell function
+    /// only recognises `kobune cd …`: a spelling accepted here that it
+    /// does not know would print a path and leave the shell where it
+    /// was. The positional is the one spelling, so this is a sentence
+    /// rather than a silent second way in.
+    #[test]
+    fn cd_turns_down_the_workspace_flag() {
+        for args in [
+            vec!["kobune", "cd", "--workspace", "feature"],
+            vec!["kobune", "-w", "feature", "cd"],
+            vec!["kobune", "cd", "feature", "-w", "other"],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap_or_else(|err| panic!("{args:?}: {err}"));
+            let target = Target::new(PathBuf::from("/repo")).workspace(cli.workspace.clone());
+
+            let err = build_request(&cli, target).expect_err("refused");
+            assert!(
+                matches!(err, CliError::Refused { .. }),
+                "{args:?}: {err} is not a refusal"
+            );
+        }
+    }
+
+    /// With nothing to go on, the daemon settles it — the main worktree —
+    /// so the request carries no name rather than an invented one.
+    #[test]
+    fn cd_with_no_name_asks_for_none() {
+        let cli = Cli::try_parse_from(["kobune", "cd"]).expect("parses");
+
+        match build_request(&cli, Target::new(PathBuf::from("/repo"))).expect("builds") {
+            Request::Find {
+                query, candidates, ..
+            } => {
+                assert_eq!(query, None);
+                assert!(!candidates, "cd settles on one workspace");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// Both notices go to stderr, which a `$( )` does not capture — but
+    /// the update one may go to the network first, and `cd` is run by a
+    /// shell function on every directory change.
+    #[test]
+    fn what_a_shell_runs_carries_no_notices() {
+        for command in [
+            Command::Cd {
+                workspace_name: None,
+            },
+            Command::Complete {
+                command: CompleteCommand::Workspaces,
+            },
+            Command::ShellInit {
+                shell: shell::Shell::Fish,
+            },
+        ] {
+            assert!(!wants_update_notice(&command), "{command:?}");
+            assert!(!wants_followup_notice(&command), "{command:?}");
         }
     }
 

@@ -71,6 +71,17 @@ pub enum Error {
     #[error("no such workspace: {0}")]
     WorkspaceNotFound(String),
 
+    /// A loosely-typed name that fits more than one workspace.
+    ///
+    /// **The candidates are in the message**, because the next thing
+    /// anyone does is choose between them, and a name is easier to pick
+    /// out of a list than out of a second command.
+    #[error("`{query}` could mean {}", .candidates.join(" or "))]
+    WorkspaceAmbiguous {
+        query: String,
+        candidates: Vec<String>,
+    },
+
     #[error("workspace already exists: {0}")]
     WorkspaceExists(String),
 

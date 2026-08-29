@@ -1,11 +1,12 @@
 # CLI commands
 
-Every command accepts `--json` and `-w, --workspace`.
+Every command accepts `--json`, and every command but one accepts
+`-w, --workspace`.
 
 | Flag | Description |
 | --- | --- |
 | `--json` | Print the response as JSON. Errors go to stdout too, so an agent watches one stream |
-| `-w, --workspace <name>` | Which workspace to act on. Inferred from the current directory when omitted |
+| `-w, --workspace <name>` | Which workspace to act on. Inferred from the current directory when omitted. [`kobune cd`](#kobune-cd-workspace) is the exception: it takes the name after the command and turns this flag down |
 
 ## What the output looks like
 
@@ -257,6 +258,44 @@ With `--all-projects` a `PROJECT` column appears. Other projects contribute
 their **registered** worktrees only — finding unregistered ones would mean
 opening someone else's repository — so a project you have never run a command
 in shows fewer rows than it would from inside.
+
+### `kobune cd [workspace]`
+
+Moves the shell to a workspace's worktree.
+
+```console
+$ kobune cd feature/user-auth
+$ kobune cd fuauth             # enough characters, in the right order
+$ kobune cd                    # the main worktree
+```
+
+The name is matched against both the label and the branch, and it does not
+have to be either in full: an exact name is tried first, then a prefix, then
+anything the name sits inside, and last the characters appearing in order.
+The closest kind of match wins outright, so a label typed in full beats a
+longer label that happens to contain it.
+
+**A tie is a question rather than a guess.** Two workspaces that fit the same
+way get you both names and no movement, because a shell that lands near where
+you meant is worse than one that stays where it was:
+
+```console
+$ kobune cd auth
+✗ error: `auth` could mean feature-user-auth or fix-auth
+  hint: name one of them exactly, or type enough of it to tell them apart
+```
+
+**A program cannot change the directory of the shell that started it.** So
+this prints the path, and the function from [`kobune
+shell-init`](#shell-integration) is what makes it a move. Without that
+function, `cd "$(kobune cd feature)"` does the same thing by hand.
+
+**The workspace goes after `cd`, and `-w` is turned down.** That function
+recognises `kobune cd …` and passes everything else through, so a second way
+of saying it would print a path and leave the shell where it was — which is
+harder to see than an error, and looks like the function is not installed.
+
+Tab completes the names, here and after `-w` on the commands that take it.
 
 ### `kobune status`
 
@@ -765,6 +804,42 @@ $ kobune completions <bash|zsh|fish|elvish|powershell>
 Writes the script to stdout. See
 [Installation](../guide/installation#shell-completions) for where each shell
 expects it; the install script does this already.
+
+The workspace names are asked for as you type, so `kobune cd` and `-w`
+complete against the worktrees that exist now. Nothing is started to answer:
+with no daemon running, Tab offers nothing rather than waiting for one to come
+up.
+
+## Shell integration
+
+```console
+$ kobune shell-init <bash|zsh|fish>
+```
+
+Prints one shell function, which passes everything that is not `cd` straight
+through to the command. Load it from your shell's startup file:
+
+::: code-group
+```console [fish]
+$ echo 'kobune shell-init fish | source' >> ~/.config/fish/config.fish
+```
+
+```console [zsh]
+$ echo 'eval "$(kobune shell-init zsh)"' >> ~/.zshrc
+```
+
+```console [bash]
+$ echo 'eval "$(kobune shell-init bash)"' >> ~/.bashrc
+```
+:::
+
+This is what [`kobune cd`](#kobune-cd-workspace) needs, and all it needs. The
+install script writes the completions for you and leaves this line alone: a
+startup file is yours, and a program that edits one has to be trusted with
+everything else in it.
+
+`elvish` and `powershell` are not accepted here. The function is written by
+hand for each shell, and one nobody has run is worse than none.
 
 ## Environment variables that configure Kobune
 

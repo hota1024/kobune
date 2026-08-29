@@ -22,6 +22,13 @@ pub enum Response {
     Workspace {
         workspace: WorkspaceInfo,
     },
+    /// Where workspaces are, and nothing about what is running (`find`).
+    ///
+    /// One entry when a name was settled on, and however many a half-typed
+    /// one could still mean.
+    Locations {
+        workspaces: Vec<WorkspaceLocation>,
+    },
     /// Diagnostics (`doctor`).
     Diagnostics(Diagnostics),
     /// A listing of environment variables.
@@ -493,6 +500,26 @@ impl WorkspaceInfo {
     pub fn service(&self, name: &str) -> Option<&ServiceInfo> {
         self.services.iter().find(|s| s.name == name)
     }
+}
+
+/// A workspace as a name and a place, with no service state attached.
+///
+/// What answers "where is it" — `kobune cd` and the shell completions.
+/// Reading service state means asking the runtime, which takes long
+/// enough to be felt on a Tab press and says nothing about where the
+/// worktree is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceLocation {
+    pub project: String,
+    /// The name to type, which the main worktree has like any other.
+    ///
+    /// Not [`WorkspaceInfo::workspace`], which is the label a URL is
+    /// built from and is absent for the main worktree — there is nothing
+    /// to put in a hostname there, but `-w` and `cd` still need a word.
+    pub workspace: String,
+    pub branch: String,
+    pub path: PathBuf,
+    pub is_main: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

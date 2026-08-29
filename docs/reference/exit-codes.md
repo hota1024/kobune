@@ -16,6 +16,7 @@ script or an agent can branch without reading any output.
 | `9` | The container runtime cannot be reached | **Yes** |
 | `10` | A runtime operation failed | **Yes** |
 | `11` | Unsupported | No |
+| `12` | The name given fits more than one workspace | No |
 | `70` | Kobune itself went wrong | No |
 | `130` | Ctrl-C | No |
 
@@ -25,6 +26,10 @@ Apple Container and try again. `10` is the operation itself failing, which a
 pull over a network that has come back can pass on the second attempt — though
 a Dockerfile that does not build fails the same way every time, so this one
 deserves a limit rather than a loop.
+
+`12` comes from one command. [`kobune cd`](./cli#kobune-cd-workspace) takes a
+loose name, and one that fits two workspaces the same way is answered with
+both of them rather than with either; the message says which two.
 
 Three sit outside the block the rest occupy. `2` is the usage code, and comes
 from the argument parser rather than from anything Kobune tried to do — a

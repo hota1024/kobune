@@ -7,7 +7,9 @@
 //! **Every item is used by one test binary or another, and each compiles
 //! this module separately.** Rust therefore sees whatever the file it is
 //! building does not touch as dead, which under `-D warnings` would make
-//! adding a helper for one suite break the other.
+//! adding a helper for one suite break the other. The macro needs saying
+//! separately from the rest: `find.rs` wants the project and the daemon
+//! and no runtime at all, so it never reaches for `require_docker!`.
 //!
 //! **The home is temporary; Docker is not.** [`Harness`] hands the daemon a
 //! `KOBUNE_HOME` of its own, so anything under that directory belongs to
@@ -16,7 +18,7 @@
 //! project name. Never send this supervisor a `Purge { dry_run: false }`:
 //! the storage sweep is machine-wide on purpose (see `docker_uninstall.rs`)
 //! and would take the volumes of whoever is running the suite.
-#![allow(dead_code)]
+#![allow(dead_code, unused_macros)]
 
 use std::path::Path;
 use std::process::Command;

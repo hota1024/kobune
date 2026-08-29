@@ -150,6 +150,35 @@ pub enum Request {
     /// The current state of a workspace.
     Status { target: Target },
 
+    /// Finds the workspace a loosely-typed name means.
+    ///
+    /// **The matching is the daemon's, not the caller's**
+    /// (`docs/DESIGN.md` §3). A shell completion and `kobune cd` ask the
+    /// same question of the same matcher, so a name that completes is a
+    /// name that resolves.
+    ///
+    /// Nothing here asks the runtime what is running: the answer is a
+    /// directory and a label, and both are known without it. That is
+    /// what makes it cheap enough to run on a Tab press.
+    Find {
+        target: Target,
+        /// What was typed, loosely. Absent when nothing was.
+        ///
+        /// The main worktree is what nothing means when one workspace is
+        /// being settled on, and every workspace when they are being
+        /// listed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// Answer with everything the name could mean, best first,
+        /// rather than with the one it settles on.
+        ///
+        /// What a completion asks for: a list to choose from, and no
+        /// error for a name that matches nothing — half a name is not a
+        /// mistake, it is a name that is still being typed.
+        #[serde(default)]
+        candidates: bool,
+    },
+
     /// Reads logs. Output arrives as [`crate::Event::Output`].
     Logs {
         target: Target,
@@ -293,6 +322,7 @@ impl Request {
             Self::Up { .. } => "up",
             Self::Down { .. } => "down",
             Self::Status { .. } => "status",
+            Self::Find { .. } => "find",
             Self::Logs { .. } => "logs",
             Self::Exec { .. } => "exec",
             Self::EnvList { .. } => "env_list",

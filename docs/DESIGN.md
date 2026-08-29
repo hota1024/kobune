@@ -1227,6 +1227,7 @@ kobune doctor                     # check the DNS resolver, docker, certificates
 kobune new <branch> [--base main] # git worktree add, warm the environment, print URLs
 kobune rm [-w <workspace>] [-f]   # destroy the environment, git worktree remove
 kobune ls [--all-projects]        # workspaces and their state
+kobune cd [workspace]             # the worktree's path, for the shell function to act on
 
 kobune up [service…] [--build]    # start explicitly; every service when named none
 kobune down [service…] [--all]
@@ -1252,6 +1253,7 @@ kobune skill install|show         # put SKILL.md in front of an agent
 kobune update [--check]
 kobune uninstall [-y] [--dry-run]
 kobune completions <shell>
+kobune shell-init <bash|zsh|fish>  # the function `cd` needs, for a startup file
 ```
 
 **Services are named positionally** on `up`, `down` and `logs` — a list, and
@@ -1267,6 +1269,51 @@ third step is the address itself rather than a command, for that reason
 
 `kobune doctor` ranks high because the initial setup involves sudo and outside
 dependencies (Docker, cloudflared). On failure it says what to do about it.
+
+#### `cd` is two commands, because a shell moves itself or not at all (after M9)
+
+A directory change belongs to a process and dies with it. So `kobune cd`
+prints a path and `kobune shell-init` prints the function that acts on one —
+the only thing Kobune has ever put inside somebody's shell, and deliberately
+the smallest thing that works. Anything that is not `cd` goes straight through
+to the binary, and `cd` itself only moves when what came back is a directory:
+`--json` and `--help` answer with something else, and a wrapper that swallowed
+either would be a worse bug than the one it fixes.
+
+**It is not folded into `kobune completions`.** That script is autoloaded at
+the first Tab press, which is long after the prompt where the function is
+wanted, so the line that loads it belongs in a startup file and the two are
+separate commands. The installer writes the completions and leaves that line
+alone.
+
+**`cd` is the one command that turns down `-w`**, and the reason is in the
+shell rather than in the CLI. The function recognises `kobune cd …` and
+passes everything else through, so `kobune -w feature cd` — accepted here at
+first — printed a path, left the shell where it was, and then advised
+installing the function that was already installed. One spelling, and the
+other answered with a sentence.
+
+**The name is matched by the daemon**, through a `Find` that carries what was
+typed ([§3](#principle-the-daemons-api-is-the-product)). A name that completes
+is therefore a name that resolves, and the GUI could offer the same jump
+without a second implementation of the rule. `Find` asks the runtime nothing —
+a path and a label come from git and the state file — which is what makes it
+cheap enough to run once per keystroke.
+
+**A tie is refused rather than broken.** Exact, then prefix, then anything the
+name sits inside, then the characters in order; the label before the branch at
+each. Two workspaces at the same kind of fit are answered with both names and
+exit code 12. Breaking the tie would mean a rule about which of two equally
+good matches wins, and nobody can predict a rule like that from outside — with
+a shell's own directory as the thing being decided.
+
+What clap generates is **rewritten on the way out** rather than forked
+(`apps/cli/src/shell.rs`): the arguments that take a workspace are pointed at
+`kobune complete workspaces`, which asks the daemon. clap can know every flag
+there is and no label at all, because labels are made and destroyed while the
+shell that loaded the script is still running. What the rewrite matches on is
+narrow enough that a test fails when clap changes it, because the other way of
+finding out is a Tab press quietly offering filenames again.
 
 #### The dashboard polls, and there is nothing to add to the API for it (M9)
 

@@ -22,7 +22,7 @@ pub use response::{
     ConfigInfo, ConfigLayerInfo, ConfigValueInfo, EnvInfo, Pong, PurgeFailure, PurgeProject,
     PurgeReport, PurgeStorageFailure, PurgeVolume, PurgeWorkspace, Response, ServiceInfo,
     TunnelAccess, TunnelInfo, TunnelLeftover, TunnelState, Unsettled, UnsettledReason,
-    WorkspaceInfo,
+    WorkspaceInfo, WorkspaceLocation,
 };
 
 /// Re-exported for convenience, so clients need not pull in `kobune-core`.

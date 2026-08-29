@@ -20,6 +20,19 @@ $ kobune status -w feature-auth                  # 同じ対象を明示的に�
 workspace 名はブランチ名をサニタイズしたもので、`feature/user-auth` であれば
 `feature-user-auth` になります。対応関係は `kobune ls` で確認できます。
 
+worktree へ移動するためのコマンドもあります。名前は、他と区別できるところ
+まで打てば足ります。
+
+```console
+$ kobune cd feature-auth   # このシェルを、その worktree へ
+$ kobune cd fuauth         # 同じ workspace
+```
+
+これには [`kobune shell-init`](../reference/cli#シェル連携) が出力するシェル
+関数が必要です。起動ファイルに 1 行書きます。プログラムは、自身を起動した
+シェルのカレントディレクトリを変えられないため、関数が無い場合は移動せずに
+パスを表示します。
+
 ## 作業を開始する
 
 ```console
