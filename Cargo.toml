@@ -49,7 +49,7 @@ toml = { version = "0.8", features = ["preserve_order"] }
 # silently or refuses the whole file. Walking the document is what lets it
 # report. `serde_yaml` is deprecated and `serde_yml` carries an unsoundness
 # advisory; this one has neither.
-yaml-rust2 = "0.11"
+yaml-rust2 = "0.12"
 indexmap = { version = "2", features = ["serde"] }
 # Terminal traffic is bytes, and the wire format is one JSON document per
 # line. Base64 is what carries the one inside the other.
