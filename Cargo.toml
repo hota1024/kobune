@@ -59,7 +59,7 @@ humantime = "2"
 
 # Utilities
 libc = "0.2"
-sha2 = "0.10"
+sha2 = "0.11"
 shell-words = "1"
 dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
