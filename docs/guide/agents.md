@@ -31,6 +31,9 @@ an agent cannot infer:
 - **Never reach for `docker`.** Anything `docker ps` shows is visible through
   Kobune, and touching containers directly puts the real state at odds with
   what Kobune believes.
+- **Never take an answer from a command you ran on the host.** A build or a
+  test run finishes there too, and what it reports is about your machine
+  rather than about the service.
 - **Never guess a port.** Ask `kobune url`. Ports change; URLs do not.
 - **Confirm by actually reaching it.** "It should be up" is not a check.
 - **`curl -s` alone is not enough** — it swallows errors and an untrusted
