@@ -16,6 +16,11 @@ at.
 visible through Kobune too. Touching it directly puts the real state at odds
 with the state Kobune knows about.
 
+**Never run the project's own tooling on the host.** A build, a test run, a
+type check: they are installed there too, so they finish and print a result.
+That result is about your machine rather than about the service. `kobune exec`
+is where it is true.
+
 **Never guess a port.** Ask `kobune url <service>`. Ports change from one start
 to the next; the URL does not.
 
@@ -234,6 +239,15 @@ have no terminal anyway, which is the usual case.
 
 ### Run a command in a container
 
+**The host runs these too, and the answer it gives is another machine's.** The
+worktree is mounted into the container, so the source is shared and nothing
+else is. A `volumes` entry such as
+`node-modules@workspace:/workspace/node_modules` covers that path inside the
+container, leaving the host's `node_modules` a separate install or no install
+at all, and what `kobune env` lists is injected into containers rather than
+into your shell. A `pnpm test` in the worktree finishes and prints a result all
+the same — about your machine, not about the service.
+
 ```bash
 kobune exec web -- pnpm test
 ```
@@ -413,6 +427,7 @@ Removes the worktree and its environment. The branch stays.
 | Startup never finishes | Watch it with `kobune logs -f` |
 | A config change does nothing | `kobune down && kobune up` |
 | A code change does nothing | The process is stale, not the file. `kobune down X && kobune up X` |
+| The tests pass and the service is still broken | They ran on the host, which is a different environment. `kobune exec <service> -- ...` |
 
 ## Reading the output
 
@@ -435,6 +450,7 @@ A `--json` error may carry a `hint`. **Read it — it says what to do next.**
 ## Do not
 
 - Run `docker` or `container` directly
+- Run the project's own build, test or type-check commands on the host
 - Put a port in a URL (`localhost:3000` and friends)
 - Edit `.env` by hand
 - Start a feature by switching the branch of the worktree you are in
