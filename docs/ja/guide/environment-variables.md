@@ -157,6 +157,7 @@ command = "sh -c 'cp $KOBUNE_CA_FILE /usr/local/share/ca-certificates/ && update
 [services.web.env]
 npm_config_store_dir = "${KOBUNE_CACHE_DIR}/pnpm"
 CARGO_HOME = "${KOBUNE_CACHE_DIR}/cargo"
+TURBO_CACHE_DIR = "${KOBUNE_CACHE_DIR}/turbo"
 ```
 
 ::: warning 波括弧は省略できません
@@ -183,6 +184,12 @@ pnpm の store であれば数 GB の追跡対象外ファイルがチェック�
 済ませるのが目的だからです。ブランチによって内容が変わるもの（ブランチごとに
 lockfile が異なる `node_modules` など）には
 [`@workspace` ボリューム](../reference/kobune-toml#スコープ) を使ってください。
+
+**Turborepo のキャッシュもここに置きます。** 既定の保存先は `.turbo/cache`、
+つまり worktree の中、リポジトリの中です。新しく作った worktree はそれを
+1 つも持たない状態から始まります。`TURBO_CACHE_DIR` を共有ボリュームに
+向ければ、明日作る worktree でも他の worktree がビルドしたものをそのまま
+使えます。コンテナがホストより遅く感じるかどうかは、ここで決まります。
 
 ::: warning root 以外で動作するコンテナの場合
 ボリュームは空かつ root 所有で作成されるため、別のユーザで動作するサービスは

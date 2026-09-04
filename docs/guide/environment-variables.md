@@ -159,6 +159,7 @@ volume Kobune manages, mounted into every service.
 [services.web.env]
 npm_config_store_dir = "${KOBUNE_CACHE_DIR}/pnpm"
 CARGO_HOME = "${KOBUNE_CACHE_DIR}/cargo"
+TURBO_CACHE_DIR = "${KOBUNE_CACHE_DIR}/turbo"
 ```
 
 ::: warning The braces are not optional
@@ -187,6 +188,13 @@ Shared by every worktree of the project, which is the point: a package store is
 worth downloading once. For anything a branch changes the shape of — a
 `node_modules` against a per-branch lockfile — use a
 [`@workspace` volume](../reference/kobune-toml#scope) instead.
+
+**A task runner belongs here too.** Turborepo's cache goes to `.turbo/cache`
+by default, which is inside the worktree and therefore inside the repository,
+and a new worktree starts with none of it. `TURBO_CACHE_DIR` moves it to the
+shared volume, where a worktree created tomorrow finds what the others have
+already built — the difference between a container that feels slower than the
+host and one that does not.
 
 ::: warning A container that does not run as root
 The volume starts empty and owned by root, so a service running as another
