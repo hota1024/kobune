@@ -1747,17 +1747,40 @@ to the first question would quietly break resolution through the second.
 
 ### What ships, and what does not
 
-`nightly` carries `kobune` and `kobuned` for macOS — Apple Silicon and Intel —
-and Linux x86_64. Both Apple targets are built on one runner: the second is a
-cross-compile that costs a minute, where a second matrix entry pays for a
-whole runner again, and a macOS runner bills at ten times the rate on a
-private repository.
+`nightly` carries `kobune`, `kobuned` and `kobune-studio` for macOS — Apple
+Silicon and Intel — and Linux x86_64. Both Apple targets are built on one
+runner: the second is a cross-compile that costs a minute, where a second
+matrix entry pays for a whole runner again, and a macOS runner bills at ten
+times the rate on a private repository.
 
-Nothing is signed. macOS quarantines the CLI and the daemon on first run,
-which `xattr -d com.apple.quarantine` clears. **The desktop app is not
-shipped at all**, because Gatekeeper stops an unsigned `.app` outright rather
-than warning about it — an archive nobody can open would promise more than it
+Nothing is signed. macOS quarantines them on first run, which
+`xattr -d com.apple.quarantine` clears. **The desktop app is not shipped at
+all**, because Gatekeeper stops an unsigned `.app` outright rather than
+warning about it — an archive nobody can open would promise more than it
 delivers. Signing and notarisation stay open below.
+
+`kobune-studio` ships where the desktop app does not, because the reason for
+that exclusion is the bundle rather than the signature: it is an executable
+like the other two, and quarantine is cleared the same way. It is a third
+binary rather than something folded into `kobune` so that the CLI's build
+does not acquire a JavaScript toolchain — one that, because `build.rs`
+supplies a placeholder page, would fail by shipping a working `kobune` with a
+broken dashboard inside it rather than by failing.
+
+**The dashboard's page is built before cargo runs, once per runner.** It is
+compiled into the binary, so a release job that skipped `pnpm build` would
+produce an archive that installs and runs and serves a sentence asking for
+`pnpm build`. The bundle is the same bytes on every architecture, so it is
+built ahead of the per-target loop rather than inside it.
+
+`kobune update` requires `kobune` and `kobuned` in the archive and treats
+`kobune-studio` as optional. An archive predating the dashboard has none, and
+refusing it would mean a build could never roll back to an older nightly. The
+consequence is felt once, in the other direction: an installation updated by a
+`kobune` from before the studio existed has the new CLI and no studio beside
+it, because that older `update` did not know to extract one. `kobune studio`
+says so and names the command that fixes it, rather than reporting a file it
+could not find.
 
 ### Branching: trunk on `main`, and when that changes
 

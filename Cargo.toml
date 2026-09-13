@@ -11,6 +11,7 @@ members = [
     "apps/daemon",
     "apps/cli",
     "apps/desktop",
+    "apps/studio",
     "xtask",
 ]
 
@@ -94,6 +95,11 @@ hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 axum = "0.8"
 http-body-util = "0.1"
+# The web dashboard's static bundle, compiled in so `kobune-studio` is one
+# file like every other binary here. The response headers that go with it
+# are axum's own; nothing needs a tower layer to set them.
+rust-embed = "8"
+mime_guess = "2"
 bytes = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2"

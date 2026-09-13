@@ -1,0 +1,32 @@
+[package]
+name = "kobune-studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kobune-studio"
+path = "src/main.rs"
+
+[dependencies]
+kobune-core.workspace = true
+kobune-api.workspace = true
+kobune-client.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process", "sync"] }
+tokio-stream.workspace = true
+axum = { workspace = true, features = ["macros"] }
+# `debug-embed`, so a debug build contains the page too. Without it
+# rust-embed reads `web/dist` off disk in debug and embeds only in release,
+# which means the binary works until it is moved and the two profiles fail
+# differently. `pnpm dev` is the development loop; this is not.
+rust-embed = { workspace = true, features = ["debug-embed"] }
+mime_guess.workspace = true
+futures.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
