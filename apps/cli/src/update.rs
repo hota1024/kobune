@@ -308,7 +308,13 @@ fn verify(bytes: &[u8], checksum_file: &[u8]) -> Result<()> {
     }
 }
 
-/// Pulls the two binaries out of the archive.
+/// Pulls the shipped binaries out of the archive.
+///
+/// `kobune` and `kobuned` are required — the CLI finds the daemon next to
+/// itself, so an archive missing either is not one to install. **The studio
+/// is optional**, because an archive built before it existed does not have
+/// one, and refusing such an archive would mean this build could never
+/// roll back to an older nightly.
 fn unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     use std::io::Read;
 
@@ -333,7 +339,7 @@ fn unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
             continue;
         };
 
-        if !matches!(name, "kobune" | "kobuned") {
+        if !matches!(name, "kobune" | "kobuned" | "kobune-studio") {
             continue;
         }
 
@@ -346,10 +352,15 @@ fn unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         found.push((name, contents));
     }
 
-    if found.len() != 2 {
+    let missing: Vec<&str> = ["kobune", "kobuned"]
+        .into_iter()
+        .filter(|required| !found.iter().any(|(name, _)| name == required))
+        .collect();
+
+    if !missing.is_empty() {
         return Err(UpdateError::Other(format!(
-            "the archive holds {} of the two binaries",
-            found.len()
+            "the archive is missing {}",
+            missing.join(" and ")
         )));
     }
 
@@ -679,6 +690,59 @@ mod tests {
         }
 
         let err = unpack(&gz).unwrap_err();
-        assert!(err.to_string().contains("1 of the two"), "got: {err}");
+        assert!(err.to_string().contains("missing kobuned"), "got: {err}");
+    }
+
+    #[test]
+    fn unpacking_does_not_need_the_studio() {
+        // An older nightly has no studio in it, and rolling back to one
+        // has to stay possible.
+        let gz = archive(&["kobune-x/kobune", "kobune-x/kobuned"]);
+
+        let found = unpack(&gz).expect("unpacks");
+        let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+
+        assert_eq!(names, ["kobune", "kobuned"]);
+    }
+
+    #[test]
+    fn unpacking_takes_the_studio_when_it_is_there() {
+        let gz = archive(&[
+            "kobune-x/kobune",
+            "kobune-x/kobuned",
+            "kobune-x/kobune-studio",
+        ]);
+
+        let found = unpack(&gz).expect("unpacks");
+        let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+
+        assert_eq!(names, ["kobune", "kobuned", "kobune-studio"]);
+    }
+
+    /// A gzipped tarball holding one small file per path.
+    fn archive(paths: &[&str]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        let contents = b"binary";
+
+        for path in paths {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, contents.as_slice())
+                .expect("appends");
+        }
+
+        let tarball = builder.into_inner().expect("builds");
+        let mut gz = Vec::new();
+        {
+            use std::io::Write as _;
+            let mut encoder = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::fast());
+            encoder.write_all(&tarball).expect("writes");
+            encoder.finish().expect("finishes");
+        }
+
+        gz
     }
 }

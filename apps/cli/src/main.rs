@@ -11,6 +11,7 @@ mod launchd;
 mod output;
 mod shell;
 mod skill;
+mod studio;
 mod system;
 mod ui;
 mod uninstall;
@@ -112,6 +113,21 @@ enum Command {
     /// It needs a terminal. With nothing to draw on — a pipe, `--json`,
     /// `TERM=dumb` — `kobune` on its own prints the help instead.
     Tui,
+
+    /// Open the dashboard in a browser
+    ///
+    /// The same environment the full-screen dashboard shows, served to a
+    /// browser by `kobune-studio` — which ships beside this binary and is
+    /// what actually runs. Everything after this point belongs to it.
+    Studio {
+        /// The port to listen on
+        #[arg(long)]
+        port: Option<u16>,
+
+        /// Print the URL instead of opening a browser
+        #[arg(long)]
+        no_open: bool,
+    },
 
     /// List workspaces
     Ls {
@@ -1166,6 +1182,24 @@ async fn run(cli: &Cli) -> Result<ExitCode, CliError> {
         return handle_complete(command, &cwd).await;
     }
 
+    // The studio is its own binary and resolves everything itself, so
+    // this hands over before a client is built rather than constructing
+    // one that is thrown away at `exec`.
+    if let Command::Studio { port, no_open } = &cli.command {
+        // Answered rather than ignored, for the reason the dashboard
+        // answers it: an agent that adds `--json` to everything would
+        // otherwise be handed a server that never returns.
+        if cli.json {
+            return Err(CliError::Refused {
+                message: "the studio is a screen, so there is nothing to answer with".to_string(),
+                hint: "kobune status --json is the same environment, as a document".to_string(),
+            });
+        }
+
+        studio::exec(*port, *no_open, cli.workspace.as_deref())?;
+        unreachable!("exec replaced this process");
+    }
+
     let client = Client::from_env().map_err(|err| {
         CliError::Local(format!("cannot resolve the configuration directory: {err}"))
     })?;
@@ -1488,7 +1522,9 @@ fn build_request(cli: &Cli, target: Target) -> Result<Request, CliError> {
         | Command::Update { .. }
         // Not one request and one answer: it makes its own, for as long
         // as it is open.
-        | Command::Tui => {
+        | Command::Tui
+        // Not this process's at all by the time anything could ask.
+        | Command::Studio { .. } => {
             unreachable!("the commands that do not send one request are handled before this")
         }
     };

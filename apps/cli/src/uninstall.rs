@@ -125,10 +125,12 @@ fn trust_is_removable(ca_path: &Path) -> bool {
 /// changing one without the other silently stops the step being offered.
 const SYSTEM_STORE_CA: &str = "/usr/local/share/ca-certificates/kobune-ca.crt";
 
-/// The two binaries, when they are where this one is.
+/// The shipped binaries, when they are where this one is.
 ///
-/// `kobune` finds the daemon next to itself, so they were installed
-/// together and go together. A build tree is left alone: deleting
+/// `kobune` finds the daemon and the studio next to itself, so they were
+/// installed together and go together. The studio is listed like the
+/// others and simply is not there on an installation that predates it —
+/// a path that does not exist is nothing to remove. A build tree is left alone: deleting
 /// `target/debug/kobune` because someone ran it from a checkout would be
 /// removing a build artefact, not an installation.
 fn installed_binaries() -> Vec<Removal> {
@@ -143,7 +145,7 @@ fn installed_binaries() -> Vec<Removal> {
         return Vec::new();
     }
 
-    ["kobune", "kobuned"]
+    ["kobune", "kobuned", "kobune-studio"]
         .into_iter()
         .map(|name| dir.join(name))
         .filter(|path| path.exists())
