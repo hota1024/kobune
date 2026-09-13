@@ -1,4 +1,5 @@
-import type { WorkspaceView } from '../lib/types'
+import { WorkspaceMenu } from './WorkspaceMenu'
+import type { Action, WorkspaceView } from '../lib/types'
 
 /**
  * Every workspace the project has — not only the open ones.
@@ -13,12 +14,18 @@ export function Sidebar({
   openTabs,
   onOpen,
   onNew,
+  onAct,
+  onEnv,
+  onLogs,
 }: {
   workspaces: WorkspaceView[]
   selected: string | null
   openTabs: string[]
   onOpen: (label: string) => void
   onNew: () => void
+  onAct: (action: Action) => void
+  onEnv: (workspace: WorkspaceView) => void
+  onLogs: (workspace: WorkspaceView) => void
 }) {
   const notOpen = workspaces.filter((workspace) => !openTabs.includes(workspace.label)).length
 
@@ -47,15 +54,26 @@ export function Sidebar({
           const shared = workspace.services.some((service) => service.tunnel_url)
 
           return (
-            <button
+            <WorkspaceMenu
               key={workspace.label}
-              type="button"
-              onClick={() => onOpen(workspace.label)}
-              className={`flex cursor-pointer flex-col gap-1 border-l-2 px-2.5 py-2 text-left ${
-                isSelected
-                  ? 'border-l-bright bg-shell-sel'
-                  : 'border-l-transparent hover:bg-shell-hover'
-              }`}
+              workspace={workspace}
+              // Already a tab? Then opening it is what a left click does,
+              // and repeating it here would be a menu item for nothing.
+              onOpen={isOpen ? undefined : () => onOpen(workspace.label)}
+              onAct={onAct}
+              onEnv={() => onEnv(workspace)}
+              onLogs={() => onLogs(workspace)}
+              trigger={
+                <button
+                  type="button"
+                  onClick={() => onOpen(workspace.label)}
+                  className={`flex cursor-pointer flex-col gap-1 border-l-2 px-2.5 py-2 text-left ${
+                    isSelected
+                      ? 'border-l-bright bg-shell-sel'
+                      : 'border-l-transparent hover:bg-shell-hover'
+                  }`}
+                />
+              }
             >
               <div className="flex items-center gap-2">
                 <span className={`font-mono text-12 ${live ? 'text-ink-good' : 'text-shell-muted'}`}>
@@ -84,7 +102,7 @@ export function Sidebar({
                 )}
                 <span className="truncate">{workspace.branch}</span>
               </div>
-            </button>
+            </WorkspaceMenu>
           )
         })}
       </div>

@@ -1,4 +1,5 @@
-import type { WorkspaceView } from '../lib/types'
+import { WorkspaceMenu } from './WorkspaceMenu'
+import type { Action, WorkspaceView } from '../lib/types'
 
 /**
  * The workspaces you have open.
@@ -16,6 +17,9 @@ export function TabStrip({
   onSelect,
   onClose,
   onPick,
+  onAct,
+  onEnv,
+  onLogs,
 }: {
   tabs: string[]
   workspaces: WorkspaceView[]
@@ -23,6 +27,9 @@ export function TabStrip({
   onSelect: (label: string) => void
   onClose: (label: string) => void
   onPick: () => void
+  onAct: (action: Action) => void
+  onEnv: (workspace: WorkspaceView) => void
+  onLogs: (workspace: WorkspaceView) => void
 }) {
   const notOpen = workspaces.filter((workspace) => !tabs.includes(workspace.label)).length
 
@@ -32,14 +39,57 @@ export function TabStrip({
         const workspace = workspaces.find((candidate) => candidate.label === label)
         const isSelected = label === selected
 
+        // Before the first listing resolves there is no workspace behind a
+        // remembered tab, and so nothing for a menu to act on. The tab is
+        // still drawn — hiding it would make persisted tabs invisible and
+        // unclosable for as long as the daemon takes to answer, which is
+        // longest exactly when it is not answering at all.
+        if (!workspace) {
+          return (
+            <div
+              key={label}
+              className={`flex items-center gap-[9px] border-t-2 border-r border-r-shell-rule px-[15px] ${
+                isSelected ? 'border-t-bright bg-shell-bg' : 'border-t-transparent bg-shell-sink'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => onSelect(label)}
+                className={`cursor-pointer font-mono text-12 ${
+                  isSelected ? 'font-semibold text-shell-fg' : 'text-shell-muted'
+                }`}
+              >
+                {label}
+              </button>
+              <button
+                type="button"
+                onClick={() => onClose(label)}
+                aria-label={`Close the ${label} tab`}
+                className="cursor-pointer font-mono text-10 text-shell-muted hover:text-shell-fg"
+              >
+                ✕
+              </button>
+            </div>
+          )
+        }
+
         return (
-          <div
+          <WorkspaceMenu
             key={label}
-            className={`flex items-center gap-[9px] border-t-2 border-r border-r-shell-rule px-[15px] ${
-              isSelected
-                ? 'border-t-bright bg-shell-bg'
-                : 'border-t-transparent bg-shell-sink'
-            }`}
+            workspace={workspace}
+            onCloseTab={() => onClose(label)}
+            onAct={onAct}
+            onEnv={() => onEnv(workspace)}
+            onLogs={() => onLogs(workspace)}
+            trigger={
+              <div
+                className={`flex items-center gap-[9px] border-t-2 border-r border-r-shell-rule px-[15px] ${
+                  isSelected
+                    ? 'border-t-bright bg-shell-bg'
+                    : 'border-t-transparent bg-shell-sink'
+                }`}
+              />
+            }
           >
             <button
               type="button"
@@ -50,11 +100,9 @@ export function TabStrip({
             >
               {label}
             </button>
-            {workspace && (
-              <span className="font-mono text-105 text-shell-muted">
-                {workspace.running}/{workspace.total}
-              </span>
-            )}
+            <span className="font-mono text-105 text-shell-muted">
+              {workspace.running}/{workspace.total}
+            </span>
             <button
               type="button"
               onClick={() => onClose(label)}
@@ -64,7 +112,7 @@ export function TabStrip({
             >
               ✕
             </button>
-          </div>
+          </WorkspaceMenu>
         )
       })}
 

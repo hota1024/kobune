@@ -11,7 +11,7 @@ import { act, fetchDoctor, fetchEnv, followLogs } from './lib/api'
 import { commandsFor } from './lib/commands'
 import { useStudioState } from './lib/state'
 import { hasToken, wantedWorkspace } from './lib/session'
-import type { Action, DoctorView, EnvView } from './lib/types'
+import type { Action, DoctorView, EnvView, WorkspaceView } from './lib/types'
 
 /**
  * Tabs survive a reload, in `localStorage`.
@@ -152,7 +152,13 @@ export function App() {
       // `rm` deletes a worktree, and the daemon will not ask — it never
       // prompts (§3), so the question has to be asked here or nowhere.
       if (action.kind === 'rm') {
-        const label = selected ?? 'this workspace'
+        // **From the action, never from the selection.** The context menu
+        // can remove a workspace that is not the open one, and a dialog
+        // that named the open tab while deleting another would be worse
+        // than no dialog at all. The path is the fallback because it is
+        // exactly what will go.
+        const target = workspaces.find((workspace) => workspace.path === action.path)
+        const label = target?.label || action.path || 'this workspace'
         const sure = window.confirm(
           `Remove ${label}?\n\nThis deletes the worktree and its containers. Uncommitted work in it goes too.`,
         )
@@ -167,7 +173,7 @@ export function App() {
         refresh()
       }
     },
-    [refresh, selected],
+    [refresh, workspaces],
   )
 
   // The log follow. Restarted when the workspace or the filter changes,
@@ -217,15 +223,47 @@ export function App() {
     }
   }, [])
 
-  const openEnv = useCallback(async () => {
-    setEnvOpen(true)
-    setEnv(null)
-    try {
-      setEnv(await fetchEnv(current?.path ?? null))
-    } catch {
-      setEnvOpen(false)
-    }
-  }, [current])
+  /** The workspace the env overlay is describing, for its subtitle. */
+  const [envOf, setEnvOf] = useState<string | null>(null)
+
+  // Which env listing is wanted. A slow one that resolves after a second
+  // was asked for would otherwise land under the second one's heading.
+  const envRequest = useRef(0)
+
+  const openEnv = useCallback(
+    async (workspace?: WorkspaceView) => {
+      const target = workspace ?? current
+      const ticket = ++envRequest.current
+
+      setEnvOf(target?.label ?? null)
+      setEnvOpen(true)
+      setEnv(null)
+
+      try {
+        const entries = await fetchEnv(target?.path ?? null)
+        if (ticket === envRequest.current) setEnv(entries)
+      } catch {
+        if (ticket === envRequest.current) setEnvOpen(false)
+      }
+    },
+    [current],
+  )
+
+  /**
+   * Show a workspace's logs, opening it first if it is not open.
+   *
+   * The pane follows whatever is in front of you, so there is no way to
+   * watch a workspace without having it open — and quietly following one
+   * that is not on screen would be worse than opening it.
+   */
+  const showLogs = useCallback(
+    (workspace: WorkspaceView) => {
+      openTab(workspace.label)
+      setLogFilter(null)
+      setLogOpen(true)
+    },
+    [openTab],
+  )
 
   const commands = useMemo(
     () =>
@@ -329,6 +367,9 @@ export function App() {
             selected={selected}
             openTabs={tabs}
             onOpen={openTab}
+            onAct={(action) => void run(action)}
+            onEnv={(workspace) => void openEnv(workspace)}
+            onLogs={showLogs}
             onNew={() => {
               const branch = window.prompt('New workspace — branch name')
               if (branch) void run({ kind: 'new', branch, start: true })
@@ -347,6 +388,9 @@ export function App() {
               setPaletteScope('goto')
               setPalette(true)
             }}
+            onAct={(action) => void run(action)}
+            onEnv={(workspace) => void openEnv(workspace)}
+            onLogs={showLogs}
           />
 
           {current ? (
@@ -394,12 +438,7 @@ export function App() {
         onOpenChange={setPalette}
       />
       <DoctorOverlay open={doctorOpen} doctor={doctor} onOpenChange={setDoctorOpen} />
-      <EnvOverlay
-        open={envOpen}
-        env={env}
-        workspace={current?.label ?? null}
-        onOpenChange={setEnvOpen}
-      />
+      <EnvOverlay open={envOpen} env={env} workspace={envOf} onOpenChange={setEnvOpen} />
     </Shell>
   )
 }
