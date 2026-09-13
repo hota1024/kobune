@@ -46,7 +46,10 @@ struct Args {
     #[arg(long)]
     path: Option<PathBuf>,
 
-    /// The workspace to open first. The busiest one when left out.
+    /// The workspace to open first.
+    ///
+    /// Left out, the page opens the first one with anything running,
+    /// preferring a worktree over the main checkout.
     #[arg(long, short = 'w')]
     workspace: Option<String>,
 
@@ -136,9 +139,18 @@ fn open_browser(url: &str) -> std::io::Result<()> {
         c
     };
 
+    // **Spawned, not waited on.** `status()` blocks until the opener
+    // exits, and this runs before the listener is served — on Linux
+    // `xdg-open` can fall through to running the browser in the
+    // foreground, which would leave the page it just opened waiting on a
+    // server that starts when the browser closes. `stdin` is closed for
+    // the same family of reasons: an `xdg-open` that reaches a terminal
+    // browser would otherwise take the tty. Both are what the TUI's
+    // opener already does (`apps/cli/src/ui/tui/mod.rs`).
     command
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
+        .spawn()
         .map(|_| ())
 }

@@ -105,7 +105,16 @@ export function App() {
     // `kobune studio -w` named one, and an explicit ask outranks both the
     // remembered tabs and the guess below.
     const asked = wantedWorkspace()
-    const named = asked && workspaces.some((w) => w.label === asked) ? asked : null
+    // The label, the raw workspace field, or `main` for the checkout whose
+    // label is `(main)` and whose workspace field is null. Matching on the
+    // label alone would take `-w main` and quietly open something else.
+    const named =
+      workspaces.find(
+        (w) =>
+          w.label === asked ||
+          (w.workspace !== null && w.workspace === asked) ||
+          (w.is_main && (asked === 'main' || asked === '(main)')),
+      )?.label ?? null
 
     const first = tabs.find((label) => workspaces.some((w) => w.label === label))
     // A running workspace before a stopped one, and a worktree before the
@@ -212,6 +221,13 @@ export function App() {
       setFollowing(false)
     }
   }, [current?.label, current?.path, logFilter, logOpen])
+
+  // A filter names a service of the workspace it was set on. Carried to
+  // the next one it leaves the pane filtered to something that workspace
+  // does not define — no lines, and no chip lit to say why.
+  useEffect(() => {
+    setLogFilter(null)
+  }, [current?.label])
 
   const openDoctor = useCallback(async () => {
     setDoctorOpen(true)

@@ -22,9 +22,10 @@ signals and the exit code are the studio's from that point. Running
 
 It opens your browser at that URL. `--no-open` prints it instead, which is
 what you want over SSH or in a container, and `--port` moves the listener.
-`-w` opens a particular workspace first rather than the busiest one; it
-travels in the fragment beside the token, so it is not sent to the server
-either.
+`-w` names the workspace to open first. Left out, the page opens the
+first one with anything running and prefers a worktree to the main
+checkout. The name travels in the fragment beside the token, so it is not
+sent to the server either.
 
 `--path` names the project when the working directory is not inside it.
 The subcommand does not pass one — the working directory is inherited, and
