@@ -224,6 +224,44 @@ Turborepo のプレフィックスや、緑色のステータスコードがそ�
 であれば、画面には返せる文書がないこと、同じ環境を文書で得るなら
 `kobune status --json` であることです。
 
+
+### `kobune studio`
+
+同じダッシュボードを、端末ではなくブラウザに描画します。
+
+```console
+$ kobune studio              # ブラウザでページを開きます
+$ kobune studio --port 9000  # 17823 以外で待ち受けます
+$ kobune studio -w feat-1    # 指定した workspace を開いた状態で始めます
+$ kobune studio --no-open    # URL を表示するだけで、何も開きません
+```
+
+3 秒ごとに同じ一覧を読み直し、同じ状態を表示し、同じ操作を提供します。端末が
+キーで行うことを、ページは右クリックで行います。workspace の行やタブから
+`up`、`down`、`restart`、`env`、`logs`、`rm` を実行できます。
+
+**表示される URL にはトークンが含まれ、それはこの実行に固有です。** サーバーを
+止めればトークンは失われ、再度起動しても以前の URL では何も開きません。これは
+意図的なものです。ページはコンテナを起動でき、環境変数も読めます。作成した
+セッション以上の価値を持たせるべきではありません。
+
+```console
+$ kobune studio --no-open
+kobune studio  http://127.0.0.1:17823/#token=2f1c…
+  open that URL. The token in the fragment is this session's.
+```
+
+トークンは `#` の後ろにあります。ブラウザはこの部分をサーバーに送らず、
+`Referer` にも載せないため、トークンはそれが開くサーバー自身のログにも
+残りません。待ち受けは 127.0.0.1 のみで、変更する flag はありません。
+ネットワークから届くダッシュボードは、そこにいる誰もがあなたとしてコマンドを
+実行できる経路になりますし、`kobune exec` は解決済みの秘密情報を表示します。
+必要であれば自分で proxy を前段に置き、その判断を自分で引き受けてください。
+
+**これはサーバーなので、自分では終了しません。** `ctrl-c` で停止します。タブを
+閉じても停止しませんし、開始した処理も止まりません。端末のダッシュボードを
+離れても何も止まらないのと同じ理由です。
+
 ## workspace の操作
 
 ### `kobune new <branch>`
@@ -848,5 +886,7 @@ $ echo 'eval "$(kobune shell-init bash)"' >> ~/.bashrc
 | `KOBUNE_CLOUDFLARED` | `PATH` にも主要なインストール先にも無い `cloudflared` のパス |
 | `KOBUNE_CONTAINER` | Apple Container の `container` について同じもの |
 | `KOBUNE_DAEMON` | 起動する `kobuned` のパス。実行中の `kobune` の隣に無い場合に使います |
+| `KOBUNE_STUDIO` | 同じく `kobune-studio` のパス |
+| `KOBUNE_STUDIO_PORT` | `kobune studio` が待ち受ける port。既定は 17823。`--port` が優先されます |
 | `KOBUNE_LOG` | daemon のログフィルタ。例: `debug` |
 | `KOBUNE_NO_UPDATE_CHECK` | 何か値を設定すると更新チェックをしません（1 日 1 回のものと `--version` のもの、どちらも） |

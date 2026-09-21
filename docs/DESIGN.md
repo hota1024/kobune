@@ -1510,13 +1510,23 @@ redraw is requested only when an event arrives; idle costs nothing.
 
 ## 13. Repository layout
 
-One Cargo workspace for the product. With GPUI there is no Node.js in
-anything that ships, and no `packages/` for TypeScript.
+One Cargo workspace for the product, and no `packages/` for TypeScript. With
+GPUI the desktop app needs no Node.js, which is most of what the rule was
+protecting.
 
-The one exception is `docs/`, which is a VitePress site and therefore has its
-own `package.json`. It is build tooling for the documentation and no part of it
-reaches a binary, so the rule it bends — no Node toolchain — still holds where
-it was meant to.
+Two places have a `package.json` anyway, and they are different cases. `docs/`
+is a VitePress site: build tooling for the documentation, no part of which
+reaches a binary. `apps/studio/web/` is a page that **does** ship — Vite builds
+it and `rust-embed` compiles the result into `kobune-studio`.
+
+So the rule as written is no longer true, and the true one is narrower: **no
+Node.js at run time, anywhere.** A built bundle is bytes in a binary, and a
+machine that runs `kobune studio` needs no toolchain to do it; the only people
+who need pnpm are the ones building the studio from source, which
+`cargo build` handles without them — `apps/studio/build.rs` writes a
+placeholder page so a checkout that has never run pnpm still compiles. What
+the original rule refused was a product that could not start without a package
+manager, and that is still refused.
 
 ```
 kobune/
@@ -1533,6 +1543,8 @@ kobune/
 ├── apps/                 # binaries, shipped
 │   ├── daemon/           #   kobuned — the supervisor and the RPC server
 │   ├── cli/              #   kobune
+│   ├── studio/           #   kobune-studio — the dashboard, served to a browser
+│   │   └── web/          #     its page: Vite, built and embedded, not shipped loose
 │   └── desktop/          #   kobune-desktop — the GPUI GUI
 ├── assets/               # the logo, in one place; see assets/README.md
 │   └── logo/             #   copied into docs/public/logo/ by the docs build

@@ -223,6 +223,45 @@ it from is the point of having a daemon at all.
 `--json` — that a screen has no document to return, and that
 `kobune status --json` is the same environment as one.
 
+
+### `kobune studio`
+
+The same dashboard, drawn in a browser instead of a terminal.
+
+```console
+$ kobune studio              # opens a browser at the page
+$ kobune studio --port 9000  # somewhere other than 17823
+$ kobune studio -w feat-1    # with a workspace already open
+$ kobune studio --no-open    # print the URL and open nothing
+```
+
+It reads the same listing every three seconds, shows the same states, and
+offers the same actions. What the terminal does with keys the page does with
+a right click: a workspace row or a tab carries `up`, `down`, `restart`,
+`env`, `logs` and `rm`.
+
+**The URL it prints carries a token, and the token is this run's.** Stop the
+server and the token is gone; start it again and the old URL no longer opens
+anything. That is deliberate — the page can start containers and read your
+environment, so it is worth no more than the session that made it.
+
+```console
+$ kobune studio --no-open
+kobune studio  http://127.0.0.1:17823/#token=2f1c…
+  open that URL. The token in the fragment is this session's.
+```
+
+The token sits after the `#`, which browsers do not send to servers and do not
+put in `Referer`, so it stays out of the log of the very server it opens. The
+listener is on 127.0.0.1 and there is no flag to move it: a dashboard reachable
+from the network would be a way for anyone on it to run commands as you, and
+`kobune exec` prints resolved secrets. Put your own proxy in front if you want
+that, and own the decision.
+
+**It is a server, so it does not end on its own.** `ctrl-c` stops it. Closing
+the tab does not — and does not stop anything it started, for the same reason
+leaving the terminal dashboard does not.
+
 ## Workspaces
 
 ### `kobune new <branch>`
@@ -852,5 +891,7 @@ hand for each shell, and one nobody has run is worse than none.
 | `KOBUNE_CLOUDFLARED` | A `cloudflared` binary somewhere neither `PATH` nor the usual install prefixes reach |
 | `KOBUNE_CONTAINER` | The same, for Apple Container's `container` |
 | `KOBUNE_DAEMON` | The `kobuned` to start, for when it is not sitting beside the `kobune` being run |
+| `KOBUNE_STUDIO` | The same, for `kobune-studio` |
+| `KOBUNE_STUDIO_PORT` | The port `kobune studio` listens on. Default 17823. `--port` wins over it |
 | `KOBUNE_LOG` | Log filter for the daemon, e.g. `debug` |
 | `KOBUNE_NO_UPDATE_CHECK` | Set to anything to stop the update check, both the daily one and `--version`'s |

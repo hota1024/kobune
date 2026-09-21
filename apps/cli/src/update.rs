@@ -201,9 +201,10 @@ pub enum Stage {
 
 /// Replaces this installation with the published build.
 ///
-/// Returns the commit installed. Both binaries are replaced together: the
-/// CLI starts the daemon by looking next to itself, so a pair from
-/// different builds would speak whatever protocol each happened to have.
+/// Returns the commit installed. Every binary in the archive is replaced
+/// together: the CLI finds both the daemon and the studio by looking next
+/// to itself, so a set from different builds would speak whatever protocol
+/// each happened to have.
 ///
 /// `report` is called as the work moves along, often during the download.
 /// It must be cheap: it runs once per chunk off the socket.

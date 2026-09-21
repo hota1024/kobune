@@ -71,6 +71,32 @@ Keychain to give them.
 Point `KOBUNE_HOME` somewhere other accounts can reach and you have given those
 accounts the daemon.
 
+### A port on loopback that speaks to that daemon for you
+
+`kobune studio` serves the dashboard to a browser, which means an HTTP surface
+in front of the socket described above — the one that asks its callers for
+nothing. The file mode and the uid check that guard the socket do not reach a
+TCP port, so the port is guarded on its own terms:
+
+- It binds 127.0.0.1 only, and there is no flag to move it.
+- Every run mints a 32-byte token from `/dev/urandom`. It goes in the URL's
+  fragment, which a browser does not send to servers and does not write into
+  `Referer`, and the page then sends it as `Authorization: Bearer`. Nothing
+  under `/api` answers without it.
+- A bearer header is not a CORS-simple one, so a page on another origin cannot
+  reach the API without a preflight, and the preflight is never answered.
+- `Host` and `Origin` are checked against this server's own address, which is
+  what stops a name that resolves to 127.0.0.1 from being pointed at it.
+
+The token lives as long as the process. Stop the server and the URL opens
+nothing.
+
+**Anyone who can read the token can do what you can do**, including starting
+containers and reading the environment variables Kobune resolved from
+1Password or the Keychain. The URL is handed to the browser as an argument to
+`open`, and on Linux `/proc/<pid>/cmdline` is world-readable for as long as
+that opener runs; `--no-open` prints the URL instead and spawns nothing.
+
 ### A flag that puts an environment on the public internet
 
 `kobune tunnel enable --public` publishes a workspace through Cloudflare Tunnel.
