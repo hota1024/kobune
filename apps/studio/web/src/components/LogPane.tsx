@@ -67,7 +67,12 @@ export function LogPane({
   // through a burst is not fought by every line that arrives.
   useEffect(() => {
     const element = body.current
-    if (!element || !pinned.current) return
+    if (!element) return
+    // A cleared pane is a new stream — switching workspace or filter empties
+    // it — and the last one's scroll position is not a reason to refuse to
+    // follow this one.
+    if (lines.length === 0) pinned.current = true
+    if (!pinned.current) return
     element.scrollTop = element.scrollHeight
   }, [lines])
 
