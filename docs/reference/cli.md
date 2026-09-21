@@ -724,6 +724,10 @@ current `nightly`. `--check` reports and installs nothing. Under `--json`:
 { "status": "available", "commit": "…", "running": "…" }
 ```
 
+A binary the archive does not carry is removed rather than left behind.
+`KOBUNE_CHANNEL` can name a release older than the dashboard, and going back
+to one would otherwise leave a newer `kobune-studio` beside an older `kobune`.
+
 `status` is one of `current`, `available`, `installed` or `unknown` — `unknown`
 meaning this build records no commit, so there is nothing to compare.
 

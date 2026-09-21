@@ -724,6 +724,10 @@ $ kobune update --check
 { "status": "available", "commit": "…", "running": "…" }
 ```
 
+アーカイブに含まれないバイナリは、残さず削除します。`KOBUNE_CHANNEL` には
+ダッシュボードより古いリリースも指定できます。そこへ戻したとき、古い `kobune`
+の隣に新しい `kobune-studio` が残ってしまうのを防ぐためです。
+
 `status` は `current` / `available` / `installed` / `unknown` のいずれかです。
 `unknown` は、そのビルドがコミットを記録しておらず比較できないことを表します。
 
