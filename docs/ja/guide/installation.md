@@ -4,9 +4,9 @@
 $ curl -fsSL https://kobune.1024.works/install.sh | sh
 ```
 
-環境に合ったアーカイブを選び、公開されている `.sha256` と照合し、`kobune` と
-`kobuned` を `~/.local/bin` に配置します。bash / zsh / fish のうちインストール
-済みのシェルには、補完スクリプトも書き込みます。
+環境に合ったアーカイブを選び、公開されている `.sha256` と照合し、`kobune`、
+`kobuned`、`kobune-studio` を `~/.local/bin` に配置します。bash / zsh / fish の
+うちインストール済みのシェルには、補完スクリプトも書き込みます。
 
 root 権限は一切必要ありません。`PATH` の設定が必要な場合は、いま使っている
 シェルの書き方で 1 行だけ表示します。fish なら `fish_add_path` を示すので、
@@ -135,7 +135,7 @@ $ cd kobune-aarch64-apple-darwin
 
 ::: warning macOS は未署名バイナリを隔離します
 ```console
-$ xattr -d com.apple.quarantine kobune kobuned
+$ xattr -d com.apple.quarantine kobune kobuned kobune-studio
 ```
 インストールスクリプトはこれを自動で実行します。署名は未解決のため、手動なら
 このコマンドを実行するか、ソースからビルドしてください。同じ理由でデスクトップ
@@ -154,19 +154,39 @@ $ cd kobune
 $ cargo build --release --workspace
 ```
 
-`target/release` に 2 つのバイナリが生成されます。
+`target/release` に 3 つのバイナリが生成されます。
 
 - `kobune` — 操作に使う CLI
 - `kobuned` — CLI が通信する daemon
+- `kobune-studio` — `kobune studio` がブラウザに配信するダッシュボード
 
 `PATH` の通ったディレクトリに配置します。
 
 ```console
-$ cp target/release/kobune target/release/kobuned ~/.local/bin/
+$ cp target/release/kobune target/release/kobuned \
+     target/release/kobune-studio ~/.local/bin/
 ```
 
-この 2 つは同じディレクトリに置いてください。CLI は自身と同じ場所を参照して
-daemon を起動します。
+この 3 つは同じディレクトリに置いてください。CLI は自身と同じ場所を参照して
+残りの 2 つを見つけます。
+
+::: tip 先にダッシュボードのページをビルドしてください
+`kobune-studio` はページを埋め込んだバイナリです。クローンした直後の
+`cargo build` にはビルドすべきページがないため、代わりに「何を実行すればよいか」
+を書いたプレースホルダが埋め込まれ、バイナリはダッシュボードではなくそれを
+配信します。
+
+```console
+$ cd apps/studio/web
+$ pnpm install
+$ pnpm build
+```
+
+そのうえで上記のビルドを実行してください。これが必要なのはソースからビルドする
+場合だけで、リリースアーカイブにはページが含まれています。`cargo build` の後に
+`pnpm build` を実行しても構いません。cargo は `web/dist` を監視しているため、
+次のビルドでページを取り込みます。
+:::
 
 ## シェル補完
 

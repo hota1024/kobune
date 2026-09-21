@@ -69,6 +69,7 @@ made your worktree the wrong way.
 
 ```console
 $ kobune           # the dashboard: all of it at once, and it keeps up
+$ kobune studio    # the same dashboard, in a browser
 $ kobune ls        # every workspace, and how many services are up
 $ kobune status    # this workspace in detail: state, URLs, addresses
 ```
@@ -78,6 +79,12 @@ so what is on it is what is true now rather than what was true when you pressed
 return. `u` and `d` start and stop whatever the cursor is on, and `?` lists the
 rest of the keys — [The dashboard](../reference/cli#the-dashboard) has them
 all. The other two print once and exit, which is what a script wants.
+
+`kobune studio` draws the same thing in a browser, where the keys become a
+right click on a workspace or its tab. It prints a URL carrying a token that
+belongs to that one run, and listens on loopback only —
+[`kobune studio`](../reference/cli#kobune-studio) has the rest, including why
+there is no flag to move it.
 
 A service is in one of four states:
 

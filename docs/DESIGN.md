@@ -1500,7 +1500,10 @@ redraw is requested only when an event arrives; idle costs nothing.
 
 - **The GUI never starts the daemon.** Looking after the daemon is launchd's
   job, and a GUI managing it too would split that responsibility. This settles
-  the open question in §15
+  the open question in §15. It is about the app that sits resident in the tray:
+  `kobune studio` is a command somebody typed, like `kobune tui`, and goes
+  through `connect_or_spawn` the way the TUI does — which asks launchd first,
+  so the job stays launchd's either way
 - The tray menu is **rebuilt only when it changes**. Rebuilding every frame
   closes it out from under whoever has it open
 - A failed connection is logged. Shown on screen only, it leaves no trace to

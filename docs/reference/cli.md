@@ -717,8 +717,10 @@ $ kobune update
 $ kobune update --check
 ```
 
-Replaces both binaries in the directory the running `kobune` came from with the
-current `nightly`. `--check` reports and installs nothing. Under `--json`:
+Replaces every binary in the archive, in the directory the running `kobune`
+came from, with the current `nightly` — `kobune` and `kobuned`, plus
+`kobune-studio` where the release carries one. `--check` reports and installs
+nothing. Under `--json`:
 
 ```json
 { "status": "available", "commit": "…", "running": "…" }
