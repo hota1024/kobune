@@ -20,6 +20,7 @@ use kobune_proxy::{
     Activation, Activator, LocalCa, NoopActivator, Route, Routes, serve_http, serve_https,
     server_config,
 };
+use rustls::pki_types::pem::PemObject;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
@@ -375,15 +376,8 @@ async fn passes_websocket_style_upgrades_through() {
 async fn serves_https_with_a_certificate_for_the_sni_name() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ca = Arc::new(LocalCa::load_or_create(dir.path()).expect("creates a CA"));
-    let ca_der = rustls::pki_types::CertificateDer::from(
-        rustls_pemfile::certs(&mut std::io::BufReader::new(
-            ca.certificate_pem().as_bytes(),
-        ))
-        .next()
-        .expect("has a certificate")
-        .expect("reads")
-        .to_vec(),
-    );
+    let ca_der = rustls::pki_types::CertificateDer::from_pem_slice(ca.certificate_pem().as_bytes())
+        .expect("reads the certificate");
 
     let upstream = spawn_upstream().await;
     let routes = Routes::new();
@@ -476,15 +470,8 @@ async fn the_constrained_ca_verifies_for_every_name_it_covers() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ca = Arc::new(LocalCa::load_or_create(dir.path()).expect("creates a CA"));
 
-    let ca_der = rustls::pki_types::CertificateDer::from(
-        rustls_pemfile::certs(&mut std::io::BufReader::new(
-            ca.certificate_pem().as_bytes(),
-        ))
-        .next()
-        .expect("has a certificate")
-        .expect("reads")
-        .to_vec(),
-    );
+    let ca_der = rustls::pki_types::CertificateDer::from_pem_slice(ca.certificate_pem().as_bytes())
+        .expect("reads the certificate");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

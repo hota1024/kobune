@@ -8,6 +8,29 @@
 # Reviewed 2026-08-12. Anything added later belongs beside a reason of the
 # same shape: where it reaches, who could reach it, and what would clear
 # it.
+#
+# ---------------------------------------------------------------------
+# The warnings, reviewed 2026-09-21.
+#
+# `cargo audit` reports unmaintained, unsound and yanked crates as
+# warnings rather than vulnerabilities, so they do not turn this job red
+# and none of them is listed below. They were still walked, because a
+# warning nobody has read is the same as one nobody was told about.
+#
+# Two reached binaries that ship, and both were fixed rather than noted:
+# `chacha20` 0.10.1 was yanked and reached `kobune` and `kobuned` through
+# `rand`, which a lockfile bump to 0.10.2 settled; `rustls-pemfile` was a
+# direct dependency of `kobune-proxy`, unmaintained because its job moved
+# into `rustls-pki-types`, which rustls already re-exports.
+#
+# The eight that remain — `instant`, `paste`, `proc-macro-error`,
+# `proc-macro-error2`, `rustls-pemfile`, `rustybuzz`, `ttf-parser` and
+# `glib` — are all inside `kobune-desktop`'s GPUI graph and reach none of
+# `kobune`, `kobuned` or `kobune-studio`. Checked with
+# `cargo tree -p <app> --target all -e normal -i <crate>`, which is the
+# command to repeat rather than trust this paragraph. They become worth
+# acting on if the desktop app is ever signed and shipped, which is the
+# same condition the quick-xml entry below waits on.
 
 [advisories]
 ignore = [
