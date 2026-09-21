@@ -76,10 +76,14 @@ export function WorkspaceDetail({
             >
               env
             </button>
+            {/* See `WorkspaceMenu`: the daemon removes worktrees, not the
+                repository they were made from. */}
             <button
               type="button"
               onClick={() => onAct({ kind: 'rm', path: target })}
-              className="cursor-pointer border border-danger-rule px-3 py-1.5 font-mono text-12 text-ink-bad hover:bg-danger-wash"
+              disabled={workspace.is_main}
+              title={workspace.is_main ? 'the main checkout is not a worktree' : undefined}
+              className="cursor-pointer border border-danger-rule px-3 py-1.5 font-mono text-12 text-ink-bad hover:bg-danger-wash disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
             >
               rm
             </button>

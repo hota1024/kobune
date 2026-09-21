@@ -19,6 +19,17 @@ struct Bundle;
 pub async fn serve(uri: Uri) -> Response {
     let requested = uri.path().trim_start_matches('/');
 
+    // **Nothing under `/api` is ever answered from here.** The guarded
+    // router has its own fallback, but this one catches every path the
+    // router did not match at all — and `/api/` is such a path, which
+    // means without this line a browser asking for it is handed the
+    // page by the one handler that sits outside [`crate::guard`]. The
+    // API is guarded by where it is, so no shape of URL may wander out
+    // of it into the static half.
+    if requested == "api" || requested.starts_with("api/") {
+        return crate::guard::nowhere().await;
+    }
+
     // **The type comes from what is served, not from what was asked for.**
     // `/` asks for the empty path, which guesses as `application/octet-stream`
     // — and a browser handed HTML under that header downloads it instead of

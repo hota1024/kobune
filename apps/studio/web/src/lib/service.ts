@@ -57,10 +57,17 @@ export function toggleLabel(service: ServiceInfo): 'stop' | 'start' {
  * A service keeps its URL when it stops — a request is what starts it, so
  * a URL that came and went with the state would take the way to wake it
  * along (`docs/DESIGN.md`, what M2 turned up).
+ *
+ * The fall back to `endpoint` is `ServiceInfo::access()` in
+ * `crates/kobune-api/src/response.rs`, written out again because this side
+ * cannot call it. A project with no DNS set up has no `url` at all and only
+ * ever had a host and port; without the fallback its services show as
+ * having no way in, while `kobune status` prints one.
  */
 export function address(service: ServiceInfo, tunnelRunning: boolean): string | null {
   if (tunnelRunning && service.tunnel_url) return service.tunnel_url
-  return service.url ?? null
+  if (service.url) return service.url
+  return service.endpoint ? `http://${service.endpoint}` : null
 }
 
 /** `vite · :5173 · workspace` — the line under a service's name. */

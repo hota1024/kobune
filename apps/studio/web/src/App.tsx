@@ -11,6 +11,7 @@ import { act, fetchDoctor, fetchEnv, followLogs } from './lib/api'
 import { commandsFor } from './lib/commands'
 import { useStudioState } from './lib/state'
 import { hasToken, wantedWorkspace } from './lib/session'
+import { read as readStore, write as writeStore } from './lib/store'
 import type { Action, DoctorView, EnvView, WorkspaceView } from './lib/types'
 
 /**
@@ -28,12 +29,15 @@ const THEME_KEY = 'kobune.studio.theme'
 /** How many lines the pane keeps. A follow is unbounded; a browser is not. */
 const LOG_LIMIT = 5000
 
+/** What `⤢ full` grows the pane to, when it is smaller than that. */
+const LOG_EXPANDED = 420
+
 export function App() {
   const { state, error, loading, refresh } = useStudioState()
 
   const [tabs, setTabs] = useState<string[]>(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem(TABS_KEY) ?? '[]')
+      const stored = JSON.parse(readStore(TABS_KEY) ?? '[]')
       return Array.isArray(stored) ? (stored as string[]) : []
     } catch {
       return []
@@ -41,7 +45,7 @@ export function App() {
   })
   const [selected, setSelected] = useState<string | null>(null)
   const [theme, setTheme] = useState<'dark' | 'light'>(
-    () => (localStorage.getItem(THEME_KEY) as 'dark' | 'light' | null) ?? 'dark',
+    () => (readStore(THEME_KEY) as 'dark' | 'light' | null) ?? 'dark',
   )
 
   const [palette, setPalette] = useState(false)
@@ -57,6 +61,8 @@ export function App() {
   const [logHeight, setLogHeight] = useState(168)
   const [logOpen, setLogOpen] = useState(true)
   const [logExpanded, setLogExpanded] = useState(false)
+  /** The height `⤢ full` grew from, so `⤡ shrink` can put it back. */
+  const logRestore = useRef<number | null>(null)
   const [following, setFollowing] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const seq = useRef(0)
@@ -67,11 +73,11 @@ export function App() {
 
   useEffect(() => {
     tabsRef.current = tabs
-    localStorage.setItem(TABS_KEY, JSON.stringify(tabs))
+    writeStore(TABS_KEY, JSON.stringify(tabs))
   }, [tabs])
 
   useEffect(() => {
-    localStorage.setItem(THEME_KEY, theme)
+    writeStore(THEME_KEY, theme)
     document.documentElement.dataset.theme = theme
   }, [theme])
 
@@ -156,8 +162,34 @@ export function App() {
     })
   }, [])
 
+  // **The drag sets the height; it does not fight a clamp.** `full` used
+  // to leave the drawn height at `max(logHeight, 420)` while a drag wrote
+  // the raw value underneath, so dragging the pane smaller did nothing
+  // until `shrink` was pressed and it then jumped to wherever the drag had
+  // got to. Dragging is somebody saying what they want, so it also ends
+  // the expanded state rather than being overruled by it.
+  const resizeLog = useCallback((height: number) => {
+    logRestore.current = null
+    setLogExpanded(false)
+    setLogHeight(height)
+  }, [])
+
+  const toggleLogSize = useCallback(() => {
+    if (logRestore.current !== null) {
+      setLogHeight(logRestore.current)
+      logRestore.current = null
+      setLogExpanded(false)
+      return
+    }
+    logRestore.current = logHeight
+    setLogHeight(Math.max(logHeight, LOG_EXPANDED))
+    setLogExpanded(true)
+  }, [logHeight])
+
   const run = useCallback(
     async (action: Action) => {
+      let request = action
+
       // `rm` deletes a worktree, and the daemon will not ask — it never
       // prompts (§3), so the question has to be asked here or nowhere.
       if (action.kind === 'rm') {
@@ -168,14 +200,31 @@ export function App() {
         // exactly what will go.
         const target = workspaces.find((workspace) => workspace.path === action.path)
         const label = target?.label || action.path || 'this workspace'
+        // The daemon refuses this one, and refuses it only after it has
+        // already destroyed the containers. Asked and answered here, so
+        // that nothing is torn down to reach a "no".
+        if (target?.is_main) {
+          window.alert(
+            `${label} is the main checkout.\n\nKobune removes worktrees, not the repository they were made from.`,
+          )
+          return
+        }
+
         const sure = window.confirm(
           `Remove ${label}?\n\nThis deletes the worktree and its containers. Uncommitted work in it goes too.`,
         )
         if (!sure) return
+
+        // **`force`, because that is what the dialog just said.** Without
+        // it `git worktree remove` refuses a dirty tree — but only after
+        // the containers are gone — and the way past that is `--force` on
+        // a CLI this page does not have. Either the sentence goes or the
+        // flag does, and the sentence is the one somebody read.
+        request = { ...action, force: true }
       }
 
       try {
-        await act(action)
+        await act(request)
       } catch (caught) {
         window.alert(caught instanceof Error ? caught.message : String(caught))
       } finally {
@@ -213,7 +262,24 @@ export function App() {
         })
       },
       // Clean end or error, the pane stops claiming to follow.
-      () => setFollowing(false),
+      (error) => {
+        setFollowing(false)
+        // **And says why, when there is a why.** A follow the daemon
+        // would not start — "no service has readable logs", for a
+        // workspace that is down — used to leave a pane showing
+        // `○ not following` and nothing else, which reads as a broken
+        // page rather than as the answer it is.
+        if (!error) return
+        setLogLines((lines) => [
+          ...lines,
+          {
+            stream: 'log',
+            text: error.message,
+            at: new Date().toLocaleTimeString(undefined, { hour12: false }),
+            seq: seq.current++,
+          },
+        ])
+      },
     )
 
     return () => {
@@ -436,11 +502,11 @@ export function App() {
           services={current.services.map((service) => service.name)}
           filter={logFilter}
           following={following}
-          height={logExpanded ? Math.max(logHeight, 420) : logHeight}
+          height={logHeight}
           expanded={logExpanded}
           onFilter={setLogFilter}
-          onResize={setLogHeight}
-          onExpand={() => setLogExpanded((now) => !now)}
+          onResize={resizeLog}
+          onExpand={toggleLogSize}
         />
       )}
 

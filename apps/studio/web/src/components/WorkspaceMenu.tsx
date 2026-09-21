@@ -85,8 +85,17 @@ export function WorkspaceMenu({
             <Rule />
 
             {/* The one chromatic thing in the menu, for the one item that
-                deletes a worktree with somebody's uncommitted work in it. */}
-            <Item onClick={() => onAct({ kind: 'rm', path })} danger>
+                deletes a worktree with somebody's uncommitted work in it.
+
+                Disabled on the main checkout: the daemon refuses it — it
+                removes worktrees, not the repository they were made from —
+                and an item that can only ever answer "no" should not first
+                ask whether you are sure. */}
+            <Item
+              onClick={() => onAct({ kind: 'rm', path })}
+              disabled={workspace.is_main}
+              danger
+            >
               rm
             </Item>
           </ContextMenu.Popup>

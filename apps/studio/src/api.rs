@@ -25,7 +25,7 @@ use kobune_client::{Client, ClientError, Connection};
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt as _;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::model::{
     ActionResult, DaemonView, DoctorView, EnvView, LogLine, StateView, TunnelView, WorkspaceView,
@@ -40,6 +40,11 @@ pub struct Studio {
     /// from. The daemon does not know the caller's working directory, so
     /// every `Target` carries it.
     pub cwd: PathBuf,
+    /// Set once ctrl-c has been seen. A log follow is a response body
+    /// that never ends on its own, and graceful shutdown waits for every
+    /// body — so a follow watches this and lets go. See
+    /// [`crate::server::serve`].
+    pub stopping: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Studio {
@@ -120,6 +125,12 @@ impl IntoResponse for Failed {
 }
 
 type Answer<T> = Result<Json<T>, Failed>;
+
+/// How many lines may wait for a browser that is not reading.
+///
+/// Generous next to a pane that shows a few hundred, small next to a
+/// process printing a megabyte a second.
+const LOG_BACKLOG: usize = 2048;
 
 /// The poll. Everything the chrome and the sidebar draw, in one round trip.
 ///
@@ -312,9 +323,24 @@ pub async fn act(State(studio): State<Studio>, Json(action): Json<Action>) -> An
         }],
     };
 
-    for request in requests {
-        connection.call(request, |_| {}).await?;
-    }
+    // **Spawned, and then awaited.** A handler future is dropped when the
+    // browser goes away, and a dropped future stops at its next await —
+    // which for a `Restart` is between the `down` and the `up`, leaving
+    // the workspace stopped because somebody closed a tab mid-restart.
+    // The task owns the connection, so the conversation with the daemon
+    // finishes either way and the response here is only who gets told.
+    let work = tokio::spawn(async move {
+        for request in requests {
+            connection.call(request, |_| {}).await?;
+        }
+        Ok::<(), ClientError>(())
+    });
+
+    work.await.map_err(|err| Failed {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("the action did not finish: {err}"),
+        hint: None,
+    })??;
 
     Ok(Json(ActionResult {
         ok: true,
@@ -357,12 +383,18 @@ pub async fn logs(
         attach: None,
     };
 
-    let (lines, receiver) = mpsc::unbounded_channel::<LogLine>();
+    let (lines, receiver) = mpsc::channel::<LogLine>(LOG_BACKLOG);
     // Resolves when the browser goes away: `alive` is moved into the
     // stream below, so it is dropped exactly when the response body is.
     let (alive, closed) = oneshot::channel::<()>();
+    let mut stopping = studio.stopping.clone();
 
     tokio::spawn(async move {
+        // Lines the channel had no room for. Reported rather than
+        // quietly skipped: a pane that silently loses the middle of a
+        // stack trace is worse than one that says it did.
+        let mut dropped: usize = 0;
+
         let outcome = connection
             .call_until(
                 request,
@@ -392,22 +424,52 @@ pub async fn logs(
                         _ => return,
                     };
 
-                    // The receiver is unbounded and a dead one only means
-                    // the browser left, which `closed` is already handling.
-                    let _ = lines.send(line);
+                    // **Bounded, and `try_send`.** A container can print
+                    // faster than a browser reads — a dev server in a
+                    // crash loop does — and an unbounded queue in front
+                    // of a slow reader is a leak with a friendly name.
+                    // A full queue drops what is arriving rather than
+                    // waiting for room, which keeps what the pane has
+                    // contiguous; the count then goes in at the seam, so
+                    // the gap is visible where it happened.
+                    if dropped > 0
+                        && lines
+                            .try_send(LogLine::note(format!(
+                                "\u{2026} {dropped} lines dropped: the page could not keep up"
+                            )))
+                            .is_ok()
+                    {
+                        dropped = 0;
+                    }
+
+                    if lines.try_send(line).is_err() {
+                        dropped += 1;
+                    }
                 },
                 async {
-                    let _ = closed.await;
+                    tokio::select! {
+                        // The browser closed the pane.
+                        _ = closed => {}
+                        // Or the process was asked to stop, and this body
+                        // is what it is waiting for.
+                        _ = stopping.wait_for(|stopping| *stopping) => {}
+                    }
                 },
             )
             .await;
 
+        // **Said out loud, not logged at `debug`.** A refused follow —
+        // "no service has readable logs" for a workspace that is down —
+        // used to close the stream with the reason written only to a
+        // stderr nobody was reading, leaving the pane looking broken.
+        // The pane is the place the answer is wanted.
         if let Err(err) = outcome {
             tracing::debug!("the log stream ended: {err}");
+            let _ = lines.try_send(LogLine::note(format!("the log stream ended: {err}")));
         }
     });
 
-    let stream = UnboundedReceiverStream::new(receiver).map(move |line| {
+    let stream = ReceiverStream::new(receiver).map(move |line| {
         // Keeps the guard alive for as long as the browser is reading.
         let _alive = &alive;
         Ok(SseEvent::default()

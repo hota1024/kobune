@@ -48,14 +48,27 @@ export function LogPane({
 }) {
   const body = useRef<HTMLDivElement>(null)
   const dragging = useRef(false)
+  /** Whether the reader is at the tail. See `stayed` below. */
+  const pinned = useRef(true)
+
+  // **Measured as the reader scrolls, not once the lines have arrived.**
+  // An effect runs after the DOM already holds the new lines, so the
+  // distance from the bottom at that point is the height of whatever just
+  // came in — a burst measured as "they have scrolled up" and turned the
+  // follow off at exactly the moment there was something to follow.
+  const stayed = () => {
+    const element = body.current
+    if (!element) return
+    pinned.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight < 40
+  }
 
   // Follow the tail. Only when already at the bottom, so reading back
   // through a burst is not fought by every line that arrives.
   useEffect(() => {
     const element = body.current
-    if (!element) return
-    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 40
-    if (atBottom) element.scrollTop = element.scrollHeight
+    if (!element || !pinned.current) return
+    element.scrollTop = element.scrollHeight
   }, [lines])
 
   useEffect(() => {
@@ -149,6 +162,7 @@ export function LogPane({
 
       <div
         ref={body}
+        onScroll={stayed}
         style={{ height }}
         className="flex flex-col gap-0.5 overflow-y-auto px-4 pb-2.5"
       >

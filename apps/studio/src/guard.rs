@@ -186,6 +186,19 @@ fn percent_encode(value: &str) -> String {
 /// it, for the reason in §3. The equivalent here is a bare 401: a body
 /// naming the project, or distinguishing "wrong token" from "wrong
 /// origin", would tell somebody who has proved nothing.
+/// Anything under `/api` that is not a route.
+///
+/// **Registered on the guarded router, not left to the outer fallback.**
+/// Without it a request for `/api/typo` matches no route, falls out of
+/// the nested router, and is answered by the static bundle — a 200 with
+/// the page in it, served from outside [`require_session`]. The page is
+/// empty until it has a token so nothing leaks, but "everything under
+/// `/api` passed the guard" is the sentence this module exists to make
+/// true, and a route that escapes it makes the sentence false.
+pub async fn nowhere() -> Response {
+    refuse("no such /api route")
+}
+
 fn refuse(why: &str) -> Response {
     tracing::warn!("refused a request: {why}");
     Response::builder()

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, fetchState } from './api'
+import { hasToken } from './session'
 import type { StateView } from './types'
 
 /**
@@ -26,13 +27,30 @@ export function useStudioState(): Live {
   const [loading, setLoading] = useState(true)
   const [nonce, setNonce] = useState(0)
 
-  // A poll in flight when the next one is due is abandoned rather than
-  // queued: the newer answer is the true one, and letting them stack turns
-  // a slow daemon into a backlog that never drains.
   const inFlight = useRef<AbortController | null>(null)
 
-  const read = useCallback(async () => {
-    inFlight.current?.abort()
+  const read = useCallback(async (force = false) => {
+    // **Nothing to ask without a token.** The page is the "open the URL
+    // from the terminal" screen in that state, and a poll behind it would
+    // write a refusal into the server's log every three seconds for as
+    // long as the tab stayed open, saying nothing to anybody.
+    if (!hasToken()) {
+      setLoading(false)
+      return
+    }
+
+    // **The timer skips a poll that is still running; a refresh replaces
+    // it.** A daemon slower than the interval used to have every poll
+    // cancelled by the next one, and since an abandoned poll deliberately
+    // settles nothing, the screen sat on `loading` for ever — the one
+    // state where it most needed to say what was wrong. A refresh is a
+    // person waiting for the result of something they just did, so that
+    // one still goes to the front.
+    if (inFlight.current) {
+      if (!force) return
+      inFlight.current.abort()
+    }
+
     const controller = new AbortController()
     inFlight.current = controller
 
@@ -46,12 +64,13 @@ export function useStudioState(): Live {
         caught instanceof ApiError ? caught : new ApiError(String(caught)),
       )
     } finally {
+      if (inFlight.current === controller) inFlight.current = null
       if (!controller.signal.aborted) setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    void read()
+    void read(true)
     const timer = window.setInterval(() => void read(), POLL_MS)
     return () => {
       window.clearInterval(timer)

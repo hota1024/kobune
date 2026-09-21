@@ -17,6 +17,24 @@ export interface Segment {
 
 const ESC = String.fromCharCode(27)
 const BEL = String.fromCharCode(7)
+const CR = String.fromCharCode(13)
+
+/**
+ * What a terminal would have left on the row.
+ *
+ * A carriage return means "go back to the start of this line", which is how
+ * every progress bar and spinner draws itself: one line, rewritten a
+ * hundred times. Kept as they came, those hundred states arrive in the pane
+ * as one very long line with the finished download somewhere in the middle
+ * of it. Only the last one was ever meant to be seen.
+ */
+function rewritten(line: string): string {
+  const last = line.lastIndexOf(CR)
+  if (last === -1) return line
+  // A trailing `\r` is the writer parking the cursor for the next frame,
+  // not an instruction to show nothing.
+  return last === line.length - 1 ? line.slice(0, last) : line.slice(last + 1)
+}
 
 /** SGR parameter to the class it turns on. */
 const FOREGROUND: Record<number, string> = {
@@ -97,7 +115,8 @@ function classOf(pen: Pen): string {
  * carry no escapes at all — and is returned as such so the renderer can
  * skip the spans entirely.
  */
-export function parseAnsi(line: string): Segment[] {
+export function parseAnsi(raw: string): Segment[] {
+  const line = rewritten(raw)
   if (!line.includes(ESC)) return [{ text: line, className: '' }]
 
   const segments: Segment[] = []

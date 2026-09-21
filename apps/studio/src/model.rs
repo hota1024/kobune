@@ -145,6 +145,19 @@ pub struct LogLine {
     pub text: String,
 }
 
+impl LogLine {
+    /// A line from the studio itself rather than from a container: why a
+    /// follow stopped, or that the page fell behind. It arrives on the
+    /// `log` stream so the pane styles it as commentary.
+    pub fn note(text: impl Into<String>) -> Self {
+        Self {
+            service: None,
+            stream: "log".into(),
+            text: text.into(),
+        }
+    }
+}
+
 /// What an action reports when it is over.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActionResult {

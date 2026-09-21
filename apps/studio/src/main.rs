@@ -100,8 +100,29 @@ async fn main() -> anyhow::Result<()> {
         .local_addr()
         .map_err(|err| anyhow::anyhow!("cannot read the port that was bound: {err}"))?;
 
+    // **Before a page is served, not on the first poll.** No
+    // `kobune.toml`, not a git repository, a daemon that will not come
+    // up: all of it belongs in the terminal that ran the command, as the
+    // ordinary error with the ordinary hint, rather than as a 502 behind
+    // a dashboard that has already opened in a browser. The TUI checks
+    // the same things in the same order for the same reason
+    // (`apps/cli/src/ui/tui/mod.rs`).
+    //
+    // **`connect_or_spawn`, and §12 still holds.** "The GUI never starts
+    // the daemon" is about the resident app that is simply *there*;
+    // `kobune studio` is a command somebody typed, like `kobune tui`,
+    // and the first thing `connect_or_spawn` does is ask launchd — so
+    // looking after the daemon stays launchd's job either way.
+    let client = kobune_client::Client::from_env()?;
+    let (connection, start) = client.connect_or_spawn().await?;
+    drop(connection);
+
     let session = guard::Session::new(addr)?;
     let url = session.entry_url(args.workspace.as_deref());
+
+    if start == kobune_client::DaemonStart::Direct {
+        eprintln!("kobune studio  started a daemon outside launchd");
+    }
 
     eprintln!("kobune studio  {url}");
     if args.no_open {
@@ -110,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("  cannot open a browser ({err}); open the URL above.");
     }
 
-    server::serve(listener, session, cwd).await
+    server::serve(listener, session, client, cwd).await
 }
 
 /// Hands the URL to whatever the desktop opens links with.
