@@ -375,6 +375,13 @@ fn unpack(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
 /// `rename` swaps the directory entry and leaves the running process on the
 /// old inode until it exits. Writing in place would fail with ETXTBSY, and
 /// deleting first would leave nothing behind if the write then failed.
+/// Binaries an archive is allowed to leave out.
+///
+/// `kobune` and `kobuned` are not on this list because [`unpack`] refuses
+/// an archive without them: a CLI and a daemon from different builds is
+/// the failure this whole path is shaped around.
+const OPTIONAL: &[&str] = &["kobune-studio"];
+
 fn replace(binaries: &[(String, Vec<u8>)]) -> Result<()> {
     let dir = install_dir()?;
 
@@ -398,7 +405,35 @@ fn replace(binaries: &[(String, Vec<u8>)]) -> Result<()> {
         })?;
     }
 
+    drop_left_out(&dir, binaries);
+
     Ok(())
+}
+
+/// Removes an optional binary the archive did not carry.
+///
+/// **Installing is not the only direction.** `KOBUNE_CHANNEL` can name a
+/// release older than the dashboard, and going back to one would leave a
+/// newer `kobune-studio` beside an older `kobune` — which is a pair from
+/// different builds, the thing [`replace`] exists to avoid. What the
+/// archive holds is what the directory holds afterwards.
+///
+/// **Best effort, and deliberately so.** By the time this runs the update
+/// has been applied, so returning an error here would report a failure
+/// that did not happen. A studio that outlives its daemon is caught on
+/// the next connection anyway: `connect_or_spawn` handshakes before it
+/// sends anything, and a version mismatch is what that check is for.
+fn drop_left_out(dir: &Path, binaries: &[(String, Vec<u8>)]) {
+    for name in OPTIONAL {
+        if binaries.iter().any(|(installed, _)| installed == name) {
+            continue;
+        }
+
+        let stale = dir.join(name);
+        if stale.is_file() {
+            let _ = std::fs::remove_file(&stale);
+        }
+    }
 }
 
 fn write_executable(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -664,6 +699,65 @@ mod tests {
         // nothing would amount to.
         assert!(verify(b"hello", b"").is_err());
         assert!(verify(b"hello", b"\n").is_err());
+    }
+
+    /// Rolling back to a release from before the dashboard.
+    #[test]
+    fn an_archive_without_the_studio_takes_the_stale_one_with_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let studio = dir.path().join("kobune-studio");
+        std::fs::write(&studio, b"an older studio").expect("writes");
+
+        // What `unpack` returns for a pre-dashboard archive.
+        let installed = vec![
+            ("kobune".to_string(), b"cli".to_vec()),
+            ("kobuned".to_string(), b"daemon".to_vec()),
+        ];
+
+        drop_left_out(dir.path(), &installed);
+
+        assert!(
+            !studio.exists(),
+            "a studio the archive did not carry stays behind"
+        );
+    }
+
+    #[test]
+    fn an_archive_with_the_studio_keeps_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let studio = dir.path().join("kobune-studio");
+        std::fs::write(&studio, b"the new studio").expect("writes");
+
+        let installed = vec![
+            ("kobune".to_string(), b"cli".to_vec()),
+            ("kobuned".to_string(), b"daemon".to_vec()),
+            ("kobune-studio".to_string(), b"studio".to_vec()),
+        ];
+
+        drop_left_out(dir.path(), &installed);
+
+        assert!(studio.exists(), "the one just installed was removed");
+    }
+
+    /// Nothing to remove is not a failure, and not a reason to touch the
+    /// two that are always there.
+    #[test]
+    fn nothing_to_drop_leaves_the_directory_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["kobune", "kobuned"] {
+            std::fs::write(dir.path().join(name), b"binary").expect("writes");
+        }
+
+        let installed = vec![
+            ("kobune".to_string(), b"cli".to_vec()),
+            ("kobuned".to_string(), b"daemon".to_vec()),
+        ];
+
+        drop_left_out(dir.path(), &installed);
+
+        for name in ["kobune", "kobuned"] {
+            assert!(dir.path().join(name).exists(), "{name} was removed");
+        }
     }
 
     #[test]
