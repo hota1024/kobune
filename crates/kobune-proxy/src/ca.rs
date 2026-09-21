@@ -18,6 +18,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, GeneralSubtree, IsCa, Issuer,
     KeyPair, KeyUsagePurpose, NameConstraints,
 };
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
@@ -441,17 +442,17 @@ pub fn permits(permitted: &[String], host: &str) -> bool {
 }
 
 /// Extracts the first certificate in a PEM as DER.
+///
+/// `rustls-pki-types` rather than `rustls-pemfile`: the latter is
+/// unmaintained because this is where it went, and rustls re-exports the
+/// crate it already depends on, so reading a PEM costs no dependency of
+/// its own. `from_pem_slice` takes the first certificate, which is what
+/// this wants — a CA file holding a chain is read as its leaf.
 fn pem_to_der(pem: &str, path: PathBuf) -> Result<CertificateDer<'static>, CaError> {
-    let mut reader = std::io::BufReader::new(pem.as_bytes());
-
-    rustls_pemfile::certs(&mut reader)
-        .next()
-        .and_then(|entry| entry.ok())
-        .map(|der| der.into_owned())
-        .ok_or_else(|| CaError::Read {
-            path,
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, "contains no certificate"),
-        })
+    CertificateDer::from_pem_slice(pem.as_bytes()).map_err(|_| CaError::Read {
+        path,
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, "contains no certificate"),
+    })
 }
 
 fn now() -> time::OffsetDateTime {
