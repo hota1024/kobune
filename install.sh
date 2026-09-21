@@ -627,13 +627,20 @@ for binary in kobune kobuned; do
     [ -f "$payload/$binary" ] || die "$archive does not contain $binary"
 done
 
-step "installing kobune and kobuned"
+# The studio is taken when it is there and skipped when it is not.
+# KOBUNE_CHANNEL can name a release older than the dashboard, and refusing
+# to install one of those would be this script deciding which releases are
+# allowed to exist.
+binaries="kobune kobuned"
+[ -f "$payload/kobune-studio" ] && binaries="$binaries kobune-studio"
+
+step "installing $(echo "$binaries" | sed 's/ /, /g;s/,\([^,]*\)$/ and\1/')"
 
 mkdir -p "$INSTALL_DIR" || die "cannot create $INSTALL_DIR"
 
-# `kobune` finds the daemon next to itself, so the two move together or
-# the CLI starts a version of kobuned it was not built against.
-for binary in kobune kobuned; do
+# `kobune` finds the daemon and the studio next to itself, so they move
+# together or the CLI starts a version of kobuned it was not built against.
+for binary in $binaries; do
     chmod +x "$payload/$binary"
     # Replaced rather than written through: the running daemon's own
     # executable cannot be opened for writing, but it can be renamed over.
@@ -643,8 +650,9 @@ done
 
 # Unsigned, so macOS refuses to run them until the download flag is gone.
 if [ "$(uname -s)" = "Darwin" ] && need xattr; then
-    xattr -d com.apple.quarantine "$INSTALL_DIR/kobune" 2>/dev/null || true
-    xattr -d com.apple.quarantine "$INSTALL_DIR/kobuned" 2>/dev/null || true
+    for binary in $binaries; do
+        xattr -d com.apple.quarantine "$INSTALL_DIR/$binary" 2>/dev/null || true
+    done
 fi
 
 # `--version` checks for a newer build, which this has just installed and
@@ -671,8 +679,9 @@ fi
 
 say ""
 say "installed $version"
-say "  $INSTALL_DIR/kobune"
-say "  $INSTALL_DIR/kobuned"
+for binary in $binaries; do
+    say "  $INSTALL_DIR/$binary"
+done
 
 # Only when it is not already reachable, and in the syntax of the shell the
 # person is actually in. A wrong line here gets pasted into a config file

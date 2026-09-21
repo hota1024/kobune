@@ -1,0 +1,193 @@
+@import "tailwindcss";
+
+/* The palette is the design's, verbatim: greyscale in oklch, with the one
+   chromatic colour reserved for a failure. Nothing here is a stock
+   Tailwind grey — the whole identity of the screen is that these are a
+   hair off neutral (0.002 chroma at hue 250) and that `--ink-bad` is the
+   only thing on it with any colour in it at all. */
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+
+  --color-accent: oklch(62% 0.003 250);
+  --color-bright: oklch(94% 0.002 250);
+  --color-hull: oklch(20% 0.002 250);
+
+  /* The application shell — the dark chrome. */
+  --color-shell-bg: oklch(18.5% 0.002 250);
+  --color-shell-raise: oklch(22.5% 0.002 250);
+  --color-shell-rule: oklch(31% 0.002 250);
+  --color-shell-fg: oklch(92% 0.002 250);
+  --color-shell-muted: oklch(60% 0.002 250);
+
+  /* Surfaces the artboard sets inline, named so they are not retyped. */
+  --color-shell-sink: oklch(15% 0.002 250);
+  --color-shell-floor: oklch(14% 0.002 250);
+  --color-shell-gutter: oklch(17% 0.002 250);
+  --color-shell-chip: oklch(25% 0.002 250);
+  --color-shell-palette: oklch(21% 0.002 250);
+  --color-shell-edge: oklch(40% 0.002 250);
+  --color-shell-wire: oklch(45% 0.002 250);
+  --color-shell-dim: oklch(78% 0.002 250);
+  --color-shell-soft: oklch(82% 0.002 250);
+  --color-shell-sel: oklch(25% 0.002 250);
+  --color-shell-hover: oklch(21% 0.002 250);
+  --color-shell-high: oklch(30% 0.002 250);
+  --color-shell-badge: oklch(74% 0.002 250);
+
+  /* The one filled control on the screen, and the text on it. A pair
+     rather than one colour: `--bright` inverts under the light shell, and
+     a button whose background followed it while its text did not would go
+     dark on dark the moment the theme flipped. */
+  --color-primary: oklch(94% 0.002 250);
+  --color-on-primary: oklch(16% 0.002 250);
+
+  --color-danger-wash: oklch(25% 0.02 25);
+  --color-danger-bg: oklch(24% 0.03 25);
+  --color-scrim: oklch(12% 0.002 250 / 0.6);
+  --color-danger-rule: oklch(45% 0.05 25);
+
+  /* State, which reads by brightness rather than by hue. */
+  --color-ink-heading: oklch(68% 0.002 250);
+  --color-ink-link: oklch(88% 0.002 250);
+  --color-ink-command: oklch(78% 0.002 250);
+  --color-ink-good: oklch(94% 0.002 250);
+  --color-ink-warn: oklch(72% 0.002 250);
+  --color-ink-bad: oklch(66% 0.11 25);
+  --color-ink-idle: oklch(56% 0.002 250);
+
+  /* The state chips' backgrounds. */
+  --color-chip-ready: oklch(78% 0.002 250 / 0.15);
+  --color-chip-starting: oklch(84% 0.002 250 / 0.15);
+  --color-chip-idle: oklch(75% 0.002 250 / 0.15);
+  --color-chip-stopped: oklch(60% 0.002 250 / 0.15);
+  --color-chip-failed: oklch(70% 0.002 250 / 0.15);
+
+  /* The type scale is small and specific — an editor's chrome, not a
+     product page. These are the sizes the artboard actually uses. */
+  --text-10: 10px;
+  --text-105: 10.5px;
+  --text-11: 11px;
+  --text-115: 11.5px;
+  --text-12: 12px;
+  --text-125: 12.5px;
+  --text-13: 13px;
+  --text-14: 14px;
+  --text-15: 15px;
+  --text-17: 17px;
+  --text-21: 21px;
+}
+
+/* The light shell.
+ *
+ * A remap of the same names, not a second set of components: every
+ * surface on the screen is addressed through a `shell-*` or `ink-*`
+ * token, so the whole theme is this block. The values are the design's
+ * own `--page-*` palette — the one artboards 1b and 2b are drawn in —
+ * rather than colours invented for the occasion. */
+[data-theme='light'] {
+  --color-hull: oklch(96.5% 0.002 250);
+  --color-bright: oklch(22% 0.002 250);
+
+  --color-shell-bg: oklch(99.5% 0 0);
+  --color-shell-raise: oklch(99.5% 0 0);
+  --color-shell-rule: oklch(88% 0.002 250);
+  --color-shell-fg: oklch(22% 0.002 250);
+  --color-shell-muted: oklch(52% 0.002 250);
+
+  --color-shell-sink: oklch(96.5% 0.002 250);
+  --color-shell-floor: oklch(96.5% 0.002 250);
+  --color-shell-gutter: oklch(93% 0.002 250);
+  --color-shell-chip: oklch(96.5% 0.002 250);
+  --color-shell-palette: oklch(99.5% 0 0);
+  --color-shell-edge: oklch(80% 0.002 250);
+  --color-shell-wire: oklch(80% 0.002 250);
+  --color-shell-dim: oklch(35% 0.002 250);
+  --color-shell-soft: oklch(30% 0.002 250);
+  --color-shell-sel: oklch(93% 0.002 250);
+  --color-shell-hover: oklch(96.5% 0.002 250);
+  --color-shell-high: oklch(91% 0.002 250);
+  --color-shell-badge: oklch(40% 0.002 250);
+
+  --color-primary: oklch(22% 0.002 250);
+  --color-on-primary: oklch(99.5% 0 0);
+
+  /* State still reads by brightness, but darker-is-stronger now that the
+     ground is white. */
+  --color-ink-heading: oklch(45% 0.002 250);
+  --color-ink-link: oklch(45% 0.002 250);
+  --color-ink-command: oklch(40% 0.002 250);
+  --color-ink-good: oklch(45% 0.002 250);
+  --color-ink-warn: oklch(48% 0.002 250);
+  --color-ink-bad: oklch(52% 0.14 25);
+  --color-ink-idle: oklch(62% 0.002 250);
+
+  --color-chip-ready: oklch(78% 0.002 250 / 0.18);
+  --color-chip-starting: oklch(84% 0.002 250 / 0.22);
+  --color-chip-idle: oklch(75% 0.002 250 / 0.18);
+  --color-chip-stopped: oklch(96.5% 0.002 250);
+  --color-chip-failed: oklch(70% 0.002 250 / 0.14);
+
+  --color-scrim: oklch(60% 0.002 250 / 0.35);
+  --color-danger-rule: oklch(70% 0.09 25);
+  --color-danger-wash: oklch(96% 0.02 25);
+  --color-danger-bg: oklch(97% 0.02 25);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-shell-bg);
+    color: var(--color-shell-fg);
+    font-family: var(--font-sans);
+    /* The screen is chrome. Selecting it by dragging is never what was
+       meant; the things worth copying say so and copy on click. */
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Square, 1px, and grey — the scrollbars have to be the same chrome as
+     everything else or they are the only rounded thing on screen. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-shell-rule) transparent;
+  }
+}
+
+@keyframes kb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes kb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* `starting` is the one state that is still changing, so it is the one
+   thing on the screen that moves. */
+.kb-pulse {
+  animation: kb-pulse 1.6s ease-in-out infinite;
+}
+
+/* The lift under a palette or an overlay. A class rather than a utility
+   because the cast has to change with the shell: a near-black shadow on
+   white reads as grime rather than as height. */
+.kb-float {
+  box-shadow: 0 18px 48px oklch(8% 0 0 / 0.55);
+}
+
+[data-theme='light'] .kb-float {
+  box-shadow: 0 18px 48px oklch(45% 0.002 250 / 0.18);
+}

@@ -65,6 +65,30 @@ jobs:
         with:
           key: release-${{ matrix.name }}
 
+      # The studio compiles its page in, so the bundle has to exist before
+      # cargo runs. Without this the build still succeeds — `build.rs`
+      # writes a placeholder — and ships a dashboard that is one sentence
+      # telling you to run `pnpm build`. Versions match docs.yml.
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/studio/web/pnpm-lock.yaml
+
+      - name: Install the dashboard's dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/studio/web
+
+      # Once, not once per target: the bundle is HTML, CSS and JavaScript,
+      # and the same bytes are embedded into every architecture's binary.
+      - name: Build the dashboard
+        run: pnpm build
+        working-directory: apps/studio/web
+
       # The desktop app is excluded: it pulls GPUI from the Zed repository,
       # and an unsigned .app is stopped by Gatekeeper on the machine it
       # reaches, so shipping one would promise more than it delivers.
@@ -81,7 +105,7 @@ jobs:
 
           for target in ${{ matrix.targets }}; do
             cargo build --release --locked \
-              --target "$target" -p kobune -p kobuned
+              --target "$target" -p kobune -p kobuned -p kobune-studio
 
             name="kobune-$target"
             staging="$(mktemp -d)/$name"
@@ -89,11 +113,13 @@ jobs:
 
             cp "target/$target/release/kobune" "$staging/"
             cp "target/$target/release/kobuned" "$staging/"
+            cp "target/$target/release/kobune-studio" "$staging/"
             # NOTICE travels with every distribution — Apache-2.0 §4(d).
             cp LICENSE NOTICE README.md "$staging/"
 
-            # The CLI looks next to itself for the daemon, so the two have
-            # to stay in one directory. The archive keeps them together.
+            # The CLI looks next to itself for the daemon and for the
+            # studio, so the three have to stay in one directory. The
+            # archive keeps them together.
             tar -C "$(dirname "$staging")" -czf "dist/$name.tar.gz" "$name"
 
             # macOS has shasum, Linux has sha256sum. Both produce the format

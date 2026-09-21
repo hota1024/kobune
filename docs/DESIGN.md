@@ -1510,13 +1510,23 @@ redraw is requested only when an event arrives; idle costs nothing.
 
 ## 13. Repository layout
 
-One Cargo workspace for the product. With GPUI there is no Node.js in
-anything that ships, and no `packages/` for TypeScript.
+One Cargo workspace for the product, and no `packages/` for TypeScript. With
+GPUI the desktop app needs no Node.js, which is most of what the rule was
+protecting.
 
-The one exception is `docs/`, which is a VitePress site and therefore has its
-own `package.json`. It is build tooling for the documentation and no part of it
-reaches a binary, so the rule it bends — no Node toolchain — still holds where
-it was meant to.
+Two places have a `package.json` anyway, and they are different cases. `docs/`
+is a VitePress site: build tooling for the documentation, no part of which
+reaches a binary. `apps/studio/web/` is a page that **does** ship — Vite builds
+it and `rust-embed` compiles the result into `kobune-studio`.
+
+So the rule as written is no longer true, and the true one is narrower: **no
+Node.js at run time, anywhere.** A built bundle is bytes in a binary, and a
+machine that runs `kobune studio` needs no toolchain to do it; the only people
+who need pnpm are the ones building the studio from source, which
+`cargo build` handles without them — `apps/studio/build.rs` writes a
+placeholder page so a checkout that has never run pnpm still compiles. What
+the original rule refused was a product that could not start without a package
+manager, and that is still refused.
 
 ```
 kobune/
@@ -1533,6 +1543,8 @@ kobune/
 ├── apps/                 # binaries, shipped
 │   ├── daemon/           #   kobuned — the supervisor and the RPC server
 │   ├── cli/              #   kobune
+│   ├── studio/           #   kobune-studio — the dashboard, served to a browser
+│   │   └── web/          #     its page: Vite, built and embedded, not shipped loose
 │   └── desktop/          #   kobune-desktop — the GPUI GUI
 ├── assets/               # the logo, in one place; see assets/README.md
 │   └── logo/             #   copied into docs/public/logo/ by the docs build
@@ -1747,17 +1759,40 @@ to the first question would quietly break resolution through the second.
 
 ### What ships, and what does not
 
-`nightly` carries `kobune` and `kobuned` for macOS — Apple Silicon and Intel —
-and Linux x86_64. Both Apple targets are built on one runner: the second is a
-cross-compile that costs a minute, where a second matrix entry pays for a
-whole runner again, and a macOS runner bills at ten times the rate on a
-private repository.
+`nightly` carries `kobune`, `kobuned` and `kobune-studio` for macOS — Apple
+Silicon and Intel — and Linux x86_64. Both Apple targets are built on one
+runner: the second is a cross-compile that costs a minute, where a second
+matrix entry pays for a whole runner again, and a macOS runner bills at ten
+times the rate on a private repository.
 
-Nothing is signed. macOS quarantines the CLI and the daemon on first run,
-which `xattr -d com.apple.quarantine` clears. **The desktop app is not
-shipped at all**, because Gatekeeper stops an unsigned `.app` outright rather
-than warning about it — an archive nobody can open would promise more than it
+Nothing is signed. macOS quarantines them on first run, which
+`xattr -d com.apple.quarantine` clears. **The desktop app is not shipped at
+all**, because Gatekeeper stops an unsigned `.app` outright rather than
+warning about it — an archive nobody can open would promise more than it
 delivers. Signing and notarisation stay open below.
+
+`kobune-studio` ships where the desktop app does not, because the reason for
+that exclusion is the bundle rather than the signature: it is an executable
+like the other two, and quarantine is cleared the same way. It is a third
+binary rather than something folded into `kobune` so that the CLI's build
+does not acquire a JavaScript toolchain — one that, because `build.rs`
+supplies a placeholder page, would fail by shipping a working `kobune` with a
+broken dashboard inside it rather than by failing.
+
+**The dashboard's page is built before cargo runs, once per runner.** It is
+compiled into the binary, so a release job that skipped `pnpm build` would
+produce an archive that installs and runs and serves a sentence asking for
+`pnpm build`. The bundle is the same bytes on every architecture, so it is
+built ahead of the per-target loop rather than inside it.
+
+`kobune update` requires `kobune` and `kobuned` in the archive and treats
+`kobune-studio` as optional. An archive predating the dashboard has none, and
+refusing it would mean a build could never roll back to an older nightly. The
+consequence is felt once, in the other direction: an installation updated by a
+`kobune` from before the studio existed has the new CLI and no studio beside
+it, because that older `update` did not know to extract one. `kobune studio`
+says so and names the command that fixes it, rather than reporting a file it
+could not find.
 
 ### Branching: trunk on `main`, and when that changes
 

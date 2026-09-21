@@ -458,6 +458,8 @@ A `--json` error may carry a `hint`. **Read it — it says what to do next.**
 - Leave `kobune logs -f` running
 - Run `kobune` with no arguments, or `kobune tui`. That is a full screen for a
   person to watch, and it does not end on its own
+- Run `kobune studio`. It is a server, it opens a browser, and it does not end
+  on its own either. It has no `--json` and refuses the flag for that reason
 - Report "it's up" without checking
 - Read empty `curl -s` output as an empty response (it may be a certificate
   error)

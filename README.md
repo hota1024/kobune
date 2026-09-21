@@ -206,7 +206,7 @@ A Cargo workspace monorepo.
 
 ```
 crates/    libraries   core / api / client / runtime / proxy / dns / tunnel
-apps/      binaries    daemon (kobuned) / cli (kobune) / desktop (GUI)
+apps/      binaries    daemon (kobuned) / cli (kobune) / studio (browser) / desktop (GUI)
 skills/    the Skill for agents
 xtask/     build tasks
 ```
@@ -234,7 +234,8 @@ $ curl -fsSL https://kobune.1024.works/install.sh | sh
 ```
 
 Picks the archive for the machine, checks it against its `.sha256`, installs
-both binaries into `~/.local/bin` (`KOBUNE_INSTALL_DIR` to change that) and
+`kobune`, `kobuned` and `kobune-studio` into `~/.local/bin`
+(`KOBUNE_INSTALL_DIR` to change that) and
 writes completions for bash, zsh and fish. If the directory is not on `PATH`
 it says how to add it, in the syntax of the shell you are in — worked out
 from the process tree rather than `$SHELL`, so fish gets `fish_add_path` and
@@ -265,12 +266,13 @@ $ tar xzf kobune-aarch64-apple-darwin.tar.gz
 
 The CLI and the daemon are not signed, so macOS quarantines them on first
 run — the install script clears the flag, and by hand it is
-`xattr -d com.apple.quarantine kobune kobuned`. The desktop app is not
+`xattr -d com.apple.quarantine kobune kobuned kobune-studio`. The desktop app
+is not
 shipped at all for the same reason: Gatekeeper stops an unsigned `.app`
 outright.
 
-`kobune` and `kobuned` have to stay in the same directory: the CLI starts the
-daemon by looking next to itself.
+`kobune`, `kobuned` and `kobune-studio` have to stay in the same directory:
+the CLI finds the other two by looking next to itself.
 
 Running it needs a container runtime. Reaching the Docker API is enough — the
 `docker` CLI itself is not required, and OrbStack, Docker Desktop and colima

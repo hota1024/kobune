@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! apps/cli ────┐
-//! apps/desktop ┴──> kobune-client ──> kobune-api ──> kobune-core
+//! apps/desktop ├──> kobune-client ──> kobune-api ──> kobune-core
+//! apps/studio ─┘
 //! apps/daemon ─────────────────────>  kobune-api ──> kobune-core
 //!        └──> kobune-runtime / kobune-proxy / kobune-dns / kobune-tunnel
 //! ```
@@ -28,7 +29,7 @@ use std::process::Command;
 /// `kobune` is `apps/cli`. It belongs here more than either of the others
 /// do — it is the client almost everyone runs — and the diagram above has
 /// listed it since this module was written.
-const CLIENTS: &[&str] = &["kobune", "kobune-client", "kobune-desktop"];
+const CLIENTS: &[&str] = &["kobune", "kobune-client", "kobune-desktop", "kobune-studio"];
 
 /// The daemon's own. Docker, the proxy, DNS and the tunnel process.
 const DAEMON_ONLY: &[&str] = &[
