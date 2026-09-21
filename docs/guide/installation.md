@@ -5,8 +5,9 @@ $ curl -fsSL https://kobune.1024.works/install.sh | sh
 ```
 
 That picks the archive for your machine, checks it against its published
-`.sha256`, installs `kobune` and `kobuned` into `~/.local/bin`, and writes shell
-completions for whichever of bash, zsh and fish you have.
+`.sha256`, installs `kobune`, `kobuned` and `kobune-studio` into
+`~/.local/bin`, and writes shell completions for whichever of bash, zsh and
+fish you have.
 
 Nothing it does needs root, and it prints the one PATH line you may need at the
 end — in the syntax of the shell you are actually in, so a fish user is told
@@ -137,7 +138,7 @@ $ cd kobune-aarch64-apple-darwin
 
 ::: warning macOS quarantines unsigned binaries
 ```console
-$ xattr -d com.apple.quarantine kobune kobuned
+$ xattr -d com.apple.quarantine kobune kobuned kobune-studio
 ```
 The install script does this for you. Signing is unresolved, so the other
 option is to build from source. The desktop app is not shipped at all for the
@@ -155,19 +156,37 @@ $ cd kobune
 $ cargo build --release --workspace
 ```
 
-That produces two binaries in `target/release`:
+That produces three binaries in `target/release`:
 
 - `kobune` — the CLI you use
 - `kobuned` — the daemon it talks to
+- `kobune-studio` — the dashboard `kobune studio` serves to a browser
 
 Put them somewhere on your `PATH`:
 
 ```console
-$ cp target/release/kobune target/release/kobuned ~/.local/bin/
+$ cp target/release/kobune target/release/kobuned \
+     target/release/kobune-studio ~/.local/bin/
 ```
 
-They ship together and expect to sit side by side: the CLI starts the daemon by
-looking next to itself.
+They ship together and expect to sit side by side: the CLI finds the other two
+by looking next to itself.
+
+::: tip Build the dashboard's page first
+`kobune-studio` has a page compiled into it, and `cargo build` on a fresh
+clone cannot build one — so a placeholder stands in that says what to run,
+and the binary serves that instead of the dashboard.
+
+```console
+$ cd apps/studio/web
+$ pnpm install
+$ pnpm build
+```
+
+Then build as above. Only a source build needs this; the release archives
+carry the page already. Running `pnpm build` after a `cargo build` works too —
+cargo watches `web/dist` and picks the page up on the next one.
+:::
 
 ## Shell completions
 

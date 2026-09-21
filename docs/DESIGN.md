@@ -1445,7 +1445,7 @@ but an empty response. The Skill names this symptom and points at
 No MCP server, for now. With `--json` on every command, Bash is enough, and a
 second surface is not worth maintaining.
 
-## 12. The GUI (`kobune-desktop`)
+## 12. The GUI (`kobune-desktop`) and the dashboard (`kobune-studio`)
 
 Pure Rust, on GPUI with gpui-component. It links `kobune-client` directly, so
 sharing type definitions needs no generation step — the biggest advantage of
@@ -1500,13 +1500,61 @@ redraw is requested only when an event arrives; idle costs nothing.
 
 - **The GUI never starts the daemon.** Looking after the daemon is launchd's
   job, and a GUI managing it too would split that responsibility. This settles
-  the open question in §15
+  the open question in §15. It is about the app that sits resident in the tray:
+  `kobune studio` is a command somebody typed, like `kobune tui`, and goes
+  through `connect_or_spawn` the way the TUI does — which asks launchd first,
+  so the job stays launchd's either way
 - The tray menu is **rebuilt only when it changes**. Rebuilding every frame
   closes it out from under whoever has it open
 - A failed connection is logged. Shown on screen only, it leaves no trace to
   diagnose from when the GUI cannot connect
 - A redraw is **requested only on an event**. Redrawing continuously burns CPU
   doing nothing
+
+### The dashboard in a browser (`kobune-studio`)
+
+A separate binary and §3's fourth client, equal to the CLI, the GUI and Skills.
+It links `kobune-client` and `kobune-api` and no implementation: every handler
+opens a connection, asks the question the CLI would have asked and serialises
+the answer. That is what keeps a second, slightly different idea of what a
+workspace is from growing behind a screen nobody diffs against `kobune ls`.
+
+**It is an HTTP surface in front of a socket that asks for nothing.** §3's
+access control is the mode on `KOBUNE_HOME` and the uid on the far end of the
+socket, and a TCP listener has neither. What stands in for them: the listener
+is on 127.0.0.1 and there is no flag to move it; every run mints a 32-byte
+token which rides in the URL fragment, where a browser will not send it to a
+server or write it into `Referer`, and comes back as `Authorization: Bearer` —
+a header that is not CORS-simple, so another origin cannot reach the API
+without a preflight that is never answered; `Host` and `Origin` are checked
+against this server's own address, which is what stops a name resolving to
+127.0.0.1 from being pointed at it. Nothing under `/api` is answered from
+outside that guard, in any shape of URL. `--host` is refused rather than
+provided, because it turns "a page on this machine" into "anybody on this
+network may start containers and read secrets" and §3 has no story for that
+reader. Somebody who wants it can put a proxy in front and own the decision.
+
+§10's rules carry over unchanged, because the reasons do. One request is one
+connection, so an `up` that takes a minute does not stop the poll that draws
+the screen for the minute it most needs drawing. The screen is read again
+every three seconds, the same interval as the TUI and the menu bar, because
+the socket has no subscription and did not grow one for them. And **closing
+the pane cancels the follow** — sharper here than in a terminal, where a tab
+left open is the normal case and every opened pane would otherwise leak a
+follower for as long as the daemon lived.
+
+Packaged as its own binary rather than linked into the CLI. `kobune` is what
+an agent reaches for and what a shell function calls, and neither should carry
+a web server and an embedded bundle to print a table; `kobune studio` finds it
+the way it finds `kobuned` — beside itself, then `PATH` — and `exec`s it, so
+ctrl-c goes where it looks like it goes. The page is Vite and React, built
+once and compiled in with `rust-embed` — which is why §13's rule is about run
+time rather than about the repository. `build.rs` writes a placeholder when
+`web/dist` is absent, so a checkout that has never run pnpm still compiles
+rather than holding the Rust side hostage to the JavaScript one.
+
+The rest is in `apps/studio/src/main.rs` and `SECURITY.md`; this section is
+the shape, not every reason.
 
 ## 13. Repository layout
 

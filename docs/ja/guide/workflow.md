@@ -71,6 +71,7 @@ carry = [".env"]
 
 ```console
 $ kobune           # ダッシュボード。全体を一度に見て、変化にも追従する
+$ kobune studio    # 同じダッシュボードをブラウザで
 $ kobune ls        # 全 workspace と稼働中のサービス数
 $ kobune status    # 対象 workspace の詳細（状態、URL、アドレス）
 ```
@@ -80,6 +81,11 @@ $ kobune status    # 対象 workspace の詳細（状態、URL、アドレス）
 ものを起動・停止でき、`?` で残りのキーを確認できます。一覧は
 [ダッシュボード](../reference/cli#ダッシュボード)にあります。あとの 2 つは
 一度出力して終了するため、スクリプトから使えます。
+
+`kobune studio` は同じものをブラウザに描画します。キー操作にあたるものは、
+workspace の行やタブの右クリックです。表示される URL にはその実行に固有の
+トークンが含まれ、待ち受けは loopback のみです。変更する flag が無い理由を
+含め、詳細は [`kobune studio`](../reference/cli#kobune-studio) にあります。
 
 サービスの状態は次の 4 つです。
 

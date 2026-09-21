@@ -6,6 +6,11 @@ environments are running, their URLs, and their logs.
 It is not meant to be kept open. It is for glancing at the state of things and
 opening one.
 
+If what you want is a window with everything in it, that is
+[`kobune studio`](../reference/cli#kobune-studio) — the same dashboard as the
+terminal's, served to a browser, and shipped in the release archives where
+this app is not.
+
 ## Running it
 
 ```console

@@ -716,9 +716,10 @@ $ kobune update
 $ kobune update --check
 ```
 
-実行した `kobune` が置かれているディレクトリの 2 つのバイナリを、現在の
-`nightly` に差し替えます。`--check` は結果を表示するだけで何もインストール
-しません。`--json` の出力は次の形です。
+実行した `kobune` が置かれているディレクトリのバイナリを、現在の `nightly` に
+差し替えます。対象はアーカイブに含まれるすべてで、`kobune` と `kobuned`、
+そしてリリースが持っていれば `kobune-studio` です。`--check` は結果を表示する
+だけで何もインストールしません。`--json` の出力は次の形です。
 
 ```json
 { "status": "available", "commit": "…", "running": "…" }
