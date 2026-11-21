@@ -35,24 +35,6 @@
 [advisories]
 ignore = [
     # ---------------------------------------------------------------
-    # hickory-proto 0.24.4 — RUSTSEC-2026-0119
-    # CPU exhaustion during message encoding (O(n²) name compression).
-    #
-    # **This one is real and it is in the product.** hickory-server is
-    # the DNS server in `kobune-dns`, and it ships inside `kobuned`.
-    #
-    # What bounds it: the server binds 127.0.0.1 only, deliberately
-    # (`GatewaySettings::dns_bind`, and `docs/DESIGN.md` §5), so
-    # reaching it means already having an account on the machine. And
-    # nothing inside a container asks it anything — the hostnames a
-    # container resolves are written into its `/etc/hosts`.
-    #
-    # Clearing it means hickory 0.24 → 0.26, which is two minor
-    # versions of a pre-1.0 crate and an API change rather than a bump.
-    # That is its own piece of work; it is not being done quietly here.
-    "RUSTSEC-2026-0119",
-
-    # ---------------------------------------------------------------
     # quick-xml 0.30.0 and 0.38.4 — RUSTSEC-2026-0194, RUSTSEC-2026-0195
     # Quadratic run time on duplicate attribute names, and unbounded
     # allocation on namespace declarations. Both denial of service.
